@@ -4,14 +4,15 @@ name: CI
 # The Python binding's tests and wheels live in python.yml, the DCO sign-off check in dco.yml.
 # Caches: Swatinem/rust-cache, one cache per job; a run on `main` saves them.
 # Manual only (a project decision: Actions minutes are limited): `gh workflow run CI`, or "Run
-# workflow" on the Actions tab, on `main` or on a branch (`--ref <branch>`). `full` adds macOS and
-# Windows to the test matrix (their minutes count x10 and x2 on a private repository).
+# workflow" on the Actions tab, on `main` or on a branch (`--ref <branch>`). `full` adds Windows to
+# the test matrix. macOS is not in it: the maintainer builds and tests on macOS, and its minutes
+# count x10 on a private repository (the macOS wheels are still built in python.yml).
 
 on:
   workflow_dispatch:
     inputs:
       full:
-        description: "Run the tests on macOS and Windows too (Linux only by default)"
+        description: "Run the tests on Windows too (Linux only by default)"
         type: boolean
         default: false
 
@@ -120,8 +121,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Linux; macOS and Windows with the input `full`.
-        os: ${{ inputs.full && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
+        # Linux; Windows with the input `full` (macOS: see the header).
+        os: ${{ inputs.full && fromJSON('["ubuntu-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
