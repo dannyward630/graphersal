@@ -32,7 +32,8 @@ cargo test  --package graphersal-storage-tests
 cargo deny check                                                          # cargo install --locked cargo-deny
 ```
 
-Depending on what you touched:
+CI does not run on its own: a maintainer starts it for a pull request. Run the checks above locally before you open
+one, and the ones below for what you touched:
 
 ```bash
 cargo test -p graphersal-session -p graphersal-wasm          # playground session logic (also the book's examples)

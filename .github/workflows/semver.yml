@@ -1,7 +1,7 @@
 name: Semver check
 
-# Manual-only (workflow_dispatch) until the first release exists on crates.io: cargo-semver-checks compares the public
-# API with a published baseline. After 0.1.0 is released, change the trigger to `pull_request` and make this job required.
+# Manual only (workflow_dispatch, a project decision like CI): cargo-semver-checks compares the public API with the
+# release published on crates.io, so it is useful from 0.1.0 on; run it before every release.
 
 on:
   workflow_dispatch:

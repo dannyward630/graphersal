@@ -1,18 +1,20 @@
 name: Python wheels
 
 # Builds abi3 wheels (one wheel per platform covers Python 3.10+) and runs the binding's tests.
-# The five-platform wheels are built only on a push to `main` and on `v*` tags; a pull request runs
-# the binding's tests only (Python 3.10 and 3.13).
+# Manual only (a project decision: Actions minutes are limited): `gh workflow run "Python wheels"`
+# runs the binding's tests (Python 3.10 and 3.13); with `-f wheels=true` it also builds the
+# five-platform wheels (two of them on macOS, whose minutes count x10 on a private repository).
 # Wheels are uploaded as workflow artifacts only. Publishing to PyPI is a later, manual decision:
 # use PyPI Trusted Publishing (OIDC, `pypa/gh-action-pypi-publish`, `permissions: id-token: write`)
 # in a separate release workflow; no token is stored in this repository.
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-  pull_request:
   workflow_dispatch:
+    inputs:
+      wheels:
+        description: "Also build the wheels for the five platforms"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -20,9 +22,7 @@ permissions:
 jobs:
   wheels:
     name: wheel (${{ matrix.name }})
-    # Not on pull requests: the wheels are needed for main and releases only. While the repository
-    # is private (macOS minutes count x10 against its quota) only on a `v*` tag.
-    if: github.event_name == 'push' && (!github.event.repository.private || startsWith(github.ref, 'refs/tags/'))
+    if: inputs.wheels
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -54,8 +54,6 @@ jobs:
     # covers 3.10+): pytest against a `maturin develop` build, then the crate's Rust tests with
     # PYO3_PYTHON pointing at the same interpreter (CLAUDE.md).
     name: test (python ${{ matrix.python }})
-    # While the repository is private (Actions minutes are limited) only on a manual start.
-    if: ${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
