@@ -1,52 +1,28 @@
-# `graphersal` — Python bindings for Graphersal
+# graphersal
 
-`graphersal` embeds the [Graphersal](../../README.md) in-memory graph traversal engine into
-Python. It does not expose every Gremlin step as a Python method; instead you write Gremlin
-script text (the same DSL `graphersal` uses) and run it against a `Graph`. The result is converted
-into native Python values (`list`/`dict`/`int`/`float`/`str`/`bool`/`None`/`uuid.UUID`).
+An in-memory graph database and traversal engine for Python, queried with Gremlin, the query
+language of Apache TinkerPop. The engine is [Graphersal](https://graphersal.dev), written in Rust
+and embedded into the Python process: no server, no JVM.
 
-Graph files are GraphSON 3.0 (the primary exchange format for Gremlin users) and GraphML.
+**[Book](https://graphersal.dev)** · **[Python Quick Start](https://graphersal.dev/library/python.html)** ·
+**[Playground](https://play.graphersal.dev)** (try the queries in the browser) ·
+**[Repository](https://github.com/graphersal/graphersal)**
+
+You write Gremlin as script text (the same DSL as the playground and the command line tool) and
+run it against a `Graph`; results come back as native Python values
+(`list`/`dict`/`int`/`float`/`str`/`bool`/`None`/`uuid.UUID`). Graph files are GraphSON 3.0 (the
+primary exchange format for Gremlin users) and GraphML; graphs can also be kept on disk with
+durable commits (the Store).
 
 ## Installing
 
-### From source (this repository), for development
-
-You need a Rust toolchain and Python 3.10+ (the binding targets `abi3-py310`). The macOS system
-`python3` is 3.9 and too old; use e.g. Homebrew's `python3.12`. Keep the virtualenv outside the
-repository or at `bindings/py-graphersal/.venv` (ignored by version control). One-time setup, from
-the repository root:
-
 ```bash
-/opt/homebrew/bin/python3.12 -m venv bindings/py-graphersal/.venv
-bindings/py-graphersal/.venv/bin/pip install maturin pytest
+pip install graphersal
 ```
 
-Build the extension into that virtualenv as `graphersal` (repeat after every Rust change in the
-binding or the engine), then run the tests:
-
-```bash
-cd bindings/py-graphersal
-VIRTUAL_ENV=$PWD/.venv .venv/bin/maturin develop      # add --release for an optimized build
-.venv/bin/python -m pytest tests/                     # Python suite, including examples/
-cd ../..
-PYO3_PYTHON=$PWD/bindings/py-graphersal/.venv/bin/python cargo test -p py-graphersal   # Rust unit tests
-```
-
-`PYO3_PYTHON` must name a Python >= 3.10 for every Cargo command that builds this crate
-(`cargo test -p py-graphersal`, workspace-wide `cargo check`/`cargo clippy`); otherwise exclude it
-with `--exclude py-graphersal`. `import graphersal` is then available in the virtualenv
-(`source bindings/py-graphersal/.venv/bin/activate`).
-
-### Building a wheel to install elsewhere
-
-```bash
-cd bindings/py-graphersal
-maturin build --release        # writes a wheel to target/wheels/
-pip install ../../target/wheels/graphersal-*.whl
-```
-
-The wheel targets the stable ABI (`abi3-py310`), so one wheel per platform covers Python 3.10 and
-newer — no per-Python-version rebuild is needed.
+Wheels exist for Linux (x86_64, aarch64), macOS (x86_64, Apple silicon) and Windows (x86_64). One
+wheel per platform covers Python 3.10 and every newer version (the stable ABI, `abi3`). On another
+platform pip builds the package from source, which needs a Rust toolchain (1.88 or newer).
 
 ## Quick start
 
@@ -170,6 +146,21 @@ graph, report = graphersal.Graph.recover("g.gsnap", ["g.wal"], mark="after-ann")
 `Graph.recover` also takes `commit_seq=` or `time=` (microseconds since the Unix epoch). An
 interrupted last write is ignored (`report["torn_tail"]`); damage raises `GraphersalError` with
 its location. The recovered graph has no journal: `save` and `start_journal` again to continue.
+
+## Keeping a graph on disk: the Store
+
+A Store is one directory (or one `.gstore` file) holding one graph: every commit is durable before
+it returns, and the store keeps marks, snapshots, point-in-time forks and verified backups (book
+page "Persistence: Python"):
+
+```python
+with graphersal.Store.create("data") as store:            # or Store.open("data"); "x.gstore": one file
+    store.graph.execute('g.addV("person").property("name", "ann").next()')   # durable when it returns
+    store.mark("after-ann")
+    store.checkpoint("nightly")
+    store.fork("branch", mark="after-ann")                 # a new store from that state
+    store.backup("bk")                                     # full, then incremental
+```
 
 ## Schemas
 
@@ -501,7 +492,7 @@ allocation of the extension.
 
 ## GraphRAG example
 
-[`examples/graphrag.py`](examples/graphrag.py) ingests a small knowledge graph of text entities and
+[`examples/graphrag.py`](https://github.com/graphersal/graphersal/blob/main/bindings/py-graphersal/examples/graphrag.py) ingests a small knowledge graph of text entities and
 relations, extracts the 2-hop neighbourhood of a question entity with
 `repeat(__.out()).times(2)` and prints one JSON line per path (`entity`, `type`, `text`, `path`,
 `hops`), ready to paste into an LLM prompt:
@@ -524,4 +515,51 @@ write lock for the whole script.
   as data through `dry_run`.
 - Positional parameters (`$1`, `$2`, ...).
 - `list`/`dict` values in `params`.
-- Any graph file format other than GraphML.
+- Graph file formats other than GraphSON and GraphML (and Graphersal's own snapshots).
+
+## Building from source
+
+For development in [the repository](https://github.com/graphersal/graphersal).
+
+You need a Rust toolchain and Python 3.10+ (the binding targets `abi3-py310`). The macOS system
+`python3` is 3.9 and too old; use e.g. Homebrew's `python3.12`. Keep the virtualenv outside the
+repository or at `bindings/py-graphersal/.venv` (ignored by version control). One-time setup, from
+the repository root:
+
+```bash
+/opt/homebrew/bin/python3.12 -m venv bindings/py-graphersal/.venv
+bindings/py-graphersal/.venv/bin/pip install maturin pytest
+```
+
+Build the extension into that virtualenv as `graphersal` (repeat after every Rust change in the
+binding or the engine), then run the tests:
+
+```bash
+cd bindings/py-graphersal
+VIRTUAL_ENV=$PWD/.venv .venv/bin/maturin develop      # add --release for an optimized build
+.venv/bin/python -m pytest tests/                     # Python suite, including examples/
+cd ../..
+PYO3_PYTHON=$PWD/bindings/py-graphersal/.venv/bin/python cargo test -p py-graphersal   # Rust unit tests
+```
+
+`PYO3_PYTHON` must name a Python >= 3.10 for every Cargo command that builds this crate
+(`cargo test -p py-graphersal`, workspace-wide `cargo check`/`cargo clippy`); otherwise exclude it
+with `--exclude py-graphersal`. `import graphersal` is then available in the virtualenv
+(`source bindings/py-graphersal/.venv/bin/activate`).
+
+### A wheel to install elsewhere
+
+```bash
+cd bindings/py-graphersal
+maturin build --release        # writes a wheel to target/wheels/
+pip install ../../target/wheels/graphersal-*.whl
+```
+
+The wheel targets the stable ABI (`abi3-py310`), so one wheel per platform covers Python 3.10 and
+newer — no per-Python-version rebuild is needed.
+
+## License
+
+Apache License, Version 2.0. Graphersal is compatible with, and inspired by, Apache TinkerPop
+Gremlin. It is an independent project: it is not part of Apache TinkerPop and is not endorsed by
+the Apache Software Foundation.

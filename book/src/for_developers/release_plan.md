@@ -41,8 +41,12 @@ From 0.1.0 on a reported break is a release blocker unless the version number sa
 
 Before a version is tagged:
 
-- the CI workflow is green (format, clippy, every test suite incl. the TinkerPop suite and the foreign-storage
-  proof, the feature and wasm32 matrices, the playground tests);
+- the CI workflow, started by hand with `full` (`gh workflow run CI -f full=true`: Linux and Windows), is green:
+  format, clippy, every test suite incl. the TinkerPop suite, the feature and wasm32 matrices, the MSRV, the
+  playground tests;
+- the checks CI leaves out pass locally: `RUSTDOCFLAGS="-D warnings" cargo doc` with the feature sets of
+  `CLAUDE.md`, `mdbook build book`, and the TinkerPop suite on the foreign storage
+  (`GRAPHERSAL_TEST_STORAGE=forwarding`);
 - `cargo deny check` (licences, RustSec advisories, duplicate crates, sources) passes against `deny.toml`;
 - the long fuzz budgets pass: robustness, the merge checkpoint and the verified backups (below; a fast budget of
   each runs in every `cargo test`);
@@ -68,3 +72,14 @@ BACKUP_FUZZ_CASES=60000 BACKUP_FUZZ_SEED=1 BACKUP_FUZZ_THREADS=8 cargo test --re
 
 Robustness findings go to `target/robustness-findings.txt` (`ROBUSTNESS_REPLAY=<seed>` replays one case); a failing
 merge or backup case prints `MERGE_FUZZ_REPLAY=<seed>` or `BACKUP_FUZZ_REPLAY=<seed>`.
+
+## Publishing
+
+1. Tag the release commit: `git tag -a v0.1.0 -m "Graphersal 0.1.0" && git push origin v0.1.0` (the tag equals the workspace `version`).
+2. The crates go to crates.io by hand, in dependency order: `cargo publish -p graphersal`, then
+   `graphersal-storage-tests`, `graphersal-session` and `graphersal-cli`.
+3. The Python package goes to PyPI through the workflow `release.yml`, started on the tag:
+   `gh workflow run Release --ref v0.1.0`. It checks that the tag matches the version, builds the five-platform
+   wheels and the sdist through `python.yml` (which also runs the binding's tests and installs each wheel it can
+   run), and uploads them with PyPI Trusted Publishing from the environment `pypi` (no token is stored).
+4. The GitHub Release takes its text from the release notes.
