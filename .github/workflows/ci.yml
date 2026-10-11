@@ -10,6 +10,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      full:
+        description: "Run the tests on macOS and Windows too (a private repository runs Linux only by default)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -116,7 +121,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # macOS and Windows minutes count x10 and x2 against a private repository's quota: while
+        # the repository is private they run only on a manual start with `full`; public: always.
+        os: ${{ (github.event.repository.private && !inputs.full) && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -165,9 +172,11 @@ jobs:
         env:
           GRAPHERSAL_TEST_STORAGE: forwarding
       - name: DSL differential (foreign_storage_tests)
-        run: cargo test --package graphersal --features "$ACCEPTANCE_FEATURES" --test all foreign_storage_tests::
+        run: |
+          cargo test --package graphersal --features "$ACCEPTANCE_FEATURES" --test all foreign_storage_tests::
       - name: Snapshots and the Store on Forwarding (generic_persist_tests, foreign_store_tests)
-        run: cargo test --package graphersal --features "$ACCEPTANCE_FEATURES" --test all -- generic_persist_tests:: foreign_store_tests::
+        run: |
+          cargo test --package graphersal --features "$ACCEPTANCE_FEATURES" --test all -- generic_persist_tests:: foreign_store_tests::
       - name: Session on Forwarding and the custom storage example
         run: |
           cargo test --package graphersal-session --lib storage::

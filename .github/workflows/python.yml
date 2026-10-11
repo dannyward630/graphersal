@@ -19,8 +19,9 @@ permissions:
 jobs:
   wheels:
     name: wheel (${{ matrix.name }})
-    # Not on pull requests: the wheels are needed for main and releases only.
-    if: github.event_name == 'push'
+    # Not on pull requests: the wheels are needed for main and releases only. While the repository
+    # is private (macOS minutes count x10 against its quota) only on a `v*` tag.
+    if: github.event_name == 'push' && (!github.event.repository.private || startsWith(github.ref, 'refs/tags/'))
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
