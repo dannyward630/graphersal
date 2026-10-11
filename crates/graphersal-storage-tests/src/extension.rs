@@ -330,10 +330,8 @@ pub fn applied_change_set_reproduces_the_unit<S: GraphStorage>(storage: &mut S) 
         .and_then(|s| s.first().cloned())
         .expect("one change set");
     // Undo by hand through the trait, then re-apply.
-    for id in ["a"] {
-        if let Some(v) = storage.get_vertex_by_id(id) {
-            storage.drop_vertex(v).expect("drop");
-        }
+    if let Some(v) = storage.get_vertex_by_id("a") {
+        storage.drop_vertex(v).expect("drop");
     }
     assert_eq!(storage.vertex_count(), 0);
     storage.apply_change_set(&set).expect("apply");
@@ -897,10 +895,8 @@ pub fn change_set_builder_round_trip<S: GraphStorage>(storage: &mut S) {
         built, captured,
         "the constructors rebuild the captured change set"
     );
-    for id in ["a"] {
-        if let Some(v) = storage.get_vertex_by_id(id) {
-            storage.drop_vertex(v).expect("drop");
-        }
+    if let Some(v) = storage.get_vertex_by_id("a") {
+        storage.drop_vertex(v).expect("drop");
     }
     assert_eq!(storage.vertex_count(), 0);
     storage.apply_change_set(&built).expect("apply");

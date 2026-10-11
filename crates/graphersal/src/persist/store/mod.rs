@@ -3117,12 +3117,18 @@ impl Shared {
             return Ok(report);
         }
         self.wal.rotate.store(true, Ordering::Release);
-        let _ = self
-            .wal
-            .since_checkpoint
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| {
-                Some(v.saturating_sub(written_since))
-            });
+        // A compare-exchange loop rather than `fetch_update` (deprecated in Rust 1.99 for
+        // `try_update`, which is newer than the MSRV).
+        let since = &self.wal.since_checkpoint;
+        let mut current = since.load(Ordering::Acquire);
+        while let Err(actual) = since.compare_exchange_weak(
+            current,
+            current.saturating_sub(written_since),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            current = actual;
+        }
         let _graph = self.graph.write();
         if let Some(Err(err)) = self
             .journal
