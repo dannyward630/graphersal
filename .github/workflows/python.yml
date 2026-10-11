@@ -12,6 +12,7 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -53,6 +54,8 @@ jobs:
     # covers 3.10+): pytest against a `maturin develop` build, then the crate's Rust tests with
     # PYO3_PYTHON pointing at the same interpreter (CLAUDE.md).
     name: test (python ${{ matrix.python }})
+    # While the repository is private (Actions minutes are limited) only on a manual start.
+    if: ${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

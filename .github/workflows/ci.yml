@@ -4,6 +4,9 @@ name: CI
 # The Python binding's tests and wheels live in python.yml, the DCO sign-off check in dco.yml.
 # Caches: Swatinem/rust-cache, one cache per job; only `main` saves (pull requests read main's
 # caches and do not evict them with their own).
+# While the repository is private (Actions minutes are limited) every job runs only on a manual
+# start (`gh workflow run CI`, or "Run workflow"; `full` adds macOS and Windows); a public
+# repository runs on every push and pull request.
 
 on:
   push:
@@ -36,6 +39,7 @@ defaults:
 
 jobs:
   fmt:
+    if: ${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +49,7 @@ jobs:
       - run: cargo fmt --all --check
 
   clippy:
+    if: ${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,6 +73,7 @@ jobs:
   # CLAUDE.md's two loops plus `alloc-tracking` and the full acceptance set. One job per
   # target, the combinations in a loop: they share one dependency build and one cache.
   features:
+    if: ${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
     name: features (${{ matrix.target }})
     runs-on: ubuntu-latest
     strategy:
@@ -116,6 +122,7 @@ jobs:
           cargo check --package graphersal-session --target wasm32-unknown-unknown
 
   test:
+    if: ${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -159,6 +166,7 @@ jobs:
   # `Forwarding` (same JSON) with the book's complete host example, and the GraphStorage
   # conformance suite.
   foreign-storage:
+    if: ${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
     name: foreign storage proof
     runs-on: ubuntu-latest
     steps:
@@ -194,6 +202,7 @@ jobs:
   # rustdoc with -D warnings, and the doctests of the smaller feature set CLAUDE.md lists (the
   # acceptance feature set's doctests run in `test`).
   docs:
+    if: ${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     env:
       RUSTDOCFLAGS: -D warnings
@@ -209,6 +218,7 @@ jobs:
       - run: cargo test --package graphersal --doc --features script,io
 
   book:
+    if: ${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -219,6 +229,7 @@ jobs:
       - run: mdbook build book
 
   deny:
+    if: ${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -228,6 +239,7 @@ jobs:
 
   # Minimum supported Rust version: keep in step with `rust-version` in the root Cargo.toml.
   msrv:
+    if: ${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -246,6 +258,7 @@ jobs:
   # wasm-bindgen-test (wasm-bindgen CLI pinned to the crate version, CLAUDE.md), the playground
   # build (playground/build.sh), and the playground's own node tests.
   playground:
+    if: ${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -272,6 +285,7 @@ jobs:
         run: playground/build.sh
 
   third-party-licenses:
+    if: ${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
