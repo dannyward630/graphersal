@@ -1,0 +1,6535 @@
+//! Integration tests for traversal diagnostics: step paths, physical plan rendering and the
+//! provenance of the value that caused a failure.
+
+use graphersal::auth::{AccessPolicy, Authorizer};
+use graphersal::changes::{ChangeSet, CommitHook, HookError};
+use graphersal::exec::ExecutionPolicy;
+use graphersal::exec::Spelling;
+use graphersal::prelude::PropertyMap;
+use graphersal::prelude::*;
+use graphersal::schema::ValueType;
+use graphersal::schema::{PropertySchema, VertexSchema};
+
+/// Builds the modern graph with a single `age` property stored as a string, reproducing the
+/// common case of heterogeneous data reaching a numeric aggregation.
+fn graph_with_string_age() -> Graph {
+    let graph = GraphSource::tinkerpop_modern();
+    {
+        let mut writable = graph.write();
+        let _ = writable
+            .traversal_mut()
+            .v("4")
+            .property("age", "999")
+            .next();
+    }
+    graph
+}
+
+#[test]
+fn aggregation_failure_reports_step_path_plan_and_origin() {
+    let graph = graph_with_string_age();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .has_label("person")
+        .values("age")
+        .max()
+        .next()
+        .expect_err("a string age must not be aggregated");
+
+    let report = format_diagnostic(&err);
+
+    assert!(
+        report.starts_with("Error: Step #2 'max()' execution failed"),
+        "missing step path in: {report}"
+    );
+    assert!(
+        report.contains(r#"at #2: v().has_label("person").values("age").max()"#),
+        "the caret must be placed in the query as written in: {report}"
+    );
+    assert!(
+        report.contains(r#"plan:  v(labels: ["person"]).values("age").max()"#),
+        "missing the executed physical plan in: {report}"
+    );
+    assert!(report.contains('^'), "missing caret marker in: {report}");
+    assert!(
+        report.contains("Caused by: Step 'max' cannot order a string value among number values"),
+        "missing root cause in: {report}"
+    );
+    assert!(
+        report.contains(r#"value:  "999""#),
+        "missing offending value in: {report}"
+    );
+    assert!(
+        report.contains(r#"origin: vertex id="4" label="person" property="age""#),
+        "missing value origin in: {report}"
+    );
+    assert!(
+        report.contains(
+            r#"Help: Property 'age' holds a string where 'max' can only order [number] values."#
+        ),
+        "missing actionable help in: {report}"
+    );
+    // Rule 14: the coercion steps resolve this failure, so the help has to name them with a
+    // query the user can run.
+    assert!(
+        report.contains(
+            r#"Convert the values in the query instead: values("age").as_number(GType.LONG)."#
+        ),
+        "the help must name the coercion step in: {report}"
+    );
+    // Rule 14: `property()` can now persist that conversion in place (step 5 of the logical type
+    // system spec), so the help must offer the full read-transform-write fix, not just the read
+    // side of it.
+    assert!(
+        report.contains(
+            r#"Or fix the data in place: property("age", __.values("age").as_number(GType.LONG))."#
+        ),
+        "the help must name the property() fix-in-place in: {report}"
+    );
+    assert!(
+        report
+            .contains(r#"Find every offending value with values("age").is(typeOf(GType.STRING))."#),
+        "the help must name typeOf() in: {report}"
+    );
+}
+
+/// The same advice reaches a failure that carries no element provenance, such as one on an
+/// injected value.
+#[test]
+fn a_cast_failure_without_provenance_still_names_the_coercion_steps() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .inject(vec!["not a number"])
+        .sum()
+        .next()
+        .expect_err("a string must not be aggregated");
+
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("Convert the stream first with .as_number(GType.LONG)."),
+        "the help must name the coercion step in: {report}"
+    );
+    assert!(
+        report.contains("Find every offending value with .is(typeOf(GType.STRING))."),
+        "the help must name typeOf() in: {report}"
+    );
+}
+
+/// A conversion target no conversion can produce fails loudly and says why.
+#[test]
+fn an_unsupported_cast_target_is_reported_with_the_supported_ones() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .values("age")
+        .cast(GType::from(ValueType::Array(Box::new(ValueType::String))))
+        .next()
+        .expect_err("a container target is not a conversion");
+
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("Caused by: Unsupported cast target 'array<string>'")
+            || report.contains("Error: Unsupported cast target 'array<string>'"),
+        "the target must be named in: {report}"
+    );
+    assert!(
+        report.contains(
+            "'array<string>' cannot be produced by a conversion yet: a container is built by fold() or project(), not by a conversion."
+        ),
+        "the help must say why in: {report}"
+    );
+    assert!(
+        report.contains(
+            "The supported targets are as_string(), as_bool(), as_number(), as_number(GType.LONG) and as_number(GType.DOUBLE)."
+        ),
+        "the help must list the supported targets in: {report}"
+    );
+}
+
+/// A UUID cast target is now implemented: a canonical string converts, a malformed one fails with
+/// a `CastException` that names the coercion step (design decision D7).
+#[test]
+fn a_uuid_cast_target_converts_a_canonical_string_and_rejects_a_malformed_one() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let ok = locked
+        .traversal()
+        .inject(vec!["550e8400-e29b-41d4-a716-446655440000"])
+        .cast(GType::UUID)
+        .next()
+        .unwrap();
+    assert!(ok.is_some());
+
+    let err = locked
+        .traversal()
+        .inject(vec!["not-a-uuid"])
+        .cast(GType::UUID)
+        .next()
+        .expect_err("a malformed UUID must not silently pass through");
+
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("uuid"),
+        "the target type must be named in: {report}"
+    );
+}
+
+/// The hint every `uuid` cast failure appends: the canonical form and a runnable literal.
+const UUID_CANONICAL_HINT: &str = "A UUID is written in canonical form: 8-4-4-4-12 lowercase \
+     hex digits, no braces, for example UUID.from_string(\"550e8400-e29b-41d4-a716-446655440000\").";
+
+/// A malformed UUID literal: the help names the canonical format and a runnable
+/// `UUID.fromString(..)` example (type system step 4).
+#[test]
+fn a_malformed_uuid_literal_help_names_the_canonical_form() {
+    let err = ElementProperty::uuid_from_string("550E8400-E29B-41D4-A716-446655440000")
+        .expect_err("uppercase is not canonical");
+    let TraverserError::Value(value_error) = *err else {
+        panic!("expected a value error");
+    };
+    assert_eq!(
+        value_error.help().expect("help"),
+        format!(
+            "Check the value type before performing conversion or cast operation.\n\
+             Convert the stream first with .cast(GType.UUID).\n\
+             Find every offending value with .is(typeOf(GType.STRING)).\n\
+             {UUID_CANONICAL_HINT}"
+        )
+    );
+}
+
+/// A stored string that fails `cast(GType::UUID)`: the property-origin help also ends with the
+/// canonical-form hint.
+#[test]
+fn a_stored_non_uuid_string_cast_help_names_the_canonical_form() {
+    let graph = GraphSource::tinkerpop_modern();
+    graph
+        .write()
+        .traversal_mut()
+        .v("1")
+        .property("uid", "abc")
+        .next()
+        .unwrap();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v("1")
+        .values("uid")
+        .cast(GType::UUID)
+        .next()
+        .expect_err("\"abc\" is not a UUID");
+    let TraverserError::Value(value_error) = err.root_cause() else {
+        panic!("expected a value error, got {err:?}");
+    };
+    let help = value_error.help().expect("help");
+    assert!(
+        help.starts_with("Property 'uid' holds a string on vertex"),
+        "unexpected help: {help}"
+    );
+    assert!(
+        help.ends_with(&format!("\n{UUID_CANONICAL_HINT}")),
+        "unexpected help: {help}"
+    );
+}
+
+#[test]
+fn an_unoptimized_query_is_reported_once() {
+    let graph = graph_with_string_age();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .values("age")
+        .max()
+        .next()
+        .expect_err("a string age must not be aggregated");
+
+    let report = format_diagnostic(&err);
+    assert_eq!(
+        err.query(),
+        None,
+        "an untouched plan needs no separate copy of the query"
+    );
+    assert!(
+        !report.contains("plan:"),
+        "an unchanged plan must not be printed twice in: {report}"
+    );
+    assert!(
+        report.contains(r#"at #2: v().values("age").max()"#),
+        "the caret must be placed in the query as written in: {report}"
+    );
+}
+
+#[test]
+fn nested_traversal_failure_reports_a_step_path_per_level() {
+    let graph = graph_with_string_age();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .has_label("person")
+        .where_t(__::values("age").sum().is(P::Gt(30)))
+        .count()
+        .next()
+        .expect_err("a string age must not be aggregated inside where()");
+
+    let report = format_diagnostic(&err);
+
+    assert!(
+        report.starts_with("Error: Step #1.0.1 'sum()' execution failed"),
+        "missing nested step path in: {report}"
+    );
+    assert_eq!(
+        err.step_trace().len(),
+        2,
+        "expected one frame per traversal level in: {report}"
+    );
+    assert!(
+        report.contains("at #1:") && report.contains("at #1.0.1:"),
+        "missing one labelled frame per level in: {report}"
+    );
+    assert!(
+        report.contains(r#"values("age").sum().is(P.gt(30))"#),
+        "missing inner plan in: {report}"
+    );
+}
+
+#[test]
+fn incomparable_kinds_are_reported_with_provenance() {
+    let graph = GraphSource::tinkerpop_modern();
+    {
+        let mut writable = graph.write();
+        let _ = writable
+            .traversal_mut()
+            .v("1")
+            .property("score", 5i64)
+            .next();
+        let _ = writable
+            .traversal_mut()
+            .v("2")
+            .property("score", "high")
+            .next();
+    }
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .values("score")
+        .max()
+        .next()
+        .expect_err("a number and a string are not comparable by max()");
+
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("origin: vertex id=\"2\""),
+        "missing origin of the offending value in: {report}"
+    );
+    assert!(
+        report.contains("max() compares numbers with numbers and text with text"),
+        "the help must explain the like-with-like rule in: {report}"
+    );
+    assert!(
+        report.contains(r#"g.v().values("name").max()"#)
+            && report.contains("Step 'max' cannot order a string value among number"),
+        "the help must carry a runnable example in: {report}"
+    );
+    // The coercion step that resolves the failure is named, too.
+    assert!(report.contains("as_number(GType.LONG)"), "{report}");
+}
+
+/// TinkerPop 3.7's `max()` (and `sum()`/`mean()`/`min()`/`median()`) is a seedless
+/// `ReducingBarrierStep`: an empty, or all-null, numeric stream emits nothing at all rather than
+/// failing the query — confirmed against TinkerPop 3.7's `MaxGlobalStep` sources and via `graphersal`
+/// (`g.V().hasLabel("nope").values("age").max()` produces no rows, not an error).
+#[test]
+fn empty_numeric_aggregation_emits_nothing_not_an_error() {
+    let graph = GraphSource::tinkerpop_modern();
+    {
+        let mut writable = graph.write();
+        let _ = writable
+            .traversal_mut()
+            .v("1")
+            .property("score", ElementProperty::Null)
+            .next();
+    }
+    let locked = graph.read();
+    let result = locked
+        .traversal()
+        .v(None)
+        .values("score")
+        .max()
+        .next()
+        .expect("a stream of null values is not an aggregation error");
+
+    assert!(
+        result.is_none(),
+        "a stream of null values carries nothing to aggregate, so max() must emit no result, got {result:?}"
+    );
+}
+
+#[test]
+fn integer_overflow_is_reported_instead_of_panicking() {
+    let graph = GraphSource::tinkerpop_modern();
+    {
+        let mut writable = graph.write();
+        let _ = writable
+            .traversal_mut()
+            .v("1")
+            .property("score", i64::MAX)
+            .next();
+        let _ = writable
+            .traversal_mut()
+            .v("2")
+            .property("score", 1i64)
+            .next();
+    }
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .values("score")
+        .sum()
+        .next()
+        .expect_err("an i64 overflow must be reported as an error");
+
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("'sum' overflowed the signed 64-bit integer range"),
+        "missing overflow diagnosis in: {report}"
+    );
+}
+
+/// The Rhai DSL surfaces the same diagnostic the Rust API produces: a data terminal such as
+/// `toList()` fails the script with the full `format_diagnostic` report attached, so a broken
+/// query is never mistaken for a result.
+#[cfg(feature = "script")]
+#[test]
+fn script_dsl_reports_the_same_diagnostic() {
+    use crate::script_host::eval;
+
+    let graph = std::sync::Arc::new(graph_with_string_age());
+    let err = eval(
+        graph,
+        r#"g.v().has_label("person").values("age").max().toList()"#,
+    )
+    .expect_err("a failing traversal must fail the script");
+    let report = err.to_string();
+
+    assert!(
+        report.contains("Step #2 'max()' execution failed"),
+        "missing step path in: {report}"
+    );
+    assert!(
+        report.contains(r#"origin: vertex id="4" label="person" property="age""#),
+        "missing value origin in: {report}"
+    );
+}
+
+/// A display terminal keeps rendering the diagnostic instead of failing, so the REPL prints the
+/// report in place of the result table.
+#[cfg(feature = "script")]
+#[test]
+fn script_dsl_renders_the_diagnostic_for_display_terminals() {
+    use crate::script_host::eval;
+
+    let graph = std::sync::Arc::new(graph_with_string_age());
+    let report = eval(graph, r#"g.v().has_label("person").values("age").max()"#)
+        .expect("a rendered traversal must not fail the script");
+
+    assert!(
+        report.contains("Step #2 'max()' execution failed"),
+        "missing step path in: {report}"
+    );
+}
+
+#[test]
+fn diagnostics_can_be_turned_off_for_hot_paths() {
+    let graph = graph_with_string_age();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .without_diagnostics()
+        .v(None)
+        .has_label("person")
+        .values("age")
+        .max()
+        .next()
+        .expect_err("a string age must not be aggregated");
+
+    let report = format_diagnostic(&err);
+    assert_eq!(
+        err.query(),
+        None,
+        "provenance must not be tracked once diagnostics are off"
+    );
+    assert!(
+        report.contains(r#"at #2: v(labels: ["person"]).values("age").max()"#),
+        "the executed plan is still reported in: {report}"
+    );
+    assert!(
+        report.contains(r#"origin: vertex id="4" label="person" property="age""#),
+        "the offending value is still reported in: {report}"
+    );
+}
+
+/// `property_json()` rejects a JSON integer that overflows `i64` (but fits `u64`) with a
+/// `CastException` instead of silently downcasting to a lossy `f64` (design decision D3); its
+/// `help()` text is covered like any other diagnostic (AGENTS.md rule 14).
+#[cfg(feature = "serde")]
+#[test]
+fn property_json_u64_overflow_help_names_the_cast_exception() {
+    let graph = GraphSource::tinkerpop_modern();
+    let mut writable = graph.write();
+    let err = writable
+        .traversal_mut()
+        .v("1")
+        .property_json(serde_json::json!({"n": 18446744073709551615u64}))
+        .next()
+        .expect_err("a u64 beyond i64::MAX must not silently downcast to f64");
+
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("Caused by: Cast exception: expected type [int64 or float64], got type 'u64 (18446744073709551615) exceeding i64::MAX'"),
+        "missing root cause in: {report}"
+    );
+    assert!(
+        report
+            .contains("Help: Check the value type before performing conversion or cast operation."),
+        "missing the generic no-origin help in: {report}"
+    );
+}
+
+/// A `CastException` whose offending value is a whole nested object (not a plain type mismatch)
+/// must point at `.json_path(...)` as the direct way to reach the one field the query actually
+/// wanted, instead of chaining `.values(property).values(subkey)` (AGENTS.md rule 14).
+#[cfg(feature = "serde")]
+#[test]
+fn cast_exception_on_nested_object_help_names_json_path() {
+    let graph = GraphSource::tinkerpop_modern();
+    let mut writable = graph.write();
+    let err = writable
+        .traversal_mut()
+        .v("1")
+        .property_json(serde_json::json!({"meta": {"k": 1}}))
+        .values("meta")
+        .as_number(GType::LONG)
+        .next()
+        .expect_err("a nested object cannot be cast straight to a number");
+
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("Caused by: Cast exception: expected type [int64], got type 'object'"),
+        "missing root cause in: {report}"
+    );
+    assert!(
+        report.contains(
+            "Reach one nested field directly instead of chaining values(): \
+             json_path(\"meta.subkey\") instead of values(\"meta\").values(\"subkey\")."
+        ),
+        "the help must name json_path() as the direct route to a nested field:\n{report}"
+    );
+}
+
+/// A `CastException` whose offending value is a plain scalar (no nested container involved) must
+/// stay free of the `json_path()` mention: it would not fix a genuine type mismatch, only a
+/// nested-value miss.
+#[test]
+fn cast_exception_on_scalar_help_omits_json_path() {
+    let graph = graph_with_string_age();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .has_label("person")
+        .values("age")
+        .max()
+        .next()
+        .expect_err("a string age must not be aggregated");
+
+    let report = format_diagnostic(&err);
+    assert!(
+        !report.contains("json_path"),
+        "a plain scalar cast mismatch has nothing to do with JSONPath:\n{report}"
+    );
+}
+
+/// `InvalidJsonPath`'s `help()` must give a runnable example using the finished API surface —
+/// both the standalone `.json_path(...)` step and the `.by(By::JsonPath(...))` modulator form —
+/// and name the unsupported JSONPath constructs concretely (AGENTS.md rule 14).
+#[cfg(feature = "serde")]
+#[test]
+fn invalid_json_path_help_names_both_api_forms_and_unsupported_syntax() {
+    let graph = GraphSource::tinkerpop_modern();
+    let mut writable = graph.write();
+    let err = writable
+        .traversal_mut()
+        .v("1")
+        .property_json(serde_json::json!({"meta": {"k": 1}}))
+        .json_path("$..bad")
+        .next()
+        .expect_err("recursive descent is not part of the supported JSONPath subset");
+
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("Caused by: Invalid JSONPath '$..bad'"),
+        "missing root cause in: {report}"
+    );
+    assert!(
+        report.contains(r#"json_path("$.meta.tags[0]")"#),
+        "the help must carry a runnable .json_path() example:\n{report}"
+    );
+    assert!(
+        report.contains(r#".by(By::JsonPath("meta.k"))"#),
+        "the help must carry a runnable By::JsonPath example:\n{report}"
+    );
+    assert!(
+        report.contains("Recursive descent ('..')")
+            && report.contains("wildcards ('*')")
+            && report.contains("filter expressions ('[?(...)]')"),
+        "the help must name the unsupported constructs concretely:\n{report}"
+    );
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn json_parse_help_does_not_promise_a_graph_json_format() {
+    let err = IOError::JsonParse(serde_json::from_str::<serde_json::Value>("{").unwrap_err());
+    let rendered = format_diagnostic(&err);
+
+    assert!(
+        rendered.contains("Verify that the JSON document is well-formed."),
+        "the help must stay about JSON well-formedness:\n{rendered}"
+    );
+}
+
+#[test]
+fn other_v_without_a_preceding_vertex_help_names_both_v_and_out_v() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .e(None)
+        .other_v()
+        .next()
+        .expect_err("g.e().other_v() has no vertex earlier in its path");
+
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("other_v() found no vertex earlier"),
+        "{report}"
+    );
+    assert!(
+        report.contains("g.v(\"1\").both_e(\"knows\").other_v()"),
+        "{report}"
+    );
+    assert!(report.contains("both_v()"), "{report}");
+    assert!(report.contains("out_v()/in_v()"), "{report}");
+}
+
+/// `select("x")` where "x" is never declared anywhere in the query (no `as("x")`, no
+/// `aggregate`/`store`/`tree`/`with_side_effect` key "x") is a plan-time, before-execution error
+/// (design spec `2026-09-26-gremlin-conformance-fixes-design.md`, task 1): this is a
+/// query-authoring mistake, not the legitimate "declared but not on this branch" case that
+/// `union()`/`optional()`/`choose()` produce (see `select_declared_but_absent_label_filters_the_traverser`
+/// below, and `crates/graphersal/src/traversal/step/map_steps/step_select.rs`'s module tests for
+/// the three branching queries verified against real TinkerPop 3.7/TinkerGraph).
+#[test]
+fn a_missing_select_label_help_names_as_and_path() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v("1")
+        .out(None)
+        .select("x")
+        .to_list()
+        .unwrap_err();
+    assert!(matches!(
+        err.root_cause(),
+        TraverserError::Value(ValueError::UndeclaredLabel { .. })
+    ));
+    let rendered = format_diagnostic(&err);
+    assert!(
+        rendered.contains("Step label 'x' is never declared anywhere in this query"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("g.v(\"1\").as(\"x\").out().select(\"x\")"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("read the whole path with path()"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("where(__.as(\"x\").values(\"name\"))"),
+        "{rendered}"
+    );
+    // pop series: the help names the Pop forms for a label set several times
+    assert!(rendered.contains("select(Pop.all, \"x\")"), "{rendered}");
+    assert!(
+        !rendered.contains("select_pop"),
+        "DSL prose only: {rendered}"
+    );
+}
+
+/// The undeclared-label diagnostic also guards the `Pop` forms of `select()` (the `path` help is
+/// asserted in the test module of `error.rs`).
+#[test]
+fn pop_forms_get_the_undeclared_label_diagnostic() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .select_pop(Pop::First, "x")
+        .to_list()
+        .unwrap_err();
+    let rendered = format_diagnostic(&err);
+    assert!(
+        rendered.contains("Step label 'x' is never declared"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Pop.first"), "{rendered}");
+    assert!(rendered.contains("Pop.mixed"), "{rendered}");
+}
+
+/// A malformed `select(Pop, ...)` call is an `ArgumentMismatch` whose help shows the four forms.
+#[test]
+#[cfg(feature = "script")]
+fn select_pop_argument_mismatch_help_shows_the_forms() {
+    use crate::script_host::eval;
+
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    let err = eval(graph, r#"g.v().as("a").select(Pop.first)"#).expect_err("a Pop alone");
+    let report = err.to_string();
+    assert!(
+        report.contains("Argument mismatch for step 'select'"),
+        "{report}"
+    );
+    for form in [
+        "select(\"a\", \"b\")",
+        "select(Pop.all, \"a\")",
+        "select(Pop.first, \"a\", \"b\")",
+        "select(Column.keys)",
+        "g.v().as(\"a\").out().as(\"a\").select(Pop.all, \"a\")",
+        "select(Pop.all, __.constant(\"a\"))",
+    ] {
+        assert!(report.contains(form), "missing {form}: {report}");
+    }
+}
+
+/// `by("name")` over a list (what `select(Pop.all, "a")` returns) points at the child traversal
+/// that reads the property of each element.
+#[test]
+fn by_property_over_a_selected_list_help_names_the_unfold_recipe() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .as_("a")
+        .out(None)
+        .as_("a")
+        .select_pop(Pop::All, "a")
+        .by("name")
+        .to_list()
+        .unwrap_err();
+    let rendered = format_diagnostic(&err);
+    assert!(
+        rendered.contains("Property 'name' not found on element type 'list'"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "g.v().as(\"a\").out().as(\"a\").select(Pop.all, \"a\").by(__.unfold().values(\"name\").fold())"
+        ),
+        "{rendered}"
+    );
+    assert!(rendered.contains("never to each element"), "{rendered}");
+    assert!(
+        rendered.contains(".properties()"),
+        "the existing advice stays: {rendered}"
+    );
+}
+
+/// The Rhai DSL surfaces the same plan-time static error as the Rust API for the same query, in
+/// both spellings (rule 2's DSL parity).
+#[test]
+#[cfg(feature = "script")]
+fn script_dsl_reports_the_undeclared_label_static_error() {
+    use crate::script_host::eval;
+
+    for query in [
+        r#"g.V("1").out().select("x").toList()"#,
+        r#"g.v("1").out().select("x").to_list()"#,
+    ] {
+        let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+        let err = eval(graph, query).expect_err("\"x\" is never declared anywhere in the query");
+        let report = err.to_string();
+        assert!(
+            report.contains("Step label 'x' is never declared anywhere in this query"),
+            "{report}"
+        );
+    }
+}
+
+/// A label that *is* declared somewhere in the query, but is absent on this traverser's path
+/// (the `union()`/`optional()`/`choose()` branching case TinkerPop's `KeyNotFoundException` ->
+/// `EmptyTraverser` covers), filters the traverser instead of erroring — verified against real
+/// TinkerPop 3.7/TinkerGraph (see `step_select.rs`'s module tests for the exact reference
+/// results).
+#[test]
+fn select_declared_but_absent_label_filters_the_traverser() {
+    // Real TinkerPop 3.7/TinkerGraph: g.V().union(__.as("a").out("knows"),
+    // __.out("created")).select("a") -> [v[1], v[1]] (marko, twice: once per "knows" edge). The
+    // four traversers from the unlabeled `out("created")` branch are filtered, not erroring, even
+    // though "a" is declared (by the left branch) and this branch never sets it.
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let result = lock
+        .traversal()
+        .v(None)
+        .union(vec![__::as_("a").out("knows"), __::out("created")])
+        .select("a")
+        .id()
+        .to_list()
+        .expect("a declared-but-absent label filters, it never errors");
+    assert_eq!(
+        result,
+        vec![
+            ElementProperty::String("1".into()),
+            ElementProperty::String("1".into())
+        ]
+    );
+}
+
+#[test]
+fn path_not_defined_help_names_as_select_and_path() {
+    let help = ValueError::PathNotDefined.help().expect("help");
+    assert!(
+        help.contains("g.v(\"1\").as(\"a\").out().select(\"a\")"),
+        "{help}"
+    );
+    assert!(help.contains("g.v(\"1\").out().path()"), "{help}");
+    assert!(!help.contains("strategy"), "{help}");
+}
+
+#[test]
+fn unpopulated_side_effect_key_help_names_aggregate_store_and_cap() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .cap("friends")
+        .next()
+        .expect_err("\"friends\" was never populated");
+    let help = err.help().expect("help");
+    assert!(help.contains("aggregate(\"friends\")"), "{help}");
+    assert!(help.contains("store(\"friends\")"), "{help}");
+    assert!(help.contains("tree(\"friends\")"), "{help}");
+    assert!(help.contains("cap(\"friends\")"), "{help}");
+    assert!(help.contains("where(within(\"friends\"))"), "{help}");
+    assert!(help.contains("ran but collected nothing"), "{help}");
+    assert!(help.contains("returns the empty collection"), "{help}");
+}
+
+#[test]
+fn timeout_help_rewrites_the_failing_query() {
+    let graph = GraphSource::large_110k();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("evaluationTimeout", 1)
+        .v(None)
+        .out(None)
+        .out(None)
+        .out(None)
+        .count()
+        .next()
+        .expect_err("1 ms is not enough");
+    let help = err.help().expect("help");
+    assert_eq!(
+        help,
+        "The traversal ran longer than its evaluationTimeout budget of 1 ms. The budget is \
+         checked between steps, every 1024 traversers and every 1024 values a step materializes \
+         (fold(), group(), order(), a terminal list); the step named above is the one that was \
+         running.\n\
+         Merge duplicate traversers: barrier() merges equal traversers so later steps process \
+         each distinct one once, for example \
+         g.v().out().barrier().out().barrier().out().count().\n\
+         Narrow the start set with has_label() or has_id(), for example \
+         g.v().has_label(\"<label>\").out().out().out().count().\n\
+         Cap the stream before it fans out with limit(), for example \
+         g.v().limit(1000).out().out().out().count().\n\
+         Or raise the budget: g.with(\"evaluationTimeout\", 2).v().out().out().out().count(). It \
+         is an administrative option: a script whose host restricts it needs Update on that \
+         Option to set it.\n\
+         To see which step spends the time, run it with execute() and a profile: the profile \
+         up to the timed-out step comes back with the error, for example \
+         g.v().out().out().out().count().execute(#{profile: true}).\n\
+         If the traversal mutates the graph, nothing of it was applied: a failing traversal is \
+         rolled back."
+    );
+    let rendered = format_diagnostic(&err);
+    assert!(
+        rendered.contains("Caused by: Traversal exceeded evaluationTimeout of 1 ms (ran "),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn timeout_help_bounds_a_glob_path_walk_with_max_depth() {
+    let graph = GraphSource::large_110k();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("evaluationTimeout", 1)
+        .v(None)
+        .glob_path_with("**", GlobPathOptions::default().prune(__::has("name", "x")))
+        .by("name")
+        .count()
+        .next()
+        .expect_err("110k '**' walks exceed 1 ms");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains(
+            "\nBound the '**' walk of glob_path() with max_depth, the deepest level below the start \
+             vertex it visits, for example \
+             g.v().glob_path(\"**\", #{max_depth: 3, prune: __.has(\"name\", \"x\")}).by(\"name\").count().\n"
+        ),
+        "{help}"
+    );
+    // The other rewrites show the options map as a Rhai map literal too.
+    assert!(
+        help.contains(
+            "Or raise the budget: g.with(\"evaluationTimeout\", 2).v().glob_path(\"**\", \
+             #{prune: __.has(\"name\", \"x\")}).by(\"name\").count()."
+        ),
+        "{help}"
+    );
+}
+
+#[test]
+fn timeout_help_does_not_bound_a_glob_path_walk_that_has_max_depth() {
+    let graph = GraphSource::large_110k();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("evaluationTimeout", 1)
+        .v(None)
+        .glob_path_with("**", GlobPathOptions::default().max_depth(50))
+        .by("name")
+        .count()
+        .next()
+        .expect_err("110k '**' walks exceed 1 ms");
+    let help = err.help().expect("help");
+    assert!(!help.contains("max_depth, the deepest level"), "{help}");
+}
+
+#[test]
+fn glob_path_max_depth_help_shows_the_corrected_query() {
+    let graph = TraversalGraph::file_tree();
+    let err = graph
+        .traversal()
+        .v("root")
+        .as_("a")
+        .glob_path_with(
+            "**",
+            GlobPathOptions::default()
+                .max_depth(0)
+                .prune(__::has("name", "x")),
+        )
+        .by("name")
+        .to_list()
+        .expect_err("max_depth 0 is invalid");
+    assert_eq!(
+        err.root_cause().to_string(),
+        "Invalid value for option 'glob_path.max_depth': must be at least 1, got 0"
+    );
+    assert_eq!(
+        err.help().expect("help"),
+        "max_depth is the deepest level below the start vertex that glob_path() visits: the start \
+         vertex is level 0 and its children are level 1, so max_depth is an integer from 1 to \
+         4294967295. Leave it out to walk without a bound. For example \
+         g.v(\"root\").as(\"a\").glob_path(\"**\", #{max_depth: 1, prune: __.has(\"name\", \"x\")}).by(\"name\")."
+    );
+    let rendered = format_diagnostic(&err);
+    assert!(
+        rendered.starts_with(
+            "Error: Step #2 'glob_path(\"**\", {max_depth: 0, prune: __.has(\"name\", \"x\")}).by(\"name\")' \
+             execution failed"
+        ),
+        "{rendered}"
+    );
+}
+
+#[cfg(feature = "script")]
+#[test]
+fn glob_path_max_depth_help_clamps_a_too_large_value() {
+    let graph = std::sync::Arc::new(GraphSource::file_tree());
+    let mut scope = crate::script_host::graph_scope(graph);
+    let err = crate::script_host::engine()
+        .eval_with_scope::<crate::script_host::rhai::Dynamic>(
+            &mut scope,
+            r#"g.v("root").glob_path("**", #{max_depth: 5000000000}).by("name").to_list()"#,
+        )
+        .expect_err("max_depth above u32::MAX is invalid");
+    let crate::script_host::rhai::EvalAltResult::ErrorRuntime(diagnostic, ..) = *err else {
+        panic!("not a runtime error: {err}");
+    };
+    let diagnostic = diagnostic.to_string();
+    assert!(
+        diagnostic.contains(
+            "\nCaused by: Invalid value for option 'glob_path.max_depth': must be at most 4294967295, \
+             got 5000000000\n"
+        ),
+        "{diagnostic}"
+    );
+    assert!(
+        diagnostic.contains(
+            "For example g.v(\"root\").glob_path(\"**\", #{max_depth: 4294967295}).by(\"name\")."
+        ),
+        "{diagnostic}"
+    );
+}
+
+#[test]
+fn timeout_help_uses_the_query_as_written() {
+    let graph = GraphSource::large_110k();
+    let lock = graph.read();
+    // The optimizer folds has_label() into v(); the advice is built on the written query.
+    let err = lock
+        .traversal()
+        .with("evaluationTimeout", 1)
+        .v(None)
+        .has_label("V_0_0")
+        .both(None)
+        .both(None)
+        .both(None)
+        .both(None)
+        .both(None)
+        .both(None)
+        .both(None)
+        .count()
+        .next()
+        .expect_err("5M paths exceed 1 ms");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("g.v().limit(1000).has_label(\"V_0_0\").both()"),
+        "{help}"
+    );
+}
+
+#[test]
+fn invalid_option_help_shows_a_valid_timeout() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("evaluationTimeout", -1)
+        .v(None)
+        .count()
+        .next()
+        .expect_err("a negative timeout is invalid");
+    assert_eq!(
+        err.to_string(),
+        "Invalid value for option 'evaluationTimeout': expected a non-negative number of \
+         milliseconds, got -1"
+    );
+    assert_eq!(
+        err.help().expect("help"),
+        "Set 'evaluationTimeout' to a non-negative integer number of milliseconds when the \
+         traversal source is created, for example g.with(\"evaluationTimeout\", 5000).v().count(); \
+         0 disables the timeout."
+    );
+}
+
+#[test]
+fn locked_option_help_explains_the_host_policy_not_a_bad_value() {
+    let policy = ExecutionPolicy::permissive().with_locked("evaluationTimeout");
+    let graph = TraversalGraph::tinkerpop_modern().with_execution_policy(policy);
+    let graph: Graph = Graph::new(graph);
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("evaluationTimeout", 5000)
+        .v(None)
+        .count()
+        .next()
+        .expect_err("evaluationTimeout is locked by the policy");
+    assert_eq!(
+        err.to_string(),
+        "Option 'evaluationTimeout' is locked by this instance's execution policy and cannot be \
+         set by a query"
+    );
+    let help = err.help().expect("help");
+    // Unlike InvalidOption's help, this never suggests trying a different value.
+    assert!(!help.contains("Set 'evaluationTimeout' to"), "{help}");
+    assert!(help.contains("execution policy"), "{help}");
+    assert!(help.contains("ExecutionPolicy::with_locked"), "{help}");
+}
+
+#[test]
+fn timeout_help_names_loop_bounds_for_a_repeat() {
+    let graph = GraphSource::large_110k();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("evaluationTimeout", 1)
+        .v(None)
+        .repeat(__::both(None))
+        .times(8)
+        .count()
+        .next()
+        .expect_err("8 hops of both() on the large graph exceed 1 ms");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains(
+            "Bound every repeat() loop with times() or until(), and skip cycles with \
+             simple_path() in its body, for example g.v().repeat(__.out().simple_path()).times(3) \
+             or g.v().repeat(__.out().simple_path()).until(__.has(\"name\", \"<value>\"))."
+        ),
+        "{help}"
+    );
+    assert!(
+        help.contains("g.with(\"evaluationTimeout\", 2).v().repeat(__.both()).times(8).count()"),
+        "{help}"
+    );
+    assert!(
+        help.contains(
+            "Equal traversers are merged automatically inside repeat(), so a loop over converging \
+             paths stays cheap; path() and simple_path() record full paths, which prevents the \
+             merge"
+        ),
+        "{help}"
+    );
+    assert!(
+        help.contains(
+            "A sack merge operator or with_bulk(false) turns automatic merging off: add barrier() \
+             inside the loop body, for example g.v().repeat(__.out().barrier()).times(3).count()."
+        ),
+        "{help}"
+    );
+}
+
+#[test]
+fn repeat_limit_help_rewrites_the_loop() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("repeat.max_loops", 3)
+        .v("1")
+        .repeat(__::both(None))
+        .to_list()
+        .expect_err("both() walks back and forth forever");
+    assert_eq!(
+        err.root_cause().to_string(),
+        "repeat() exceeded the loop limit of 3 iterations"
+    );
+    assert_eq!(
+        err.help().expect("help"),
+        "The loop ran 3 iterations without stopping: it walks a cycle, or nothing ends it.\n\
+         Bound the number of iterations with times(), for example repeat(__.both()).times(3).\n\
+         Stop at a target with until(), for example \
+         repeat(__.both()).until(__.has(\"name\", \"<value>\")).\n\
+         On a cyclic graph, drop the paths that revisit an element with simple_path(), for \
+         example repeat(__.both().simple_path()).\n\
+         Equal traversers are merged automatically inside repeat(), but path() and simple_path() \
+         record full paths and prevent that merge, so exponential path counts stay expensive \
+         with them. A sack merge operator or with_bulk(false) turns automatic merging off: add \
+         barrier() inside the loop body, for example repeat(__.both().barrier()).\n\
+         Or raise the limit: g.with(\"repeat.max_loops\", 6).v(\"1\").repeat(__.both()). It is \
+         an administrative option: a script whose host restricts it needs Update on that Option \
+         to set it.\n\
+         On a tree-shaped graph (directories, org charts, categories), walk the levels below a \
+         vertex with glob_path() instead: it follows outgoing edges along a pattern, prunes \
+         branches that cannot match and stops on cycles without a loop limit, for example \
+         g.v(\"1\").glob_path(\"**/*.rs\").by(\"name\"), or g.v(\"1\").glob_path(\"**\").by(\"name\") \
+         for every level below; bound how deep it walks with max_depth, for example \
+         g.v(\"1\").glob_path(\"**\", #{max_depth: 3}).by(\"name\")."
+    );
+    let rendered = format_diagnostic(&err);
+    assert!(
+        rendered.starts_with("Error: Step #1 'repeat(__.both())' execution failed"),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn unknown_loop_name_help_lists_the_active_loops() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v("1")
+        .repeat_named("a", __::out(None).where_t(__::loops_named("b").is(0)))
+        .times(1)
+        .to_list()
+        .expect_err("no loop is named b");
+    assert_eq!(
+        err.root_cause().to_string(),
+        "loops(\"b\") names no enclosing repeat() (active loops: a)"
+    );
+    assert_eq!(
+        err.help().expect("help"),
+        "The enclosing named loops are: a. Read one of them, for example loops(\"a\"), or name \
+         the loop that loops(\"b\") should read: repeat(\"b\", __.out())."
+    );
+}
+
+#[test]
+fn unknown_loop_name_help_outside_any_loop() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v("1")
+        .loops_named("x")
+        .to_list()
+        .expect_err("no loop at all");
+    assert_eq!(
+        err.root_cause().to_string(),
+        "loops(\"x\") names no enclosing repeat()"
+    );
+    assert_eq!(
+        err.help().expect("help"),
+        "No enclosing repeat() is named 'x'. Name the loop, for example \
+         repeat(\"x\", __.out()).until(__.loops(\"x\").is(2)), or read the innermost loop with \
+         loops()."
+    );
+}
+
+#[test]
+fn repeat_without_body_help_shows_both_placements() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .times(2)
+        .to_list()
+        .expect_err("times() without repeat()");
+    assert_eq!(
+        err.root_cause().to_string(),
+        "times(2) modulates a repeat() step, but the traversal has no repeat() for it"
+    );
+    assert_eq!(
+        err.help().expect("help"),
+        "Write the loop body with repeat(). Before repeat(), times(2) is checked before each \
+         iteration, for example g.v().times(2).repeat(__.out()); after it, times(2) is checked \
+         after each iteration, for example g.v().repeat(__.out()).times(2)."
+    );
+}
+
+#[test]
+fn repeat_without_body_help_in_a_child_traversal() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .where_t(__::out(None).emit())
+        .to_list()
+        .expect_err("emit() without repeat()");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("for example __.out().emit().repeat(__.out())"),
+        "{help}"
+    );
+    assert!(
+        help.contains("for example __.out().repeat(__.out()).emit()"),
+        "{help}"
+    );
+}
+
+#[test]
+fn option_without_branch_help() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .option(ElementProperty::from("person"), __::identity())
+        .to_list()
+        .expect_err(".option() without choose()/branch()");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("must follow choose(traversal) or branch(traversal)"),
+        "{help}"
+    );
+    assert!(
+        help.contains("choose(predicate, onTrue, onFalse)")
+            && help.contains("does not accept further .option() calls"),
+        "{help}"
+    );
+    assert!(
+        help.contains(
+            "option(Merge.onCreate|onMatch, ..) must follow merge_v()/merge_e(), for example \
+             g.merge_v(#{\"T.label\": \"person\", \"name\": \"marko\"}).option(Merge.onCreate, \
+             #{\"age\": 29}); option(Merge.outV|inV, ..) must follow merge_e(), for example \
+             g.merge_e(#{\"Direction.OUT\": Merge.outV, \"Direction.IN\": \"2\"}).option(Merge.outV, \
+             #{\"T.id\": \"1\"})."
+        ),
+        "{help}"
+    );
+    assert!(
+        err.root_cause()
+            .to_string()
+            .contains("or merge_v()/merge_e() step"),
+        "{err}"
+    );
+}
+
+#[test]
+fn invalid_repeat_option_help_shows_valid_values() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("repeat.order", "sideways")
+        .v(None)
+        .count()
+        .next()
+        .expect_err("not an order");
+    assert_eq!(
+        err.to_string(),
+        "Invalid value for option 'repeat.order': expected \"bfs\" or \"dfs\", got \"sideways\""
+    );
+    assert_eq!(
+        err.help().expect("help"),
+        "Set 'repeat.order' to \"bfs\" (breadth first, the default) or \"dfs\" (depth first) \
+         when the traversal source is created, for example \
+         g.with(\"repeat.order\", \"dfs\").v(\"1\").repeat(__.out()).times(2)."
+    );
+
+    let err = lock
+        .traversal()
+        .with("repeat.max_loops", 0)
+        .v(None)
+        .count()
+        .next()
+        .expect_err("not a positive limit");
+    assert_eq!(
+        err.to_string(),
+        "Invalid value for option 'repeat.max_loops': expected a positive integer number of \
+         iterations up to 4294967295, got 0"
+    );
+    assert_eq!(
+        err.help().expect("help"),
+        "Set 'repeat.max_loops' to a positive integer number of iterations when the traversal \
+         source is created, for example \
+         g.with(\"repeat.max_loops\", 100).v(\"1\").repeat(__.out()).until(__.has(\"name\", \"<value>\")); \
+         the default is 10000 and times(n) is never limited."
+    );
+}
+
+#[test]
+fn invalid_optimizer_rule_option_help_names_the_valid_rules() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+
+    let err = lock
+        .traversal()
+        .with("optimizer.disabled", vec!["not_a_real_rule"])
+        .v(None)
+        .count()
+        .next()
+        .expect_err("not a known rule name");
+    assert_eq!(
+        err.to_string(),
+        "Invalid value for option 'optimizer.disabled': unknown optimizer rule \"not_a_real_rule\"; \
+         valid names are: where_unnest, add_property_fold, filter_reorder, has_id_pushdown, source_filter_pushdown, \
+         barrier_pushdown, group_count_pushdown, count_pushdown, lazy_barrier, all"
+    );
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("g.with(\"optimizer.disabled\", [\"filter_reorder\"])"),
+        "{help}"
+    );
+    assert!(help.contains("count_pushdown"), "{help}");
+    // Every registered rule is named, in registry order (the list is built from the registry,
+    // so it cannot go stale when a rule is added).
+    assert!(
+        help.contains(
+            "(where_unnest, add_property_fold, filter_reorder, has_id_pushdown, \
+             source_filter_pushdown, barrier_pushdown, group_count_pushdown, count_pushdown, \
+             lazy_barrier — see the book's Query Optimizer chapter"
+        ),
+        "{help}"
+    );
+    assert!(help.contains("\"all\""), "{help}");
+    assert!(
+        help.contains("(optimizer_rules_applied of g.v().has_label(\"person\").count().profile())"),
+        "{help}"
+    );
+
+    let err = lock
+        .traversal()
+        .with("optimizer.disabled", vec!["filter_reorder"])
+        .with("optimizer.enabled", vec!["filter_reorder"])
+        .v(None)
+        .count()
+        .next()
+        .expect_err("a rule cannot be both enabled and disabled");
+    assert_eq!(
+        err.to_string(),
+        "Invalid value for option 'optimizer.enabled': \"filter_reorder\" is in both \
+         'optimizer.enabled' and 'optimizer.disabled'; a rule cannot be both enabled and disabled \
+         for the same execution"
+    );
+}
+
+/// D9: a label containing "::" is rejected at `add_vertex` time with a diagnostic that points at
+/// both `labels()` (D4) and the GraphML delimiter reason, not just a bare "invalid" message.
+#[test]
+fn invalid_label_help_points_at_the_graphml_delimiter_and_labels_step() {
+    let mut tg = TraversalGraph::new();
+    let err = tg
+        .add_vertex(
+            Some("1".into()),
+            vec!["Admin::Role".into()],
+            PropertyMap::default(),
+        )
+        .expect_err("a label containing \"::\" must be rejected");
+
+    assert_eq!(
+        err.to_string(),
+        "Vertex label 'Admin::Role' is invalid: it contains \"::\", which GraphSON and GraphML vertex label \
+         export reserve as the multi-label delimiter"
+    );
+    assert_eq!(
+        err.help().expect("help"),
+        "Rename the label to remove \"::\" — e.g. add_v(\"Admin_Role\") instead of \
+         add_v(\"Admin::Role\") — since GraphSON and GraphML export join a vertex's multiple labels \
+         with \"::\" (see labels()/has_label())."
+    );
+}
+
+/// `value()`/`key()` review pass (rule 6, property/value/key/valueMap spec): calling `value()`
+/// directly on a bare vertex (not a property-object traverser from `properties()`/`values()`)
+/// produces a `CastException` whose help() now points at `.properties(...)`/`.value()` as the
+/// fix, not just the generic no-origin message.
+#[test]
+fn value_on_bare_vertex_help_points_at_properties() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let g = lock.traversal();
+    let err = g
+        .v("1")
+        .value()
+        .next()
+        .expect_err("a bare vertex is not a property object");
+
+    let report = format_diagnostic(&err);
+    assert!(
+        report
+            .contains("Help: Check the value type before performing conversion or cast operation."),
+        "missing the generic no-origin help in: {report}"
+    );
+    assert!(
+        report.contains(".properties(\"name\").value()"),
+        "missing the properties()/value() pointer in: {report}"
+    );
+}
+
+/// The generic `PropertyNotFound` diagnostic (raised, among other places, by an empty
+/// `select()`'s label lookup) now also points at `.properties()` with no arguments as a way to
+/// list the keys actually present on an element — added alongside the property/value/key/
+/// valueMap spec's `properties()` step (rule 6 review pass).
+#[test]
+fn property_not_found_help_points_at_properties_listing() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let g = lock.traversal();
+    let err = g
+        .v("1")
+        .select(Vec::<String>::new())
+        .next()
+        .expect_err("an empty select() has no label to find");
+
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(
+            "Ensure the property key exists on the specified element type or use .has() filter."
+        ),
+        "missing the existing generic advice in: {report}"
+    );
+    assert!(
+        report.contains("List the keys actually present with .properties() (no arguments)."),
+        "missing the new properties() pointer in: {report}"
+    );
+}
+
+/// Returns the `help()` of a failed traversal's root `ValueError`.
+fn value_help(err: &BoxedTraverserError) -> String {
+    let TraverserError::Value(value_error) = err.root_cause() else {
+        panic!("expected a value error, got {err:?}");
+    };
+    value_error.help().expect("help")
+}
+
+/// `properties()`/`key()`/`value()` on a `group()` map stay an error (TinkerPop semantics), but
+/// the help now shows how to read a map's keys and values, and keeps the generic advice.
+#[test]
+fn element_steps_on_a_map_point_at_select_column() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None::<()>)
+        .group()
+        .by("name")
+        .by(__::out(None::<()>).count())
+        .properties(None::<()>)
+        .key()
+        .next()
+        .expect_err("a map has no element properties");
+    let help = value_help(&err);
+    assert!(
+        help.starts_with("Check the value type before performing conversion or cast operation."),
+        "the existing advice must stay: {help}"
+    );
+    assert!(
+        help.contains("unfold().select(Column.keys) / unfold().select(Column.values)"),
+        "{help}"
+    );
+    assert!(
+        help.contains(
+            r#"g.v().group().by("name").by(__.out().count()).unfold().select(Column.keys)"#
+        ),
+        "{help}"
+    );
+
+    // The same hint on `key()` of an unfolded entry, whose expected kinds are property objects.
+    let err = locked
+        .traversal()
+        .v(None::<()>)
+        .group_count()
+        .by("name")
+        .unfold()
+        .key()
+        .next()
+        .expect_err("an entry is not a property object");
+    let help = value_help(&err);
+    assert!(
+        help.contains(".value()/.key() only read a property object"),
+        "{help}"
+    );
+    assert!(help.contains("unfold().select(Column.keys)"), "{help}");
+}
+
+/// `select(Column)` on something that is not a map names what it reads and how to get there.
+#[test]
+fn select_column_on_a_non_map_names_unfold_and_select_column() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None::<()>)
+        .select(Column::Keys)
+        .next()
+        .expect_err("a vertex is not a map");
+    assert!(
+        err.root_cause()
+            .to_string()
+            .contains("expected type [map or entry], got type 'vertex'"),
+        "{err}"
+    );
+    let help = value_help(&err);
+    assert!(help.starts_with("Check the value type"), "{help}");
+    assert!(
+        help.contains(r#"g.v().group_count().by("name").unfold().select(Column.keys)"#),
+        "{help}"
+    );
+    assert!(help.contains(r#"select("label")"#), "{help}");
+}
+
+/// A plain cast error on a scalar gets neither of the map hints.
+#[test]
+fn scalar_cast_errors_get_no_map_hint() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None::<()>)
+        .fold()
+        .out(None::<()>)
+        .next()
+        .expect_err("a list is not a vertex");
+    let help = value_help(&err);
+    assert!(!help.contains("Column.keys"), "{help}");
+}
+
+/// The display-limit options name `no_limit: true` as the one way to say "unlimited".
+#[cfg(all(feature = "script", feature = "display"))]
+#[test]
+fn display_limit_options_help() {
+    use crate::script_host::eval;
+    use std::sync::Arc;
+
+    let graph = || Arc::new(GraphSource::tinkerpop_modern());
+
+    let err = eval(graph(), "g.v().to_table(#{max_rows: 0})")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains(
+            "Error: Invalid value for option 'max_rows': 0 is not a positive number of rows"
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains(
+            "Help: Set 'max_rows' to a positive integer for this call, for example \
+             g.v().to_table(#{max_rows: 20}). To show everything, remove both display limits \
+             with no_limit: true instead, for example g.v().to_table(#{no_limit: true})"
+        ),
+        "{err}"
+    );
+
+    let err = eval(graph(), "g.v().to_table(#{no_limit: true, max_items: 3})")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains(
+            "Help: no_limit: true removes both display limits, so it cannot be combined with \
+             max_rows or max_items in the same options map."
+        ),
+        "{err}"
+    );
+
+    let err = eval(graph(), "g.v().to_table(42)").unwrap_err().to_string();
+    assert!(err.contains("Invalid value for option 'options'"), "{err}");
+    assert!(
+        err.contains("Help: Pass the display options as a map"),
+        "{err}"
+    );
+
+    // A session default of the wrong shape is reported when the traversal is rendered.
+    let rendered = eval(graph(), r#"g.with("render.max_rows", 0).v().to_table()"#).unwrap();
+    assert!(
+        rendered.contains("Invalid value for option 'render.max_rows'"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Help: Set 'render.max_rows' to a positive integer, for example g.with(\"render.max_rows\", 20).v()."),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn invalid_modulator_help_explains_positional_by_and_suggests_has_label() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .order()
+        .by(["name"])
+        .to_list()
+        .expect_err("order() cannot sort by a label list");
+    let help = err.help().expect("help");
+    assert_eq!(
+        help,
+        "A step's by() modulators are positional: the first by() of order() means one thing, \
+         the second another, and each position accepts only certain kinds of argument (a \
+         property key, T.id/T.label, a traversal such as __.values(\"name\"), ...). \
+         A list of vertex labels, such as by([\"person\", \"software\"]), is not a projection \
+         order() can use. To keep only elements with certain labels, filter them with \
+         has_label(...) before the step instead, for example \
+         g.v().has_label(\"person\", \"software\").order().by(\"name\")."
+    );
+    let rendered = format_diagnostic(&err);
+    assert!(
+        rendered.contains(
+            "Caused by: `order()` cannot use its by() #1: a vertex-label list is not a \
+             projection this step can use"
+        ),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn invalid_modulator_help_for_glob_path_shows_the_corrected_query() {
+    let graph = GraphSource::file_tree();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v("root")
+        .glob_path("**/*.rs")
+        .by(["directory", "file"])
+        .to_list()
+        .expect_err("a label list cannot be the match key");
+    let help = err.help().expect("help");
+    assert_eq!(
+        help,
+        "glob_path()'s by() modulators are positional: the first by() is the required match key \
+         a named pattern segment is compared with, a property key such as by(\"name\") or T.id / \
+         T.label; the optional second by() is a non-empty list of vertex labels that every \
+         visited vertex below the start must carry. The first by() is the key and the label list \
+         goes second: put a key such as by(\"name\") before the label list. For example \
+         g.v(\"root\").glob_path(\"**/*.rs\").by(\"name\").by([\"directory\",\"file\"])."
+    );
+    let rendered = format_diagnostic(&err);
+    assert!(
+        rendered.contains(
+            "Caused by: `glob_path()` cannot use its by() #1: the first by() is the match key; \
+             the vertex-label list goes into the second by()"
+        ),
+        "{rendered}"
+    );
+}
+
+/// The syntax summary every `InvalidGlobPattern` help ends with.
+const GLOB_SYNTAX: &str = "\nA pattern is a '/'-separated list of segments matched level by level \
+     below the start vertex: '*' (any value), '?' (one character), '**' (any number of levels, a \
+     whole segment only), '[a-z]' / '[!a-z]' (character classes), '{a,b}' (alternatives within \
+     one segment) and '\\' to escape any of them, for example glob_path(\"**/src/*.{rs,toml}\").";
+
+/// Runs `g.v("root").glob_path(pattern).by("name")` on the file tree and returns the root cause
+/// message and the help of the pattern error it must raise.
+fn glob_pattern_failure(pattern: &str) -> (String, String) {
+    let graph = GraphSource::file_tree();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v("root")
+        .glob_path(pattern)
+        .by("name")
+        .to_list()
+        .expect_err("an invalid glob pattern must fail the traversal");
+    // A long pattern is cut in the step rendering, like every long literal.
+    let total = pattern.chars().count();
+    let shown = if total > 64 {
+        let head: String = pattern.chars().take(64).collect();
+        format!("{}…\" ({total} chars)", head.replace('\\', "\\\\"))
+    } else {
+        format!("{}\"", pattern.replace('\\', "\\\\"))
+    };
+    assert!(
+        format_diagnostic(&err).starts_with(&format!(
+            "Error: Step #1 'glob_path(\"{shown}).by(\"name\")' execution failed"
+        )),
+        "{}",
+        format_diagnostic(&err)
+    );
+    (err.root_cause().to_string(), err.help().expect("help"))
+}
+
+#[test]
+fn invalid_glob_pattern_double_star_inside_a_segment_suggests_the_split_pattern() {
+    let (message, help) = glob_pattern_failure("a**b");
+    assert_eq!(
+        message,
+        "Invalid glob pattern 'a**b' at position 1: '**' must be a whole segment"
+    );
+    assert_eq!(
+        help,
+        format!(
+            "'**' spans whole levels, so it must stand alone between slashes. Write \
+             glob_path(\"a*/**/*b\") instead, or plain glob_path(\"**\") to match every level \
+             below the start vertex. A literal '*' is written '\\*'.{GLOB_SYNTAX}"
+        )
+    );
+}
+
+#[test]
+fn invalid_glob_pattern_slash_inside_alternatives_suggests_two_queries() {
+    let (message, help) = glob_pattern_failure("{src/a,lib/b}");
+    assert_eq!(
+        message,
+        "Invalid glob pattern '{src/a,lib/b}' at position 4: alternatives '{..}' cannot contain '/'"
+    );
+    assert_eq!(
+        help,
+        format!(
+            "Alternatives in '{{..}}' choose within one segment and cannot contain '/'. Split the \
+             alternative into two queries, for example glob_path(\"src/a\") and \
+             glob_path(\"lib/b\") instead of glob_path(\"{{src/a,lib/b}}\"), or use '**' to span \
+             levels, for example glob_path(\"**/{{a,b}}\"). A value that itself contains '/' is \
+             matched with '\\/'.{GLOB_SYNTAX}"
+        )
+    );
+}
+
+#[test]
+fn invalid_glob_pattern_parent_segment_is_reserved() {
+    let (message, help) = glob_pattern_failure("..");
+    assert_eq!(
+        message,
+        "Invalid glob pattern '..' at position 0: '.' and '..' are reserved as whole segments"
+    );
+    assert_eq!(
+        help,
+        format!(
+            "'.' and '..' as whole segments are reserved for relative navigation. The start \
+             vertex is already the current level: glob_path(\"docs/*\") matches its children \
+             directly. To walk back up use .in() or repeat(__.in()) before the step, for example \
+             g.v(\"x\").in().glob_path(\"docs/*\"). A value that is literally '.' is matched with \
+             '\\.'.{GLOB_SYNTAX}"
+        )
+    );
+}
+
+#[test]
+fn invalid_glob_pattern_leading_slash_is_relative_to_the_start_vertex() {
+    let (message, help) = glob_pattern_failure("/src");
+    assert_eq!(
+        message,
+        "Invalid glob pattern '/src' at position 0: a pattern cannot start with '/'"
+    );
+    assert_eq!(
+        help,
+        format!(
+            "The pattern is relative to the start vertex: drop the leading and trailing '/' and \
+             the empty segments, for example glob_path(\"src/main.rs\") instead of \
+             glob_path(\"/src//main.rs/\"). Use '**' to match any number of levels.{GLOB_SYNTAX}"
+        )
+    );
+}
+
+#[test]
+fn invalid_glob_pattern_unclosed_class_names_the_closing_bracket() {
+    let (message, help) = glob_pattern_failure("file[0-9");
+    assert_eq!(
+        message,
+        "Invalid glob pattern 'file[0-9' at position 4: unclosed character class '['"
+    );
+    assert_eq!(
+        help,
+        format!(
+            "Close the character class with ']' in the same segment, for example \
+             glob_path(\"file[0-9].txt\"); match a literal '[' with '\\['.{GLOB_SYNTAX}"
+        )
+    );
+}
+
+#[test]
+fn invalid_glob_pattern_with_too_many_segments_suggests_chaining_the_step() {
+    let pattern = vec!["a"; 64].join("/");
+    let (message, help) = glob_pattern_failure(&pattern);
+    assert_eq!(
+        message,
+        format!(
+            "Invalid glob pattern '{pattern}' at position 126: the pattern has more than 63 segments"
+        )
+    );
+    assert_eq!(
+        help,
+        format!(
+            "A pattern can have at most 63 segments (a run of '**/**' counts once). Split the \
+             walk into two consecutive steps, each matching below the vertices the previous one \
+             emits, for example glob_path(\"a/b/c\").glob_path(\"d/e/f\") instead of \
+             glob_path(\"a/b/c/d/e/f\").{GLOB_SYNTAX}"
+        )
+    );
+}
+
+/// The part of every `glob_path()` `InvalidModulator` help that precedes the specific advice.
+const GLOB_BY_POSITIONS: &str = "glob_path()'s by() modulators are positional: the first by() is \
+     the required match key a named pattern segment is compared with, a property key such as \
+     by(\"name\") or T.id / T.label; the optional second by() is a non-empty list of vertex labels \
+     that every visited vertex below the start must carry.";
+
+/// The corrected query every `glob_path()` `InvalidModulator` help ends with.
+const GLOB_BY_EXAMPLE: &str =
+    "For example g.v(\"root\").glob_path(\"**/*.rs\").by(\"name\").by([\"directory\",\"file\"]).";
+
+/// Asserts the step, root cause and help of a `glob_path()` `by()` misuse on the file tree.
+fn assert_glob_modulator_failure(err: BoxedTraverserError, step: &str, cause: &str, advice: &str) {
+    let rendered = format_diagnostic(&err);
+    assert!(
+        rendered.starts_with(&format!("Error: Step #1 '{step}' execution failed")),
+        "{rendered}"
+    );
+    assert_eq!(err.root_cause().to_string(), cause);
+    assert_eq!(
+        err.help().expect("help"),
+        format!("{GLOB_BY_POSITIONS} {advice} {GLOB_BY_EXAMPLE}")
+    );
+}
+
+#[test]
+fn glob_path_without_by_asks_for_the_match_key() {
+    let graph = GraphSource::file_tree();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v("root")
+        .glob_path("**/*.rs")
+        .to_list()
+        .expect_err("glob_path() needs a match key");
+    assert_glob_modulator_failure(
+        err,
+        "glob_path(\"**/*.rs\")",
+        "`glob_path()` cannot use its by() #1: glob_path() needs a first by() naming the match key",
+        "Add the match key as the first by().",
+    );
+}
+
+#[test]
+fn glob_path_with_the_label_list_first_asks_for_the_key_before_it() {
+    let graph = GraphSource::file_tree();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v("root")
+        .glob_path("**/*.rs")
+        .by(["directory", "file"])
+        .to_list()
+        .expect_err("a label list cannot be the match key");
+    assert_glob_modulator_failure(
+        err,
+        "glob_path(\"**/*.rs\").by([\"directory\",\"file\"])",
+        "`glob_path()` cannot use its by() #1: the first by() is the match key; the vertex-label \
+         list goes into the second by()",
+        "The first by() is the key and the label list goes second: put a key such as by(\"name\") \
+         before the label list.",
+    );
+}
+
+#[test]
+fn glob_path_with_an_empty_label_list_asks_for_a_label() {
+    let graph = GraphSource::file_tree();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v("root")
+        .glob_path("**/*.rs")
+        .by("name")
+        .by(Vec::<&str>::new())
+        .to_list()
+        .expect_err("an empty label list admits no vertex");
+    assert_glob_modulator_failure(
+        err,
+        "glob_path(\"**/*.rs\").by(\"name\").by([])",
+        "`glob_path()` cannot use its by() #2: the vertex-label list is empty",
+        "An empty label list would admit no vertex: list at least one label, or drop the second \
+         by() to visit every vertex.",
+    );
+}
+
+#[test]
+fn glob_path_with_a_third_by_asks_to_drop_it() {
+    let graph = GraphSource::file_tree();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v("root")
+        .glob_path("**/*.rs")
+        .by("name")
+        .by(["file"])
+        .by("name")
+        .to_list()
+        .expect_err("glob_path() takes at most two by() modulators");
+    assert_glob_modulator_failure(
+        err,
+        "glob_path(\"**/*.rs\").by(\"name\").by([\"file\"]).by(\"name\")",
+        "`glob_path()` cannot use its by() #3: glob_path() takes at most two by() modulators",
+        "There is no third by(): drop it.",
+    );
+}
+
+#[test]
+fn glob_path_with_a_traversal_key_names_the_accepted_keys() {
+    let graph = GraphSource::file_tree();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v("root")
+        .glob_path("**/*.rs")
+        .by(__::values("name"))
+        .to_list()
+        .expect_err("a traversal cannot be the match key");
+    assert_glob_modulator_failure(
+        err,
+        "glob_path(\"**/*.rs\").by(<traversal>)",
+        "`glob_path()` cannot use its by() #1: the match key must be a property key, T.id or T.label",
+        "A traversal, an order, a JSON path, Value or Count cannot be the match key.",
+    );
+}
+
+/// A `repeat()` walking the file tree runs into its `loop` cycle; the help offers `glob_path()`
+/// as the tree walk, written on the steps before the loop.
+#[test]
+fn repeat_limit_help_on_a_tree_suggests_glob_path() {
+    let graph = GraphSource::file_tree();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("repeat.max_loops", 5)
+        .v("root")
+        .has_label("directory")
+        .emit()
+        .repeat(__::out(None))
+        .values("name")
+        .to_list()
+        .expect_err("the file tree's loop directory is a cycle");
+    assert_eq!(
+        err.root_cause().to_string(),
+        "repeat() exceeded the loop limit of 5 iterations"
+    );
+    assert_eq!(
+        err.help().expect("help"),
+        "The loop ran 5 iterations without stopping: it walks a cycle, or nothing ends it.\n\
+         Bound the number of iterations with times(), for example repeat(__.out()).times(3).\n\
+         Stop at a target with until(), for example \
+         repeat(__.out()).until(__.has(\"name\", \"<value>\")).\n\
+         On a cyclic graph, drop the paths that revisit an element with simple_path(), for \
+         example repeat(__.out().simple_path()).\n\
+         Equal traversers are merged automatically inside repeat(), but path() and simple_path() \
+         record full paths and prevent that merge, so exponential path counts stay expensive \
+         with them. A sack merge operator or with_bulk(false) turns automatic merging off: add \
+         barrier() inside the loop body, for example repeat(__.out().barrier()).\n\
+         Or raise the limit: g.with(\"repeat.max_loops\", 10).v(\"root\").has_label(\"directory\")\
+         .emit().repeat(__.out()).values(\"name\"). It is an administrative option: a script \
+         whose host restricts it needs Update on that Option to set it.\n\
+         On a tree-shaped graph (directories, org charts, categories), walk the levels below a \
+         vertex with glob_path() instead: it follows outgoing edges along a pattern, prunes \
+         branches that cannot match and stops on cycles without a loop limit, for example \
+         g.v(\"root\").has_label(\"directory\").glob_path(\"**/*.rs\").by(\"name\"), or \
+         g.v(\"root\").has_label(\"directory\").glob_path(\"**\").by(\"name\") for every level \
+         below; bound how deep it walks with max_depth, for example \
+         g.v(\"root\").has_label(\"directory\").glob_path(\"**\", #{max_depth: 3}).by(\"name\")."
+    );
+    // The suggested rewrite runs and terminates on the same graph.
+    let names = lock
+        .traversal()
+        .v("root")
+        .has_label("directory")
+        .glob_path("**/*.rs")
+        .by("name")
+        .values("name")
+        .to_list()
+        .expect("the glob_path() rewrite terminates");
+    assert_eq!(names.len(), 12);
+    // So does the bounded one.
+    let names = lock
+        .traversal()
+        .v("root")
+        .has_label("directory")
+        .glob_path_with("**", GlobPathOptions::default().max_depth(3))
+        .by("name")
+        .values("name")
+        .to_list()
+        .expect("the bounded glob_path() rewrite terminates");
+    assert_eq!(names.len(), 28);
+}
+
+/// The Rhai DSL reports the same `repeat()` advice, `glob_path()` suggestion included.
+#[cfg(feature = "script")]
+#[test]
+fn script_repeat_limit_help_suggests_glob_path() {
+    use crate::script_host::eval;
+
+    let graph = std::sync::Arc::new(GraphSource::file_tree());
+    let err = eval(
+        graph,
+        r#"g.with("repeat.max_loops", 5).v("root").repeat(__.out()).toList()"#,
+    )
+    .expect_err("the file tree's loop directory is a cycle");
+    let report = err.to_string();
+    assert!(
+        report.contains(
+            "for example g.v(\"root\").glob_path(\"**/*.rs\").by(\"name\"), or \
+             g.v(\"root\").glob_path(\"**\").by(\"name\") for every level below; bound how deep it \
+             walks with max_depth, for example g.v(\"root\").glob_path(\"**\", #{max_depth: 3}).by(\"name\")."
+        ),
+        "{report}"
+    );
+}
+
+/// A `valueMap()` argument that is neither a key string, a null nor a leading boolean fails with an
+/// argument mismatch whose help explains the accepted forms and names `element_map()` (rule 6).
+#[cfg(feature = "script")]
+#[test]
+fn value_map_bad_argument_help_explains_the_accepted_forms() {
+    use crate::script_host::eval;
+
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    let report = eval(graph, "g.v().valueMap(\"name\", true).to_list()")
+        .expect_err("a boolean after a key must fail loudly")
+        .to_string();
+
+    assert!(
+        report.contains(
+            "Error: Argument mismatch for step 'valueMap': expected property keys as strings, \
+             optionally preceded by a boolean, got a boolean (`true`) that is not the first argument\n\
+             Help: value_map() takes property keys as strings; a leading `true` adds id and label: \
+             g.v().value_map(true, \"name\"). A boolean is accepted only as the first argument, and a \
+             null key (`()`) is ignored. element_map() returns the same shape with plain values \
+             instead of lists: g.v().element_map(\"name\")."
+        ),
+        "unexpected report: {report}"
+    );
+}
+
+/// `id()` over a `properties()` element: Graphersal has no property ids, and the help names the
+/// readers that work (rule 6).
+#[test]
+fn id_of_a_property_element_help_names_key_and_element() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .properties(None)
+        .id()
+        .to_list()
+        .expect_err("property elements have no id");
+    let help = err.help().expect("help");
+    assert!(help.contains("Graphersal has no property ids"), "{help}");
+    assert!(help.contains("g.v().properties().key()"), "{help}");
+    assert!(help.contains("g.v().properties().element().id()"), "{help}");
+    assert!(
+        help.contains("label() and has_label() work on properties()"),
+        "{help}"
+    );
+}
+
+/// `by(T.label)` / `by(T.id)` over plain values is an error, and over `properties()` the id token
+/// shares the no-property-id help (rule 6).
+#[test]
+fn by_token_on_non_elements_help_names_the_alternatives() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .values("name")
+        .order()
+        .by(By::Label)
+        .to_list()
+        .expect_err("a string has no label");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("T.label reads the label or id of a graph element"),
+        "{help}"
+    );
+    assert!(help.contains(r#"g.v().order().by("name")"#), "{help}");
+
+    let err = lock
+        .traversal()
+        .v(None)
+        .properties(None)
+        .order()
+        .by(By::Id)
+        .to_list()
+        .expect_err("property elements have no id");
+    let help = err.help().expect("help");
+    assert!(help.contains("by(T.id) over properties()"), "{help}");
+    assert!(help.contains("by(T.label)"), "{help}");
+}
+
+/// The part of every `dedup()` `InvalidModulator` help that precedes the specific advice.
+const DEDUP_BY_WHAT: &str = "dedup() takes one by(): the projection each traverser is \
+     deduplicated by, a property key such as by(\"name\"), T.id / T.label, or a traversal such as \
+     __.out().count() whose first result is the key.";
+
+/// The corrected query every `dedup()` `InvalidModulator` help ends with.
+const DEDUP_BY_EXAMPLE: &str =
+    "For example g.v().dedup().by(T.label) keeps the first vertex of each label.";
+
+/// Asserts the root cause and help of a `dedup()` `by()` misuse.
+fn assert_dedup_modulator_failure(err: BoxedTraverserError, cause: &str, advice: &str) {
+    assert_eq!(err.root_cause().to_string(), cause);
+    assert_eq!(
+        err.help().expect("help"),
+        format!("{DEDUP_BY_WHAT} {advice} {DEDUP_BY_EXAMPLE}")
+    );
+}
+
+#[test]
+fn dedup_by_a_label_list_suggests_has_label() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .dedup()
+        .by(["person", "software"])
+        .to_list()
+        .expect_err("a label list is not a projection");
+    assert_dedup_modulator_failure(
+        err,
+        "`dedup()` cannot use its by() #1: a vertex-label list is not a projection this step can use",
+        "A list of vertex labels, such as by([\"person\", \"software\"]), is not a projection: to \
+         keep only elements with certain labels, filter them with has_label(...) before the step \
+         instead, for example g.v().has_label(\"person\", \"software\").dedup().by(\"name\").",
+    );
+}
+
+#[test]
+fn dedup_by_an_order_suggests_order_after_it() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .dedup()
+        .by(graphersal::prelude::Order::Desc)
+        .to_list()
+        .expect_err("an order is not a projection");
+    assert_dedup_modulator_failure(
+        err,
+        "`dedup()` cannot use its by() #1: an order or Count is not a projection dedup() can key by",
+        "An order or Count is not a projection: drop it, and sort after dedup() with \
+         order().by(...) if an order was meant, for example \
+         g.v().dedup().by(T.label).order().by(\"name\").",
+    );
+}
+
+#[test]
+fn dedup_with_two_by_suggests_one_combined_traversal() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .dedup()
+        .by("name")
+        .by("age")
+        .to_list()
+        .expect_err("dedup() takes a single by()");
+    assert_dedup_modulator_failure(
+        err,
+        "`dedup()` cannot use its by() #2: dedup() takes a single by()",
+        "There is no second by(): to deduplicate by several values at once, combine them in one \
+         traversal, for example g.v().dedup().by(__.values(\"name\", \"age\").fold()).",
+    );
+}
+
+/// The part of the ring-step `InvalidModulator` help that follows the step-specific sentence.
+const RING_BY_ADVICE: &str = "Each by() is a projection: a property key such as by(\"name\"), \
+     T.id / T.label, or a traversal such as __.out().count(). An order or Count projects nothing: \
+     drop it, and sort afterwards with order().by(...) if an order was meant.";
+
+/// `select()`'s `by()`s form TinkerPop's traversal ring; an order in it names the ring and shows
+/// one `by()` applied to both keys.
+#[test]
+fn select_by_an_order_explains_the_ring() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v("1")
+        .as_("a")
+        .out("knows")
+        .as_("b")
+        .select(vec!["a", "b"])
+        .by("name")
+        .by(graphersal::prelude::Order::Desc)
+        .to_list()
+        .expect_err("an order is not a projection");
+    assert_eq!(
+        err.root_cause().to_string(),
+        "`select()` cannot use its by() #2: an order or Count is not a projection; this step \
+         applies each by() to a value"
+    );
+    assert_eq!(
+        err.help().expect("help"),
+        format!(
+            "select() applies its by() modulators round-robin, like TinkerPop's traversal ring: \
+             one by() per selected key, cycling when there are fewer by() than keys. \
+             {RING_BY_ADVICE} For example g.v(\"1\").as(\"a\").out(\"knows\").as(\"b\")\
+             .select(\"a\", \"b\").by(\"name\") reads the name of both a and b."
+        )
+    );
+}
+
+/// The same help, worded for each other ring step.
+#[test]
+fn ring_steps_by_an_order_or_count_explain_the_ring() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let cases = [
+        (
+            lock.traversal()
+                .v(None)
+                .project(vec!["name", "out"])
+                .by("name")
+                .by(By::Count)
+                .to_list(),
+            "project() applies its by() modulators round-robin, like TinkerPop's traversal ring: \
+             one by() per key, cycling when there are fewer by() than keys.",
+            "g.v().project(\"name\", \"out\").by(\"name\").by(__.out().count())",
+        ),
+        (
+            lock.traversal()
+                .v("1")
+                .out(None)
+                .path()
+                .by(graphersal::prelude::Order::Asc)
+                .to_list(),
+            "path() applies its by() modulators round-robin, like TinkerPop's traversal ring: \
+             one by() per path object, cycling along the path.",
+            "g.v(\"1\").out().path().by(\"name\")",
+        ),
+        (
+            lock.traversal()
+                .v("1")
+                .out(None)
+                .tree(None::<()>)
+                .by(By::Count)
+                .to_list(),
+            "tree() applies its by() modulators round-robin, like TinkerPop's traversal ring: \
+             one by() per tree level, cycling along each path.",
+            "g.v(\"1\").out().tree().by(\"name\")",
+        ),
+        (
+            lock.traversal()
+                .v(None)
+                .as_("a")
+                .out("knows")
+                .as_("b")
+                .math("a + b")
+                .by(graphersal::prelude::Order::Desc)
+                .to_list(),
+            "math() applies its by() modulators round-robin, like TinkerPop's traversal ring: \
+             one by() per variable of the equation, cycling when there are fewer by() than \
+             variables.",
+            "g.v().as(\"a\").out(\"knows\").as(\"b\").math(\"a + b\").by(\"age\")",
+        ),
+    ];
+    for (result, what, example) in cases {
+        let err = result.expect_err(what);
+        assert!(
+            matches!(err.root_cause(), TraverserError::InvalidModulator { .. }),
+            "{err}"
+        );
+        assert_eq!(
+            err.help().expect("help"),
+            format!("{what} {RING_BY_ADVICE} For example {example}.")
+        );
+    }
+}
+
+/// The part of every `valueMap()` `InvalidModulator` help that precedes the specific advice.
+const VALUE_MAP_BY_WHAT: &str = "value_map() wraps each property value in a list, such as {name: \
+     [marko], age: [29]}, and its by() is a traversal applied to each of those lists; the first \
+     result replaces the list.";
+
+/// The corrected query every `valueMap()` `InvalidModulator` help ends with.
+const VALUE_MAP_BY_EXAMPLE: &str = "For example g.v().value_map().by(__.unfold()) returns the \
+     plain values, {name: marko, age: 29}; element_map() returns them too, together with id and \
+     label.";
+
+/// Asserts the root cause and help of a `valueMap()` `by()` misuse.
+fn assert_value_map_modulator_failure(err: BoxedTraverserError, cause: &str, advice: &str) {
+    assert_eq!(err.root_cause().to_string(), cause);
+    assert_eq!(
+        err.help().expect("help"),
+        format!("{VALUE_MAP_BY_WHAT} {advice} {VALUE_MAP_BY_EXAMPLE}")
+    );
+}
+
+#[test]
+fn value_map_by_a_label_list_suggests_has_label() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .value_map(None)
+        .by(["person"])
+        .to_list()
+        .expect_err("a label list is not a traversal");
+    assert_value_map_modulator_failure(
+        err,
+        "`value_map()` cannot use its by() #1: a vertex-label list is not a projection this step can use",
+        "A list of vertex labels, such as by([\"person\", \"software\"]), is not a traversal: to \
+         keep only elements with certain labels, filter them with has_label(...) before the step \
+         instead, for example g.v().has_label(\"person\").value_map().",
+    );
+}
+
+#[test]
+fn value_map_by_a_property_key_suggests_a_traversal() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .value_map(None)
+        .by("name")
+        .to_list()
+        .expect_err("a property key cannot take a value list");
+    assert_value_map_modulator_failure(
+        err,
+        "`value_map()` cannot use its by() #1: value_map() applies by() to each property's value \
+         list; only a traversal can take it",
+        "A property key, T.id / T.label, an order, a JSON path, Value or Count cannot take a \
+         list: pass a traversal instead, or select the keys as arguments, for example \
+         g.v().value_map(\"name\").by(__.unfold()).",
+    );
+}
+
+/// The part of every `group()`/`group_count()` `InvalidModulator` help that precedes the
+/// specific advice.
+const GROUP_BY_WHAT: &str = "group()'s by() modulators are positional: the first by() reads the \
+     grouping key from each element, and the second reads the value kept under that key \
+     (group_count() and by(Count) ask for a count there instead).";
+
+/// `group().by(Order)` fails with `InvalidModulator`, not `QueryExecution`: an order is not a
+/// projection this step can use, consistent with every other `by()` consumer.
+#[test]
+fn group_by_an_order_is_invalid_modulator_not_query_execution() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .group()
+        .by(graphersal::prelude::Order::Desc)
+        .to_list()
+        .expect_err("an order is not a projection group() can use");
+    assert!(
+        matches!(err.root_cause(), TraverserError::InvalidModulator { .. }),
+        "expected InvalidModulator, got {err:?}"
+    );
+    assert_eq!(
+        err.root_cause().to_string(),
+        "`group()` cannot use its by() #1: an order is not a projection this step can use"
+    );
+    assert_eq!(
+        err.help().expect("help"),
+        format!(
+            "{GROUP_BY_WHAT} An order, such as Order.desc, is not a projection: group() applies \
+             each by() to a key or a value, it does not sort the result. Drop it, and sort \
+             afterward instead, for example g.v().group().by(\"name\").unfold().order()\
+             .by(Order.desc). For example g.v().group().by(\"name\")."
+        )
+    );
+}
+
+/// The same rejection at the second `by()` position, and for `group_count()`.
+#[test]
+fn group_count_by_an_order_at_the_second_position_is_invalid_modulator() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .group_count()
+        .by("name")
+        .by(graphersal::prelude::Order::Desc)
+        .to_list()
+        .expect_err("an order is not a projection group_count() can use");
+    assert_eq!(
+        err.root_cause().to_string(),
+        "`group_count()` cannot use its by() #2: an order is not a projection this step can use"
+    );
+    assert_eq!(
+        err.help().expect("help"),
+        format!(
+            "{GROUP_BY_WHAT} An order, such as Order.desc, is not a projection: group() applies \
+             each by() to a key or a value, it does not sort the result. Drop it, and sort \
+             afterward instead, for example g.v().group().by(\"name\").unfold().order()\
+             .by(Order.desc). For example g.v().group_count().by(\"name\")."
+        )
+    );
+}
+
+/// The list of `by()`-modulating steps every misplaced-`by()` help ends with.
+const BY_STEPS: &str = "The steps that take by() are order(), dedup(), group(), group_count(), \
+     select() with step labels, project(), path(), simple_path(), cyclic_path(), where(), tree(), \
+     math(), value_map(), aggregate(), store(), sample() (the weight) and glob_path().";
+
+/// The advice for a `by()` after a step that takes none, other than the special-cased steps.
+const MOVE_THE_BY: &str = "Move the by() to the step it was meant for, for example \
+     g.v().out().order().by(\"name\") sorts the neighbours by name; to read a property of each \
+     element, use values(), for example g.v().out().values(\"name\") rather than \
+     g.v().out().by(\"name\").";
+
+#[test]
+fn a_by_after_a_step_that_takes_none_names_where_it_belongs() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let cases = [
+        (
+            lock.traversal().v(None).out(None).by("name").to_list(),
+            "`out()` cannot use its by() #1: out() does not take by() modulators",
+            format!(
+                "by() modulates the step right before it, and out() does not take one. {MOVE_THE_BY} {BY_STEPS}"
+            ),
+        ),
+        (
+            lock.traversal().v(None).has("age", 29).by("x").to_list(),
+            "`has()` cannot use its by() #1: has() does not take by() modulators",
+            format!(
+                "by() modulates the step right before it, and has() does not take one. {MOVE_THE_BY} {BY_STEPS}"
+            ),
+        ),
+        (
+            lock.traversal().v(None).count().by("name").to_list(),
+            "`count()` cannot use its by() #1: count() does not take by() modulators",
+            format!(
+                "by() modulates the step right before it, and count() does not take one. To count \
+                 per value, use group_count() with the by() instead, for example \
+                 g.v().group_count().by(\"name\") rather than g.v().count().by(\"name\"). {BY_STEPS}"
+            ),
+        ),
+        (
+            lock.traversal().v(None).sum().by("age").to_list(),
+            "`sum()` cannot use its by() #1: sum() does not take by() modulators",
+            format!(
+                "by() modulates the step right before it, and sum() does not take one. To \
+                 aggregate a property, read it with values() first, for example \
+                 g.v().values(\"age\").sum() rather than g.v().sum().by(\"age\"). {BY_STEPS}"
+            ),
+        ),
+        (
+            lock.traversal()
+                .v(None)
+                .select(Column::Keys)
+                .by("x")
+                .to_list(),
+            "`select()` cannot use its by() #1: select(Column.keys) does not take by() modulators",
+            format!(
+                "by() modulates the step right before it, and select(Column.keys) / \
+                 select(Column.values) does not take one. They read a map as it is; put the by() \
+                 on the step that builds the map, for example \
+                 g.v().group().by(\"name\").select(Column.keys). {BY_STEPS}"
+            ),
+        ),
+        (
+            lock.traversal().by("name").to_list(),
+            "`g()` cannot use its by() #1: by() modulates the step before it, and there is none",
+            format!(
+                "by() modulates the step right before it, so it cannot start a traversal. Write \
+                 the step first and the by() after it, for example g.v().order().by(\"name\"). \
+                 {BY_STEPS}"
+            ),
+        ),
+    ];
+    for (result, cause, help) in cases {
+        let err = result.expect_err(cause);
+        assert_eq!(err.root_cause().to_string(), cause);
+        assert_eq!(err.help().expect("help"), help);
+    }
+}
+
+/// The list of `from()`/`to()`-modulating steps every misplaced-`from()`/`to()` help ends with.
+const FROM_TO_STEPS: &str = "The steps that take from()/to() are add_e(), path(), \
+     simple_path() and cyclic_path().";
+
+#[test]
+fn a_from_to_after_a_step_that_takes_none_names_where_it_belongs() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let cases = [
+        (
+            lock.traversal().v(None).out(None).from("1").to_list(),
+            "`out()` cannot use its from()/to() #1: out() does not take from()/to() modulators",
+            format!(
+                "from()/to() modulates the step right before it, and out() does not take one. \
+                 add_e() accepts from()/to(), to point a new edge at existing \
+                 elements or labelled positions, for example g.v(\"1\").add_e(\"knows\").to(\"2\") \
+                 or g.v(\"1\").as(\"a\").out(\"knows\").add_e(\"co-developer\").from(\"a\"). \
+                 An endpoint can also be a traversal, \
+                 g.v(\"1\").add_e(\"knows\").to(__.v(\"2\")), or a side-effect key, \
+                 g.with_side_effect(\"b\", \"2\").v(\"1\").add_e(\"knows\").to(\"b\"). \
+                 path(), simple_path() and cyclic_path() take them as a window onto the path \
+                 between two labelled positions, for example \
+                 g.v().as(\"a\").out().as(\"b\").path().from(\"a\").to(\"b\"). \
+                 {FROM_TO_STEPS}"
+            ),
+        ),
+        (
+            lock.traversal().v(None).count().to("1").to_list(),
+            "`count()` cannot use its from()/to() #1: count() does not take from()/to() modulators",
+            format!(
+                "from()/to() modulates the step right before it, and count() does not take one. \
+                 add_e() accepts from()/to(), to point a new edge at existing \
+                 elements or labelled positions, for example g.v(\"1\").add_e(\"knows\").to(\"2\") \
+                 or g.v(\"1\").as(\"a\").out(\"knows\").add_e(\"co-developer\").from(\"a\"). \
+                 An endpoint can also be a traversal, \
+                 g.v(\"1\").add_e(\"knows\").to(__.v(\"2\")), or a side-effect key, \
+                 g.with_side_effect(\"b\", \"2\").v(\"1\").add_e(\"knows\").to(\"b\"). \
+                 path(), simple_path() and cyclic_path() take them as a window onto the path \
+                 between two labelled positions, for example \
+                 g.v().as(\"a\").out().as(\"b\").path().from(\"a\").to(\"b\"). \
+                 {FROM_TO_STEPS}"
+            ),
+        ),
+        (
+            lock.traversal().from("1").to_list(),
+            "`g()` cannot use its from()/to() #1: from()/to() modulates the step before it, and there is none",
+            format!(
+                "from()/to() modulates the step right before it, so it cannot start a \
+                 traversal. Write the step first and from()/to() after it, for example \
+                 g.v(\"1\").add_e(\"knows\").to(\"2\"). {FROM_TO_STEPS}"
+            ),
+        ),
+    ];
+    for (result, cause, help) in cases {
+        let err = result.expect_err(cause);
+        assert_eq!(err.root_cause().to_string(), cause);
+        assert_eq!(err.help().expect("help"), help);
+    }
+}
+
+/// A global reducer fed a folded list names `Scope.local` as the direct fix, with a runnable
+/// example, and keeps the existing advice.
+#[test]
+fn cast_exception_on_a_folded_list_help_names_scope_local() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .values("age")
+        .fold()
+        .sum()
+        .next()
+        .expect_err("a list is not a number");
+
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("got type 'array'"),
+        "missing root cause in: {report}"
+    );
+    assert!(
+        report.contains("Check the value type before performing conversion or cast operation."),
+        "the existing advice must stay:\n{report}"
+    );
+    assert!(
+        report.contains(
+            "The value is a list (for example from fold()): reduce each traverser's list with \
+             Scope.local, for example g.v().values(\"age\").fold().sum(Scope.local) or \
+             g.v().fold().count(Scope.local), or unfold() it first."
+        ),
+        "the help must name Scope.local:\n{report}"
+    );
+}
+
+/// A global reducer fed a stored list property names the property-shaped `Scope.local` fix.
+#[test]
+fn cast_exception_on_a_stored_list_help_names_scope_local() {
+    let graph = GraphSource::empty();
+    {
+        let mut writable = graph.write();
+        writable
+            .traversal_mut()
+            .add_v("data")
+            .property(
+                "list",
+                ElementProperty::Array(vec![1_i64.into(), 2_i64.into()]),
+            )
+            .next()
+            .expect("add vertex");
+    }
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .values("list")
+        .sum()
+        .next()
+        .expect_err("a list is not a number");
+
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(
+            "'list' holds a list: reduce each traverser's list with Scope.local, for example \
+             values(\"list\").sum(Scope.local) or values(\"list\").count(Scope.local), or unfold() it first."
+        ),
+        "the help must name Scope.local:\n{report}"
+    );
+}
+
+/// A global string step fed a folded list names the string-step `Scope.local` form too.
+#[test]
+fn cast_exception_on_a_folded_list_help_names_a_local_string_step() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .values("name")
+        .fold()
+        .to_upper()
+        .next()
+        .expect_err("a list is not a string");
+
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("got type 'array'"),
+        "missing root cause in: {report}"
+    );
+    assert!(
+        report.contains("g.v().values(\"age\").fold().sum(Scope.local)"),
+        "the reducer example must stay:\n{report}"
+    );
+    assert!(
+        report.contains(
+            "A string step transforms each element of the list the same way, for example \
+             g.v().values(\"name\").fold().to_upper(Scope.local)."
+        ),
+        "the help must name the string-step Scope.local form:\n{report}"
+    );
+}
+
+/// A local string step fed a list with a non-string element reports TinkerPop's wording and
+/// shows how to convert or filter the elements first.
+#[test]
+fn local_string_step_on_a_non_string_element_explains_the_fix() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .values("age")
+        .fold()
+        .trim_scoped(Scope::Local)
+        .next()
+        .expect_err("a number is not a string");
+
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(
+            "Cast exception: The trim(local) step can only take string or list of strings, but \
+             element 0 of the list has type 'int64'"
+        ),
+        "missing root cause in: {report}"
+    );
+    assert!(
+        report.contains(
+            "trim(local) transforms each element of the list a traverser holds, so every element \
+             must be a string (a null element stays null), but element 0 has type 'int64'.\n"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "Convert the elements first, for example \
+             g.v().values(\"name\").fold().unfold().as_string().fold().trim(Scope.local), or keep \
+             only the strings with \
+             g.v().values(\"name\").fold().unfold().is(typeOf(GType.STRING)).fold().trim(Scope.local)."
+        ),
+        "{report}"
+    );
+
+    // The example names the snake_case spelling of a camelCase step.
+    let err = locked
+        .traversal()
+        .v(None)
+        .values("age")
+        .fold()
+        .l_trim_scoped(Scope::Local)
+        .next()
+        .expect_err("a number is not a string");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("The lTrim(local) step can only take"),
+        "{report}"
+    );
+    assert!(report.contains(".fold().l_trim(Scope.local)"), "{report}");
+}
+
+/// `as_string(local)` fed a list with a `null` element says there is nothing to parse and how
+/// to drop the nulls.
+#[test]
+fn local_as_string_on_a_null_element_explains_the_fix() {
+    let graph = GraphSource::empty();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .inject(vec![1_i64])
+        .constant(ElementProperty::Array(vec![
+            1_i64.into(),
+            ElementProperty::Null,
+        ]))
+        .as_string_scoped(Scope::Local)
+        .next()
+        .expect_err("null has no string form");
+
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(
+            "The asString(local) step can only take non-null elements (Can't parse null as a \
+             string), but element 1 of the list has type 'null'"
+        ),
+        "missing root cause in: {report}"
+    );
+    assert!(
+        report.contains(
+            "Drop the null elements before converting, for example \
+             g.v().values(\"age\").fold().unfold().not(__.is(typeOf(GType.NULL))).fold().as_string(Scope.local), \
+             or convert the stream before folding it: g.v().values(\"age\").as_string().fold()."
+        ),
+        "{report}"
+    );
+}
+
+/// A scalar mismatch is not a list: no `Scope.local` hint.
+#[test]
+fn cast_exception_on_a_scalar_help_omits_scope_local() {
+    let graph = graph_with_string_age();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .has_label("person")
+        .values("age")
+        .max()
+        .next()
+        .expect_err("a string age must not be aggregated");
+    let report = format_diagnostic(&err);
+    assert!(!report.contains("Scope.local"), "{report}");
+}
+
+/// `InvalidRange` raised by the local range family keeps the stream-wide advice and names the
+/// `Scope.local` form with a runnable example.
+#[test]
+fn invalid_local_range_help_names_the_scope_local_form() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .fold()
+        .range_scoped(Scope::Local, 3, 1)
+        .next()
+        .expect_err("high below low");
+
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("Invalid range [3, 1): high must be at least low"),
+        "{report}"
+    );
+    assert!(
+        report.contains("range(low, high) slices the stream to [low, high)"),
+        "the existing advice must stay:\n{report}"
+    );
+    assert!(
+        report.contains(
+            "The same bounds apply to the Scope.local form, which slices the list or map each \
+             traverser holds, for example g.v().values(\"name\").fold().range(Scope.local, 1, 3); \
+             its limit(Scope.local, n), skip(Scope.local, n) and tail(Scope.local, n) take a count \
+             of zero or more, for example g.v().values(\"name\").fold().limit(Scope.local, 2)."
+        ),
+        "the help must name the Scope.local form:\n{report}"
+    );
+
+    let err = locked
+        .traversal()
+        .v(None)
+        .fold()
+        .limit_scoped(Scope::Local, -1)
+        .next()
+        .expect_err("negative count");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("limit(local, -1) needs a count of zero or more"),
+        "{report}"
+    );
+}
+
+/// `by(Column.keys)` / `by(Column.values)` on a step other than `order()` fails with
+/// `InvalidModulator`, and the help names the supported `order().by(Column.values, Order.desc)`
+/// and `order(Scope.local)` forms plus `select(Column)`.
+#[test]
+fn by_column_outside_order_names_the_order_forms() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .group()
+        .by(Column::Keys)
+        .to_list()
+        .expect_err("group() does not take by(Column)");
+    assert_eq!(
+        err.root_cause().to_string(),
+        "`group()` cannot use its by() #1: a Column (keys/values) is a sort key only order() takes"
+    );
+    assert_eq!(
+        err.help().expect("help"),
+        "by(Column.keys) / by(Column.values) reads the key or value of a map entry (or the keys or \
+         values of a whole map), and only order() takes it, as a sort key, not group(). Sort map \
+         entries with it, for example \
+         g.v().has_label(\"person\").group().by(\"name\").by(__.out_e().values(\"weight\").sum()).unfold().order().by(Column.values, Order.desc), \
+         or sort the entries inside each map with order(Scope.local).by(Column.values). To read a \
+         map's keys or values as data, use select(Column.keys) / select(Column.values) after the \
+         step instead, for example g.v().group().by(\"name\").select(Column.keys). The steps that \
+         take by() are order(), dedup(), group(), group_count(), select() with step labels, \
+         project(), path(), simple_path(), cyclic_path(), where(), tree(), math(), \
+         value_map(), aggregate(), store(), sample() (the weight) and glob_path()."
+    );
+    // The same help for a ring step, in the DSL.
+    #[cfg(feature = "script")]
+    {
+        let err = crate::script_host::eval_value(
+            std::sync::Arc::new(GraphSource::tinkerpop_modern()),
+            r#"g.V().project("a").by(Column.values).toList()"#,
+        )
+        .expect_err("project() does not take by(Column)");
+        assert!(err.to_string().contains("only order() takes it"), "{err}");
+    }
+}
+
+/// `property(Cardinality.list, ..)` fails with `UnsupportedCardinality`, leaves the graph
+/// unchanged, and its help names `Cardinality.single` and the array-value alternative.
+#[test]
+fn unsupported_cardinality_help_suggests_single_or_an_array_value() {
+    let mut graph = TraversalGraph::tinkerpop_modern();
+    let err = graph
+        .traversal_mut()
+        .v("1")
+        .property_with(Cardinality::List, "age", 1)
+        .next()
+        .expect_err("list cardinality");
+    assert!(matches!(
+        err.root_cause(),
+        TraverserError::UnsupportedCardinality { .. }
+    ));
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(
+            "Graphersal stores one value per property key, so only Cardinality.single can be \
+             written: it replaces the current value, for example \
+             g.v(\"1\").property(Cardinality.single, \"age\", 30) (the same as \
+             g.v(\"1\").property(\"age\", 30)). To keep several values, store them as one array \
+             value: g.v(\"1\").property(\"tags\", [\"a\", \"b\"])."
+        ),
+        "{report}"
+    );
+    let age = graph.traversal().v("1").values("age").next().unwrap();
+    assert_eq!(age, Some(ElementProperty::from(29)));
+}
+
+/// A cardinality on an edge property explains that edges take none.
+#[test]
+fn edge_cardinality_help_says_edges_take_none() {
+    let mut graph = TraversalGraph::tinkerpop_modern();
+    let err = graph
+        .traversal_mut()
+        .e("0")
+        .property_with(Cardinality::Single, "weight", 1.0)
+        .next()
+        .expect_err("edge cardinality");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("Property cardinality can only be set for a Vertex"),
+        "{report}"
+    );
+    assert!(
+        report.contains("Edge properties have no cardinality: drop the Cardinality argument"),
+        "{report}"
+    );
+    // The example names an edge that exists in the modern graph (edge ids "0".."5").
+    assert!(
+        report.contains("for example g.e(\"0\").property(\"weight\", 0.5)"),
+        "{report}"
+    );
+}
+
+/// `property(T.id, ..)` on an existing element points at `addV()` with a runnable example.
+#[test]
+fn token_property_outside_add_help_points_at_add_v() {
+    let mut graph = TraversalGraph::tinkerpop_modern();
+    let err = graph
+        .traversal_mut()
+        .v("1")
+        .property_id(5)
+        .next()
+        .expect_err("T.id outside addV");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(
+            "property(T.id, ..) can only set the id of an element add_v()/add_e() is creating"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "property(T.id, v) sets the id of the element add_v()/add_e() is creating; write it right \
+             after add_v()/add_e() (other property() calls may come in between), for example \
+             g.add_v(\"person\").property(T.id, \"p1\")."
+        ),
+        "{report}"
+    );
+
+    let err = graph
+        .traversal_mut()
+        .v("1")
+        .add_e("likes")
+        .to("2")
+        .property_label("x")
+        .next()
+        .expect_err("T.label after addE");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("An edge's label comes from add_e(label), for example g.v(\"1\").add_e(\"knows\").to(\"2\")."),
+        "{report}"
+    );
+}
+
+/// `add_e()` as a start step without endpoints names the self-loop default and the start form.
+#[test]
+fn add_e_endpoint_help_names_the_self_loop_default() {
+    let mut graph = TraversalGraph::tinkerpop_modern();
+    let err = graph
+        .traversal_mut()
+        .add_e("x")
+        .next()
+        .expect_err("no endpoints");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("add_e() as a start step has no incoming vertex"),
+        "{report}"
+    );
+    assert!(
+        report.contains("and neither makes a self-loop (g.v(\"1\").add_e(\"self\"))"),
+        "{report}"
+    );
+    assert!(
+        report.contains("g.add_e(\"knows\").from(\"1\").to(\"2\")"),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "To create the edge only when it does not exist yet, use mergeE, for example \
+             g.merge_e(#{\"T.label\": \"knows\", \"Direction.OUT\": \"1\", \"Direction.IN\": \"2\"})."
+        ),
+        "{report}"
+    );
+}
+
+/// A reserved key in `property(map)` names `property(T.id, v)` after `addV()`.
+#[test]
+fn property_map_reserved_key_help_names_the_token_form() {
+    let mut graph = TraversalGraph::tinkerpop_modern();
+    let mut map = PropertyMap::default();
+    map.insert("T.id", 3.into());
+    let err = graph
+        .traversal_mut()
+        .v("1")
+        .property_map(ElementProperty::Object(Box::new(map)))
+        .next()
+        .expect_err("reserved key");
+    let report = format_diagnostic(&err);
+    assert!(report.contains("map key \"T.id\" is reserved"), "{report}");
+    assert!(
+        report.contains(
+            "property(map) writes one property per map entry, for example \
+             g.v(\"1\").property(#{\"name\": \"marko\", \"age\": 29})"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains("g.add_v(\"person\").property(T.id, \"p1\")"),
+        "{report}"
+    );
+}
+
+fn merge_map(entries: &[(&str, ElementProperty)]) -> ElementProperty {
+    let mut map = PropertyMap::default();
+    for (key, value) in entries {
+        map.insert(*key, value.clone());
+    }
+    ElementProperty::Object(Box::new(map))
+}
+
+/// A hidden `~id` key in a `mergeV()` map: rejected before execution, and the help names the
+/// reserved `"T.id"` key with a runnable example.
+#[test]
+fn invalid_merge_map_help_names_the_reserved_key() {
+    let mut graph = TraversalGraph::new();
+    let err = graph
+        .traversal_mut()
+        .merge_v(merge_map(&[("~id", "1".into())]))
+        .next()
+        .expect_err("hidden key");
+    assert!(
+        matches!(err.root_cause(), TraverserError::InvalidMergeMap { .. }),
+        "{err}"
+    );
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(
+            "Property key can not be a hidden key: ~id (in the merge() map of merge_v())"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "Write the id with the reserved key \"T.id\" instead of \"~id\", for example \
+             g.merge_v(#{\"T.id\": \"1\"})."
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "A merge_v() map holds property keys plus the reserved keys \"T.id\" and \"T.label\""
+        ),
+        "{report}"
+    );
+
+    let err = graph
+        .traversal_mut()
+        .merge_v(ElementProperty::Null)
+        .option_merge(Merge::OnMatch, merge_map(&[("T.label", "x".into())]))
+        .next()
+        .expect_err("label in onMatch");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(
+            "option(Merge.onMatch, ..) only updates properties of the matched element, for example \
+             g.merge_v(#{\"name\": \"marko\"}).option(Merge.onMatch, #{\"age\": 30})"
+        ),
+        "{report}"
+    );
+}
+
+/// Conflicting values for one key in the merge map and the onCreate map.
+#[test]
+fn merge_override_help_says_on_create_only_adds_keys() {
+    let mut graph = TraversalGraph::new();
+    let err = graph
+        .traversal_mut()
+        .merge_v(merge_map(&[("T.label", "a".into())]))
+        .option_merge(Merge::OnCreate, merge_map(&[("T.label", "b".into())]))
+        .next()
+        .expect_err("override");
+    assert!(
+        matches!(err.root_cause(), TraverserError::MergeOverride { .. }),
+        "{err}"
+    );
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("option(onCreate) cannot override values from merge() argument: T.label is \"a\" in merge_v() but \"b\" in option(onCreate)"),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "option(Merge.onCreate, ..) can only add keys to the merge() map: a key present in both \
+             must have the same value there. Remove \"T.label\" from the onCreate map"
+        ),
+        "{report}"
+    );
+    assert_eq!(
+        graph.traversal().v(None).count().next().unwrap(),
+        Some(ElementProperty::from(0))
+    );
+}
+
+/// A duplicate vertex id suggests `mergeV` as the get-or-create form.
+#[test]
+fn vertex_id_unique_constraint_help_suggests_merge_v() {
+    let mut graph = TraversalGraph::tinkerpop_modern();
+    let err = graph
+        .traversal_mut()
+        .add_v("person")
+        .property_id("1")
+        .next()
+        .expect_err("duplicate id");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("Ensure vertex IDs are unique when adding new vertices."),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "use mergeV, for example g.merge_v(#{\"T.id\": \"1\"}).option(Merge.onCreate, #{\"T.label\": \"person\"})."
+        ),
+        "{report}"
+    );
+}
+
+/// `mergeE()` without the vertices an edge needs: the error names the end, and the help gives
+/// runnable id and placeholder forms.
+#[test]
+fn merge_vertex_unresolved_help_names_ids_and_placeholders() {
+    let mut graph = TraversalGraph::tinkerpop_modern();
+    let err = graph
+        .traversal_mut()
+        .merge_e(merge_map(&[("T.label", "x".into())]))
+        .next()
+        .expect_err("no vertices");
+    assert!(
+        matches!(
+            err.root_cause(),
+            TraverserError::MergeVertexUnresolved {
+                direction: Direction::Out,
+                ..
+            }
+        ),
+        "{err}"
+    );
+    let report = format_diagnostic(&err);
+    assert!(report.contains("Out Vertex not specified"), "{report}");
+    assert!(
+        report.contains(
+            "An edge merge_e() creates needs both vertices: give \"Direction.OUT\" and \
+             \"Direction.IN\" an existing vertex id, for example g.merge_e(#{\"T.label\": \"knows\", \
+             \"Direction.OUT\": \"1\", \"Direction.IN\": \"2\"})"
+        ),
+        "{report}"
+    );
+
+    let err = graph
+        .traversal_mut()
+        .merge_e(merge_map(&[
+            ("Direction.OUT", "1".into()),
+            ("Direction.IN", "100".into()),
+        ]))
+        .next()
+        .expect_err("unknown id");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("Vertex id could not be resolved from mergeE: 100"),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "Give \"Direction.IN\" the id of an existing vertex (check it with g.v(id)), or create \
+             the vertex first, for example g.merge_v(#{\"T.id\": \"1\"})."
+        ),
+        "{report}"
+    );
+
+    let err = graph
+        .traversal_mut()
+        .merge_e(merge_map(&[
+            ("Direction.OUT", "Merge.outV".into()),
+            ("Direction.IN", "2".into()),
+        ]))
+        .next()
+        .expect_err("no option");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("there is no option(Merge.outV, ..)"),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "\"Direction.OUT\": Merge.outV is resolved from option(Merge.outV, ..), which takes a \
+             vertex search map such as #{\"T.id\": \"1\"} or a traversal yielding a vertex"
+        ),
+        "{report}"
+    );
+
+    let err = graph
+        .traversal_mut()
+        .merge_e(merge_map(&[
+            ("Direction.OUT", "Merge.outV".into()),
+            ("Direction.IN", "2".into()),
+        ]))
+        .option_merge(Merge::OutV, merge_map(&[("T.label", "person".into())]))
+        .next()
+        .expect_err("ambiguous");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("matched 4 vertices; it must identify exactly one vertex"),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "The option(Merge.outV, map) map is a vertex search that must find exactly one \
+             vertex: name it by id, for example option(Merge.outV, #{\"T.id\": \"1\"})"
+        ),
+        "{report}"
+    );
+}
+
+/// The `mergeE()`-specific malformed maps each get their own advice.
+#[test]
+fn invalid_merge_map_help_covers_edge_maps() {
+    let mut graph = TraversalGraph::tinkerpop_modern();
+    type MergeCase = (
+        ElementProperty,
+        Option<(Merge, ElementProperty)>,
+        &'static str,
+    );
+    let cases: [MergeCase; 3] = [
+        (
+            merge_map(&[("Direction.BOTH", "1".into())]),
+            None,
+            "write \"Direction.OUT\" and \"Direction.IN\" instead of \"Direction.BOTH\"",
+        ),
+        (
+            merge_map(&[("Direction.OUT", "Merge.inV".into())]),
+            None,
+            "Each end takes its own placeholder: \"Direction.OUT\": Merge.outV and \"Direction.IN\": Merge.inV",
+        ),
+        (
+            merge_map(&[("Direction.OUT", "Merge.outV".into())]),
+            Some((Merge::OutV, merge_map(&[("Direction.IN", "1".into())]))),
+            "The option(Merge.outV|inV, map) map is a vertex search (\"T.id\", \"T.label\" and properties)",
+        ),
+    ];
+    for (map, option, advice) in cases {
+        let mut traversal = graph.traversal_mut().merge_e(map);
+        if let Some((token, value)) = option {
+            traversal = traversal.option_merge(token, value);
+        }
+        let err = traversal.next().expect_err("invalid edge map");
+        assert!(
+            matches!(err.root_cause(), TraverserError::InvalidMergeMap { .. }),
+            "{err}"
+        );
+        let report = format_diagnostic(&err);
+        assert!(report.contains(advice), "{report}");
+        // The general part names the edge keys and gives a mergeE() example, not a mergeV() one.
+        assert!(
+            report.contains(
+                "A merge_e() map holds property keys plus the reserved keys \"T.id\", \
+                 \"T.label\", \"Direction.OUT\" and \"Direction.IN\", for example \
+                 g.merge_e(#{\"T.label\": \"knows\", \"Direction.OUT\": \"1\", \"Direction.IN\": \
+                 \"2\"}).option(Merge.onCreate, #{\"weight\": 0.5})"
+            ),
+            "{report}"
+        );
+    }
+
+    let err = graph
+        .traversal_mut()
+        .merge_v(ElementProperty::Null)
+        .option_merge(Merge::OutV, merge_map(&[("T.id", "1".into())]))
+        .next()
+        .expect_err("outV on mergeV");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(
+            "option(Merge.outV|inV, ..) belongs to merge_e(), for example \
+             g.merge_e(#{\"T.label\": \"knows\", \"Direction.OUT\": Merge.outV, \"Direction.IN\": \
+             \"2\"}).option(Merge.outV, #{\"T.id\": \"1\"})"
+        ),
+        "{report}"
+    );
+}
+
+/// `mergeE()` override and cardinality errors give edge examples.
+#[test]
+fn merge_e_override_and_cardinality_help_use_edge_examples() {
+    let mut graph = TraversalGraph::tinkerpop_modern();
+    let err = graph
+        .traversal_mut()
+        .merge_e(merge_map(&[("Direction.OUT", "1".into())]))
+        .option_merge(Merge::OnCreate, merge_map(&[("Direction.OUT", "2".into())]))
+        .next()
+        .expect_err("override");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("Direction.OUT is \"1\" in merge_e() but \"2\" in option(onCreate)"),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "for example g.merge_e(#{\"T.label\": \"knows\", \"Direction.OUT\": \"1\", \
+             \"Direction.IN\": \"2\"}).option(Merge.onCreate, #{\"weight\": 0.5})"
+        ),
+        "{report}"
+    );
+
+    let err = graph
+        .traversal_mut()
+        .merge_e(merge_map(&[("Direction.OUT", "1".into())]))
+        .option_merge_with(
+            Merge::OnMatch,
+            merge_map(&[("w", 1.into())]),
+            Cardinality::Single,
+        )
+        .next()
+        .expect_err("cardinality");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(
+            "Edge properties have no cardinality: drop the Cardinality argument of option() and \
+             any Cardinality.single(v) wrapper in the merge_e() maps"
+        ),
+        "{report}"
+    );
+}
+
+/// A duplicate edge id names `mergeE()` as the get-or-create form.
+#[test]
+fn edge_id_unique_constraint_help_names_merge_e() {
+    let mut graph = TraversalGraph::tinkerpop_modern();
+    let err = graph
+        .traversal_mut()
+        .v("1")
+        .add_e("x")
+        .to("2")
+        .property_id("0")
+        .next()
+        .expect_err("duplicate edge id");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(
+            "To get the edge with this id if it exists and create it otherwise, use mergeE, for \
+             example g.merge_e(#{\"T.id\": \"7\"}).option(Merge.onCreate, #{\"T.label\": \"knows\", \
+             \"Direction.OUT\": \"1\", \"Direction.IN\": \"2\"})."
+        ),
+        "{report}"
+    );
+}
+
+/// Renders the diagnostic of a failed `math()` traversal on the modern graph.
+fn math_report(
+    build: impl FnOnce(
+        GraphTraversalSource<'_, &TraversalGraph>,
+    ) -> Result<Vec<ElementProperty>, Box<TraverserError>>,
+) -> String {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = build(locked.traversal()).expect_err("math() must fail");
+    format_diagnostic(&err)
+}
+
+#[test]
+fn math_syntax_error_underlines_the_token_before_execution() {
+    let report = math_report(|g| g.v(None).has("name", "nobody").math("2 +* 3").to_list());
+    assert!(
+        report.contains("math(\"2 +* 3\") failed at column 4: unexpected '*'"),
+        "{report}"
+    );
+    assert!(
+        report.contains("  equation: math(\"2 +* 3\")\n                     ^"),
+        "the caret must sit under '*' in: {report}"
+    );
+    assert!(
+        report.contains(
+            "math() evaluates an equation like TinkerPop does: numbers, the operators + - * / % \
+             and ^ (power), parentheses, the functions abs, acos,"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "Fix the equation at the marked position, for example \
+             g.v().values(\"age\").math(\"(_ + 1) * 2\")."
+        ),
+        "{report}"
+    );
+}
+
+#[test]
+fn math_unknown_function_lists_close_names() {
+    let report = math_report(|g| g.v("1").values("age").math("sqr(_)").to_list());
+    assert!(
+        report.contains("  equation: math(\"sqr(_)\")\n                  ^^^"),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "Help: 'sqr' is not a math() function; did you mean sqrt (square root), sin (sine \
+             (radians))? For example g.v(\"1\").values(\"age\").math(\"sqrt(_)\")."
+        ),
+        "{report}"
+    );
+}
+
+#[test]
+fn math_unknown_variable_names_every_scope_and_the_nested_form() {
+    let report = math_report(|g| g.v("1").values("age").math("_ + x").to_list());
+    assert!(
+        report.contains(
+            "variable 'x' is not '_', a key of the current map, a side effect or a step label"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "Help: math() reads a variable other than _ from, in this order, a key of the current \
+             map (project(\"x\", ...), value_map(), element_map()), a side effect \
+             (g.with_side_effect(\"x\", 10), aggregate(\"x\")) or a step label (as(\"x\")), and \
+             'x' is none of these for this traverser. Label the value it should read, for example \
+             g.v(\"1\").values(\"age\").as(\"x\").math(\"_ + x\"), or declare it as a side effect, \
+             for example g.with_side_effect(\"x\", 10).v().values(\"age\").math(\"_ + x\"). To \
+             read a key of the current value itself, use the nested form _.x (a Graphersal \
+             extension), for example g.v().element_map().math(\"_ + _.x\")."
+        ),
+        "{report}"
+    );
+}
+
+#[test]
+fn math_value_points_to_underscore() {
+    let report = math_report(|g| g.v("1").values("age").math("value * 2").to_list());
+    assert!(
+        report.contains(
+            "Help: The current value is named _ in math(), as in TinkerPop; value is not a name \
+             for it. For example g.v(\"1\").values(\"age\").math(\"_ * 2\")."
+        ),
+        "{report}"
+    );
+}
+
+#[test]
+fn math_non_numeric_value_suggests_as_number() {
+    let report = math_report(|g| g.v("1").values("name").math("_ + 1").to_list());
+    assert!(
+        report.contains("the variable _ for math() must resolve to a number, but it is a string"),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "Help: math() computes with numbers only, and _ is a string. Convert the value with \
+             as_number(GType.DOUBLE) first, for example \
+             g.v(\"1\").values(\"name\").as_number(GType.DOUBLE).math(\"_ + 1\"), or inside the \
+             by() that reads it, for example by(__.values(\"age\").as_number(GType.DOUBLE))."
+        ),
+        "{report}"
+    );
+}
+
+#[test]
+fn math_null_value_suggests_filtering() {
+    let mut map = PropertyMap::default();
+    map.insert("a", ElementProperty::Null);
+    let report = math_report(|g| {
+        g.inject(vec![ElementProperty::Object(Box::new(map))])
+            .math("_.a + 1")
+            .to_list()
+    });
+    assert!(
+        report.contains(
+            "Help: _.a is null, and math() computes with numbers only. Keep only traversers that \
+             have the value before math(), for example \
+             g.v().has(\"age\").math(\"_ + 1\").by(\"age\"), or replace a missing value with a \
+             default inside the by(), for example \
+             by(__.coalesce(__.values(\"age\"), __.constant(0)))."
+        ),
+        "{report}"
+    );
+}
+
+#[test]
+fn math_bad_path_names_the_available_keys() {
+    let report = math_report(|g| {
+        g.v("1")
+            .element_map(None::<()>)
+            .math("_.agee * 2")
+            .to_list()
+    });
+    assert!(
+        report.contains(
+            "_.agee leads to no value: no key 'agee'; the available keys are: id, label, name, age"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains("  equation: math(\"_.agee * 2\")\n                  ^^^^^^"),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "Help: Nested access such as _.agee is a Graphersal extension of math(): after a \
+             variable, .key or [\"key\"] reads a key of a map"
+        ),
+        "{report}"
+    );
+}
+
+#[test]
+fn math_division_by_zero_suggests_filtering_the_divisor() {
+    let report = math_report(|g| g.v("1").values("age").math("_ / 0").to_list());
+    assert!(
+        report.contains("failed at column 3: Division by zero!"),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "Help: math() follows TinkerPop: a zero divisor of / or % (or cot(x) \
+             where tan(x) is 0) is an error, not infinity. Keep only traversers with a non-zero \
+             divisor before math(), for example g.v().project(\"a\", \"b\").by(\"age\")\
+             .by(__.out().count()).where(__.select(\"b\").is(P.neq(0))).math(\"a / b\")."
+        ),
+        "{report}"
+    );
+}
+
+#[test]
+fn timeout_help_suggests_a_barrier_between_expansions() {
+    let graph = GraphSource::large_110k();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("evaluationTimeout", 1)
+        .v(None)
+        .both(None)
+        .both(None)
+        .both(None)
+        .both(None)
+        .both(None)
+        .count()
+        .next()
+        .expect_err("5 hops of both() on the large graph exceed 1 ms");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains(
+            "Merge duplicate traversers: barrier() merges equal traversers so later steps \
+             process each distinct one once, for example \
+             g.v().both().barrier().both().barrier().both().barrier().both().barrier().both().count()."
+        ),
+        "{help}"
+    );
+    // The suggested query runs.
+    assert!(
+        lock.traversal()
+            .v(None)
+            .limit(2)
+            .both(None)
+            .barrier()
+            .both(None)
+            .count()
+            .next()
+            .is_ok()
+    );
+}
+
+#[test]
+fn timeout_help_without_two_expansions_uses_the_example_query() {
+    let graph = GraphSource::large_110k();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("evaluationTimeout", 1)
+        .v(None)
+        .repeat(__::both(None))
+        .times(8)
+        .count()
+        .next()
+        .expect_err("8 hops of both() on the large graph exceed 1 ms");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("for example g.v().out().barrier().out().barrier().out().count()."),
+        "{help}"
+    );
+}
+
+/// `V()`/`E()`/`hasId()` reject a map that is not an element, with advice on the accepted forms.
+#[cfg(feature = "script")]
+#[test]
+fn id_argument_mismatch_help_lists_the_accepted_forms() {
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    let err = crate::script_host::eval_value(graph, "g.E(#{a: 1}).toList()")
+        .expect_err("a map without an id is not an id")
+        .to_string();
+    assert!(
+        err.contains(
+            "v(), e() and has_id() take ids (strings, numbers, UUIDs), elements returned by \
+             next()/to_list(), or lists of them. For example: let e = g.e(\"11\").next(); \
+             g.e(e).to_list() or g.v([\"1\", \"2\"]).to_list(). A map is accepted only as an \
+             element, that is, with an `id` key."
+        ),
+        "{err}"
+    );
+}
+
+/// A second `by()` on `aggregate()`, `store()`, `group_count()` and `valueMap()`.
+#[test]
+fn a_second_by_help_names_the_single_by_form() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .aggregate("x")
+        .by("name")
+        .by("age")
+        .cap("x")
+        .to_list()
+        .expect_err("a second by()");
+    assert_eq!(
+        err.root_cause().to_string(),
+        "`aggregate()` cannot use its by() #2: aggregate() and store() take a single by()"
+    );
+    assert_eq!(
+        err.help().expect("help"),
+        "aggregate() collects one projection of each traverser, so it takes a single by(), for \
+         example g.v().aggregate(\"x\").by(\"name\").cap(\"x\"). To collect several values per \
+         traverser, project them in one traversal, for example \
+         g.v().aggregate(\"x\").by(__.values(\"name\", \"age\").fold()).cap(\"x\")."
+    );
+    let err = lock
+        .traversal()
+        .v(None)
+        .group_count()
+        .by("name")
+        .by("age")
+        .to_list()
+        .expect_err("a second by()");
+    assert!(err.help().expect("help").contains(
+        "group_count() counts the elements per key, so it takes a single by(), the key; there is \
+         no value projection to give."
+    ));
+    let err = lock
+        .traversal()
+        .v(None)
+        .value_map(vec!["name"])
+        .by(__::unfold())
+        .by(__::unfold())
+        .to_list()
+        .expect_err("a second by()");
+    assert!(
+        err.help()
+            .expect("help")
+            .contains("value_map() takes a single by(): it is applied to every property's list.")
+    );
+}
+
+/// `inject()` as a direct step of a `repeat()` body.
+#[test]
+fn repeat_inject_help_suggests_union_or_injecting_before_the_loop() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .repeat(__::inject(vec!["y"]))
+        .times(2)
+        .to_list()
+        .expect_err("inject in a repeat body");
+    assert!(
+        matches!(err.root_cause(), TraverserError::RepeatInject { .. }),
+        "{err}"
+    );
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("union(__.identity(), __.inject(\"y\"))"),
+        "{help}"
+    );
+    assert!(help.contains("Inject before the loop"), "{help}");
+}
+
+#[test]
+fn choose_traversal_option_key_help_names_predicates_and_branch() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .choose_switch(__::values("name"))
+        .option_traversal(__::is("marko"), __::values("age"))
+        .to_list()
+        .expect_err("a traversal option key is invalid for choose()");
+    assert!(
+        matches!(err.root_cause(), TraverserError::InvalidOption { .. }),
+        "{err}"
+    );
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("option(P.gt(30), __.constant(\"old\"))"),
+        "{help}"
+    );
+    assert!(help.contains("use branch()"), "{help}");
+    assert!(
+        help.contains("passes the traverser through unchanged"),
+        "{help}"
+    );
+}
+
+/// A string step on a graph element names `as_string()`, which renders an element as text.
+#[test]
+fn a_string_step_on_an_element_names_as_string() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .to_upper()
+        .next()
+        .expect_err("a vertex is not a string");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(r#"g.v().as_string() gives "v[1]""#),
+        "{report}"
+    );
+    assert!(
+        report.contains(r#"g.v().values("name").to_upper()"#),
+        "{report}"
+    );
+}
+
+/// `tree("a")` over a key that already holds a list names the clash and a fix.
+#[test]
+fn tree_over_a_non_tree_side_effect_names_the_clash() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .aggregate("a")
+        .tree("a")
+        .to_list()
+        .expect_err("a list is not a tree");
+    assert!(
+        matches!(err.root_cause(), TraverserError::QueryExecution { .. }),
+        "{err}"
+    );
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("side effect 'a' already holds a list"),
+        "{help}"
+    );
+    assert!(help.contains(r#"tree("a") needs an unused key"#), "{help}");
+    assert!(help.contains(r#".tree("t").cap("t")"#), "{help}");
+}
+
+/// A map with a non-string key cannot be stored: the help names the string-key form and `to_json()`.
+#[test]
+fn storing_a_map_with_a_non_string_key_names_to_json() {
+    let graph = GraphSource::tinkerpop_modern();
+    let map = ElementProperty::from_entries([(
+        ElementProperty::from(29i64),
+        ElementProperty::from(1i64),
+    )]);
+    let err = graph
+        .write()
+        .traversal_mut()
+        .v("1")
+        .property("ages", map)
+        .next()
+        .expect_err("a map with a non-string key is not a property value");
+    assert_eq!(
+        err.root_cause().help().expect("help"),
+        "A property value that is a map must have string keys, because a stored map is a plain \
+         object. Store the map under string keys, for example property(\"ages\", #{\"29\": 1}), or \
+         keep the data in the stream and show a map with a non-string key with to_json(), for \
+         example g.v().group_count().by(\"age\").to_json()."
+    );
+}
+
+/// `as_bool()` and `as_number(GType::LONG)` are advised in a cast failure, so the help also says
+/// what they really convert.
+#[test]
+fn cast_help_states_the_rules_of_as_bool_and_as_number() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .inject(vec!["maybe"])
+        .as_bool()
+        .next()
+        .expect_err("an unknown text is not a boolean");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(
+            "as_bool() turns 0 (and NaN) into false, any other number into true, and the texts \
+             true/false in any letter case; any other text is an error."
+        ),
+        "{report}"
+    );
+    let err = locked
+        .traversal()
+        .inject(vec!["not a number"])
+        .sum()
+        .next()
+        .expect_err("a string must not be aggregated");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("as_number(GType.LONG) truncates a float toward zero."),
+        "{report}"
+    );
+}
+
+/// `from()`/`to()` of the path steps: the advice after `out()` names `path()`, an absent label gets
+/// the path-label help, and a label list is a rejected modulator.
+#[test]
+fn path_window_diagnostics_name_the_path_steps() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+
+    let err = lock
+        .traversal()
+        .v(None)
+        .out(None)
+        .from("a")
+        .to_list()
+        .expect_err("out takes no from");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("path(), simple_path() and cyclic_path() take them as a window"),
+        "{help}"
+    );
+    assert!(
+        help.contains("g.v().as(\"a\").out().as(\"b\").path().from(\"a\").to(\"b\")"),
+        "{help}"
+    );
+    assert!(
+        help.contains("add_e() accepts from()/to()"),
+        "the add_e advice stays: {help}"
+    );
+
+    let err = lock
+        .traversal()
+        .v(None)
+        .out(None)
+        .path()
+        .from("nowhere")
+        .to_list()
+        .expect_err("no position carries the label");
+    assert_eq!(
+        err.root_cause().to_string(),
+        "Property 'nowhere' not found on element type 'path'"
+    );
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("No step label 'nowhere' is set on the path"),
+        "{help}"
+    );
+
+    let err = lock
+        .traversal()
+        .v(None)
+        .as_("a")
+        .out(None)
+        .path()
+        .from(vec!["a".to_string(), "b".to_string()])
+        .to_list()
+        .expect_err("a label list is not a window bound");
+    assert_eq!(
+        err.root_cause().to_string(),
+        "`path()` cannot use its from()/to() #1: from()/to() of a path step takes exactly one step label"
+    );
+    let help = err.help().expect("help");
+    assert!(help.contains("takes exactly one step label"), "{help}");
+    assert!(help.contains("path().from(\"a\").to(\"b\")"), "{help}");
+}
+
+/// `by()` ring help names the two filter steps next to `path()`.
+#[test]
+fn ring_help_names_simple_and_cyclic_path() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .both(None)
+        .simple_path()
+        .by(graphersal::prelude::Order::Desc)
+        .to_list()
+        .expect_err("an order is not a projection");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("simple_path() applies its by() modulators round-robin"),
+        "{help}"
+    );
+    assert!(
+        help.contains("g.v(\"1\").both().both().simple_path().by(\"name\")"),
+        "{help}"
+    );
+}
+
+/// `select(Column.keys)`/`select(Column.values)` of a path and `where(P).by()` are named by the
+/// help texts.
+#[test]
+fn where_by_and_path_keys_help() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .values("age")
+        .select(Column::Values)
+        .to_list()
+        .expect_err("a number has no values column");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains(r#"select(Column.keys) of a path() lists the step labels of each position, for example g.v().as("a").out().as("b").path().select(Column.keys)"#),
+        "{help}"
+    );
+    assert!(
+        help.contains(r#"select(Column.values) of a path() lists its objects, for example g.v("1").out().path().select(Column.values)"#),
+        "{help}"
+    );
+
+    let err = lock
+        .traversal()
+        .v(None)
+        .as_("a")
+        .where_p(P::Gt("a"))
+        .by(graphersal::prelude::Order::Desc)
+        .to_list()
+        .expect_err("an order is not a projection");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("where() applies its by() modulators round-robin"),
+        "{help}"
+    );
+    assert!(
+        help.contains(r#"g.v("1").as("a").out().where(P.gt("a")).by("age")"#),
+        "{help}"
+    );
+
+    let err = lock
+        .traversal()
+        .v(None)
+        .count()
+        .by("x")
+        .to_list()
+        .expect_err("count takes no by");
+    let help = err.help().expect("help");
+    assert!(help.contains("cyclic_path(), where(), tree()"), "{help}");
+}
+
+/// `add_e()` takes a label string or a traversal; any other argument is a mismatch whose help
+/// names the traversal form (rule 6).
+#[cfg(feature = "script")]
+#[test]
+fn add_e_argument_mismatch_help_names_the_traversal_label() {
+    use crate::script_host::eval;
+
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    let report = eval(graph, r#"g.v("1").add_e(5).to("2").to_list()"#)
+        .expect_err("a number is no label")
+        .to_string();
+    assert!(
+        report.contains(
+            "Error: Argument mismatch for step 'add_e': expected a label string or a traversal, got "
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "Help: add_e() takes the edge label as a string, or as a traversal whose first result \
+             is the label, for example g.v(\"1\").add_e(\"knows\").to(\"2\") or \
+             g.v().as(\"a\").out_e().as(\"b\").in_v().add_e(__.select(\"b\").label()).to(\"a\"). \
+             A list of labels is not accepted."
+        ),
+        "{report}"
+    );
+}
+
+#[cfg(feature = "script")]
+#[test]
+fn choose_and_branch_selector_mismatch_names_the_accepted_forms() {
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    for script in [
+        r#"g.V().choose("x")"#,
+        r#"g.V().branch(1)"#,
+        r#"g.V().choose(1, __.constant(1))"#,
+    ] {
+        let err = crate::script_host::eval_value(graph.clone(), script)
+            .expect_err("a scalar is not a selector")
+            .to_string();
+        assert!(
+            err.contains("g.v().choose(T.label).option(\"person\""),
+            "{script}: {err}"
+        );
+        assert!(
+            err.contains("g.v().values(\"age\").choose(P.gt(30), __.constant(\"old\"), __.constant(\"young\"))"),
+            "{script}: {err}"
+        );
+    }
+}
+
+/// `remove_property()` argument mismatch help shows the accepted forms and the null relation.
+#[cfg(feature = "script")]
+#[test]
+fn remove_property_argument_mismatch_help_shows_the_forms() {
+    use crate::script_host::eval;
+
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    let rendered = eval(graph, "g.v().remove_property(5).to_list()")
+        .expect_err("a number is no key")
+        .to_string();
+    assert!(
+        rendered.contains("Argument mismatch for step 'remove_property'"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"g.v().has_label("person").remove_property("age")"#),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"remove_property(["age", "name"])"#),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("property(k, ()) stores a null"),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn operator_failed_help_in_a_sack_names_the_by_operand_and_the_coercion() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with_sack("a")
+        .v(None)
+        .sack_with(Operator::Sum)
+        .by("age")
+        .to_list()
+        .expect_err("a text sack cannot be summed");
+    let help = err.help().expect("help");
+    for needle in [
+        "g.with_sack(0).v().out_e().sack(Operator.sum).by(\"weight\")",
+        "g.with_sack(0).v().sack(Operator.sum).by(__.values(\"age\").as_number())",
+        "as_number()",
+    ] {
+        assert!(help.contains(needle), "{needle} missing from: {help}");
+    }
+    assert!(!help.contains("normSack"), "{help}");
+}
+
+#[test]
+fn norm_sack_failure_help_names_barrier_norm_sack() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with_sack("a")
+        .v(None)
+        .barrier_with(Barrier::NormSack)
+        .to_list()
+        .expect_err("a text sack cannot be normalised");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("g.with_sack(1.0).v().out().barrier(Barrier.normSack).sack()"),
+        "{help}"
+    );
+}
+
+#[test]
+fn a_second_sack_by_help_names_the_single_operand_form() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .sack_with(Operator::Assign)
+        .by("age")
+        .by("name")
+        .to_list()
+        .expect_err("sack takes one by()");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("g.with_sack(0).v().out_e().sack(Operator.sum).by(\"weight\")"),
+        "{help}"
+    );
+    assert!(help.contains("by(__.values(\"age\").sum())"), "{help}");
+}
+
+#[test]
+fn operator_failed_help_names_the_reducer_forms() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .values("age")
+        .fold_with("", Operator::Sum)
+        .to_list()
+        .expect_err("a text seed cannot be summed");
+    let help = err.help().expect("help");
+    for needle in [
+        "g.v().values(\"age\").fold(0, Operator.sum)",
+        "g.with_side_effect(\"a\", 0, Operator.sum).v().aggregate(\"a\").by(\"age\").cap(\"a\")",
+    ] {
+        assert!(help.contains(needle), "{needle} missing from: {help}");
+    }
+    // The same text through a reducer side effect.
+    let err = lock
+        .traversal()
+        .with_side_effect_reduced("a", "x", Operator::Sum)
+        .v(None)
+        .aggregate("a")
+        .by("age")
+        .cap("a")
+        .to_list()
+        .expect_err("a text seed cannot be summed");
+    assert!(err.help().expect("help").contains("Operator.sum"), "{err}");
+}
+
+#[test]
+fn side_effect_key_helps_name_the_reducer_declaration() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .cap("nope")
+        .to_list()
+        .expect_err("an undeclared key");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("g.with_side_effect(\"nope\", 0, Operator.sum).v().aggregate(\"nope\").by(\"age\").cap(\"nope\")"),
+        "{help}"
+    );
+    let err = lock
+        .traversal()
+        .v(None)
+        .aggregate("a")
+        .tree("a")
+        .to_list()
+        .expect_err("a list is not a tree");
+    assert!(
+        err.help()
+            .expect("help")
+            .contains("with_side_effect(\"a\", 0, Operator.sum)"),
+        "{err}"
+    );
+}
+
+#[test]
+fn reserved_parameter_help_lists_token_classes() {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    let err = crate::script_host::eval_with_params(
+        Arc::new(GraphSource::tinkerpop_modern()),
+        "g.v().count().next()",
+        HashMap::from([("Order".to_string(), ElementProperty::Boolean(true))]),
+    )
+    .expect_err("Order is a reserved token name");
+    let text = format!("{err:?}{err}");
+    assert!(text.contains("reserved by the script scope"), "{text}");
+}
+
+#[test]
+fn property_path_write_help_texts_name_the_fix() {
+    use graphersal::prelude::JsonPath;
+    let graph = GraphSource::empty();
+    {
+        let mut writable = graph.write();
+        writable
+            .traversal_mut()
+            .add_v("p")
+            .property("scalar", 5)
+            .property(
+                "tags",
+                ElementProperty::Array(vec![ElementProperty::from("a")]),
+            )
+            .next()
+            .unwrap();
+    }
+    let path = |text: &str| text.parse::<JsonPath>().unwrap();
+    let report = |key: &str| {
+        let mut writable = graph.write();
+        let err = writable
+            .traversal_mut()
+            .v(None)
+            .property(path(key), 1)
+            .next()
+            .expect_err("write must fail");
+        let root = err.root_cause();
+        (root.to_string(), root.help().expect("help"))
+    };
+
+    let (message, help) = report("tags[5]");
+    assert_eq!(
+        message,
+        "Cannot write property path '$.tags[5]': index 5 is out of range for the array '$.tags' of length 1"
+    );
+    assert_eq!(
+        help,
+        "Use an index inside the array, [len] to append as the last segment, or a negative index [-1] \
+         for the last element; arrays are never padded with null. Written path: $.tags[5]."
+    );
+
+    let (message, help) = report("tags.x");
+    assert_eq!(
+        message,
+        "Cannot write property path '$.tags.x': '$.tags' is an array, not an object, so a key cannot be set on it"
+    );
+    assert_eq!(
+        help,
+        "A key segment needs an object. Read the current value first, for example \
+         g.v().values(jpath(\"$.tags.x\")), or write a whole object at a shorter path, for example \
+         property(jpath(\"meta\"), #{\"k\": 1}). Missing keys are created, existing scalars and arrays are \
+         never overwritten by a deeper path."
+    );
+
+    let (message, help) = report("scalar[0]");
+    assert_eq!(
+        message,
+        "Cannot write property path '$.scalar[0]': '$.scalar' is a number, not an array, so an index cannot be used on it"
+    );
+    assert_eq!(
+        help,
+        "An index segment needs an array. Use a key segment for an object, for example \
+         jpath(\"meta.tags\") instead of jpath(\"meta[0]\"), or write the array first with \
+         property(jpath(\"meta.tags\"), [\"x\"]). Written path: $.scalar[0]."
+    );
+
+    let (message, help) = report("missing.list[0]");
+    assert_eq!(
+        message,
+        "Cannot write property path '$.missing.list[0]': the array '$.missing.list' does not exist, and an index segment never creates one"
+    );
+    assert_eq!(
+        help,
+        "Create the array first, for example property(jpath(\"meta.tags\"), [\"x\"]), then address its \
+         elements. Only key segments create missing objects. Written path: $.missing.list[0]."
+    );
+
+    let (message, help) = report("[0]");
+    assert_eq!(
+        message,
+        "Cannot write property path '$[0]': the first segment must name the property, not an index"
+    );
+    assert_eq!(
+        help,
+        "Start the path with the property name, for example property(jpath(\"meta.tags[0]\"), \"x\"); \
+         '$[0]' begins with an index."
+    );
+
+    let mut writable = graph.write();
+    let err = writable
+        .traversal_mut()
+        .v(None)
+        .property_with(Cardinality::List, path("tags[0]"), 1)
+        .next()
+        .expect_err("cardinality with a path");
+    let root = err.root_cause();
+    assert_eq!(
+        root.to_string(),
+        "Cannot write property path '$.tags[0]': property(Cardinality, jpath(..), value) is not supported"
+    );
+    assert_eq!(
+        root.help().expect("help"),
+        "Graphersal stores one value per property; write a nested value with \
+         property(jpath(\"meta.tags[0]\"), \"x\") without a Cardinality, or build the whole value and \
+         write it with property(Cardinality.single, \"meta\", value)."
+    );
+}
+
+/// `remove_property()` accepts `jpath(..)`: the help names it and the removal rules, and
+/// `properties(jpath(..)).drop()` points at it.
+#[cfg(feature = "script")]
+#[test]
+fn remove_property_jpath_help_and_path_property_drop_help() {
+    use crate::script_host::eval;
+
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    let rendered = eval(graph.clone(), "g.v().remove_property(5).to_list()")
+        .expect_err("a number is no key")
+        .to_string();
+    assert!(
+        rendered.contains("strings or jpath(..) values"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"g.v().remove_property(jpath("meta.tags[0]"))"#),
+        "{rendered}"
+    );
+    assert!(rendered.contains("a missing path is a no-op"), "{rendered}");
+
+    let rendered = eval(
+        graph,
+        r#"g.v("1").properties(jpath("name")).drop().to_list()"#,
+    )
+    .expect_err("a path property cannot be dropped")
+    .to_string();
+    assert!(rendered.contains("got type 'pathProperty'"), "{rendered}");
+    assert!(
+        rendered.contains("holds no reference to the element"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(r#"remove_property(jpath("meta.tags[0]"))"#),
+        "{rendered}"
+    );
+}
+
+/// Nested schema errors (Task 10 of the jpath work) name the full canonical path and their help
+/// reads that location with `jpath(..)`, never with a literal key.
+#[cfg(feature = "script")]
+#[test]
+fn nested_schema_error_help_names_the_path_and_reads_it_with_jpath() {
+    use crate::script_host::eval;
+
+    let schema = crate::schema_support::schema(
+        r#"{"mode": "closed", "vertices": {"P": {"schema": {"type": "object", "properties": {
+            "meta": {"type": ["object", "null"], "properties": {"k": {"type": "integer"}},
+                     "required": ["k"]}}}}}}"#,
+    );
+    let graph = std::sync::Arc::new(GraphSource::empty());
+    eval(
+        graph.clone(),
+        r#"g.addV("P").property(T.id, "a").property_json(#{meta: #{k: 1}}).toList()"#,
+    )
+    .expect("setup");
+    graph.write().set_schema(schema).unwrap();
+
+    let mismatch = eval(
+        graph.clone(),
+        r#"g.V("a").property(jpath("meta.k"), "x").toList()"#,
+    )
+    .expect_err("type")
+    .to_string();
+    assert!(mismatch.contains("$.meta.k"), "{mismatch}");
+    assert!(
+        mismatch.contains(r#"values(jpath("$.meta.k")).as_number(GType.LONG)"#),
+        "{mismatch}"
+    );
+    assert!(!mismatch.contains(r#"values("$.meta.k")"#), "{mismatch}");
+
+    let undeclared = eval(
+        graph.clone(),
+        r#"g.V("a").property(jpath("meta.extra"), 1).toList()"#,
+    )
+    .expect_err("undeclared")
+    .to_string();
+    assert!(
+        undeclared.contains("Undeclared property '$.meta.extra'"),
+        "{undeclared}"
+    );
+    assert!(
+        undeclared
+            .contains(r#"Declare '$.meta.extra' among the "properties" of its enclosing object"#),
+        "{undeclared}"
+    );
+    assert!(
+        undeclared.contains(r#""additionalProperties": true"#),
+        "{undeclared}"
+    );
+
+    let required = eval(
+        graph,
+        r#"g.V("a").remove_property(jpath("meta.k")).toList()"#,
+    )
+    .expect_err("required")
+    .to_string();
+    assert!(
+        required.contains("Missing required property '$.meta.k'"),
+        "{required}"
+    );
+    assert!(
+        required.contains("\"default\" is an annotation only"),
+        "{required}"
+    );
+    assert!(
+        required.contains(r#"property(jpath("$.meta.k"), value)"#),
+        "{required}"
+    );
+    assert!(
+        required.contains("cannot be removed with remove_property(jpath(..))"),
+        "{required}"
+    );
+}
+
+/// Task 11 of the jpath work: every help() where a jpath key is the natural fix names it with a
+/// runnable example, and the grammar help describes the RFC 9535 singular query.
+#[cfg(all(feature = "script", feature = "serde"))]
+#[test]
+fn jpath_help_audit_texts_name_the_jpath_fix() {
+    use crate::script_host::eval;
+
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+
+    // InvalidJsonPath raised by jpath(..) itself: grammar, bracket form, negative index, literal keys.
+    let rendered = eval(graph.clone(), r#"jpath("a..b")"#)
+        .expect_err("an empty segment is not a path")
+        .to_string();
+    for needle in [
+        "singular JSONPath (RFC 9535)",
+        r#"jpath("$.meta.tags[-1]")"#,
+        r#"jpath("meta['a.b'].k")"#,
+        r#"g.v().values(jpath("meta.k"))"#,
+        r#"g.v().has(jpath("meta.k"), 1)"#,
+        "Recursive descent ('..'), wildcards ('*'), slices and filter expressions",
+        r#"values("a.b") is never parsed"#,
+    ] {
+        assert!(
+            rendered.contains(needle),
+            "missing {needle:?} in: {rendered}"
+        );
+    }
+
+    // A non-key argument to a key-taking step.
+    {
+        let query = r#"g.v().property(5, 1).to_list()"#;
+        let rendered = eval(graph.clone(), query)
+            .expect_err("a number is no key")
+            .to_string();
+        assert!(
+            rendered.contains(r#"g.v().property(jpath("meta.tags[0]"), "x")"#)
+                && rendered
+                    .contains(r#"A dotted string such as "meta.k" is never parsed as a path"#),
+            "{rendered}"
+        );
+    }
+
+    // valueMap names jpath.
+    let rendered = eval(graph.clone(), "g.v().valueMap(5).to_list()")
+        .expect_err("a number is no key")
+        .to_string();
+    assert!(
+        rendered.contains(r#"g.v().value_map(jpath("meta.k"))"#),
+        "{rendered}"
+    );
+
+    // A nested object reached by values() names the jpath read forms (existing json_path advice stays).
+    let g = GraphSource::tinkerpop_modern();
+    let mut writable = g.write();
+    let err = writable
+        .traversal_mut()
+        .v("1")
+        .property_json(serde_json::json!({"meta": {"k": 1}}))
+        .values("meta")
+        .as_number(GType::LONG)
+        .next()
+        .expect_err("a nested object cannot be cast to a number");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(r#"values(jpath("meta.subkey")), has(jpath("meta.subkey"), v), order().by(jpath("meta.subkey"))"#),
+        "{report}"
+    );
+    assert!(
+        report.contains(r#"json_path("meta.subkey") instead of"#),
+        "{report}"
+    );
+}
+
+/// The generic `PropertyNotFound` help explains that a key is literal and points at jpath.
+#[test]
+fn property_not_found_help_names_jpath_for_nested_fields() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v("1")
+        .select(Vec::<String>::new())
+        .next()
+        .expect_err("an empty select() has no label to find");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(r#"is not read as a path even when it contains dots"#)
+            && report.contains(r#"values(jpath("meta.k")) or by(jpath("meta.k"))"#)
+            && report.contains("a path that does not exist yields nothing instead of an error"),
+        "{report}"
+    );
+}
+
+/// `to_graph()` over vertices names the edge forms that work.
+#[test]
+fn to_graph_over_vertices_names_the_edge_forms() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .to_graph()
+        .expect_err("vertices are not edges");
+    assert!(
+        matches!(err.root_cause(), TraverserError::QueryExecution { .. }),
+        "{err}"
+    );
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("to_graph() needs edges, but the traversal yields a vertex"),
+        "{help}"
+    );
+    assert!(help.contains("g.e(0).to_graph()"), "{help}");
+    assert!(
+        help.contains(r#"g.v(1).out_e().has_label("knows").to_graph()"#),
+        "{help}"
+    );
+    assert!(help.contains(r#"subgraph("sg").cap("sg")"#), "{help}");
+}
+
+/// `subgraph()` over a vertex stream names the edge steps.
+#[test]
+fn subgraph_over_vertices_names_the_edge_steps() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .subgraph("sg")
+        .cap("sg")
+        .next()
+        .expect_err("vertices are not edges");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains(r#"subgraph("sg") collects edges, but the traversal yields a vertex"#),
+        "{help}"
+    );
+    assert!(help.contains("out_e()/in_e()/both_e()"), "{help}");
+    assert!(
+        help.contains(r#"g.v(1).both_e().subgraph("sg").cap("sg")"#),
+        "{help}"
+    );
+}
+
+/// `subgraph()` into a bucket that is not a subgraph names `withSideEffect("sg", target)`.
+#[test]
+fn subgraph_over_a_foreign_side_effect_names_the_target_form() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .with_side_effect("sg", 1)
+        .e(None)
+        .subgraph("sg")
+        .to_list()
+        .expect_err("sg holds a number");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("already holds a value that is not a subgraph"),
+        "{help}"
+    );
+    assert!(help.contains(r#"with_side_effect("sg", target)"#), "{help}");
+    assert!(help.contains("let target = g.e(0).to_graph();"), "{help}");
+}
+
+/// Schema-audit decision A: a required property that is not supplied at creation (the
+/// `add_property_fold` rule disabled, so `property()` runs after an empty `addV()`) fails, and the
+/// help says the property must be supplied at creation and names the rule.
+#[test]
+fn missing_required_property_at_creation_help_names_add_property_fold() {
+    let mut schema = GraphSchema::new().with_mode(SchemaMode::Closed);
+    schema.vertices.insert(
+        "Person".into(),
+        VertexSchema::new(
+            PropertySchema::object().with_required_property("name", PropertySchema::string()),
+        ),
+    );
+    let mut graph = TraversalGraph::new();
+    graph.set_schema(schema).unwrap();
+
+    let err = graph
+        .traversal_mut()
+        .with("optimizer.disabled", vec!["add_property_fold"])
+        .add_v("Person")
+        .property("name", "Ann")
+        .next()
+        .expect_err("the empty creation misses the required name");
+    assert!(
+        err.root_cause()
+            .to_string()
+            .contains("Missing required property 'name'"),
+        "{err}"
+    );
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("supplied when the element is created"),
+        "{help}"
+    );
+    assert!(help.contains("never filled in"), "{help}");
+    assert!(help.contains("add_property_fold"), "{help}");
+    assert!(
+        help.contains(r#"add_v("L").property("name", value)"#),
+        "{help}"
+    );
+    assert_eq!(
+        graph.traversal().v(None).count().next().unwrap(),
+        Some(ElementProperty::from(0))
+    );
+
+    // With the rule on (default) the same query succeeds.
+    graph
+        .traversal_mut()
+        .add_v("Person")
+        .property("name", "Ann")
+        .next()
+        .unwrap();
+}
+
+/// Schema-audit decision B: removing a required property is rejected, and help() explains it.
+#[test]
+fn required_property_removal_help_explains_required_and_alternatives() {
+    let mut schema = GraphSchema::new().with_mode(SchemaMode::Open);
+    schema.vertices.insert(
+        "Person".into(),
+        VertexSchema::new(
+            PropertySchema::object().with_required_property("name", PropertySchema::string()),
+        ),
+    );
+    let mut graph = TraversalGraph::new();
+    graph.set_schema(schema).unwrap();
+    graph
+        .traversal_mut()
+        .add_v("Person")
+        .property("name", "Ann")
+        .next()
+        .unwrap();
+
+    let err = graph
+        .traversal_mut()
+        .v(None)
+        .remove_property("name")
+        .next()
+        .expect_err("name is required");
+    let text = err.root_cause().to_string();
+    assert!(
+        text.contains("Cannot remove required property 'name' from vertex 'Person'"),
+        "{text}"
+    );
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("\"required\"") && help.contains("open or closed"),
+        "{help}"
+    );
+}
+
+#[test]
+fn applying_a_schema_to_violating_data_help_says_how_to_proceed() {
+    let mut schema = GraphSchema::new().with_mode(SchemaMode::Closed);
+    schema.vertices.insert(
+        "Person".into(),
+        VertexSchema::new(
+            PropertySchema::object().with_required_property("name", PropertySchema::string()),
+        ),
+    );
+    let mut graph = TraversalGraph::new();
+    graph
+        .add_vertex(Some("p".into()), vec!["Person".into()], Default::default())
+        .unwrap();
+    let err = graph
+        .traversal_mut()
+        .set_schema(schema)
+        .expect_err("the vertex lacks the required name");
+    assert!(
+        err.root_cause()
+            .to_string()
+            .contains("Person.name is declared mandatory but is missing on 1 vertex"),
+        "{err}"
+    );
+    let help = err.help().expect("help");
+    assert!(help.contains("NOT applied"), "{help}");
+    assert!(help.contains("Fix or migrate the offending data"), "{help}");
+    assert!(help.contains("mode \"none\""), "{help}");
+    assert!(help.contains("g.infer_schema()"), "{help}");
+    assert!(help.contains("g.validate_schema(schema)"), "{help}");
+    assert!(help.contains("backfill first"), "{help}");
+    assert!(help.contains("annotation only"), "{help}");
+    assert_eq!(graph.get_schema(), None);
+}
+
+#[cfg(feature = "script")]
+#[test]
+fn traverser_cap_error_names_the_option_and_a_runnable_raise() {
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    let err = crate::script_host::eval_value(
+        graph.clone(),
+        r#"g.with("traversal.max_traversers", 3).v().to_list()"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("Resource limit 'traversal.max_traversers' exceeded (limit 3, reached 6)"),
+        "{err}"
+    );
+    assert!(
+        err.contains(r#"g.with("traversal.max_traversers", 6).v().out().out().count()"#),
+        "{err}"
+    );
+    // The raised query from the advice runs.
+    let ok = crate::script_host::eval_value(
+        graph,
+        r#"g.with("traversal.max_traversers", 6).v().out().out().count().next()"#,
+    );
+    assert!(ok.is_ok(), "{ok:?}");
+}
+
+#[cfg(feature = "script")]
+#[test]
+fn script_limit_error_names_the_builder_and_the_flag() {
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    let limits = crate::script_host::ScriptLimits::default().with_max_operations(500);
+    let err =
+        crate::script_host::eval_value_with_limits(graph, "loop { }", Default::default(), &limits)
+            .unwrap_err()
+            .to_string();
+    assert!(
+        err.contains("Resource limit 'script.max_operations' exceeded (limit 500)"),
+        "{err}"
+    );
+    assert!(
+        err.contains("ScriptLimits::default().with_max_operations(1000)"),
+        "{err}"
+    );
+    assert!(err.contains("--max-operations 1000"), "{err}");
+}
+
+#[test]
+fn adding_an_edge_to_a_dropped_vertex_explains_stale_handles() {
+    let mut graph = TraversalGraph::new();
+    let a = graph
+        .add_vertex(Some("a".into()), vec![], Default::default())
+        .unwrap();
+    let b = graph
+        .add_vertex(Some("b".into()), vec![], Default::default())
+        .unwrap();
+    graph.drop_vertex(b).unwrap();
+    let err = graph
+        .add_edge(None, None, a, b, Default::default())
+        .expect_err("rejected");
+    assert!(
+        err.to_string()
+            .contains("The vertex was removed earlier in this query"),
+        "{err}"
+    );
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("side_effect(__.drop())") && help.contains("element_map()"),
+        "{help}"
+    );
+}
+
+#[test]
+fn label_of_an_edge_removed_earlier_in_the_query_explains_the_stale_handle() {
+    let mut graph = TraversalGraph::tinkerpop_modern();
+    let err = graph
+        .traversal_mut()
+        .v("1")
+        .out_e(None)
+        .as_("e")
+        .side_effect_t(__::drop())
+        .select("e")
+        .label()
+        .to_list()
+        .expect_err("label() of a removed edge fails");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("The edge was removed earlier in this query; its id, label and value are no longer available"),
+        "{report}"
+    );
+    assert!(
+        report.contains("label()"),
+        "the failing step is named: {report}"
+    );
+    assert!(
+        report.contains(
+            "g.v(\"1\").out_e().as(\"e\").element_map().as(\"m\").select(\"e\").side_effect(__.drop()).select(\"m\")"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains("through a step label (as()/select()), a side effect (aggregate()/store()/cap()), a path or a sack"),
+        "{report}"
+    );
+}
+
+#[test]
+fn id_of_a_vertex_removed_earlier_in_the_query_explains_the_stale_handle() {
+    let mut graph = TraversalGraph::tinkerpop_modern();
+    let err = graph
+        .traversal_mut()
+        .v("1")
+        .as_("a")
+        .side_effect_t(__::drop())
+        .select("a")
+        .id()
+        .to_list()
+        .expect_err("id() of a removed vertex fails");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("The vertex was removed earlier in this query"),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "g.v(\"1\").as(\"a\").element_map().as(\"m\").select(\"a\").side_effect(__.drop()).select(\"m\")"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains("A lazy value such as values(\"name\") or id() taken before the drop"),
+        "{report}"
+    );
+}
+
+/// A commit hook's veto: the help says the whole unit was rolled back and the query can be
+/// run again once the hook's cause is fixed; an unsupported hook registration points to
+/// `capabilities()`.
+#[test]
+fn commit_rejected_and_unsupported_have_help() {
+    struct Refuse;
+    impl CommitHook for Refuse {
+        fn before_commit(&mut self, _changes: &ChangeSet) -> Result<(), HookError> {
+            Err("journal unavailable".into())
+        }
+    }
+    let mut graph = TraversalGraph::tinkerpop_modern();
+    graph.register_commit_hook(Box::new(Refuse)).unwrap();
+    let err = graph.traversal_mut().add_v("x").to_list().unwrap_err();
+    assert!(err.to_string().contains("journal unavailable"), "{err}");
+    let help = err.help().expect("help");
+    assert!(help.contains("whole unit was rolled back"), "{help}");
+    assert!(help.contains("run the query again"), "{help}");
+    assert!(help.contains("transaction, whole script"), "{help}");
+    assert!(help.contains("Transactional::dry_run"), "{help}");
+
+    // A veto that brings its own advice replaces the generic help.
+    struct Frozen;
+    impl CommitHook for Frozen {
+        fn name(&self) -> &str {
+            "frozen"
+        }
+        fn before_commit(&mut self, _changes: &ChangeSet) -> Result<(), HookError> {
+            Err(Box::new(graphersal::changes::HookRefusal::new(
+                "the graph is frozen: writes are refused",
+                "Write to the live copy instead.",
+            )))
+        }
+    }
+    let mut graph = TraversalGraph::tinkerpop_modern();
+    graph.register_commit_hook(Box::new(Frozen)).unwrap();
+    let err = graph.traversal_mut().add_v("x").to_list().unwrap_err();
+    assert!(err.to_string().contains("the graph is frozen"), "{err}");
+    let help = err.help().expect("help");
+    assert_eq!(
+        help,
+        "The commit hook 'frozen' refused the commit, so the whole unit was rolled back and \
+         left nothing behind. Write to the live copy instead."
+    );
+
+    let view = TraversalGraph::new();
+    let mut read_only = &view;
+    let err = read_only
+        .register_commit_hook(Box::new(Refuse))
+        .unwrap_err();
+    let help = err.help().expect("help");
+    assert!(help.contains("capabilities()"), "{help}");
+    assert!(help.contains("change_capture"), "{help}");
+}
+
+/// A source step inside a child traversal (`__.with_sack(1)`) names the step and shows the fix:
+/// the same step on `g`, before the first step.
+#[cfg(feature = "script")]
+#[test]
+fn source_step_in_child_help_moves_the_step_to_g() {
+    use crate::script_host::{ScriptGraphTraversalSource, engine, eval_value, graph_scope};
+
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    let cases = [
+        (
+            "g.V().local(__.withSack(1).out().sack())",
+            "with_sack",
+            "g.with_sack(1).v().local(__.out().sack()) instead of \
+             g.v().local(__.with_sack(1).out().sack())",
+        ),
+        (
+            r#"g.v().where(__.with_side_effect("x", 1).select("x"))"#,
+            "with_side_effect",
+            "g.with_side_effect(\"x\", 1).v().local(__.select(\"x\")) instead of \
+             g.v().local(__.with_side_effect(\"x\", 1).select(\"x\"))",
+        ),
+        (
+            "g.V().local(__.withPath().out().path())",
+            "with_path",
+            "g.with_path().v().local(__.out().path()) instead of \
+             g.v().local(__.with_path().out().path()); with_path() changes nothing in Graphersal \
+             (paths are recorded as the query reads them), so it can also simply be left out",
+        ),
+    ];
+    for (script, step, example) in cases {
+        let mut scope = graph_scope(graph.clone());
+        let gts = engine()
+            .eval_with_scope::<ScriptGraphTraversalSource>(&mut scope, script)
+            .unwrap_or_else(|e| panic!("`{script}`: {e}"));
+        let err = {
+            let lock = graph.read();
+            gts.ast_convert_to_gts(&*lock).to_list().expect_err(script)
+        };
+        assert_eq!(
+            err.root_cause().to_string(),
+            format!(
+                "`{step}()` configures the traversal source g and cannot be used inside a child \
+                 traversal"
+            )
+        );
+        let help = err.help().expect("help");
+        assert_eq!(
+            help,
+            format!(
+                "{step}() sets up the traversal source g: it applies to the whole query, child \
+                 traversals included, so it is written once on g, before the first step, for \
+                 example {example}. A child traversal sees the sacks and side effects of the \
+                 outer traversal."
+            )
+        );
+        // The script's data terminal carries the same diagnostic.
+        let report = eval_value(graph.clone(), &format!("{script}.toList()"))
+            .expect_err(script)
+            .to_string();
+        assert!(report.contains(&help), "{report}");
+    }
+}
+
+/// `PermissionDenied`: the help names the denied request, says who decides and how a host
+/// allows it, and gives advice for the resource built from the denied step.
+#[cfg(feature = "script")]
+#[test]
+fn permission_denied_help_names_the_request_the_policy_and_an_alternative() {
+    use std::sync::Arc;
+    let graph = Arc::new(GraphSource::tinkerpop_modern());
+    let run = |script: &str, policy: AccessPolicy| {
+        let policy: Arc<dyn Authorizer> = Arc::new(policy);
+        graphersal::script::eval_value_with_limits(
+            graph.clone(),
+            script,
+            Default::default(),
+            &graphersal::script::ScriptLimits::default(),
+            policy,
+        )
+        .unwrap_err()
+        .to_string()
+    };
+    let err = run(
+        r#"g.V().property("x", 1).toList()"#,
+        AccessPolicy::read_only(),
+    );
+    assert!(
+        err.contains("Permission denied for 'property' (Update Data)"),
+        "{err}"
+    );
+    assert!(
+        err.contains(
+            "'property' needs Update Data, which the host running this script does not allow"
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains("AccessPolicy::read_only().allow(ActionKind::Update, ResourceKind::Data)"),
+        "{err}"
+    );
+    assert!(
+        err.contains("GraphSource::empty().add_v(\"x\").next()"),
+        "{err}"
+    );
+    assert!(err.contains("remove property() from the query"), "{err}");
+
+    let err = run(
+        r#"g.with("evaluationTimeout", 0).V().count().next()"#,
+        AccessPolicy::read_only(),
+    );
+    assert!(
+        err.contains("Update Option(\"evaluationTimeout\")"),
+        "{err}"
+    );
+    assert!(err.contains("remove the g.with(..) call"), "{err}");
+
+    let err = run("g.V().count().next()", AccessPolicy::deny_all());
+    assert!(
+        err.contains("Without reading data a script can only compute"),
+        "{err}"
+    );
+
+    #[cfg(feature = "io")]
+    {
+        let err = run(
+            r#"g.export_graphml("x.graphml")"#,
+            AccessPolicy::read_only(),
+        );
+        assert!(
+            err.contains("'export_graphml' needs Create File(\"x.graphml\")"),
+            "{err}"
+        );
+        assert!(err.contains("use a relative path inside it"), "{err}");
+    }
+}
+
+/// `ScriptError::ReturnedClosure`: a whole-script unit that returns a closure.
+#[cfg(feature = "script")]
+#[test]
+fn returned_closure_help_says_to_return_data_or_a_traversal() {
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    let err = graphersal::script::eval_value_atomic(
+        graph,
+        "|x| x + 1",
+        Default::default(),
+        &graphersal::script::ScriptLimits::default(),
+        std::sync::Arc::new(graphersal::auth::AllowAll),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains(
+            "A script run as one unit cannot return a closure or function pointer (the result)"
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains("Return data or a traversal instead of a closure"),
+        "{err}"
+    );
+    assert!(
+        err.contains("The closure was found at the result."),
+        "{err}"
+    );
+}
+
+/// `drop()` on a value that is not stored graph data names the real kind (never `computed`) and
+/// explains what drop() removes and how to reach the elements of a list or a path; the advice of
+/// other steps (key()/value(), Scope.local, select(Column)) stays out.
+#[test]
+fn drop_of_a_non_removable_value_names_its_kind_and_what_drop_removes() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let g = || lock.traversal();
+    for (err, kind) in [
+        (
+            g().v("1").path().drop().to_list().expect_err("path"),
+            "path",
+        ),
+        (
+            g().v("1").fold().drop().to_list().expect_err("list"),
+            "array",
+        ),
+        (
+            g().v("1")
+                .value_map(None)
+                .drop()
+                .to_list()
+                .expect_err("map"),
+            "object",
+        ),
+        (
+            g().inject(vec![1]).drop().to_list().expect_err("int"),
+            "int64",
+        ),
+    ] {
+        assert!(
+            err.root_cause()
+                .to_string()
+                .contains(&format!("got type '{kind}'")),
+            "{err:?}"
+        );
+        let help = value_help(&err);
+        assert!(help.contains("drop() removes stored graph data"), "{help}");
+        assert!(
+            help.contains(r#"g.v("1").out().fold().unfold().drop()"#),
+            "{help}"
+        );
+        assert!(help.contains(r#"remove_property("key")"#), "{help}");
+        assert!(!help.contains(".value()/.key() only read"), "{help}");
+        assert!(!help.contains("Scope.local"), "{help}");
+        assert!(!help.contains("select(Column.keys)"), "{help}");
+    }
+}
+
+/// The key filters on a `properties(jpath(..))` element and on an unfolded map entry name the
+/// real kind and show the form that works.
+#[test]
+fn key_filters_on_a_path_property_or_an_entry_show_the_working_form() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let jpath = |text: &str| text.parse::<JsonPath>().unwrap();
+    let err = lock
+        .traversal()
+        .v("1")
+        .properties(jpath("name"))
+        .has_p("a", P::Gt(0))
+        .to_list()
+        .expect_err("a path property has no keys");
+    assert!(
+        err.root_cause()
+            .to_string()
+            .contains("got type 'pathProperty'")
+    );
+    let help = value_help(&err);
+    assert!(
+        help.contains(
+            r#"test the path on the element instead, for example g.v().has(jpath("meta.a"), 1)"#
+        ),
+        "{help}"
+    );
+    assert!(!help.contains("drop() cannot remove it"), "{help}");
+
+    let err = lock
+        .traversal()
+        .v("1")
+        .value_map(None)
+        .unfold()
+        .has_not("a")
+        .to_list()
+        .expect_err("an entry has no keys");
+    assert!(err.root_cause().to_string().contains("got type 'entry'"));
+    let help = value_help(&err);
+    assert!(
+        help.contains(r#"g.v().value_map().unfold().where(__.select(Column.keys).is("name"))"#),
+        "{help}"
+    );
+    assert!(
+        help.contains(r#"g.v().value_map().has("name").unfold()"#),
+        "{help}"
+    );
+}
+
+/// `inE()` (and the other vertex-to-adjacent steps) on an edge: TinkerPop raises too; the help
+/// names outV()/inV()/otherV() instead of the string-step advice.
+#[test]
+fn adjacency_steps_on_an_edge_point_at_the_edge_vertex_steps() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let errors = [
+        lock.traversal().v("1").out_e(None).in_e(None).to_list(),
+        lock.traversal().v("1").out_e(None).out(None).to_list(),
+        lock.traversal().e(None).both(None).to_list(),
+    ];
+    for result in errors {
+        let err = result.expect_err("an edge has no adjacent edges");
+        assert!(
+            err.root_cause().to_string().contains("got type 'edge'"),
+            "{err:?}"
+        );
+        let help = value_help(&err);
+        assert!(
+            help.contains("From an edge, step to its vertices first"),
+            "{help}"
+        );
+        assert!(help.contains("g.v(\"1\").out_e().in_v().in_e()"), "{help}");
+        assert!(!help.contains("This step needs a string"), "{help}");
+        assert!(!help.contains(".value()/.key() only read"), "{help}");
+    }
+}
+
+/// The same diagnostics through the Rhai DSL, in both spellings.
+#[cfg(feature = "script")]
+#[test]
+fn drop_key_filter_and_adjacency_help_in_rhai() {
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    for (script, needle) in [
+        (
+            r#"g.V("1").path().drop().toList()"#,
+            "drop() removes stored graph data",
+        ),
+        (
+            r#"g.v("1").fold().drop().to_list()"#,
+            "drop() removes stored graph data",
+        ),
+        (
+            r#"g.V("1").properties(jpath("name")).has("a", 1).toList()"#,
+            "test the path on the element instead",
+        ),
+        (
+            r#"g.v("1").properties(jpath("name")).has_not("a").to_list()"#,
+            "test the path on the element instead",
+        ),
+        (
+            r#"g.V("1").valueMap().unfold().has("a").toList()"#,
+            "unfold() split the map into single key/value entries",
+        ),
+        (
+            r#"g.V("1").outE().inE().toList()"#,
+            "From an edge, step to its vertices first",
+        ),
+        (
+            r#"g.v("1").out_e().in_e().to_list()"#,
+            "From an edge, step to its vertices first",
+        ),
+    ] {
+        let err = crate::script_host::eval_value(graph.clone(), script)
+            .expect_err(script)
+            .to_string();
+        assert!(err.contains(needle), "{script}: {err}");
+    }
+}
+
+/// A string step or a reducer fed a folded list names `conjoin()` and the list functions.
+#[test]
+fn cast_exception_on_a_folded_list_help_names_conjoin_and_the_list_functions() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .values("name")
+        .fold()
+        .as_string()
+        .next()
+        .expect_err("a list has no string form");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(
+            "To join the elements into one string use conjoin(), for example \
+             g.v().values(\"name\").fold().conjoin(\", \"); to combine it with a second list use \
+             combine(), merge(), intersect(), difference(), disjunct() or product(), for example \
+             g.v().values(\"name\").fold().combine([\"dave\"])."
+        ),
+        "the help must name conjoin() and the list functions:\n{report}"
+    );
+    assert!(
+        report.contains(
+            "reverse() reverses the list itself, for example \
+             g.v().values(\"name\").fold().reverse()."
+        ),
+        "the help must name reverse():\n{report}"
+    );
+    assert!(
+        report.contains("or unfold() it first."),
+        "the existing advice must stay:\n{report}"
+    );
+}
+
+/// The help of a list function names `fold()` for a non-list input, the list argument forms for a
+/// bad argument, `fold()` at the end of a child traversal, and the map form of `merge()`.
+#[test]
+fn list_function_input_help_names_fold_and_the_argument_forms() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let g = || locked.traversal();
+
+    let report = format_diagnostic(
+        &g().v(None)
+            .values("name")
+            .combine(vec!["x"])
+            .next()
+            .expect_err("a string is not a list"),
+    );
+    assert!(
+        report.contains("The combine() step takes a list as its incoming value, but got string"),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "combine() works on the list a traverser holds (a fold(), a path(), a list-valued \
+             property). Collect the stream into a list with fold() first, for example \
+             g.v().values(\"name\").fold().combine([\"x\"])"
+        ),
+        "{report}"
+    );
+
+    let report = format_diagnostic(
+        &g().v(None)
+            .values("name")
+            .fold()
+            .intersect(2)
+            .next()
+            .expect_err("2 is not a list"),
+    );
+    assert!(
+        report.contains("The intersect() step takes a list as its argument, but got int64"),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "The argument of intersect() is a list constant such as [\"a\", \"b\"] or a child \
+             traversal whose first result is a list"
+        ),
+        "{report}"
+    );
+
+    let report = format_diagnostic(
+        &g().v(None)
+            .fold()
+            .product_traversal(__::v(None))
+            .next()
+            .expect_err("a vertex is not a list"),
+    );
+    assert!(
+        report.contains(
+            "The child traversal of product() must yield a list as its first result. End it with \
+             fold()"
+        ),
+        "{report}"
+    );
+
+    let report = format_diagnostic(
+        &g().v(None)
+            .element_map(None)
+            .merge_traversal(__::constant("a"))
+            .next()
+            .expect_err("a string is not a map"),
+    );
+    assert!(
+        report.contains("The merge() step takes a map as its traversal argument, but got string"),
+        "{report}"
+    );
+
+    let report = format_diagnostic(
+        &g().v(None)
+            .element_map(None)
+            .merge(vec!["a"])
+            .next()
+            .expect_err("a list is not a map"),
+    );
+    assert!(
+        report.contains("merge() of a map merges another map into it"),
+        "{report}"
+    );
+
+    let report = format_diagnostic(
+        &g().v(None)
+            .values("name")
+            .conjoin("-")
+            .next()
+            .expect_err("a string is not a list"),
+    );
+    assert!(
+        report.contains("g.v().values(\"name\").fold().conjoin(\"-\")"),
+        "{report}"
+    );
+}
+
+/// A null incoming value of a list function gets the "keep the nulls out" advice.
+#[test]
+fn list_function_null_input_help_names_the_null_filter() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let report = format_diagnostic(
+        &locked
+            .traversal()
+            .inject(vec![ElementProperty::Null])
+            .combine(vec![1])
+            .next()
+            .expect_err("null is not a list"),
+    );
+    assert!(
+        report.contains("The combine() step takes a list as its incoming value, but got null"),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "Keep the null values out before the step, for example \
+             g.v().values(\"tags\").not(__.is(typeOf(GType.NULL))).combine([\"x\"])."
+        ),
+        "{report}"
+    );
+}
+
+/// The help of `concat()` names `coalesce()` for a child without a result, `as_string()` and
+/// `conjoin()` for a child result that is not a string, and the argument forms for a bad constant.
+#[test]
+fn concat_argument_help_names_the_fixes() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let report = |result: Result<Vec<ElementProperty>, Box<TraverserError>>| {
+        format_diagnostic(&result.expect_err("concat must fail"))
+    };
+    let no_result = report(
+        locked
+            .traversal()
+            .v("3")
+            .as_("x")
+            .values("name")
+            .concat_traversal(vec![__::select("x").values("age")])
+            .to_list(),
+    );
+    assert!(
+        no_result.contains(
+            "A child traversal of concat() must yield a value for every traverser: its first \
+             result is appended. Make it always produce one, for example with coalesce(): \
+             g.v().values(\"name\").concat(__.coalesce(__.values(\"lang\"), __.constant(\"\"))), \
+             or keep only the traversers it has a value for: \
+             g.v().where(__.values(\"lang\")).values(\"name\").concat(__.values(\"lang\"))."
+        ),
+        "{no_result}"
+    );
+    let not_a_string = report(
+        locked
+            .traversal()
+            .v("1")
+            .as_("x")
+            .values("name")
+            .concat_traversal(vec![__::select("x").values("age")])
+            .to_list(),
+    );
+    assert!(
+        not_a_string.contains(
+            "A child traversal of concat() must yield a string (or null, which is skipped). \
+             Convert its result with as_string(), for example \
+             g.v().values(\"name\").concat(\" \").concat(__.values(\"age\").as_string()); a list \
+             is joined into one string with conjoin(), for example \
+             g.v().values(\"name\").concat(__.out().values(\"name\").fold().conjoin(\",\"))."
+        ),
+        "{not_a_string}"
+    );
+    let constant = report(
+        locked
+            .traversal()
+            .inject(vec!["a"])
+            .concat(vec![1])
+            .to_list(),
+    );
+    assert!(
+        constant.contains(
+            "The arguments of concat() are strings (a null is skipped) or child traversals, for \
+             example g.v().values(\"name\").concat(\" is \", \"here\") or \
+             g.v().values(\"name\").concat(__.values(\"age\").as_string()); convert a number with \
+             as_string() in a child traversal instead of passing it directly."
+        ),
+        "{constant}"
+    );
+}
+
+/// An invalid `TextP.regex()` names the Rust `regex` dialect and its syntax page.
+#[test]
+fn invalid_regex_help_names_the_dialect() {
+    let err = P::regex("a{2").expect_err("unclosed repetition");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("Invalid regular expression 'a{2'"),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "TextP.regex()/TextP.not_regex() take a regular expression in the syntax of the Rust \
+             `regex` crate (https://docs.rs/regex/latest/regex/#syntax), not Java's"
+        ),
+        "{report}"
+    );
+}
+
+#[test]
+fn sample_weight_help_names_numeric_by_forms() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .sample(1)
+        .by("name")
+        .to_list()
+        .expect_err("a string weight");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("which must be a number of at least 0, but got string"),
+        "{report}"
+    );
+    assert!(
+        report.contains("g.e().sample(2).by(\"weight\")")
+            && report.contains("g.v().sample(1).by(__.values(\"score\").as_number())"),
+        "{report}"
+    );
+}
+
+#[test]
+fn fail_help_shows_how_to_guard_the_step() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v("1")
+        .fail(Some("stop here"))
+        .to_list()
+        .expect_err("fail() reached");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("stop here (fail() reached by v[1])"),
+        "{report}"
+    );
+    assert!(
+        report.contains("g.v().coalesce(__.out(\"knows\"), __.fail(\"no friends\"))"),
+        "{report}"
+    );
+}
+
+#[test]
+fn random_seed_option_help_shows_an_integer_seed() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("random.seed", "x")
+        .v(None)
+        .sample(1)
+        .to_list()
+        .expect_err("a string seed");
+    let report = format_diagnostic(&err);
+    assert!(report.contains("expected an integer seed"), "{report}");
+    assert!(
+        report.contains("g.with(\"random.seed\", 42).v().sample(2)"),
+        "{report}"
+    );
+}
+
+#[test]
+fn render_spelling_option_help_names_both_spellings() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("render.spelling", "kebab")
+        .v(None)
+        .to_list()
+        .expect_err("an unknown spelling");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(r#"expected "snake" or "camel""#),
+        "{report}"
+    );
+    assert!(
+        report.contains(r#"g.with("render.spelling", "camel").v().has_label("person").profile()"#)
+            && report.contains("never a result"),
+        "{report}"
+    );
+}
+
+#[test]
+fn group_side_effect_key_clash_help_names_the_group_steps() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .aggregate("a")
+        .group_count_side_effect("a")
+        .to_list()
+        .expect_err("a list key");
+    let report = format_diagnostic(&err);
+    assert!(report.contains("already holds a list"), "{report}");
+    assert!(
+        report.contains("group(\"a\") and group_count(\"a\") add every traverser to the map")
+            && report.contains("g.v().aggregate(\"a\").group_count(\"m\").by(T.label).cap(\"m\")"),
+        "{report}"
+    );
+}
+
+#[test]
+fn side_effect_key_help_names_group_count() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .cap("nope")
+        .to_list()
+        .expect_err("an unknown key");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("g.v().group_count(\"nope\").by(T.label).cap(\"nope\")"),
+        "{report}"
+    );
+}
+
+#[test]
+fn with_option_help_names_value_map_and_index() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .out(None)
+        .with_option(WithOptions::Tokens, None)
+        .to_list()
+        .expect_err("out() takes no with()");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("out() cannot take this with() option"),
+        "{report}"
+    );
+    assert!(
+        report.contains("g.v().value_map(\"name\").with(WithOptions.tokens, WithOptions.labels)")
+            && report.contains("index().with(WithOptions.indexer, WithOptions.map)")
+            && report.contains("g.with(\"random.seed\", 7)"),
+        "{report}"
+    );
+}
+
+#[test]
+fn sample_second_by_help_names_the_single_weight() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .sample(1)
+        .by("age")
+        .by(By::Id)
+        .to_list()
+        .expect_err("two by()");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("sample() takes at most one by() modulator"),
+        "{report}"
+    );
+    assert!(
+        report.contains("sample(n) takes at most one by(), the weight")
+            && report.contains("g.v().order().by(\"age\").sample(2)"),
+        "{report}"
+    );
+}
+
+/// `traversal.max_value_depth`: the help names the loops that nest, the option with a runnable
+/// example, the lock and the option request.
+#[test]
+fn value_depth_limit_help_names_the_option_and_the_nesting_loops() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .inject(vec![1])
+        .repeat(__::fold())
+        .times(200)
+        .to_list()
+        .expect_err("the loop nests its value 200 levels deep");
+    assert_eq!(
+        err.root_cause().to_string(),
+        "Resource limit 'traversal.max_value_depth' exceeded (limit 128)"
+    );
+    let help = err.help().expect("help");
+    for needle in [
+        "repeat(__.fold())",
+        "jpath(..) write with many segments",
+        "g.inject(1).repeat(__.fold()).times(10).next()",
+        "g.with(\"traversal.max_value_depth\", 256).inject(1).repeat(__.fold()).times(200).count()",
+        "ExecutionPolicy::with_locked(\"traversal.max_value_depth\")",
+        "needs Update on that Option",
+    ] {
+        assert!(help.contains(needle), "{needle} missing in: {help}");
+    }
+}
+
+/// A malformed `traversal.max_value_depth` names a valid value and the default.
+#[test]
+fn invalid_value_depth_option_help_gives_a_valid_value() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("traversal.max_value_depth", 0)
+        .v(None)
+        .count()
+        .next()
+        .expect_err("0 is not a depth");
+    assert_eq!(
+        err.help().expect("help"),
+        "Set 'traversal.max_value_depth' to a positive integer number of nesting levels when the \
+         traversal source is created, for example \
+         g.with(\"traversal.max_value_depth\", 256).inject(1).repeat(__.fold()).times(200).count(); \
+         the default is 128."
+    );
+}
+
+/// A jpath with more than 256 segments is a parse error whose help states the bound.
+#[test]
+fn jpath_help_states_the_segment_and_index_bounds() {
+    let long = format!("a{}", ".b".repeat(256));
+    let err = long
+        .parse::<graphersal::prelude::JsonPath>()
+        .expect_err("257 segments");
+    assert!(
+        err.to_string()
+            .contains("too many segments: a path has at most 256"),
+        "{err}"
+    );
+    let help = err.help().expect("help");
+    assert!(
+        help.contains(
+            "A path has at most 256 segments, and an index is at most 9007199254740991 \
+             (2^53 - 1) from either end."
+        ),
+        "{help}"
+    );
+    let err = "a[-9223372036854775808]"
+        .parse::<graphersal::prelude::JsonPath>()
+        .expect_err("out of range");
+    assert!(
+        err.to_string().contains(
+            "array index '-9223372036854775808' at position 2 is out of range (at most \
+             +/-9007199254740991)"
+        ),
+        "{err}"
+    );
+}
+
+/// `traversal.max_materialized_bytes`: the help names the materializing steps and the doubling
+/// loops, the alternatives that work on the multiplicity, the option with a runnable example, the
+/// lock and the option request.
+#[test]
+fn materialized_bytes_help_names_the_option_and_the_alternatives() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("traversal.max_materialized_bytes", 100_000)
+        .inject(vec![1])
+        .repeat(__::path())
+        .times(60)
+        .to_list()
+        .expect_err("the path doubles past 100 000 bytes");
+    let cause = err.root_cause().to_string();
+    assert!(
+        cause.starts_with(
+            "Resource limit 'traversal.max_materialized_bytes' exceeded (limit 100000, reached "
+        ),
+        "{cause}"
+    );
+    let help = err.help().expect("help");
+    for needle in [
+        "'traversal.max_materialized_bytes' allows (100000 bytes); this one needed at least",
+        "fold(), aggregate(), store(), group() value lists, a terminal list",
+        "repeat(__.path()), repeat(__.group())",
+        "g.v().repeat(__.both()).times(8).count()",
+        "g.v().repeat(__.both()).times(8).group_count()",
+        "g.v().repeat(__.both()).times(8).dedup().fold()",
+        "g.inject(1).repeat(__.path()).times(10).count()",
+        "g.with(\"traversal.max_materialized_bytes\", 200000).v().repeat(__.both()).times(8).fold()",
+        "ExecutionPolicy::with_locked(\"traversal.max_materialized_bytes\")",
+        "needs Update on that Option",
+    ] {
+        assert!(help.contains(needle), "{needle} missing in: {help}");
+    }
+}
+
+/// `memory.limit`: the help says what is measured, names the alternatives that hold less, the
+/// recovery when the graph alone is over the budget, every front end's setting and the option
+/// request; an invalid value names both accepted shapes.
+#[test]
+fn memory_limit_help_names_the_measure_the_alternatives_and_the_front_ends() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("memory.limit", 1_000)
+        .v(None)
+        .to_list()
+        .expect_err("Modern alone is larger than 1000 bytes");
+    let cause = err.root_cause().to_string();
+    assert!(
+        cause.starts_with("Resource limit 'memory.limit' exceeded (limit 1000, reached "),
+        "{cause}"
+    );
+    let help = err.help().expect("help");
+    for needle in [
+        "memory budget 'memory.limit' (1000 bytes); it reached",
+        "everything it changed was rolled back",
+        "live heap when the host installs the tracking allocator",
+        "g.memory_usage()",
+        "g.v().repeat(__.both()).times(8).count()",
+        "g.v().out().dedup().fold()",
+        "g.with(\"memory.limit\", 2000).v().has_label(\"tmp\").drop()",
+        "--memory-limit <bytes|auto>",
+        "Graph(memory_limit=...)",
+        "ExecutionPolicy::with_default(\"memory.limit\", bytes)",
+        "'memory.headroom'",
+        "needs Update on that Option",
+    ] {
+        assert!(help.contains(needle), "{needle} missing in: {help}");
+    }
+    let err = lock
+        .traversal()
+        .with("memory.limit", "plenty")
+        .v(None)
+        .to_list()
+        .expect_err("not a byte count");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("g.with(\"memory.limit\", \"auto\")"),
+        "{help}"
+    );
+    assert!(help.contains("no memory budget (the default)"), "{help}");
+}
+
+/// `traversal.max_string_bytes`: the help names the amplifying steps, the script-side
+/// counterpart, runnable examples, the lock and the option request.
+#[test]
+fn string_bytes_help_names_the_option_and_the_amplifying_steps() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("traversal.max_string_bytes", 4)
+        .inject(vec!["xx"])
+        .replace("x", "xxxx")
+        .to_list()
+        .expect_err("8 bytes are more than 4");
+    assert_eq!(
+        err.root_cause().to_string(),
+        "Resource limit 'traversal.max_string_bytes' exceeded (limit 4, reached 8)"
+    );
+    assert!(
+        err.to_string().contains("'replace(\"x\", \"xxxx\")'"),
+        "{err}"
+    );
+    let help = err.help().expect("help");
+    for needle in [
+        "'traversal.max_string_bytes' allows (4 bytes); this one would be 8 bytes",
+        "replace(), concat(), conjoin() and format()",
+        "'script.max_string_size'",
+        "g.v().values(\"name\").replace(\"a\", \"b\")",
+        "g.inject(\"x\").repeat(__.concat(__.identity())).times(10)",
+        "g.with(\"traversal.max_string_bytes\", 8).v().values(\"name\").replace(\"a\", \"aa\")",
+        "ExecutionPolicy::with_locked(\"traversal.max_string_bytes\")",
+        "needs Update on that Option",
+    ] {
+        assert!(help.contains(needle), "{needle} missing in: {help}");
+    }
+}
+
+/// A malformed byte limit names a valid value and the default.
+#[test]
+fn invalid_byte_limit_options_help_give_a_valid_value() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("traversal.max_materialized_bytes", 0)
+        .v(None)
+        .count()
+        .next()
+        .expect_err("0 is not a budget");
+    assert_eq!(
+        err.root_cause().to_string(),
+        "Invalid value for option 'traversal.max_materialized_bytes': expected a positive integer \
+         number of bytes, got 0"
+    );
+    assert_eq!(
+        err.help().expect("help"),
+        "Set 'traversal.max_materialized_bytes' to a positive integer number of bytes when the \
+         traversal source is created, for example \
+         g.with(\"traversal.max_materialized_bytes\", 2147483648).v().repeat(__.both()).times(8).fold(); \
+         the default is 1073741824 (1 GiB; 268435456 on wasm32)."
+    );
+    let err = lock
+        .traversal()
+        .with("traversal.max_string_bytes", "big")
+        .v(None)
+        .count()
+        .next()
+        .expect_err("a string is not a size");
+    assert_eq!(
+        err.help().expect("help"),
+        "Set 'traversal.max_string_bytes' to a positive integer number of bytes when the \
+         traversal source is created, for example \
+         g.with(\"traversal.max_string_bytes\", 67108864).v().values(\"name\").replace(\"a\", \"aa\"); \
+         the default is 16777216 (16 MiB)."
+    );
+    let err = lock
+        .traversal()
+        .with("bulk.max_expansion", 0)
+        .v(None)
+        .count()
+        .next()
+        .expect_err("0 values");
+    assert!(
+        err.help()
+            .expect("help")
+            .ends_with("the default is 10000000."),
+        "{err}"
+    );
+}
+
+/// The script value-depth help names every front end's switch.
+#[cfg(feature = "script")]
+#[test]
+fn script_value_depth_help_names_the_front_end_switches() {
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    let err = crate::script_host::eval_value(
+        graph,
+        "let x = 1; for i in 0..200 { x = [x]; } g.inject(x).count().next()",
+    )
+    .unwrap_err()
+    .to_string();
+    for needle in [
+        "ScriptLimits::default().with_max_value_depth(256)",
+        "--max-value-depth 256",
+        "graph.set_limits(max_value_depth=256)",
+    ] {
+        assert!(err.contains(needle), "{needle} missing in: {err}");
+    }
+}
+
+/// Errors found before the run (robustness finding 10) carry the location of the step they are
+/// about: a rejected modulator, an undeclared step label and a denied step, also inside a child
+/// traversal.
+#[test]
+fn errors_before_the_run_carry_the_step_location() {
+    let graph = GraphSource::tinkerpop_modern();
+    {
+        let lock = graph.read();
+        // A from()/to() no step takes, at the step it follows.
+        let err = lock
+            .traversal()
+            .v(None)
+            .out(None)
+            .to("x")
+            .to_list()
+            .unwrap_err();
+        let location = err.step_location().expect("located");
+        assert_eq!(location.step_id, "1");
+        assert!(format_diagnostic(&err).contains("at #1: v().out()"));
+        // An undeclared label, at the reading step, its own error kind.
+        let err = lock
+            .traversal()
+            .v(None)
+            .union(vec![__::select("nope")])
+            .to_list()
+            .unwrap_err();
+        assert_eq!(err.step_location().expect("located").step_id, "1.0.0");
+        assert!(matches!(
+            err.root_cause(),
+            TraverserError::Value(ValueError::UndeclaredLabel { .. })
+        ));
+        let rendered = format_diagnostic(&err);
+        assert!(
+            rendered.contains("Caused by: Step label 'nope' is never declared in this query"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("undeclared_label"), "{rendered}");
+        // The help is in the canonical DSL style.
+        let help = err.help().expect("help");
+        assert!(
+            help.contains("g.v(\"1\").as(\"nope\").out().select(\"nope\")"),
+            "{help}"
+        );
+        for rust in ["as_(", "where_t(", "(None)", "select_pop", "Pop::"] {
+            assert!(!help.contains(rust), "{rust} in {help}");
+        }
+    }
+    // A denied step is located in the plan as written.
+    let mut write = graph.write();
+    let err = write
+        .traversal_mut()
+        .with_authorizer(std::sync::Arc::new(
+            graphersal::auth::AccessPolicy::read_only(),
+        ))
+        .v(None)
+        .add_v("x")
+        .to_list()
+        .unwrap_err();
+    assert_eq!(err.step_location().expect("located").step_id, "1");
+    assert!(matches!(
+        err.root_cause(),
+        TraverserError::PermissionDenied { .. }
+    ));
+}
+
+/// The DSL reports the same locations for the plan checks of its argument errors, and an
+/// invalid constant renders as written.
+#[test]
+#[cfg(feature = "script")]
+fn dsl_plan_checks_are_located_and_render_the_argument_as_written() {
+    use crate::script_host::eval;
+    for (query, at) in [
+        (
+            r#"g.inject(1).merge_v(1).toList()"#,
+            "at #1: inject(1).merge_v(1)",
+        ),
+        (
+            r#"g.inject(1).math("_ +").toList()"#,
+            r#"at #1: inject(1).math("_ +")"#,
+        ),
+        (
+            r#"g.inject(1).product(1).toList()"#,
+            "at #1: inject(1).product(1)",
+        ),
+        (
+            r#"g.inject(1).local(__.with_sack(1)).toList()"#,
+            "at #1.0.0: with_sack()",
+        ),
+    ] {
+        let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+        let report = eval(graph, query).expect_err(query).to_string();
+        assert!(report.contains(at), "{query}: {report}");
+    }
+}
+
+/// Under `render.spelling = camel` an error raised before the run is respelled like one inside
+/// it: a denied step names its camelCase spelling, and so does its help.
+#[test]
+#[cfg(feature = "script")]
+fn errors_before_the_run_are_respelled() {
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    let err = graphersal::script::eval_value_with_limits(
+        graph.clone(),
+        r#"g.with("render.spelling", "camel").V().addV("x").toList()"#,
+        Default::default(),
+        &graphersal::script::ScriptLimits::default(),
+        std::sync::Arc::new(graphersal::auth::AccessPolicy::read_only()),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("Permission denied for 'addV' (Create Data(vertex \"x\"))"),
+        "{err}"
+    );
+    assert!(
+        err.contains("GraphSource::empty().addV(\"x\").next()"),
+        "{err}"
+    );
+    assert!(!err.contains("add_v"), "{err}");
+    // An option error has no step: the spelling travels in `TraverserError::Spelled`.
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .with("render.spelling", "camel")
+        .with("repeat.order", "sideways")
+        .v(None)
+        .to_list()
+        .unwrap_err();
+    assert!(matches!(&*err, TraverserError::Spelled { .. }), "{err}");
+    assert_eq!(err.spelling(), Spelling::Camel);
+    assert!(matches!(
+        err.root_cause(),
+        TraverserError::InvalidOption { .. }
+    ));
+    assert!(err.step_location().is_none());
+}
+
+/// Type names in argument errors are the display names of the DSL (finding 12), also in Rhai's
+/// own "function not found" errors.
+#[test]
+#[cfg(feature = "script")]
+fn argument_errors_name_dsl_types() {
+    use crate::script_host::eval;
+    for (query, expected) in [
+        (
+            r#"g.inject(1).and(P.lte(1)).toList()"#,
+            "Data type incorrect: Predicate",
+        ),
+        (r#"g.inject(1).to(1, Merge.inV)"#, "to (int64, Merge)"),
+        (r#"g.inject(1).execute(1.5).error"#, "got float64"),
+    ] {
+        let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+        let text = match eval(graph, query) {
+            Ok(value) => value.to_string(),
+            Err(err) => err.to_string(),
+        };
+        assert!(text.contains(expected), "{query}: {text}");
+        assert!(!text.contains("graphersal::"), "{query}: {text}");
+        assert!(
+            !text.contains("f64") && !text.contains("i64"),
+            "{query}: {text}"
+        );
+    }
+}
+
+/// A result that cannot be materialized (a vertex dropped earlier in the query, returned by the
+/// last step) is located at that last step, like an error inside the run.
+#[test]
+fn a_result_that_cannot_be_materialized_is_located_at_the_last_step() {
+    let graph = GraphSource::tinkerpop_modern();
+    let mut lock = graph.write();
+    let err = lock
+        .traversal_mut()
+        .v(None)
+        .optional(__::drop())
+        .to_list()
+        .unwrap_err();
+    assert_eq!(err.step_location().expect("located").step_id, "1");
+    let rendered = format_diagnostic(&err);
+    assert!(
+        rendered.contains("at #1: v().optional(__.drop())"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Caused by: The vertex was removed earlier in this query"),
+        "{rendered}"
+    );
+}
+
+/// The commit sequence never wraps: the help explains where the high number came from and that
+/// the unit left nothing behind.
+#[test]
+fn commit_sequence_overflow_help_names_the_cause_and_the_rollback() {
+    let mut graph = TraversalGraph::new().with_last_commit_seq(u64::MAX);
+    let err = graph.traversal_mut().add_v("a").to_list().unwrap_err();
+    assert!(err.to_string().contains("commit sequence number"), "{err}");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("TraversalGraph::with_last_commit_seq(u64::MAX)"),
+        "{help}"
+    );
+    assert!(
+        help.contains("rolled back and left nothing behind"),
+        "{help}"
+    );
+}
+
+/// An explicit numeric id at the end of the range exhausts the auto-id sequence: the help shows
+/// the id that does it and the explicit-id way out.
+#[test]
+fn auto_id_sequence_overflow_help_suggests_explicit_ids() {
+    let mut graph = TraversalGraph::new();
+    let mark = graph.begin_unit();
+    graph
+        .add_vertex(
+            Some(u64::MAX.to_string().into()),
+            vec![],
+            PropertyMap::default(),
+        )
+        .unwrap();
+    graph.commit_unit(mark).unwrap();
+    let err = graph.traversal_mut().add_v("a").to_list().unwrap_err();
+    assert!(
+        err.root_cause()
+            .to_string()
+            .contains("vertex auto-id sequence"),
+        "{err}"
+    );
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("g.add_v(\"person\").property(T.id, \"18446744073709551615\")"),
+        "{help}"
+    );
+    assert!(
+        help.contains("g.add_v(\"person\").property(T.id, \"p-1\")"),
+        "{help}"
+    );
+}
+
+/// The help of every saved-query error names the fix with a runnable call
+/// (`roadmap/saved-queries.md`, task SQ3; rule 6).
+#[cfg(feature = "script")]
+#[test]
+fn saved_query_errors_carry_their_help() {
+    use crate::script_host::eval_value;
+
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    let fail = |script: &str| -> String {
+        eval_value(graph.clone(), script)
+            .expect_err(script)
+            .to_string()
+    };
+    let _ = eval_value(
+        graph.clone(),
+        r#"g.define_query(#{name: "top", params: #{limit: #{schema: #{type: "integer", minimum: 1}, default: 2}},
+               body: "fn top(limit) { g.v().limit(limit) }"});
+           g.define_query(#{name: "again", body: "fn again() { g.query(\"again\") }"});
+           g.define_query(#{name: "writer", body: "fn writer() { g.v().drop() }"});"#,
+    )
+    .unwrap();
+
+    let cases: [(&str, &[&str]); 10] = [
+        (
+            r#"g.v().query("top")"#,
+            &[
+                r#"query("top") can only start a traversal, it cannot follow other steps"#,
+                r#"Help: Call a saved query at the start of a traversal, on g: g.query("top")"#,
+            ],
+        ),
+        (
+            r#"g.query("again")"#,
+            &[
+                "Saved query calls nested deeper than 16 levels",
+                "Help: Saved queries may call each other at most 16 levels deep",
+            ],
+        ),
+        (
+            r#"g.query("top", #{lim: 1})"#,
+            &[
+                "Saved query 'top' has no parameter 'lim'",
+                r#"Help: Arguments are named after the parameters of 'top': limit. For example g.query("top", #{limit: ..})"#,
+            ],
+        ),
+        (
+            r#"g.query("top", #{limit: 0})"#,
+            &[
+                "Invalid argument 'limit' for saved query 'top'",
+                r#"Help: An argument is a data value"#,
+                r#"g.get_query("top")["params"] shows the schema of 'limit'"#,
+            ],
+        ),
+        (
+            r#"g.define_query(#{name: "x", body: "fn y() { 1 }"})"#,
+            &[
+                "Invalid body of saved query 'x'",
+                "Help: The body of a saved query is the text of ONE Rhai function",
+            ],
+        ),
+        (
+            r#"g.query("writer")"#,
+            &[
+                "Saved query 'writer' returned a traversal with a writing step (the result)",
+                "Help: Saved queries are read-only, also through a traversal they return",
+            ],
+        ),
+        (
+            r#"g.query("top").property("k", 1).to_list()"#,
+            &[
+                "a saved query is read-only",
+                "Help: A saved query never writes",
+            ],
+        ),
+        (
+            r#"g.query("nope")"#,
+            &[
+                "There is no query named 'nope'",
+                "Help: List the existing definitions first: g.queries() in the DSL",
+            ],
+        ),
+        (
+            r#"g.query("top", 5)"#,
+            &[
+                "Argument mismatch for step 'query'",
+                r#"Help: Saved queries take maps and strings"#,
+            ],
+        ),
+        (
+            r#"g.define_query(#{name: "q", body: "fn q() { 1 }"}); g.query("q", #{x: 1})"#,
+            &[
+                "Saved query 'q' has no parameter 'x'",
+                r#"Help: 'q' takes no arguments: call it as g.query("q")"#,
+            ],
+        ),
+    ];
+    for (script, expected) in cases {
+        let report = fail(script);
+        for part in expected {
+            assert!(
+                report.contains(part),
+                "expected `{part}` for {script} in:\n{report}"
+            );
+        }
+    }
+
+    let _ = eval_value(
+        graph.clone(),
+        r#"g.define_query(#{name: "need", params: #{n: "integer"}, body: "fn need(n) { n }"})"#,
+    )
+    .unwrap();
+    let report = fail(r#"g.query("need")"#);
+    assert!(
+        report.contains(r#"Help: Pass every parameter without a default by name, for example g.query("need", #{n: ..})"#),
+        "{report}"
+    );
+}
+
+/// Ids are strings: an order predicate on a number in `has_id(P)` is a plan-time error located
+/// on the step, whose help shows the string form and the string order; equality keeps numbers.
+#[test]
+fn numeric_order_predicate_on_ids_is_an_error() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .has_id_p(P::Gt(3))
+        .id()
+        .to_list()
+        .expect_err("ids are strings");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(
+            "has_id(P.gt(3)) compares element ids with a number, but element ids are strings"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains(r#"Compare with a string instead: has_id(P.gt("3"))"#),
+        "{report}"
+    );
+    assert!(report.contains(r#""10" sorts before "9""#), "{report}");
+
+    // located even inside a child traversal that no traverser reaches
+    let err = locked
+        .traversal()
+        .v("nope")
+        .where_t(__::has_id_p(P::Between(1, 5)))
+        .to_list()
+        .expect_err("ids are strings");
+    assert_eq!(err.step_location().expect("located").step_id, "1.0.0");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains(r#"has_id(P.between("1", "5"))"#),
+        "{report}"
+    );
+
+    // string order predicates keep working
+    let ids = locked
+        .traversal()
+        .v(None)
+        .has_id_p(P::Gt("3"))
+        .to_list()
+        .expect("valid");
+    assert_eq!(ids.len(), 3);
+}
+
+/// The same check through the DSL: both spellings and the `has(T.id, P)` token form.
+#[cfg(feature = "script")]
+#[test]
+fn numeric_order_predicate_on_ids_is_an_error_in_the_dsl() {
+    use crate::script_host::eval_value;
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    for (script, step, fix) in [
+        (
+            "g.v().has_id(P.gt(3)).to_list()",
+            "has_id(P.gt(3))",
+            r#"has_id(P.gt("3"))"#,
+        ),
+        (
+            "g.V().hasId(P.lte(3)).toList()",
+            "has_id(P.lte(3))",
+            r#"has_id(P.lte("3"))"#,
+        ),
+        (
+            "g.V().has(T.id, P.inside(1, 4)).toList()",
+            "has_id(P.inside(1, 4))",
+            r#"has_id(P.inside("1", "4"))"#,
+        ),
+        (
+            "g.e().has(T.id, P.outside(1, 4)).to_list()",
+            "has_id(P.outside(1, 4))",
+            r#"has_id(P.outside("1", "4"))"#,
+        ),
+        (
+            r#"g.with("render.spelling", "camel").V().where(__.hasId(P.not(P.gt(2)))).toList()"#,
+            "hasId(P.not(P.gt(2)))",
+            r#"hasId(P.not(P.gt("2")))"#,
+        ),
+    ] {
+        let err = eval_value(graph.clone(), script)
+            .expect_err("ids are strings")
+            .to_string();
+        assert!(
+            err.contains(&format!("{step} compares element ids with a number")),
+            "{script}: {err}"
+        );
+        assert!(
+            err.contains(&format!("Compare with a string instead: {fix}")),
+            "{script}: {err}"
+        );
+    }
+    for (script, count) in [
+        ("g.v().has_id(3).count().next()", 1),
+        ("g.V().hasId(P.eq(3)).count().next()", 1),
+        ("g.V().hasId(P.within(1, 2)).count().next()", 2),
+        ("g.v().has(T.id, 3).count().next()", 1),
+        ("g.v().has(T.id, P.eq(3)).count().next()", 1),
+        (r#"g.v().has_id(P.gt("3")).count().next()"#, 3),
+    ] {
+        let value = eval_value(graph.clone(), script).expect(script);
+        assert_eq!(value.as_int().ok(), Some(count), "{script}");
+    }
+}
+
+/// A label step applied to the wrong element kind names the step for the kind that arrived:
+/// `set_label()` on a vertex points to `add_label()`/`drop_label()`, the vertex steps on an edge
+/// point to `set_label()`; a value that is no element names both.
+#[cfg(feature = "script")]
+#[test]
+fn label_steps_on_the_wrong_element_kind_name_the_right_step() {
+    use crate::script_host::eval_value;
+
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    for (script, message, help) in [
+        (
+            r#"g.v(1).set_label("x").toList()"#,
+            "The set_label() step takes an edge, but got a value of type 'vertex'",
+            "set_label() changes the label of an edge; a vertex carries a label set, changed \
+             with add_label() and drop_label(), for example \
+             g.v().has_label(\"person\").add_label(\"employee\")",
+        ),
+        (
+            r#"g.e(0).add_label("x").toList()"#,
+            "The add_label() step takes a vertex, but got a value of type 'edge'",
+            "add_label() changes the label set of a vertex; an edge has exactly one label, \
+             changed with set_label(), for example g.e().has_label(\"knows\").set_label(\"met\")",
+        ),
+        (
+            r#"g.e(0).dropLabel("x").toList()"#,
+            "The drop_label() step takes a vertex, but got a value of type 'edge'",
+            "drop_label() changes the label set of a vertex; an edge has exactly one label",
+        ),
+        (
+            r#"g.inject(1).add_label("x").toList()"#,
+            "The add_label() step takes a vertex, but got a value of type 'int64'",
+            "add_label() changes the label of a graph element, not of a value of type 'int64'",
+        ),
+    ] {
+        let err = eval_value(graph.clone(), script)
+            .expect_err(script)
+            .to_string();
+        assert!(err.contains(message), "{script}: {err}");
+        assert!(err.contains(help), "{script}: {err}");
+    }
+    // Nothing changed: each failing traversal rolled back.
+    let labels = eval_value(graph, r#"g.v(1).labels().next()"#).unwrap();
+    assert_eq!(labels.to_string(), r#"["person"]"#);
+}
+
+/// The help of a `closed` freeze blocked by unlabeled elements names the label steps.
+#[cfg(feature = "script")]
+#[test]
+fn closed_freeze_with_unlabeled_elements_suggests_the_label_steps() {
+    use crate::script_host::eval_value;
+
+    let graph = std::sync::Arc::new(GraphSource::empty());
+    let err = eval_value(
+        graph,
+        r#"g.add_v().next(); g.add_v("a").next(); g.set_schema(g.infer_schema(), SchemaMode.closed)"#,
+    )
+    .expect_err("an unlabeled vertex blocks a closed freeze")
+    .to_string();
+    for fragment in [
+        "g.v(\"id\").add_label(\"Label\") for a vertex",
+        "g.e(\"id\").set_label(\"label\") for an edge",
+        "g.v().not(__.has_label()).add_label(\"Label\")",
+        "then g.set_schema(g.infer_schema(), SchemaMode.closed)",
+    ] {
+        assert!(err.contains(fragment), "missing `{fragment}` in: {err}");
+    }
+}
+
+/// `GraphError::Unsupported`'s help fits every operation a storage may refuse: it names the
+/// operation, says the storage does not implement it, and points to the storage's documentation
+/// and capabilities; it does not talk about one operation (commit hooks) as if it were the
+/// only one.
+#[test]
+fn unsupported_help_names_the_operation_and_fits_every_storage() {
+    use graphersal::error::{DiagnosticError, GraphError};
+    use graphersal::storage::GraphStorage;
+
+    // A query: a mark through the read-only `&G` view of a graph.
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let mut view: &TraversalGraph = &locked;
+    let err = GraphStorage::mark(&mut view, "m").expect_err("a read-only view has no journal");
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("does not implement marks on a read-only view"),
+        "{help}"
+    );
+
+    // The operations a foreign storage leaves at the trait's defaults.
+    for operation in [
+        "compressed properties",
+        "schemas",
+        "definitions",
+        "commit hooks",
+    ] {
+        let help = GraphError::unsupported(operation).help().expect("help");
+        for fragment in [
+            format!("The graph's storage does not implement {operation}:"),
+            "the storage's documentation".to_string(),
+            "GraphStorage::capabilities()".to_string(),
+            "TraversalGraph, the reference storage".to_string(),
+        ] {
+            assert!(
+                help.contains(&fragment),
+                "{operation}: missing `{fragment}` in: {help}"
+            );
+        }
+    }
+}
+
+/// A bounded visualizer appends `limit(n + 1) [display]` to the plan it runs; an error location
+/// shows the user's query without it, in the query as written, the executed plan and the step
+/// location, and the help's rewritten query does not carry it either.
+#[test]
+fn error_locations_leave_out_the_display_limit() {
+    let graph = GraphSource::tinkerpop_modern();
+    let locked = graph.read();
+    let err = locked
+        .traversal()
+        .v(None)
+        .has_label("person")
+        .math("value + 1")
+        .to_table_with(&graphersal::exec::RenderOptions::new().with_max_rows(5))
+        .expect_err("value is not a math() variable");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("at #1: v().has_label(\"person\").math(\"value + 1\")\n"),
+        "{report}"
+    );
+    assert!(
+        report.contains("plan:  v(labels: [\"person\"]).math(\"value + 1\")\n"),
+        "{report}"
+    );
+    assert!(!report.contains("[display]"), "{report}");
+    assert!(!report.contains("limit("), "{report}");
+    assert!(
+        report.contains(r#"g.v().has_label("person").math("_ + 1")"#),
+        "{report}"
+    );
+    let location = err.step_location().expect("located");
+    assert_eq!(location.step_id, "1");
+    assert!(
+        location
+            .step_path
+            .iter()
+            .all(|entry| !entry.name.contains("[display]")),
+        "{location:?}"
+    );
+}

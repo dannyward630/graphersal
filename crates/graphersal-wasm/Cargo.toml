@@ -1,0 +1,27 @@
+[package]
+name = "graphersal-wasm"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "WebAssembly build of the Graphersal engine for the browser playground (internal JS API)"
+# The JS API is internal to the playground in 0.1.0; npm publication is planned for 0.2.0.
+publish = false
+
+[lib]
+# cdylib: the .wasm module for wasm-bindgen; rlib: native unit tests of the session logic.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+graphersal = { workspace = true, features = ["io", "script", "serde", "display", "alloc-tracking"] }
+graphersal-session = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
+web-time = { workspace = true }
+wasm-bindgen = { workspace = true }
+
+[dev-dependencies]
+wasm-bindgen-test = { workspace = true }

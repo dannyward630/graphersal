@@ -1,0 +1,17 @@
+/target
+/ai/output/
+/.vscode
+.DS_Store
+history.txt
+
+# bindings/py-graphersal: local venv and pytest artifacts for `maturin develop`/pytest
+bindings/py-graphersal/.venv
+bindings/py-graphersal/.pytest_cache
+bindings/py-graphersal/**/__pycache__
+/bindings/py-graphersal/.venv/
+
+# playground/build.sh output (the wasm engine); built, never committed
+/playground/pkg/
+
+# local Store directory used for trying the dev server (graphersal --graph data/ --server)
+/data/

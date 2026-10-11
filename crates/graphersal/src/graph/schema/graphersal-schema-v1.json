@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://graphersal.dev/schema/v1",
+  "title": "GraphersalGraphSchema",
+  "description": "A Graphersal graph schema: an envelope (mode, meta, labels, connections) around a strict subset of JSON Schema 2020-12 for each label's properties. Unknown keys are errors everywhere.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "const": "https://graphersal.dev/schema/v1" },
+    "meta": {
+      "description": "Free-form data the library stores, round-trips and never interprets.",
+      "type": "object"
+    },
+    "mode": { "enum": ["none", "open", "closed"], "default": "none" },
+    "vertices": {
+      "type": "object",
+      "propertyNames": { "minLength": 1 },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schema": { "$ref": "#/$defs/label_schema" }
+        }
+      }
+    },
+    "edges": {
+      "type": "object",
+      "propertyNames": { "minLength": 1 },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "connections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["from", "to"],
+              "properties": {
+                "from": { "type": "string", "minLength": 1 },
+                "to": { "type": "string", "minLength": 1 }
+              }
+            }
+          },
+          "schema": { "$ref": "#/$defs/label_schema" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "label_schema": {
+      "description": "The JSON Schema of a label's property map: an object node, optionally with $defs for local $ref.",
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "object" },
+        "$schema": { "type": "string" },
+        "$id": { "type": "string" },
+        "$defs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/node" } },
+        "properties": { "type": "object", "additionalProperties": { "$ref": "#/$defs/node" } },
+        "required": { "$ref": "#/$defs/key_list" },
+        "additionalProperties": { "type": "boolean" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "$comment": { "type": "string" },
+        "examples": { "type": "array" },
+        "deprecated": { "type": "boolean" },
+        "default": true,
+        "$ref": { "$ref": "#/$defs/local_ref" }
+      },
+      "additionalProperties": false
+    },
+    "type_name": { "enum": ["null", "boolean", "integer", "number", "string", "array", "object"] },
+    "key_list": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "local_ref": { "type": "string", "pattern": "^#/\\$defs/" },
+    "count": { "type": "integer", "minimum": 0 },
+    "node": {
+      "description": "One property schema node. integer = int64, number = float64, string + format uuid = uuid.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "anyOf": [
+            { "$ref": "#/$defs/type_name" },
+            { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/type_name" } }
+          ]
+        },
+        "format": { "const": "uuid" },
+        "items": { "$ref": "#/$defs/node" },
+        "properties": { "type": "object", "additionalProperties": { "$ref": "#/$defs/node" } },
+        "required": { "$ref": "#/$defs/key_list" },
+        "additionalProperties": { "type": "boolean" },
+        "anyOf": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/node" } },
+        "enum": { "type": "array", "minItems": 1 },
+        "const": true,
+        "minimum": { "type": "number" },
+        "maximum": { "type": "number" },
+        "exclusiveMinimum": { "type": "number" },
+        "exclusiveMaximum": { "type": "number" },
+        "minLength": { "$ref": "#/$defs/count" },
+        "maxLength": { "$ref": "#/$defs/count" },
+        "pattern": { "type": "string", "format": "regex" },
+        "minItems": { "$ref": "#/$defs/count" },
+        "maxItems": { "$ref": "#/$defs/count" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "$comment": { "type": "string" },
+        "examples": { "type": "array" },
+        "deprecated": { "type": "boolean" },
+        "default": { "description": "An annotation only: never applied on write, never substituted on read." },
+        "$ref": { "$ref": "#/$defs/local_ref" }
+      }
+    }
+  }
+}

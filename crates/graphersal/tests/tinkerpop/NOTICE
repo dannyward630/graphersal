@@ -1,0 +1,16 @@
+This directory contains files vendored from Apache TinkerPop (https://tinkerpop.apache.org),
+tag 3.8.2, commit 952d8d8e4c3cd37ed8e192ecb97348e6e82594a9:
+
+  - features/  (the Gherkin conformance feature files)
+  - data/      (the stock scenario graphs: tinkerpop-modern, tinkerpop-crew, tinkerpop-sink,
+                 grateful-dead)
+  - api-3.8.2.txt  (list of traversal API names derived from gremlin-language's Gremlin.g4 and
+                    gremlin-core's __.java)
+
+Apache TinkerPop
+Copyright 2015-2026 The Apache Software Foundation.
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+
+Licensed under the Apache License, Version 2.0. See LICENSE in this directory.

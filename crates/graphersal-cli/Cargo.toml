@@ -1,0 +1,53 @@
+[package]
+name = "graphersal-cli"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Command line REPL and one-shot query runner for the Graphersal graph traversal engine (binary: graphersal)"
+readme = "README.md"
+keywords = ["graph", "gremlin", "tinkerpop", "repl", "cli"]
+categories = ["command-line-utilities", "database"]
+# `ui` is a symbolic link to `../../playground`; `cargo package` follows it, so the packaged crate
+# holds a real copy of the UI files `build.rs` embeds (the same entries as its `ENTRIES`).
+include = ["/src/**", "/build.rs", "/ui/index.html", "/ui/css/**", "/ui/js/**", "/ui/assets/**", "/ui/reset/**", "/README.md", "/LICENSE-APACHE", "/NOTICE"]
+
+[[bin]]
+name = "graphersal"
+path = "src/main.rs"
+
+[features]
+default = ["dev-server", "ai"]
+# `graphersal --server`: the playground UI over HTTP on 127.0.0.1 (DEV mode, unstable).
+# `--mcp` adds the MCP endpoint `/mcp`; `rand` (already in the tree through graphersal) makes
+# its session ids unguessable.
+dev-server = ["dep:tiny_http", "dep:serde_json", "dep:rand"]
+# `--ai FILE`: the AI Chat of the dev server, an LLM agent working on the served graph
+# (EXPERIMENTAL). `ureq` calls the provider (OpenAI-compatible Chat Completions or Anthropic
+# Messages) over HTTPS.
+ai = ["dev-server", "dep:ureq"]
+
+[dependencies]
+graphersal = { workspace = true, features = ["io", "script", "display", "serde", "persist", "persist-zip", "alloc-tracking"] }
+rustyline = { workspace = true }
+rustyline-derive = { workspace = true }
+rhai = { workspace = true }
+ctrlc = { workspace = true }
+# The stderr log of `--server` and `graphersal store` (`src/log.rs`, a minimal `Subscriber`):
+# already in the tree through graphersal, so no new crate (no `tracing-subscriber`).
+tracing = { workspace = true }
+# The completion catalogue of the REPL (the same source as the playground) and the dev
+# server's session.
+graphersal-session = { workspace = true }
+tiny_http = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+ureq = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Parses `--format json` output and the dev server's answers in the CLI contract tests; already
+# a workspace dependency.
+serde_json = { workspace = true }

@@ -1,0 +1,127 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/graphersal",
+    "crates/graphersal-cli",
+    "crates/graphersal-session",
+    "crates/graphersal-storage-tests",
+    "crates/graphersal-wasm",
+    "bindings/py-graphersal",
+]
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Aleksandr Dederer <aleks@graphersal.dev>"]
+repository = "https://github.com/graphersal/graphersal"
+homepage = "https://graphersal.dev"
+license = "Apache-2.0"
+edition = "2024"
+# Measured with cargo-msrv: the library needs 1.87 (`is_multiple_of`, quick-xml), the CLI 1.88
+# (`home` via rustyline).
+rust-version = "1.88"
+
+[profile.release]
+# One codegen unit: with the default 16, adding unrelated code (e.g. the jpath valueMap/elementMap
+# path keys) shifted cross-unit inlining and slowed pure-adjacency traversals by ~10 %.
+codegen-units = 1
+#debug = true
+
+# The browser playground's WebAssembly module (crates/graphersal-wasm, playground/build.sh):
+# release code optimized for size ("z": 25% smaller gzipped than "s", ~30% slower), link-time optimized, panics abort (no unwinding tables).
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+panic = "abort"
+
+[workspace.dependencies]
+# Internal workspace crates
+graphersal = { path = "crates/graphersal", version = "0.1.0" }
+graphersal-session = { path = "crates/graphersal-session", version = "0.1.0" }
+graphersal-storage-tests = { path = "crates/graphersal-storage-tests", version = "0.1.0" }
+
+# Core Graph & Algorithms
+petgraph = { version = "0.6.5", features = ["serde-1"] }
+compact_str = { version = "0.10", features = ["serde"] }
+indexmap = { version = "2.5", features = ["serde"] }
+fnv = "1.0"
+rand = "0.8"
+floating-duration = "0.1"
+ordered-float = { version = "4.2", features = ["serde"] }
+bitmask-enum = "2.2"
+parking_lot = "0.12"
+tracing = "0.1"
+# `std::time::Instant` panics on wasm32-unknown-unknown; web-time is std's type elsewhere and a
+# `performance.now()` clock in the browser (already in the tree through rhai).
+web-time = "1"
+thiserror = "1.0"
+# Schema `pattern` constraints are regular expressions (JSON Schema semantics). The de-facto
+# standard engine: linear-time matching (no catastrophic backtracking on untrusted schemas), no
+# unsafe FFI, builds for wasm32-unknown-unknown. A pattern is compiled once, when the schema
+# field is built, never per value.
+regex = "1"
+
+# Entropy backends for wasm32-unknown-unknown (browser): enabled only for that target in the
+# library, see crates/graphersal/Cargo.toml.
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+
+# Scripting & Parsing
+rhai = { version = "1.20.0", features = ["internals", "decimal", "metadata"] }
+quick-xml = "0.42"
+tabled = "0.22"
+
+# Persistence (`persist` feature: packed snapshots, journal, recovery; book/src/persistence/format.md).
+# LZ4 block compression of snapshot chunks and large journal records: pure Rust, no unsafe in
+# the default `safe-encode`/`safe-decode` mode, builds for wasm32; only the block format is used
+# (no frame format, so no `twox-hash`).
+lz4_flex = { version = "0.14", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }
+# CRC-32C (Castagnoli), the checksum of every chunk, record and header (format spec section 2):
+# hardware accelerated on x86_64 (SSE 4.2) and aarch64 (CRC extension), table-driven software
+# fallback elsewhere (wasm32), pure Rust.
+crc32c = "0.6"
+# The Store's directory lock (`persist`, native only): one writer per store directory through the
+# OS's advisory lock (`flock` on Unix, `LockFileEx` on Windows), released by the OS when the
+# process ends, also on a crash. Pure Rust (rustix / windows-sys, both already in the tree through
+# rustyline, as fd-lock itself is). `std::fs::File::lock` needs Rust 1.89, above the MSRV.
+fd-lock = "4"
+# The free disk space of a single-file store's file system (`statvfs`, Unix), for the
+# compaction advice. Already in the tree through fd-lock (the same version and features).
+rustix = { version = "1", features = ["fs"] }
+# zstd chunks (codec 2, `persist-zstd` feature): the pure-Rust zstd encoder and decoder (no C
+# library), builds for wasm32.
+ruzstd = { version = "0.9", default-features = false, features = ["std"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# CLI & REPL
+rustyline = "14.0"
+rustyline-derive = "0.10"
+# The dev server of the CLI (`graphersal --server`, feature `dev-server`): a small, synchronous,
+# pure-Rust HTTP/1.1 server without an async runtime (4 small dependencies); a local DEV
+# endpoint needs no more.
+tiny_http = "0.12"
+# The AI Chat of the dev server (`graphersal --server --ai FILE`, CLI feature `ai`): the LLM provider
+# calls over HTTPS. Synchronous (no async runtime: the dev server is synchronous, the Rust LLM
+# SDKs need tokio), pure Rust with rustls (ring) and the webpki root certificates, no system TLS.
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+# SIGINT/SIGTERM (Ctrl+C, `kill`) in the CLI and its dev server: a Store open in the process is
+# closed cleanly before it exits (a second Ctrl+C exits at once). Small and pure Rust (a signal
+# pipe on Unix through `nix`, a console handler on Windows); `termination` adds SIGTERM/SIGHUP.
+# std has no portable signal API, and a hand-written `libc::signal` handler could not do the
+# close outside the signal context safely.
+ctrlc = { version = "3.4", features = ["termination"] }
+
+# WebAssembly (crates/graphersal-wasm). Pinned exactly: the wasm-bindgen CLI that generates the
+# JS glue must have the same version (`cargo install --locked wasm-bindgen-cli --version 0.2.129`).
+wasm-bindgen = "=0.2.129"
+wasm-bindgen-test = "=0.3.79"
+
+# Python bindings (bindings/py-graphersal)
+pyo3 = "0.29"
+uuid = "1.10"
+
+# Benchmarking
+divan = "0.1.14"

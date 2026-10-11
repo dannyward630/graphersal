@@ -1,0 +1,1415 @@
+//! Authorization (book page "Permissions"): everything is allowed by
+//! default, in the Rust API and the script entry; a host plugs in an `Authorizer` (its own impl
+//! or the ready-made `AccessPolicy`); one check per execution, before anything runs, on the plan
+//! as written (child traversals included); file access limited to a host-configured root; a
+//! graph the script built itself is private and writable; `Resource::Custom` serves an
+//! embedding server.
+//!
+//! This module uses `graphersal::script` directly, NOT the trusted `script_host` helper.
+#![cfg(feature = "script")]
+
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use graphersal::auth::AllowAll;
+use graphersal::auth::{
+    AccessPolicy, AccessRequest, AccessRequestBuf, Action, ActionKind, Authorizer, Denied,
+    Resource, ResourceKind,
+};
+use graphersal::exec::RenderOptions;
+use graphersal::prelude::*;
+use graphersal::script::rhai::Dynamic;
+use graphersal::script::{self, ScriptLimits};
+use graphersal::storage::ElementKind;
+
+fn modern() -> Arc<Graph> {
+    Arc::new(GraphSource::tinkerpop_modern())
+}
+
+/// Runs `script` checked by `authorizer`.
+fn run(
+    graph: &Arc<Graph>,
+    script: &str,
+    authorizer: impl Authorizer + 'static,
+) -> Result<Dynamic, String> {
+    script::eval_value_with_limits(
+        graph.clone(),
+        script,
+        Default::default(),
+        &ScriptLimits::default(),
+        Arc::new(authorizer),
+    )
+    .map_err(|err| err.to_string())
+}
+
+/// Asserts a `PermissionDenied` for `step` whose request renders starting with `request`
+/// (`"Update Data"`, `"Create File("`).
+fn assert_denied(result: Result<Dynamic, String>, step: &str, request: &str) {
+    let err = result.expect_err("the script must be denied");
+    let expected = format!("Permission denied for '{step}' ({request}");
+    assert!(err.contains(&expected), "expected `{expected}` in:\n{err}");
+}
+
+fn count(graph: &Arc<Graph>) -> usize {
+    graph.read().vertex_count()
+}
+
+/// A fresh, empty directory under the system temp dir (unique per test and process).
+fn fresh_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "graphersal-permissions-{}-{name}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the test directory");
+    dir
+}
+
+fn forward(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// An authorizer that allows everything and records every request it was asked.
+#[derive(Default)]
+struct Recorder(Mutex<Vec<AccessRequestBuf>>);
+
+impl Authorizer for Recorder {
+    fn authorize(&self, request: &AccessRequest<'_>) -> Result<(), Denied> {
+        if let Ok(mut seen) = self.0.lock() {
+            seen.push(request.to_owned_request());
+        }
+        Ok(())
+    }
+}
+
+impl Recorder {
+    fn seen(&self) -> Vec<String> {
+        self.0
+            .lock()
+            .map(|seen| seen.iter().map(ToString::to_string).collect())
+            .unwrap_or_default()
+    }
+}
+
+mod default_allow_all {
+    use super::*;
+
+    #[test]
+    fn the_script_entry_allows_everything_by_default() {
+        let graph = modern();
+        let n = script::eval_value(graph.clone(), r#"g.addV("x").next(); g.V().count().next()"#)
+            .unwrap();
+        assert_eq!(n.as_int().unwrap(), 7);
+        let mut scope = script::graph_scope(graph.clone());
+        let n = script::engine()
+            .eval_with_scope::<Dynamic>(
+                &mut scope,
+                r#"g.with("evaluationTimeout", 0).V().drop().toList(); g.V().count().next()"#,
+            )
+            .unwrap();
+        assert_eq!(n.as_int().unwrap(), 0);
+        assert!(
+            script::eval_value(
+                graph,
+                "g.statistics(); g.memory_usage(); g.get_schema(); g.infer_schema(); \
+                 g.set_schema(#{mode: \"open\"}); g.patch_schema(#{mode: \"none\"})"
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn the_rust_api_allows_everything_unless_the_host_attaches_an_authorizer() {
+        let graph = GraphSource::tinkerpop_modern();
+        let mut g = graph.write();
+        assert!(g.traversal_mut().add_v("trusted").to_list().is_ok());
+        let err = g
+            .traversal_mut()
+            .with_authorizer(Arc::new(AccessPolicy::read_only()))
+            .v(None::<()>)
+            .union(vec![__::out(None::<()>), __::add_v("hidden")])
+            .to_list()
+            .unwrap_err();
+        let TraverserError::PermissionDenied { step, request, .. } = err.root_cause() else {
+            panic!("{err:?}");
+        };
+        assert_eq!(step, "add_v");
+        assert_eq!(request.as_request().action, Action::Create);
+        assert_eq!(
+            request.as_request().resource,
+            Resource::data(Some(ElementKind::Vertex), Some("hidden"))
+        );
+        // Located in the plan as written: step 1 (`union`), child 1, step 0.
+        assert_eq!(err.step_location().expect("located").step_id, "1.1.0");
+        assert_eq!(g.vertex_count(), 7);
+        // Options set before `with_authorizer` are the host's presets.
+        let preset = g
+            .traversal_mut()
+            .with("evaluationTimeout", 5000)
+            .with_authorizer(Arc::new(AccessPolicy::read_only()))
+            .v(None::<()>)
+            .count()
+            .to_list();
+        assert!(preset.is_ok(), "{preset:?}");
+        let after = g
+            .traversal_mut()
+            .with_authorizer(Arc::new(AccessPolicy::read_only()))
+            .with("evaluationTimeout", 5000)
+            .v(None::<()>)
+            .count()
+            .to_list()
+            .unwrap_err();
+        let TraverserError::PermissionDenied { request, .. } = &*after else {
+            panic!("{after:?}");
+        };
+        assert_eq!(
+            request.as_request(),
+            AccessRequest::new(
+                Action::Update,
+                Resource::Option {
+                    key: "evaluationTimeout"
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn execute_reports_the_denial_in_its_error_without_throwing() {
+        let graph = modern();
+        let value = run(
+            &graph,
+            r#"let r = g.addV("x").execute(); r.error.message"#,
+            AccessPolicy::read_only(),
+        )
+        .unwrap();
+        let message = value.into_string().unwrap();
+        assert!(
+            message.contains(r#"Permission denied for 'add_v' (Create Data(vertex "x"))"#),
+            "{message}"
+        );
+        assert_eq!(count(&graph), 6);
+    }
+
+    #[test]
+    fn a_traversal_returned_without_a_terminal_is_checked_when_rendered() {
+        let policy: Arc<dyn Authorizer> = Arc::new(AccessPolicy::deny_all());
+        let mut scope = script::graph_scope_with_options(modern(), &[], policy.clone());
+        let value = script::engine_with_limits(&ScriptLimits::default(), policy)
+            .eval_with_scope::<Dynamic>(&mut scope, "g.V()")
+            .unwrap();
+        let rendered =
+            script::try_render_value(value, VisualizeFormat::Auto, &RenderOptions::unlimited())
+                .unwrap_err();
+        assert!(rendered.contains("Permission denied"), "{rendered}");
+    }
+}
+
+mod request_mapping {
+    use super::*;
+
+    #[test]
+    fn each_distinct_request_is_asked_once_in_plan_order() {
+        let graph = modern();
+        let recorder = Arc::new(Recorder::default());
+        let _ = run(
+            &graph,
+            r#"g.V().outE("knows").inV().out().addV("person").property("x", 1)
+                .addE("rel").to(__.V("1")).drop().toList()"#,
+            recorder.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            recorder.seen(),
+            [
+                // `V()`, then `outE()`; `inV()`, `out()` and `__.V("1")` repeat these two
+                "Read Data(vertex)",
+                "Read Data(edge)",
+                "Create Data(vertex \"person\")",
+                "Update Data",
+                "Create Data(edge \"rel\")",
+                // the `to(..)` modulator asks nothing
+                "Delete Data",
+            ]
+        );
+    }
+
+    #[test]
+    fn only_steps_that_reach_graph_data_ask_for_a_read() {
+        let graph = modern();
+        let recorder = Arc::new(Recorder::default());
+        let names = run(
+            &graph,
+            r#"g.V().has("age", P.gt(30)).values("name").limit(2).toList()"#,
+            recorder.clone(),
+        )
+        .unwrap();
+        assert_eq!(names.into_array().unwrap().len(), 2);
+        assert_eq!(recorder.seen(), ["Read Data(vertex)"]);
+    }
+
+    #[test]
+    fn value_only_steps_need_no_permission() {
+        let graph = modern();
+        let sum = run(
+            &graph,
+            "g.inject(1, 2).sum().next()",
+            AccessPolicy::deny_all(),
+        )
+        .unwrap();
+        assert_eq!(sum.as_int().unwrap(), 3);
+        let n = run(
+            &graph,
+            r#"g.inject(1).math("_ * 2").is(P.gt(1)).count().next()"#,
+            AccessPolicy::deny_all(),
+        )
+        .unwrap();
+        assert_eq!(n.as_int().unwrap(), 1);
+        // A step that reaches the graph is still denied, also in the middle of a traversal.
+        assert_denied(
+            run(&graph, "g.V().toList()", AccessPolicy::deny_all()),
+            "v",
+            "Read Data(vertex)",
+        );
+        assert_denied(
+            run(&graph, "g.inject(1).V().toList()", AccessPolicy::deny_all()),
+            "v",
+            "Read Data(vertex)",
+        );
+    }
+
+    /// No live element handle survives a run: `next()` returns the vertex materialized (a map)
+    /// and `inject()` takes values, so `g.inject(v)` injects that copy. Reading the copy reads no
+    /// graph data and asks nothing, also under `deny_all()`.
+    #[test]
+    fn a_held_element_is_a_materialized_copy_and_reading_it_asks_nothing() {
+        let graph = modern();
+        let mut scope = script::graph_scope(graph.clone());
+        let v = script::engine()
+            .eval_with_scope::<Dynamic>(&mut scope, r#"g.V("1").next()"#)
+            .unwrap();
+        assert!(v.is_map(), "{v:?}");
+        let recorder = Arc::new(Recorder::default());
+        let authorizer: Arc<dyn Authorizer> = recorder.clone();
+        let mut scope = script::graph_scope_with_options(graph.clone(), &[], authorizer.clone());
+        scope.push("v", v.clone());
+        let n = script::engine_with_limits(&ScriptLimits::default(), authorizer)
+            .eval_with_scope::<Dynamic>(&mut scope, "g.inject(v).unfold().count().next()")
+            .unwrap();
+        assert_eq!(n.as_int().unwrap(), 4);
+        assert!(recorder.seen().is_empty(), "{:?}", recorder.seen());
+
+        let denied: Arc<dyn Authorizer> = Arc::new(AccessPolicy::deny_all());
+        let mut scope = script::graph_scope_with_options(graph, &[], denied.clone());
+        scope.push("v", v);
+        let name = script::engine_with_limits(&ScriptLimits::default(), denied)
+            .eval_with_scope::<Dynamic>(&mut scope, "v.name")
+            .unwrap();
+        assert_eq!(name.into_string().unwrap(), "marko");
+    }
+
+    #[test]
+    fn merges_schema_options_and_source_methods_have_their_requests() {
+        let graph = modern();
+        let recorder = Arc::new(Recorder::default());
+        let _ = run(
+            &graph,
+            r#"g.with("repeat.max_loops", 5).mergeV(#{name: "zed"}).toList();
+               g.V().inferSchema().next(); g.infer_schema(); g.statistics(); g.V().removeProperty("age").toList();"#,
+            recorder.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            recorder.seen(),
+            [
+                "Update Option(\"repeat.max_loops\")",
+                "Create Data(vertex)",
+                "Update Data(vertex)",
+                "Read Data(vertex)",
+                "Read Schema",
+                "Read Schema",
+                "Read Data",
+                "Read Data(vertex)",
+                "Update Data",
+            ]
+        );
+    }
+}
+
+/// A role-based authorizer as a server would build it per connection, e.g. from the roles of a
+/// JWT: the subject lives in the instance, the library only asks.
+mod custom_authorizer {
+    use super::*;
+
+    #[derive(Clone, Copy)]
+    enum Role {
+        Viewer,
+        Editor,
+        Admin,
+    }
+
+    struct Session {
+        role: Role,
+    }
+
+    impl Authorizer for Session {
+        fn authorize(&self, request: &AccessRequest<'_>) -> Result<(), Denied> {
+            let allowed = match (self.role, request.action, request.resource) {
+                (Role::Admin, _, _) => true,
+                // Server-owned resources: everybody may open the shared database.
+                (
+                    _,
+                    Action::Custom("open"),
+                    Resource::Custom {
+                        kind: "database",
+                        name,
+                    },
+                ) => name == Some("shared"),
+                (_, Action::Read, Resource::Data { .. } | Resource::Schema) => true,
+                // Editors change data, except the `secret` label.
+                (
+                    Role::Editor,
+                    Action::Create | Action::Update | Action::Delete,
+                    Resource::Data { label, .. },
+                ) => label != Some("secret"),
+                _ => false,
+            };
+            if allowed {
+                Ok(())
+            } else {
+                Err(Denied::new(format!("not allowed for this role: {request}")))
+            }
+        }
+    }
+
+    #[test]
+    fn denies_by_action() {
+        let graph = modern();
+        let viewer = || Session { role: Role::Viewer };
+        assert!(run(&graph, "g.V().count().next()", viewer()).is_ok());
+        assert_denied(
+            run(&graph, r#"g.V().property("x", 1).toList()"#, viewer()),
+            "property",
+            "Update Data",
+        );
+        assert_denied(
+            run(&graph, "g.E().drop().toList()", viewer()),
+            "drop",
+            "Delete Data",
+        );
+        assert_eq!(graph.read().edge_count(), 6);
+        let editor = Session { role: Role::Editor };
+        assert!(run(&graph, r#"g.V().property("x", 1).toList()"#, editor).is_ok());
+    }
+
+    #[test]
+    fn denies_by_resource_kind() {
+        let graph = modern();
+        let editor = || Session { role: Role::Editor };
+        assert_denied(
+            run(
+                &graph,
+                r#"g.with("evaluationTimeout", 0).V().toList()"#,
+                editor(),
+            ),
+            "with(\"evaluationTimeout\")",
+            "Update Option(\"evaluationTimeout\")",
+        );
+        #[cfg(feature = "io")]
+        assert_denied(
+            run(&graph, r#"g.export_graphml("x.graphml")"#, editor()),
+            "export_graphml",
+            "Create File(\"x.graphml\")",
+        );
+        let admin = Session { role: Role::Admin };
+        assert!(
+            run(
+                &graph,
+                r#"g.with("evaluationTimeout", 0).V().toList()"#,
+                admin
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn denies_by_label() {
+        let graph = modern();
+        let editor = || Session { role: Role::Editor };
+        assert!(run(&graph, r#"g.addV("public").next()"#, editor()).is_ok());
+        let err = run(&graph, r#"g.addV("secret").next()"#, editor()).unwrap_err();
+        assert!(
+            err.contains(r#"Permission denied for 'add_v' (Create Data(vertex "secret")): not allowed for this role"#),
+            "{err}"
+        );
+        assert_denied(
+            run(
+                &graph,
+                r#"g.V("1").addE("secret").to(__.V("2")).next()"#,
+                editor(),
+            ),
+            "add_e",
+            "Create Data(edge \"secret\")",
+        );
+        // A multi-label vertex asks once per label.
+        assert_denied(
+            run(&graph, r#"g.addV(["public", "secret"]).next()"#, editor()),
+            "add_v",
+            "Create Data(vertex \"secret\")",
+        );
+        assert_eq!(count(&graph), 7);
+    }
+
+    #[test]
+    fn a_server_checks_its_own_resources_with_the_same_authorizer() {
+        let viewer = Session { role: Role::Viewer };
+        let open = |name| {
+            AccessRequest::new(
+                Action::Custom("open"),
+                Resource::Custom {
+                    kind: "database",
+                    name: Some(name),
+                },
+            )
+        };
+        assert!(viewer.authorize(&open("shared")).is_ok());
+        let denied = viewer.authorize(&open("payroll")).unwrap_err();
+        assert_eq!(
+            denied.reason(),
+            r#"not allowed for this role: open database("payroll")"#
+        );
+        assert!(
+            Session { role: Role::Admin }
+                .authorize(&open("payroll"))
+                .is_ok()
+        );
+        // The ready-made policy decides custom requests by kind.
+        assert!(AccessPolicy::allow_all().authorize(&open("x")).is_ok());
+        assert!(
+            AccessPolicy::allow_all()
+                .deny_resource(ResourceKind::Custom)
+                .authorize(&open("x"))
+                .is_err()
+        );
+        assert!(
+            AccessPolicy::allow_all()
+                .deny(ActionKind::Custom, ResourceKind::Custom)
+                .allows(ActionKind::Read, ResourceKind::Custom)
+        );
+    }
+}
+
+mod access_policy {
+    use super::*;
+
+    #[test]
+    fn read_only_reads_and_cannot_write() {
+        let graph = modern();
+        let read = AccessPolicy::read_only;
+        assert_eq!(
+            run(&graph, "g.V().count().next()", read())
+                .unwrap()
+                .as_int()
+                .unwrap(),
+            6
+        );
+        assert_denied(
+            run(&graph, r#"g.V().property("x", 1).toList()"#, read()),
+            "property",
+            "Update Data",
+        );
+        assert_denied(
+            run(&graph, "g.V().drop().toList()", read()),
+            "drop",
+            "Delete Data",
+        );
+        assert_denied(
+            run(&graph, r#"g.mergeV(#{name: "zed"}).toList()"#, read()),
+            "merge_v",
+            "Create Data(vertex)",
+        );
+        assert_denied(
+            run(&graph, r#"g.V().removeProperty("age").toList()"#, read()),
+            "remove_property",
+            "Update Data",
+        );
+        assert_denied(
+            run(&graph, r#"g.V().addLabel("x").toList()"#, read()),
+            "add_label",
+            "Update Data(vertex)",
+        );
+        assert_denied(
+            run(&graph, r#"g.V().drop_label("person").toList()"#, read()),
+            "drop_label",
+            "Update Data(vertex)",
+        );
+        assert_denied(
+            run(&graph, r#"g.E().set_label("x").toList()"#, read()),
+            "set_label",
+            "Update Data(edge)",
+        );
+        assert_eq!(count(&graph), 6);
+        assert!(
+            run(
+                &graph,
+                "g.statistics(); g.memory_usage(); g.get_schema(); g.infer_schema(); \
+                 g.diff_schema(`{}`); g.validate_schema(`{}`); g.validate_schema_patch(`{}`)",
+                read()
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn deny_all_denies_the_graph_but_not_plain_computation() {
+        let graph = modern();
+        let none = AccessPolicy::deny_all;
+        assert_denied(
+            run(&graph, "g.V().count().next()", none()),
+            "v",
+            "Read Data(vertex)",
+        );
+        assert_denied(
+            run(&graph, "g.statistics()", none()),
+            "statistics",
+            "Read Data",
+        );
+        for (script, operation) in [
+            ("g.get_schema()", "get_schema"),
+            ("g.inferSchema()", "infer_schema"),
+            ("g.diff_schema(`{}`)", "diff_schema"),
+            ("g.validate_schema(`{}`)", "validate_schema"),
+            (
+                "g.validate_schema(`{}`, SchemaMode.closed)",
+                "validate_schema",
+            ),
+            ("g.validateSchemaPatch(`{}`)", "validate_schema_patch"),
+        ] {
+            assert_denied(run(&graph, script, none()), operation, "Read Schema");
+        }
+        assert_eq!(run(&graph, "1 + 2", none()).unwrap().as_int().unwrap(), 3);
+    }
+
+    #[test]
+    fn write_without_read_can_add_but_not_traverse() {
+        let graph = modern();
+        let write = || {
+            AccessPolicy::deny_all()
+                .allow(ActionKind::Create, ResourceKind::Data)
+                .allow(ActionKind::Update, ResourceKind::Data)
+                .allow(ActionKind::Delete, ResourceKind::Data)
+        };
+        assert!(run(&graph, r#"g.addV("x").property("k", 1).next()"#, write()).is_ok());
+        assert_eq!(count(&graph), 7);
+        assert_denied(
+            run(&graph, "g.V().drop().toList()", write()),
+            "v",
+            "Read Data(vertex)",
+        );
+        assert_eq!(count(&graph), 7);
+    }
+
+    #[test]
+    fn administrative_options_need_update_on_option_and_harmless_ones_do_not() {
+        let graph = modern();
+        for key in [
+            r#""evaluationTimeout", 1000"#,
+            r#""repeat.max_loops", 5"#,
+            r#""bulk.max_expansion", 10"#,
+            r#""traversal.max_traversers", 10"#,
+            r#""traversal.max_value_depth", 10"#,
+            r#""traversal.max_materialized_bytes", 10"#,
+            r#""traversal.max_string_bytes", 10"#,
+            r#""memory.limit", 10"#,
+            r#""memory.headroom", 10"#,
+            r#""optimizer.disabled", ["all"]"#,
+            r#""path.analysis", false"#,
+            r#""bulk.merge", false"#,
+        ] {
+            let name = key.split('"').nth(1).unwrap();
+            assert_denied(
+                run(
+                    &graph,
+                    &format!("g.with({key}).V().count().next()"),
+                    AccessPolicy::read_only(),
+                ),
+                &format!("with(\"{name}\")"),
+                &format!("Update Option(\"{name}\")"),
+            );
+        }
+        for harmless in [
+            r#""repeat.order", "dfs""#,
+            r#""bulk.one", true"#,
+            r#""random.seed", 42"#,
+            r#""render.max_rows", 5"#,
+            r#""render.spelling", "camel""#,
+            r#""no.such.option", 1"#,
+        ] {
+            assert!(
+                run(
+                    &graph,
+                    &format!("g.with({harmless}).V().count().next()"),
+                    AccessPolicy::read_only()
+                )
+                .is_ok(),
+                "{harmless}"
+            );
+        }
+        let options = AccessPolicy::read_only().allow(ActionKind::Update, ResourceKind::Option);
+        assert!(
+            run(
+                &graph,
+                r#"g.with("evaluationTimeout", 1000).V().count().next()"#,
+                options
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_host_preset_option_is_not_the_query_setting() {
+        let graph = modern();
+        let read: Arc<dyn Authorizer> = Arc::new(AccessPolicy::read_only());
+        let timeout = ElementProperty::from(30_000);
+        let engine = script::engine_with_limits(&ScriptLimits::default(), read.clone());
+        let mut scope = script::graph_scope_with_options(
+            graph.clone(),
+            &[("evaluationTimeout", timeout)],
+            read,
+        );
+        // The preset itself runs; setting it to the same value is no change either.
+        let n = engine
+            .eval_with_scope::<Dynamic>(&mut scope, "g.V().count().next()")
+            .unwrap();
+        assert_eq!(n.as_int().unwrap(), 6);
+        assert!(
+            engine
+                .eval_with_scope::<Dynamic>(
+                    &mut scope,
+                    r#"g.with("evaluationTimeout", 30000).V().count().next()"#
+                )
+                .is_ok()
+        );
+        // Raising (or removing) it is the query's own administrative setting.
+        let err = engine
+            .eval_with_scope::<Dynamic>(
+                &mut scope,
+                r#"g.with("evaluationTimeout", 0).V().count().next()"#,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(
+                r#"Permission denied for 'with("evaluationTimeout")' (Update Option("evaluationTimeout"))"#
+            ),
+            "{err}"
+        );
+    }
+}
+
+mod plan_as_written {
+    use super::*;
+
+    #[test]
+    fn a_mutation_inside_a_child_traversal_is_denied_before_anything_runs() {
+        let graph = modern();
+        for (query, step, request) in [
+            (
+                r#"g.V().union(__.out(), __.addV("x")).toList()"#,
+                "add_v",
+                "Create Data(vertex \"x\")",
+            ),
+            (
+                r#"g.V().sideEffect(__.property("seen", true)).toList()"#,
+                "property",
+                "Update Data",
+            ),
+            (
+                r#"g.V().local(__.coalesce(__.out(), __.drop())).toList()"#,
+                "drop",
+                "Delete Data",
+            ),
+            (
+                r#"g.V().group().by(__.addV("y")).toList()"#,
+                "add_v",
+                "Create Data(vertex \"y\")",
+            ),
+            (
+                r#"g.V().repeat(__.out().property("hop", 1)).times(2).toList()"#,
+                "property",
+                "Update Data",
+            ),
+            (
+                r#"g.V().where(__.out().addE("x").to(__.V("1"))).toList()"#,
+                "add_e",
+                "Create Data(edge \"x\")",
+            ),
+        ] {
+            assert_denied(run(&graph, query, AccessPolicy::read_only()), step, request);
+        }
+        // Nothing ran: no property, no element was added.
+        assert_eq!(count(&graph), 6);
+        assert_eq!(graph.read().edge_count(), 6);
+        assert_eq!(
+            run(
+                &graph,
+                r#"g.V().has("seen").count().next()"#,
+                AccessPolicy::read_only()
+            )
+            .unwrap()
+            .as_int()
+            .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn optimizer_fusion_cannot_hide_a_step() {
+        let graph = modern();
+        // `add_property_fold` folds the `property()` steps into `add_v`, and `count_pushdown`
+        // folds `count()` into the source step; the check sees the plan as written.
+        let write = || {
+            AccessPolicy::deny_all()
+                .allow(ActionKind::Create, ResourceKind::Data)
+                .allow(ActionKind::Update, ResourceKind::Data)
+        };
+        assert_denied(
+            run(
+                &graph,
+                r#"g.addV("a").property("k", 1).id().toList()"#,
+                AccessPolicy::deny_all().allow(ActionKind::Create, ResourceKind::Data),
+            ),
+            "property",
+            "Update Data",
+        );
+        assert_denied(
+            run(
+                &graph,
+                r#"g.V().hasLabel("person").count().next()"#,
+                write(),
+            ),
+            "v",
+            "Read Data(vertex)",
+        );
+        assert_eq!(count(&graph), 6);
+        // The denied step is named as written, also when it only exists before optimization.
+        assert_denied(
+            run(
+                &graph,
+                r#"g.inject(1).addV("a").property("k", 1).toList()"#,
+                AccessPolicy::read_only(),
+            ),
+            "add_v",
+            "Create Data(vertex \"a\")",
+        );
+    }
+}
+
+mod private_graphs {
+    use super::*;
+
+    #[test]
+    fn a_graph_the_script_builds_itself_is_writable_without_asking() {
+        let graph = modern();
+        let n = run(
+            &graph,
+            r#"let mine = GraphSource::empty();
+               mine.addV("x").property("k", 1).next();
+               __.addV("scratch").next();
+               _g.addV("scratch").next();
+               mine.V().count().next()"#,
+            AccessPolicy::read_only(),
+        )
+        .unwrap();
+        assert_eq!(n.as_int().unwrap(), 1);
+        assert_eq!(count(&graph), 6);
+    }
+
+    #[test]
+    fn mutating_a_subgraph_result_is_not_a_write_to_the_host_graph() {
+        let graph = modern();
+        let n = run(
+            &graph,
+            r#"let sg = g.E().hasLabel("knows").subgraph("sg").cap("sg").next();
+               sg.addV("extra").next();
+               sg.V().drop().toList();
+               let tg = g.E().hasLabel("created").toGraph();
+               tg.addV("more").next();
+               tg.V().count().next()"#,
+            AccessPolicy::read_only(),
+        )
+        .unwrap();
+        assert_eq!(n.as_int().unwrap(), 6);
+        assert_eq!(count(&graph), 6);
+        assert_eq!(graph.read().edge_count(), 6);
+    }
+
+    #[test]
+    fn a_private_graph_is_not_readable_without_read() {
+        let graph = modern();
+        assert_denied(
+            run(
+                &graph,
+                "GraphSource::tinkerpop_modern().V().count().next()",
+                AccessPolicy::deny_all(),
+            ),
+            "v",
+            "Read Data(vertex)",
+        );
+    }
+
+    #[test]
+    fn a_subgraph_into_the_host_graph_needs_create() {
+        let host = Arc::new(GraphSource::empty());
+        let query = r#"GraphSource::tinkerpop_modern().withSideEffect("sg", g).E().hasLabel("knows")
+                       .subgraph("sg").cap("sg").next(); 1"#;
+        assert_denied(
+            run(&host, query, AccessPolicy::read_only()),
+            "with_side_effect",
+            "Create Data",
+        );
+        assert_eq!(host.read().edge_count(), 0);
+        let write = AccessPolicy::read_only().allow(ActionKind::Create, ResourceKind::Data);
+        let _ = run(&host, query, write).unwrap();
+        assert_eq!(host.read().edge_count(), 2);
+        // A private target needs nothing beyond the private graph's own relaxation.
+        let private_target = r#"let t = GraphSource::empty();
+            g.withSideEffect("sg", t).E().subgraph("sg").cap("sg").next(); t.E().count().next()"#;
+        assert_eq!(
+            run(&host, private_target, AccessPolicy::read_only())
+                .unwrap()
+                .as_int()
+                .unwrap(),
+            2
+        );
+    }
+}
+
+#[cfg(feature = "io")]
+mod file_io {
+    use super::*;
+
+    fn files() -> AccessPolicy {
+        AccessPolicy::read_only().allow_resource(ResourceKind::File)
+    }
+
+    #[test]
+    fn export_and_import_ask_for_the_file() {
+        let graph = modern();
+        let dir = fresh_dir("needs-file-io");
+        let path = forward(&dir.join("out.graphml"));
+        assert_denied(
+            run(
+                &graph,
+                &format!(r#"g.export_graphml("{path}")"#),
+                AccessPolicy::read_only(),
+            ),
+            "export_graphml",
+            "Create File(",
+        );
+        assert!(!dir.join("out.graphml").exists());
+        let _ = run(&graph, &format!(r#"g.export_graphml("{path}")"#), files()).unwrap();
+        assert!(dir.join("out.graphml").exists());
+        // Importing writes into the graph: file access alone is not enough.
+        let target = Arc::new(GraphSource::empty());
+        assert_denied(
+            run(&target, &format!(r#"g.import_graphml("{path}")"#), files()),
+            "import_graphml",
+            "Create Data",
+        );
+        let all = files().allow(ActionKind::Create, ResourceKind::Data);
+        let _ = run(&target, &format!(r#"g.import_graphml("{path}")"#), all).unwrap();
+        assert_eq!(count(&target), 6);
+        // GraphSource::file reads a file into a private graph.
+        assert_denied(
+            run(
+                &graph,
+                &format!(r#"GraphSource::file("{path}").V().count().next()"#),
+                AccessPolicy::read_only(),
+            ),
+            "GraphSource::file",
+            "Read File(",
+        );
+        let n = run(
+            &graph,
+            &format!(r#"GraphSource::file("{path}").V().count().next()"#),
+            files(),
+        )
+        .unwrap();
+        assert_eq!(n.as_int().unwrap(), 6);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "persist")]
+    #[test]
+    fn snapshot_export_asks_for_the_file_and_mark_for_update() {
+        let graph = modern();
+        let dir = fresh_dir("snapshot-needs-file-io");
+        let path = forward(&dir.join("g.gsnap"));
+        for spelling in ["export_snapshot", "exportSnapshot"] {
+            assert_denied(
+                run(
+                    &graph,
+                    &format!(r#"g.{spelling}("{path}")"#),
+                    AccessPolicy::read_only(),
+                ),
+                "export_snapshot",
+                "Create File(",
+            );
+        }
+        assert!(!dir.join("g.gsnap").exists());
+        let _ = run(&graph, &format!(r#"g.exportSnapshot("{path}")"#), files()).unwrap();
+        assert!(dir.join("g.gsnap").exists());
+        assert_denied(
+            run(
+                &graph,
+                &format!(r#"GraphSource::file("{path}")"#),
+                AccessPolicy::deny_all(),
+            ),
+            "GraphSource::file",
+            "Read File(",
+        );
+        let n = run(
+            &graph,
+            &format!(r#"GraphSource::file("{path}").V().count().next()"#),
+            files(),
+        )
+        .unwrap();
+        assert_eq!(n.as_int().unwrap(), 6);
+        assert_denied(
+            run(&graph, r#"g.mark("m")"#, AccessPolicy::read_only()),
+            "mark",
+            "Update Data",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn graphson_export_and_import_ask_for_the_file() {
+        let graph = modern();
+        let dir = fresh_dir("graphson-needs-file-io");
+        let path = forward(&dir.join("out.json"));
+        for spelling in ["export_graphson", "exportGraphson"] {
+            assert_denied(
+                run(
+                    &graph,
+                    &format!(r#"g.{spelling}("{path}")"#),
+                    AccessPolicy::read_only(),
+                ),
+                "export_graphson",
+                "Create File(",
+            );
+        }
+        assert!(!dir.join("out.json").exists());
+        let _ = run(&graph, &format!(r#"g.exportGraphson("{path}")"#), files()).unwrap();
+        assert!(dir.join("out.json").exists());
+        let target = Arc::new(GraphSource::empty());
+        for spelling in ["import_graphson", "importGraphson"] {
+            assert_denied(
+                run(&target, &format!(r#"g.{spelling}("{path}")"#), files()),
+                "import_graphson",
+                "Create Data",
+            );
+            assert_denied(
+                run(
+                    &target,
+                    &format!(r#"g.{spelling}("{path}")"#),
+                    AccessPolicy::read_only(),
+                ),
+                "import_graphson",
+                "",
+            );
+        }
+        let all = files().allow(ActionKind::Create, ResourceKind::Data);
+        let _ = run(&target, &format!(r#"g.importGraphson("{path}")"#), all).unwrap();
+        assert_eq!(count(&target), 6);
+        // GraphSource::file reads a `.json` file as GraphSON.
+        let n = run(
+            &graph,
+            &format!(r#"GraphSource::file("{path}").V().count().next()"#),
+            files(),
+        )
+        .unwrap();
+        assert_eq!(n.as_int().unwrap(), 6);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_file_root_confines_every_path() {
+        let graph = modern();
+        let root = fresh_dir("root");
+        let outside = fresh_dir("outside");
+        let rooted = || files().with_file_root(&root);
+        // A relative path resolves under the root.
+        let _ = run(&graph, r#"g.export_graphml("inside.graphml")"#, rooted()).unwrap();
+        assert!(root.join("inside.graphml").exists());
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let _ = run(
+            &graph,
+            r#"g.export_graphml("sub/../sub/nested.graphml")"#,
+            rooted(),
+        )
+        .unwrap();
+        assert!(root.join("sub/nested.graphml").exists());
+        // Leaving it is denied: `..`, an absolute path elsewhere.
+        for path in [
+            "../escape.graphml".to_string(),
+            "sub/../../escape.graphml".to_string(),
+            forward(&outside.join("abs.graphml")),
+        ] {
+            let err = run(&graph, &format!(r#"g.export_graphml("{path}")"#), rooted()).unwrap_err();
+            assert!(
+                err.contains("Permission denied for 'export_graphml' (Create File("),
+                "{err}"
+            );
+            assert!(err.contains("outside the file root"), "{err}");
+        }
+        assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
+        // Reading is confined the same way.
+        std::fs::copy(root.join("inside.graphml"), outside.join("secret.graphml")).unwrap();
+        let secret = forward(&outside.join("secret.graphml"));
+        let err = run(
+            &graph,
+            &format!(r#"GraphSource::file("{secret}")"#),
+            rooted(),
+        )
+        .unwrap_err();
+        assert!(err.contains("outside the file root"), "{err}");
+        let n = run(
+            &graph,
+            r#"GraphSource::file("inside.graphml").V().count().next()"#,
+            rooted(),
+        )
+        .unwrap();
+        assert_eq!(n.as_int().unwrap(), 6);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symbolic_link_out_of_the_root_is_denied() {
+        let graph = modern();
+        let root = fresh_dir("link-root");
+        let outside = fresh_dir("link-outside");
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        let rooted = files().with_file_root(&root);
+        let err = run(&graph, r#"g.export_graphml("link/out.graphml")"#, rooted).unwrap_err();
+        assert!(err.contains("outside the file root"), "{err}");
+        assert!(!outside.join("out.graphml").exists());
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn a_missing_file_root_denies_instead_of_panicking() {
+        let graph = modern();
+        let rooted = files()
+            .with_file_root(std::env::temp_dir().join("graphersal-permissions-no-such-root"));
+        let err = run(&graph, r#"g.export_graphml("x.graphml")"#, rooted).unwrap_err();
+        assert!(err.contains("cannot be resolved"), "{err}");
+    }
+
+    #[test]
+    fn a_host_resolves_files_with_the_same_policy() {
+        let root = fresh_dir("host-root");
+        let policy = AccessPolicy::allow_all().with_file_root(&root);
+        let resolved = policy
+            .resolve_file(std::path::Path::new("data.graphml"))
+            .unwrap();
+        assert!(resolved.starts_with(std::fs::canonicalize(&root).unwrap()));
+        assert!(
+            policy
+                .resolve_file(std::path::Path::new("../data.graphml"))
+                .is_err()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The schema methods take a map or JSON text, never a path: no file access at all.
+    #[test]
+    fn schema_changes_ask_for_update_on_the_schema_and_no_file() {
+        let graph = modern();
+        for (script, operation) in [
+            (r#"g.set_schema(`{"mode": "open"}`)"#, "set_schema"),
+            (r#"g.setSchema(`{}`, SchemaMode.open)"#, "set_schema"),
+            (r#"g.patchSchema(#{mode: "open"})"#, "patch_schema"),
+        ] {
+            assert_denied(run(&graph, script, files()), operation, "Update Schema");
+            let _ = run(
+                &graph,
+                script,
+                AccessPolicy::read_only().allow(ActionKind::Update, ResourceKind::Schema),
+            )
+            .unwrap();
+        }
+    }
+}
+
+mod rhai_import {
+    use super::*;
+
+    fn import(script: &str, policy: AccessPolicy) -> Result<Dynamic, String> {
+        let policy: Arc<dyn Authorizer> = Arc::new(policy);
+        let engine = script::engine_with_limits(&ScriptLimits::default(), policy.clone());
+        let mut scope = script::graph_scope_with_options(modern(), &[], policy);
+        engine
+            .eval_with_scope::<Dynamic>(&mut scope, script)
+            .map_err(|err| err.to_string())
+    }
+
+    #[test]
+    fn import_asks_to_execute_the_module_file() {
+        let err = import(r#"import "anything" as m; 1"#, AccessPolicy::read_only()).unwrap_err();
+        assert!(
+            err.contains(r#"Permission denied for 'import' (Execute File("anything.rhai"))"#),
+            "{err}"
+        );
+        // Allowed by default: a missing module is just not found.
+        let err = script::engine()
+            .eval::<i64>(r#"import "graphersal-no-such-module" as m; 1"#)
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("Permission denied"), "{err}");
+        let dir = fresh_dir("import-default");
+        std::fs::write(dir.join("helpers.rhai"), "fn answer() { 42 }").unwrap();
+        let module = forward(&dir.join("helpers"));
+        let value = script::engine()
+            .eval::<i64>(&format!(r#"import "{module}" as h; h::answer()"#))
+            .unwrap();
+        assert_eq!(value, 42);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_resolves_under_the_file_root_and_not_outside_it() {
+        let root = fresh_dir("import-root");
+        let outside = fresh_dir("import-outside");
+        std::fs::write(root.join("helpers.rhai"), "fn answer() { 42 }").unwrap();
+        std::fs::write(outside.join("evil.rhai"), "fn answer() { 666 }").unwrap();
+        let rooted = || {
+            AccessPolicy::read_only()
+                .allow(ActionKind::Execute, ResourceKind::File)
+                .with_file_root(&root)
+        };
+        let value = import(r#"import "helpers" as h; h::answer()"#, rooted()).unwrap();
+        assert_eq!(value.as_int().unwrap(), 42);
+        let evil = forward(&outside.join("evil"));
+        for path in [
+            format!(
+                "../graphersal-permissions-{}-import-outside/evil",
+                std::process::id()
+            ),
+            evil,
+        ] {
+            let err =
+                import(&format!(r#"import "{path}" as h; h::answer()"#), rooted()).unwrap_err();
+            assert!(err.contains("outside the file root"), "{path}: {err}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+}
+
+mod atomic_unit {
+    use super::*;
+
+    fn atomic(graph: &Arc<Graph>, script: &str) -> Result<Dynamic, String> {
+        script::eval_value_atomic(
+            graph.clone(),
+            script,
+            Default::default(),
+            &ScriptLimits::default(),
+            Arc::new(AllowAll),
+        )
+        .map_err(|err| err.to_string())
+    }
+
+    #[test]
+    fn a_returned_closure_is_rejected_and_rolls_back() {
+        let graph = modern();
+        for (script, location) in [
+            (r#"g.addV("a").next(); |x| x + 1"#, "the result"),
+            (
+                r#"g.addV("a").next(); [1, 2, || g.V().count().next()]"#,
+                "result[2]",
+            ),
+            (
+                r#"g.addV("a").next(); fn helper(x) { x } #{inner: #{f: Fn("helper")}}"#,
+                "result.inner.f",
+            ),
+        ] {
+            let err = atomic(&graph, script).unwrap_err();
+            assert!(
+                err.contains("cannot return a closure or function pointer"),
+                "{err}"
+            );
+            assert!(err.contains(location), "{location}: {err}");
+            assert_eq!(count(&graph), 6, "{script}");
+        }
+        // Calling the closure inside the script and returning data is fine.
+        let n = atomic(&graph, r#"let f = || g.V().count().next(); f.call()"#).unwrap();
+        assert_eq!(n.as_int().unwrap(), 6);
+    }
+
+    #[test]
+    fn the_atomic_entry_asks_the_authorizer_too() {
+        let graph = modern();
+        let err = script::eval_value_atomic(
+            graph.clone(),
+            r#"g.addV("a").next()"#,
+            Default::default(),
+            &ScriptLimits::default(),
+            Arc::new(AccessPolicy::read_only()),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains(r#"Permission denied for 'add_v' (Create Data(vertex "a"))"#),
+            "{err}"
+        );
+        assert_eq!(count(&graph), 6);
+    }
+}
+
+/// Saved queries (`roadmap/saved-queries.md`, sections 4 and 7): `Execute` on the query to call
+/// it (asked before the body runs), `Read` to list, `Create`/`Update`/`Delete` to manage; a call
+/// runs under the read-only restriction whatever the host allows.
+mod saved_queries {
+    use super::*;
+
+    /// The modern graph with the saved query `people` (defined with everything allowed).
+    fn with_query() -> Arc<Graph> {
+        let graph = modern();
+        let _ = run(
+            &graph,
+            r#"g.define_query(#{name: "people", body: "fn people() { g.v().has_label(\"person\") }"})"#,
+            AllowAll,
+        )
+        .unwrap();
+        graph
+    }
+
+    #[test]
+    fn calling_asks_execute_on_the_query_before_the_body_runs() {
+        let graph = with_query();
+        let recorder = Arc::new(Recorder::default());
+        let _ = run(
+            &graph,
+            r#"g.query("people").count().next()"#,
+            recorder.clone(),
+        )
+        .unwrap();
+        let seen: Vec<String> = recorder
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| request.to_string())
+            .collect();
+        assert_eq!(seen[0], r#"Execute Definition(query "people")"#, "{seen:?}");
+        assert!(
+            seen[1..]
+                .iter()
+                .any(|request| request.starts_with("Read Data")),
+            "{seen:?}"
+        );
+
+        let denied = run(
+            &graph,
+            r#"g.query("people").count().next()"#,
+            AccessPolicy::allow_all().deny(ActionKind::Execute, ResourceKind::Definition),
+        );
+        assert_denied(denied, "query", r#"Execute Definition(query "people")"#);
+    }
+
+    #[test]
+    fn a_read_only_host_calls_and_lists_but_does_not_define() {
+        let graph = with_query();
+        let policy = AccessPolicy::read_only;
+        assert_eq!(
+            run(&graph, r#"g.query("people").count().next()"#, policy())
+                .unwrap()
+                .as_int()
+                .unwrap(),
+            4
+        );
+        assert!(run(&graph, r#"g.queries()"#, policy()).is_ok());
+        assert!(run(&graph, r#"g.get_query("people")"#, policy()).is_ok());
+        assert_denied(
+            run(
+                &graph,
+                r#"g.define_query(#{name: "x", body: "fn x() { 1 }"})"#,
+                policy(),
+            ),
+            "define_query",
+            r#"Create Definition(query "x")"#,
+        );
+        assert_denied(
+            run(
+                &graph,
+                r#"g.define_query(#{name: "people", body: "fn people() { 1 }"})"#,
+                policy(),
+            ),
+            "define_query",
+            r#"Update Definition(query "people")"#,
+        );
+        assert_denied(
+            run(&graph, r#"g.drop_query("people")"#, policy()),
+            "drop_query",
+            r#"Delete Definition(query "people")"#,
+        );
+        assert_denied(
+            run(&graph, r#"g.move_query("people", "x")"#, policy()),
+            "move_query",
+            "Update Definition",
+        );
+        assert_denied(
+            run(&graph, r#"g.describe_query("people", "x")"#, policy()),
+            "describe_query",
+            "Update Definition",
+        );
+        assert_denied(
+            run(&graph, r#"g.define_queries("", "fn y() { 1 }")"#, policy()),
+            "define_queries",
+            r#"Create Definition(query "y")"#,
+        );
+    }
+
+    #[test]
+    fn listing_asks_read_on_the_saved_queries() {
+        let graph = with_query();
+        let no_read = || AccessPolicy::allow_all().deny(ActionKind::Read, ResourceKind::Definition);
+        assert_denied(
+            run(&graph, r#"g.queries()"#, no_read()),
+            "queries",
+            "Read Definition(query)",
+        );
+        assert_denied(
+            run(&graph, r#"g.get_query("people")"#, no_read()),
+            "get_query",
+            r#"Read Definition(query "people")"#,
+        );
+        // Calling needs Execute only.
+        assert!(run(&graph, r#"g.query("people").to_list()"#, no_read()).is_ok());
+    }
+
+    #[test]
+    fn the_body_runs_with_the_hosts_reads_and_never_its_writes() {
+        let graph = with_query();
+        // The host denies reading data: the body cannot read either.
+        assert_denied(
+            run(
+                &graph,
+                r#"g.query("people").to_list()"#,
+                AccessPolicy::allow_all().deny(ActionKind::Read, ResourceKind::Data),
+            ),
+            "v",
+            "Read Data",
+        );
+        // The host allows everything: a write through a query result is still denied.
+        let err = run(&graph, r#"g.query("people").drop().to_list()"#, AllowAll).unwrap_err();
+        assert!(err.contains("Permission denied for 'drop'"), "{err}");
+        assert!(err.contains("a saved query is read-only"), "{err}");
+        assert_eq!(count(&graph), 6);
+    }
+}

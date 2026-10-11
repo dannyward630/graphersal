@@ -1,0 +1,75 @@
+{
+  "_comment": "Gemini-style answers of Google's OpenAI-compatible endpoint (the shape of a Gemini 3 thinking model; signatures replaced by placeholders). one_call: one tool call with a thought signature, plus message-level extra_content and a reasoning_content that must not be sent back. two_calls: parallel calls, only the first carries a signature. text: a text answer with a signature on the message.",
+  "one_call": {
+    "id": "gemini-1",
+    "object": "chat.completion",
+    "model": "gemini-3-flash-preview",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "reasoning_content": "The user asks for saved queries; list them first.",
+          "extra_content": {"google": {"thought_signature": "CsIBAVSoXO_msg"}},
+          "tool_calls": [
+            {
+              "id": "function-call-1",
+              "type": "function",
+              "function": {"name": "list_saved_queries", "arguments": "{}"},
+              "extra_content": {"google": {"thought_signature": "CsIBAVSoXO_one"}}
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ],
+    "usage": {"prompt_tokens": 900, "completion_tokens": 40, "total_tokens": 940}
+  },
+  "two_calls": {
+    "id": "gemini-2",
+    "object": "chat.completion",
+    "model": "gemini-3-flash-preview",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "Let me check both.",
+          "tool_calls": [
+            {
+              "id": "function-call-2",
+              "type": "function",
+              "function": {"name": "query", "arguments": "{\"script\":\"g.v().count()\"}"},
+              "extra_content": {"google": {"thought_signature": "CsIBAVSoXO_first"}}
+            },
+            {
+              "id": "function-call-3",
+              "type": "function",
+              "function": {"name": "query", "arguments": "{\"script\":\"g.e().count()\"}"}
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ],
+    "usage": {"prompt_tokens": 950, "completion_tokens": 50, "total_tokens": 1000}
+  },
+  "text": {
+    "id": "gemini-3",
+    "object": "chat.completion",
+    "model": "gemini-3-flash-preview",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "There are 6 vertices and 6 edges.",
+          "extra_content": {"google": {"thought_signature": "CsIBAVSoXO_text"}}
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {"prompt_tokens": 1000, "completion_tokens": 12, "total_tokens": 1012}
+  }
+}

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "graphersal"
+description = "Python bindings for the Graphersal graph traversal engine"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+dynamic = ["version"]
+authors = [{ name = "Aleksandr Dederer", email = "aleks@graphersal.dev" }]
+
+[project.urls]
+Homepage = "https://graphersal.dev"
+Documentation = "https://graphersal.dev"
+Repository = "https://github.com/graphersal/graphersal"
+Playground = "https://play.graphersal.dev"
+
+[tool.maturin]
+features = ["extension-module"]
+module-name = "graphersal"

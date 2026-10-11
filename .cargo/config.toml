@@ -1,0 +1,7 @@
+# getrandom 0.3 selects its wasm32-unknown-unknown backend by cfg, not by feature alone.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", 'getrandom_backend="wasm_js"']
+# `cargo test --target wasm32-unknown-unknown` (graphersal-wasm's wasm-bindgen tests) runs the
+# test module under Node.js. Installed with the matching CLI version:
+# `cargo install --locked wasm-bindgen-cli --version 0.2.129`.
+runner = "wasm-bindgen-test-runner"

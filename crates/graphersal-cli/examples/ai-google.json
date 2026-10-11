@@ -1,0 +1,9 @@
+{
+  "provider": "openai",
+  "model": "gemini-3.8-flash",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+  "api_key_env": "GEMINI_API_KEY",
+  "read_only": false,
+  "max_tool_calls_per_turn": 20,
+  "max_tokens": 4096
+}

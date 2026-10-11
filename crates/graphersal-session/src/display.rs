@@ -1,0 +1,602 @@
+//! Display shapes of results (a table, JSON text) within the display limits, and the elements
+//! the results refer to (the "subgraph" the Graph panel highlights).
+//!
+//! Display is bounded, data never: `execution.results` always holds everything; only what is
+//! shown here is cut, with the CLI's `…` marker. Values stay [`ElementProperty`] until they are
+//! serialized, so map keys keep the engine's order (a `serde_json::Value` would sort them).
+
+use std::collections::{HashMap, HashSet};
+
+use graphersal::exec::RenderOptions;
+use graphersal::prelude::CompactString;
+use graphersal::prelude::*;
+use graphersal::storage::ElementKind;
+use serde::Serialize;
+
+/// The `…` marker of a cut collection, as in the CLI.
+const CUT: &str = "…";
+
+/// Vertices and edges a result's subgraph carries by default ([`crate::RunOptions`]
+/// `subgraph_max_elements`, the playground's setting "Result graph"). Measured in GR4
+/// (`playground/README.md`, "Graph drawing"): the compact columns of 50 000 elements are about
+/// 1.4 MB of JSON and reach the page in tens of milliseconds; the Fast tier draws them smoothly.
+pub const DEFAULT_SUBGRAPH_MAX_ELEMENTS: usize = 50_000;
+
+/// The largest subgraph a run may ask for (the end of the Fast tier's range,
+/// `TIER_TUNING.fastMax` in `playground/js/graph/tiers.js`).
+pub const SUBGRAPH_MAX_ELEMENTS: usize = 200_000;
+
+/// The byte bound of a result's subgraph: the estimated size of its JSON columns (ids, captions,
+/// indices). A result whose elements carry very long ids or names stops here before the element
+/// limit (`stoppedBy: "bytes"`).
+pub const SUBGRAPH_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// Most columns a table of maps gets before it falls back to one `value` column.
+const MAX_COLUMNS: usize = 50;
+
+/// Display limits: `None` is unbounded.
+#[derive(Debug, Clone, Copy)]
+pub struct Bounds {
+    /// Top-level rows shown.
+    pub max_rows: Option<usize>,
+    /// Items shown of every nested collection.
+    pub max_items: Option<usize>,
+}
+
+impl Bounds {
+    /// The limits of a [`RenderOptions`].
+    pub fn of(render: &RenderOptions) -> Self {
+        Self {
+            max_rows: render.max_rows,
+            max_items: render.max_items,
+        }
+    }
+
+    /// Show everything.
+    pub fn unlimited() -> Self {
+        Self {
+            max_rows: None,
+            max_items: None,
+        }
+    }
+}
+
+/// `{columns, rows}`: what the Results panel's Table tab shows.
+#[derive(Debug, Clone, Serialize)]
+pub struct Table {
+    /// Column names.
+    pub columns: Vec<String>,
+    /// One list of cells per row.
+    pub rows: Vec<Vec<ElementProperty>>,
+}
+
+/// The display of a result: `{table, json, raw, notice, total_rows}` (engine.js).
+#[derive(Debug, Clone, Serialize)]
+pub struct Display {
+    /// The Table tab.
+    pub table: Table,
+    /// The JSON tab (pretty-printed, within the limits).
+    pub json: String,
+    /// The Raw tab: the engine's own visualizer output (what the CLI prints).
+    pub raw: String,
+    /// The truncation notice, when something was cut.
+    pub notice: Option<String>,
+    /// How many results there are (a list result), `None` for a single value.
+    pub total_rows: Option<usize>,
+}
+
+/// The display of `results` (one row per item when `as_rows`, else the single value). `raw` is
+/// filled in by the caller from the engine's visualizer.
+pub fn bounded_display(results: &[ElementProperty], as_rows: bool, bounds: &Bounds) -> Display {
+    let total = results.len();
+    let shown_rows = bounds.max_rows.map_or(total, |n| n.min(total));
+    let mut nested_cut = false;
+    let rows: Vec<ElementProperty> = results[..shown_rows]
+        .iter()
+        .map(|row| cut_nested(row, bounds.max_items, &mut nested_cut))
+        .collect();
+    let notice = if shown_rows < total {
+        Some(format!(
+            "{CUT} showing the first {shown_rows} rows; more exist. Raise \"Max rows\" in the \
+             settings, or override one call with to_table(#{{max_rows: n}}) / #{{no_limit: true}}."
+        ))
+    } else if nested_cut {
+        Some(format!(
+            "{CUT} nested collections are cut to {} items; raise \"Max items\" in the settings.",
+            bounds.max_items.unwrap_or_default()
+        ))
+    } else {
+        None
+    };
+    let json = if as_rows {
+        serde_json::to_string_pretty(&rows)
+    } else {
+        serde_json::to_string_pretty(rows.first().unwrap_or(&ElementProperty::Null))
+    }
+    .unwrap_or_default();
+    Display {
+        table: table_of(&rows),
+        json,
+        raw: String::new(),
+        notice,
+        total_rows: as_rows.then_some(total),
+    }
+}
+
+/// The entries of a map-like value (a map, a materialized vertex or edge).
+fn entries_of(value: &ElementProperty) -> Option<&PropertyMap> {
+    match value {
+        ElementProperty::Object(map)
+        | ElementProperty::Vertex(map)
+        | ElementProperty::Edge(map) => Some(map),
+        _ => None,
+    }
+}
+
+fn cut_nested(
+    value: &ElementProperty,
+    max_items: Option<usize>,
+    cut: &mut bool,
+) -> ElementProperty {
+    let Some(limit) = max_items else {
+        return value.clone();
+    };
+    if let ElementProperty::Array(items) = value {
+        let mut out: Vec<ElementProperty> = items
+            .iter()
+            .take(limit)
+            .map(|item| cut_nested(item, max_items, cut))
+            .collect();
+        if items.len() > limit {
+            *cut = true;
+            out.push(ElementProperty::from(format!(
+                "{CUT} {} more",
+                items.len() - limit
+            )));
+        }
+        return ElementProperty::Array(out);
+    }
+    if let Some(map) = entries_of(value) {
+        let mut out: PropertyMap = map
+            .iter()
+            .take(limit)
+            .map(|(k, v)| (k.clone(), cut_nested(v, max_items, cut)))
+            .collect();
+        if map.len() > limit {
+            *cut = true;
+            out.insert(
+                CompactString::new(CUT),
+                ElementProperty::from(format!("{} more", map.len() - limit)),
+            );
+        }
+        return ElementProperty::Object(Box::new(out));
+    }
+    value.clone()
+}
+
+/// Column layout: rows that are all maps get one column per key, in first-seen order (element
+/// keys `id`, `label`, `_from`, `_to` first); anything else is a single `value` column.
+pub fn table_of(rows: &[ElementProperty]) -> Table {
+    if rows.is_empty() {
+        return Table {
+            columns: Vec::new(),
+            rows: Vec::new(),
+        };
+    }
+    let maps: Option<Vec<&PropertyMap>> = rows.iter().map(entries_of).collect();
+    if let Some(maps) = maps {
+        let mut keys: Vec<String> = Vec::new();
+        for first in ["id", "label", "_from", "_to"] {
+            if maps.iter().any(|m| m.contains_key(first)) {
+                keys.push(first.to_string());
+            }
+        }
+        for map in &maps {
+            for key in map.keys() {
+                if !keys.iter().any(|k| k == key.as_str()) {
+                    keys.push(key.to_string());
+                }
+            }
+        }
+        if keys.len() <= MAX_COLUMNS {
+            let rows = maps
+                .iter()
+                .map(|m| {
+                    keys.iter()
+                        .map(|k| m.get(k.as_str()).cloned().unwrap_or(ElementProperty::Null))
+                        .collect()
+                })
+                .collect();
+            return Table {
+                columns: keys,
+                rows,
+            };
+        }
+    }
+    Table {
+        columns: vec!["value".to_string()],
+        rows: rows.iter().map(|r| vec![r.clone()]).collect(),
+    }
+}
+
+/// A vertex as the playground draws it.
+#[derive(Debug, Clone, Serialize)]
+pub struct Node {
+    /// The vertex id.
+    pub id: String,
+    /// The primary label (`""` when unlabeled).
+    pub label: String,
+    /// The full label set.
+    pub labels: Vec<String>,
+    /// The stored properties, in order.
+    pub properties: PropertyMap,
+}
+
+/// An edge as the playground draws it.
+#[derive(Debug, Clone, Serialize)]
+pub struct Edge {
+    /// The edge id.
+    pub id: String,
+    /// The edge label.
+    pub label: String,
+    /// The out-vertex id.
+    pub source: String,
+    /// The in-vertex id.
+    pub target: String,
+    /// The stored properties, in order.
+    pub properties: PropertyMap,
+}
+
+/// Vertices and edges to draw as columns (`GraphView` in engine.js): what the Graph panel needs to
+/// draw, nothing more. Properties are not part of it: the inspector fetches the clicked element's
+/// with [`element_of`] (`Session::element`).
+///
+/// Vertex `i` is `vertexIds[i]` with label `labels[vertexLabel[i]]` (its primary label, `""` when
+/// unlabeled) and caption `vertexName[i]` (its `name` property as text, `null` without one); edge
+/// `j` is `edgeIds[j]` from vertex `edgeSource[j]` to vertex `edgeTarget[j]` (indices into the
+/// vertex columns) with label `labels[edgeLabel[j]]`. Every edge's endpoints are in the vertex
+/// columns. `truncated` says that the graph (or the result) has more than is drawn; `totalNodes` /
+/// `totalEdges` count what there is.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactGraph {
+    /// The vertex ids.
+    pub vertex_ids: Vec<String>,
+    /// Per vertex: the index of its primary label in `labels`.
+    pub vertex_label: Vec<u32>,
+    /// Per vertex: its `name` property as text (the caption), or `None`.
+    pub vertex_name: Vec<Option<String>>,
+    /// The edge ids.
+    pub edge_ids: Vec<String>,
+    /// Per edge: the index of its out-vertex in the vertex columns.
+    pub edge_source: Vec<u32>,
+    /// Per edge: the index of its in-vertex in the vertex columns.
+    pub edge_target: Vec<u32>,
+    /// Per edge: the index of its label in `labels`.
+    pub edge_label: Vec<u32>,
+    /// The label table shared by vertices and edges, in first-use order.
+    pub labels: Vec<String>,
+    /// More vertices or edges exist than are drawn.
+    pub truncated: bool,
+    /// Vertices in the graph (or the result).
+    pub total_nodes: usize,
+    /// Edges in the graph (or the result).
+    pub total_edges: usize,
+    /// Why a result's subgraph stopped early: `"elements"` (its element limit) or `"bytes"`
+    /// ([`SUBGRAPH_MAX_BYTES`]); absent when nothing stopped it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stopped_by: Option<&'static str>,
+}
+
+impl CompactGraph {
+    /// The columns of `vertices` and `edges`; an edge whose endpoint is not among `vertices` is
+    /// left out. `truncated` and the totals are the caller's.
+    pub fn build<S: GraphStorage>(g: &S, vertices: &[S::VertexId], edges: &[S::EdgeId]) -> Self {
+        let mut view = CompactGraph {
+            vertex_ids: Vec::with_capacity(vertices.len()),
+            vertex_label: Vec::with_capacity(vertices.len()),
+            vertex_name: Vec::with_capacity(vertices.len()),
+            edge_ids: Vec::with_capacity(edges.len()),
+            edge_source: Vec::with_capacity(edges.len()),
+            edge_target: Vec::with_capacity(edges.len()),
+            edge_label: Vec::with_capacity(edges.len()),
+            ..CompactGraph::default()
+        };
+        let mut labels = LabelTable::default();
+        let mut position = HashMap::with_capacity(vertices.len());
+        for v in vertices {
+            let Ok(index) = u32::try_from(view.vertex_ids.len()) else {
+                break;
+            };
+            position.insert(*v, index);
+            view.vertex_ids
+                .push(g.vertex_id(*v).unwrap_or_default().to_string());
+            let label = g.vertex_labels(*v).first().map_or("", |l| l.as_str());
+            view.vertex_label.push(labels.index(label));
+            view.vertex_name.push(
+                g.vertex_properties(*v)
+                    .and_then(|p| p.get("name"))
+                    .and_then(caption_text),
+            );
+        }
+        for e in edges {
+            let Some((s, t)) = g.edge_endpoints(*e) else {
+                continue;
+            };
+            let (Some(s), Some(t)) = (position.get(&s), position.get(&t)) else {
+                continue;
+            };
+            view.edge_ids
+                .push(g.edge_id(*e).unwrap_or_default().to_string());
+            view.edge_source.push(*s);
+            view.edge_target.push(*t);
+            view.edge_label
+                .push(labels.index(g.edge_label(*e).unwrap_or_default()));
+        }
+        view.labels = labels.names;
+        view
+    }
+}
+
+/// Interned label names: index of a name in `names`, added on first use.
+#[derive(Default)]
+struct LabelTable {
+    names: Vec<String>,
+    index: HashMap<String, u32>,
+}
+
+impl LabelTable {
+    fn index(&mut self, label: &str) -> u32 {
+        if let Some(i) = self.index.get(label) {
+            return *i;
+        }
+        let i = u32::try_from(self.names.len()).unwrap_or(u32::MAX);
+        self.names.push(label.to_string());
+        self.index.insert(label.to_string(), i);
+        i
+    }
+}
+
+/// A caption from a scalar property value: a string as it is, a number or boolean as text;
+/// `None` for anything else (null, lists, maps, UUIDs).
+pub(crate) fn caption_text(value: &ElementProperty) -> Option<String> {
+    match value {
+        ElementProperty::String(s) => Some(s.to_string()),
+        ElementProperty::Number(n) => Some(n.to_string()),
+        ElementProperty::Boolean(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// One element with everything the inspector shows, tagged with its `kind`: a vertex
+/// (`{kind: "vertex", id, label, labels, properties}`) or an edge (`{kind: "edge", id, label,
+/// source, target, properties}`). Serialized directly (never through a `serde_json::Value`), so
+/// the properties keep the engine's order.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum InspectedElement {
+    /// A vertex.
+    Vertex(Node),
+    /// An edge.
+    Edge(Edge),
+}
+
+/// The element of `kind` with `id`, or `None` when there is none (dropped since it was drawn).
+pub fn element_of<S: GraphStorage>(g: &S, kind: ElementKind, id: &str) -> Option<InspectedElement> {
+    Some(match kind {
+        ElementKind::Vertex => InspectedElement::Vertex(node_of(g, g.get_vertex_by_id(id)?)),
+        ElementKind::Edge => InspectedElement::Edge(edge_of(g, g.get_edge_by_id(id)?)),
+    })
+}
+
+/// A vertex as the playground draws it.
+pub fn node_of<S: GraphStorage>(g: &S, v: S::VertexId) -> Node {
+    let labels: Vec<String> = g.vertex_labels(v).iter().map(|l| l.to_string()).collect();
+    Node {
+        id: g.vertex_id(v).unwrap_or_default().to_string(),
+        label: labels.first().cloned().unwrap_or_default(),
+        labels,
+        properties: g.vertex_properties(v).cloned().unwrap_or_default(),
+    }
+}
+
+/// An edge as the playground draws it.
+pub fn edge_of<S: GraphStorage>(g: &S, e: S::EdgeId) -> Edge {
+    let (source, target) = g
+        .edge_endpoints(e)
+        .map(|(s, t)| {
+            (
+                g.vertex_id(s).unwrap_or_default().to_string(),
+                g.vertex_id(t).unwrap_or_default().to_string(),
+            )
+        })
+        .unwrap_or_default();
+    Edge {
+        id: g.edge_id(e).unwrap_or_default().to_string(),
+        label: g.edge_label(e).unwrap_or_default().to_string(),
+        source,
+        target,
+        properties: g.edge_properties(e).cloned().unwrap_or_default(),
+    }
+}
+
+/// Estimated JSON bytes of a vertex in the columns: its id, its caption and the separators and
+/// index digits around them.
+fn vertex_bytes<S: GraphStorage>(g: &S, v: S::VertexId) -> usize {
+    let name = g
+        .vertex_properties(v)
+        .and_then(|p| p.get("name"))
+        .and_then(ElementProperty::as_str)
+        .map_or(4, str::len);
+    g.vertex_id(v).map_or(0, str::len) + name + 12
+}
+
+/// The vertices and edges `results` refer to, as a [`CompactGraph`]: every map with a string
+/// `id` and `label` that names a stored element (an edge has `_from`/`_to`), searched through
+/// nested lists and maps (paths, projections). Edge endpoints are included so the drawing is
+/// connected. At most `max_elements` vertices + edges (clamped to [`SUBGRAPH_MAX_ELEMENTS`])
+/// and about [`SUBGRAPH_MAX_BYTES`] of columns; `truncated` and `stopped_by` say when the
+/// search stopped there. `None` when the results refer to no element.
+pub fn collect_subgraph<S: GraphStorage>(
+    g: &S,
+    results: &[ElementProperty],
+    max_elements: usize,
+) -> Option<CompactGraph> {
+    let max_elements = max_elements.min(SUBGRAPH_MAX_ELEMENTS);
+    let mut vertices = Vec::new();
+    let mut edges = Vec::new();
+    let mut seen_v = HashSet::new();
+    let mut seen_e = HashSet::new();
+    let mut stack: Vec<&ElementProperty> = results.iter().rev().collect();
+    let mut stopped_by = None;
+    let mut bytes = 0usize;
+    while let Some(value) = stack.pop() {
+        if vertices.len() + edges.len() >= max_elements {
+            stopped_by = Some("elements");
+            break;
+        }
+        if bytes >= SUBGRAPH_MAX_BYTES {
+            stopped_by = Some("bytes");
+            break;
+        }
+        if let ElementProperty::Array(items) = value {
+            stack.extend(items.iter().rev());
+            continue;
+        }
+        let Some(map) = entries_of(value) else {
+            continue;
+        };
+        let id = map.get("id").and_then(ElementProperty::as_str);
+        // `label` is a string, or null for an element without a label.
+        let label = match map.get("label") {
+            Some(ElementProperty::Null) => Some(None),
+            Some(other) => other.as_str().map(Some),
+            None => None,
+        };
+        if let (Some(id), Some(label)) = (id, label) {
+            if map.contains_key("_from") && map.contains_key("_to") {
+                if let Some(e) = g.get_edge_by_id(id)
+                    && g.edge_label(e).filter(|l| !l.is_empty()) == label.filter(|l| !l.is_empty())
+                    && seen_e.insert(e)
+                {
+                    edges.push(e);
+                    bytes += id.len() + 24;
+                    if let Some((s, t)) = g.edge_endpoints(e) {
+                        for v in [s, t] {
+                            if seen_v.insert(v) {
+                                bytes += vertex_bytes(g, v);
+                                vertices.push(v);
+                            }
+                        }
+                    }
+                }
+            } else if let Some(v) = g.get_vertex_by_id(id)
+                && label.map_or(g.vertex_labels(v).is_empty(), |l| g.vertex_has_label(v, l))
+                && seen_v.insert(v)
+            {
+                bytes += vertex_bytes(g, v);
+                vertices.push(v);
+            }
+        }
+        stack.extend(map.values());
+    }
+    if vertices.is_empty() && edges.is_empty() {
+        return None;
+    }
+    let (total_nodes, total_edges) = (vertices.len(), edges.len());
+    let mut view = CompactGraph::build(g, &vertices, &edges);
+    view.truncated = stopped_by.is_some();
+    view.stopped_by = stopped_by;
+    view.total_nodes = total_nodes;
+    view.total_edges = total_edges;
+    Some(view)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn list(items: Vec<i64>) -> ElementProperty {
+        ElementProperty::Array(items.into_iter().map(ElementProperty::from).collect())
+    }
+
+    #[test]
+    fn rows_and_nested_items_are_cut_with_a_notice() {
+        let rows = vec![list(vec![1, 2, 3]), list(vec![4]), list(vec![5])];
+        let d = bounded_display(
+            &rows,
+            true,
+            &Bounds {
+                max_rows: Some(2),
+                max_items: Some(2),
+            },
+        );
+        assert_eq!(d.total_rows, Some(3));
+        assert_eq!(d.table.rows.len(), 2);
+        let text = serde_json::to_string(&d.table.rows[0][0]).unwrap();
+        assert_eq!(text, r#"[1,2,"… 1 more"]"#);
+        assert!(d.notice.unwrap().contains("first 2 rows"));
+    }
+
+    #[test]
+    fn maps_become_columns_in_engine_order_with_element_keys_first() {
+        let mut map = PropertyMap::default();
+        map.insert("name", "a".into());
+        map.insert("age", 1i64.into());
+        map.insert("id", "1".into());
+        let t = table_of(&[ElementProperty::Object(Box::new(map))]);
+        assert_eq!(t.columns, vec!["id", "name", "age"]);
+    }
+
+    /// The modern graph twice: as a `TraversalGraph` and wrapped in the `Forwarding` storage
+    /// (not `TraversalGraph`, own handle types), for the generic-helper comparisons.
+    fn modern_pair() -> (
+        TraversalGraph,
+        graphersal_storage_tests::forwarding::Forwarding,
+    ) {
+        (
+            TraversalGraph::tinkerpop_modern(),
+            graphersal_storage_tests::forwarding::Forwarding::new(
+                TraversalGraph::tinkerpop_modern(),
+            ),
+        )
+    }
+
+    #[test]
+    fn elements_and_subgraphs_on_a_foreign_storage_equal_those_of_a_traversal_graph() {
+        let (tg, fw) = modern_pair();
+        for (kind, id) in [
+            (ElementKind::Vertex, "1"),
+            (ElementKind::Edge, "0"),
+            (ElementKind::Vertex, "none"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(element_of(&tg, kind, id)).unwrap(),
+                serde_json::to_value(element_of(&fw, kind, id)).unwrap()
+            );
+        }
+        let element = |pairs: &[(&str, &str)]| {
+            let mut map = PropertyMap::default();
+            for (k, v) in pairs {
+                map.insert(*k, (*v).into());
+            }
+            ElementProperty::Object(Box::new(map))
+        };
+        let results = vec![
+            element(&[("id", "4"), ("label", "person")]),
+            ElementProperty::Array(vec![element(&[
+                ("id", "0"),
+                ("label", "knows"),
+                ("_from", "1"),
+                ("_to", "2"),
+            ])]),
+        ];
+        let tg_view = collect_subgraph(&tg, &results, 100).unwrap();
+        let fw_view = collect_subgraph(&fw, &results, 100).unwrap();
+        assert_eq!(tg_view.vertex_ids, ["4", "1", "2"]);
+        assert_eq!(
+            serde_json::to_value(tg_view).unwrap(),
+            serde_json::to_value(fw_view).unwrap()
+        );
+    }
+}

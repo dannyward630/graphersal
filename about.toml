@@ -1,0 +1,19 @@
+# cargo-about configuration: generates THIRD-PARTY-LICENSES for the `graphersal-cli` binary.
+#   cargo about generate --config about.toml --manifest-path crates/graphersal-cli/Cargo.toml about.hbs > THIRD-PARTY-LICENSES.html
+# The accepted list mirrors the licence allow list of deny.toml.
+accepted = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "Zlib",
+    "BSL-1.0",
+    "Unlicense",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "MPL-2.0",
+]
+ignore-dev-dependencies = true
+ignore-build-dependencies = true

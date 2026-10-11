@@ -1,0 +1,34 @@
+//! `ScriptGraphTraversalSource::is_mutating()`: whether a script plan contains a mutating step.
+
+use super::*;
+
+impl ScriptGraphTraversalSource {
+    /// Whether the traversal contains a mutating step (`add_v`, `property`, `drop`, `merge_v`,
+    /// ...), also inside a child traversal. Decided from the plan, before it runs: a `true` plan
+    /// may still leave the graph unchanged (no traverser reached the mutating step). Script hosts
+    /// use it to warn before re-running a query (the browser playground's refresh); the
+    /// terminals use it to take the graph's write lock instead of its read lock.
+    ///
+    /// Derived from the core's single step -> [`AccessRequest`](crate::graph::AccessRequest)
+    /// mapping: the plan is lowered to engine steps (without a graph) and is mutating when some
+    /// step requests a write of data or the schema, the same mapping the authorization check
+    /// uses.
+    ///
+    /// A traversal built from a saved query's result (or inside a query's body) is never
+    /// mutating on the host graph: it carries the query's read-only restriction, so a writing
+    /// step in it fails with `PermissionDenied` before anything runs
+    /// (`roadmap/saved-queries.md`, section 4).
+    pub fn is_mutating(&self) -> bool {
+        if self.access.read_only && !self.private {
+            return false;
+        }
+        self.plan_writes()
+    }
+
+    /// Whether the plan as written has a step that writes data or the schema (the mapping
+    /// behind [`Self::is_mutating`], without the saved-query exception).
+    pub(crate) fn plan_writes(&self) -> bool {
+        let mut plan = self.lower::<&TraversalGraph>(true);
+        crate::traversal::permission_check::plan_mutates(&mut plan.steps)
+    }
+}

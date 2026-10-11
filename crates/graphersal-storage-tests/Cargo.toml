@@ -1,0 +1,23 @@
+[package]
+name = "graphersal-storage-tests"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "EXPERIMENTAL conformance suite for implementations of the graphersal GraphStorage trait; may break in minor versions before 1.0"
+readme = "README.md"
+keywords = ["graph", "gremlin", "storage", "conformance", "testing"]
+categories = ["development-tools::testing", "database-implementations"]
+include = ["/src/**", "/README.md", "/LICENSE-APACHE", "/NOTICE"]
+
+[dependencies]
+# Everything, the label and id types of the `GraphStorage` signatures included, comes through
+# `graphersal`'s public facade (`graphersal::storage::CompactString`).
+graphersal = { workspace = true }
+
+[features]
+# `PersistentStorage` for the `Forwarding` proof storage (graphersal's `persist`).
+persist = ["graphersal/persist"]

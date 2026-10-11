@@ -1,0 +1,26 @@
+[package]
+name = "graphersal-session"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Internal session logic (JSON in, JSON out) shared by the Graphersal playground (WebAssembly) and the dev server of graphersal-cli; no stability guarantees"
+readme = "README.md"
+keywords = ["graph", "gremlin", "tinkerpop"]
+categories = ["database"]
+include = ["/src/**", "/README.md", "/LICENSE-APACHE", "/NOTICE"]
+
+[dependencies]
+graphersal = { workspace = true, features = ["io", "script", "serde", "display", "persist"] }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
+web-time = { workspace = true }
+
+[dev-dependencies]
+# The `Forwarding` storage: the generic helpers are tested on a storage that is not
+# `TraversalGraph` (no cycle: the storage tests do not depend on the session); `persist` for its
+# `PersistentStorage` (the session's `.gsnap` loads and stores over it).
+graphersal-storage-tests = { workspace = true, features = ["persist"] }

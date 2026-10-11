@@ -1,0 +1,179 @@
+[
+  {
+    "group": "Modern graph",
+    "graph": "modern",
+    "title": "Count all vertices",
+    "script": "g.v().count()"
+  },
+  {
+    "group": "Modern graph",
+    "graph": "modern",
+    "title": "Names of people",
+    "script": "g.v().has_label(\"person\").values(\"name\")"
+  },
+  {
+    "group": "Modern graph",
+    "graph": "modern",
+    "title": "People older than 30 (camelCase spelling)",
+    "script": "g.V().hasLabel(\"person\").has(\"age\", P.gt(30)).valueMap(true)"
+  },
+  {
+    "group": "Modern graph",
+    "graph": "modern",
+    "title": "Who does marko know?",
+    "script": "g.v(1).out(\"knows\").values(\"name\")"
+  },
+  {
+    "group": "Modern graph",
+    "graph": "modern",
+    "title": "Element maps of all edges",
+    "script": "g.e().element_map()"
+  },
+  {
+    "group": "Modern graph",
+    "graph": "modern",
+    "title": "Count by label",
+    "script": "g.v().group_count().by(T.label)"
+  },
+  {
+    "group": "Modern graph",
+    "graph": "modern",
+    "title": "Software and its creators",
+    "script": "g.v().has_label(\"software\").project(\"name\", \"creators\")\n  .by(\"name\")\n  .by(__.in_(\"created\").values(\"name\").fold())"
+  },
+  {
+    "group": "Modern graph",
+    "graph": "modern",
+    "title": "Paths of length 2",
+    "script": "g.v(1).out().out().path()"
+  },
+  {
+    "group": "Modern graph",
+    "graph": "modern",
+    "title": "Two hops with repeat()",
+    "script": "g.v(1).repeat(__.out()).times(2).values(\"name\")"
+  },
+  {
+    "group": "Modern graph",
+    "graph": "modern",
+    "title": "People ordered by age",
+    "script": "g.v().has_label(\"person\").order().by(\"age\", Order.desc)\n  .project(\"name\", \"age\").by(\"name\").by(\"age\")"
+  },
+  {
+    "group": "Modern graph",
+    "graph": "modern",
+    "title": "Add a vertex",
+    "script": "g.add_v(\"person\").property(\"name\", \"zoe\").property(\"age\", 23)"
+  },
+  {
+    "group": "Rhai scripts",
+    "graph": "any",
+    "title": "Rhai program: build a service inventory (functions, loops, nested objects)",
+    "script": "// A whole Rhai program: functions, arrays, loops, nested maps. Runs on any graph and can be\n// re-run: it first removes the services an earlier run created.\ng.v().has_label(\"service\").drop().to_list();\n\nfn add_service(g, name, team, image, replicas, ports) {\n    g.add_v(\"service\")\n        .property(\"name\", name)\n        .property(\"config\", #{\n            runtime: #{ image: image, replicas: replicas, ports: ports },\n            owner:   #{ team: team, oncall: [team + \"-primary\", team + \"-secondary\"] }\n        })\n        .next()\n}\n\nlet services = [\n    [\"gateway\",  \"edge\",     \"nginx:1.27\",    2, [80, 443]],\n    [\"api\",      \"core\",     \"api:4.1\",       3, [8080]],\n    [\"billing\",  \"payments\", \"billing:2.0\",   1, [8081, 9090]],\n    [\"postgres\", \"data\",     \"postgres:16\",   1, [5432]],\n];\nfor s in services {\n    add_service(g, s[0], s[1], s[2], s[3], s[4]);\n}\n\nlet deps = [[\"gateway\", \"api\"], [\"api\", \"billing\"], [\"api\", \"postgres\"], [\"billing\", \"postgres\"]];\nfor d in deps {\n    g.v().has(\"name\", d[0]).add_e(\"depends_on\").to(__.v().has(\"name\", d[1])).to_list();\n}\n\n// Everything api depends on, with values read deep inside the nested config.\ng.v().has(\"name\", \"api\").out(\"depends_on\")\n    .project(\"service\", \"image\", \"first_port\", \"team\")\n    .by(\"name\")\n    .by(jpath(\"config.runtime.image\"))\n    .by(jpath(\"config.runtime.ports[0]\"))\n    .by(jpath(\"config.owner.team\"))"
+  },
+  {
+    "group": "Rhai scripts",
+    "graph": "modern",
+    "title": "Rhai variables: compute over query results",
+    "script": "// Data terminals (to_list(), next()) return plain Rhai values you can compute with.\nlet people = g.v().has_label(\"person\").value_map(\"name\", \"age\").to_list();\nlet total = 0;\nlet oldest = \"\";\nlet max_age = 0;\nfor p in people {\n    let age = p.age[0];\n    total += age;\n    if age > max_age { max_age = age; oldest = p.name[0]; }\n}\n#{ people: people.len(), average_age: total / people.len(), oldest: oldest }"
+  },
+  {
+    "group": "Generated test data (Fake)",
+    "graph": "any",
+    "title": "Fake(seed): a table of reproducible test people",
+    "script": "// Fake(seed): reproducible English test data. Change the seed for other values; Fake()\n// without a seed picks one (read it with f.seed()). Nothing is written to the graph.\nlet f = Fake(7);\nlet rows = [];\nfor i in 0..10 {\n    let name = f.full_name();\n    rows.push(#{\n        name:    name,\n        email:   f.email(name),\n        job:     f.job_title(),\n        company: f.company(),\n        address: f.address(),\n        uuid:    f.uuid()\n    });\n}\nrows"
+  },
+  {
+    "group": "Generated test data (Fake)",
+    "graph": "any",
+    "title": "Generate a test graph: companies, management trees, people, cities (parameters at the top; replaces the graph)",
+    "script": "// A reproducible test graph: companies with a management tree each, people with Fake data\n// and a Lorem ipsum \"about\" text, cities and random \"knows\" edges. Change the parameters\n// and run again; the same parameters always give the same graph. REPLACES the current graph.\n// Sizes: people = companies * (fanout^(depth+1) - 1) / (fanout - 1) (with fanout > 1);\n// companies 3, depth 6, fanout 4 gives 16 383 people.\n\n// ---- parameters ------------------------------------------------------------------------\nlet seed        = 42;   // the same seed gives the same graph\nlet companies   = 3;    // one management tree per company\nlet depth       = 4;    // levels of reports below each CEO\nlet fanout      = 3;    // direct reports per manager\nlet knows_edges = 500;  // random \"knows\" pairs (a pair of one person is skipped)\nlet cities      = 12;   // cities people live in\nlet about_min   = 200;  // \"about\": Lorem ipsum text of a random length, in bytes, from\nlet about_max   = 5000; //   about_min to about_max (0 and 0: no \"about\" property)\nlet compress_about = true; // keep \"about\" compressed in memory (a compression rule)\n// ----------------------------------------------------------------------------------------\n\n// The rule is (re)defined after the data, so its pass builds the dictionary from it.\nif g.compressions().filter(|c| c.name == \"person_about\").len() > 0 {\n    g.drop_compression(\"person_about\");\n}\ng.v().drop().to_list();\n\nlet f      = Fake(seed);\nlet people = f.fork(\"people\");   // separate streams: a change in one part of the graph\nlet social = f.fork(\"social\");   // does not shift the values of the others\nlet about  = #{ text: f.fork(\"about\"), min: about_min, max: about_max };\n\nlet city_ids = [];\nfor i in 0..cities {\n    city_ids.push(g.add_v(\"city\").property(\"name\", f.city())\n        .property(\"state\", f.state_abbr()).id().next());\n}\n\n// A person with Fake data, working at `company`, living in a random city. `p` is shared with\n// the caller: every call draws new values.\nfn hire(g, p, about, company, title, cities) {\n    let name = p.full_name();\n    let person = g.add_v(\"person\")\n        .property(\"name\", name)\n        .property(\"email\", p.email(name))\n        .property(\"title\", title)\n        .property(\"age\", p.int(21, 67));\n    if about.max > 0 {\n        person = person.property(\"about\", about.text.lorem(about.min, about.max));\n    }\n    let id = person.id().next();\n    g.v(id).add_e(\"works_at\").to(g.v(company)).to_list();\n    g.v(id).add_e(\"lives_in\").to(g.v(p.pick(cities))).to_list();\n    id\n}\n\nlet person_ids = [];\nfor c in 0..companies {\n    let company = g.add_v(\"company\").property(\"name\", f.company())\n        .property(\"domain\", f.domain_name()).id().next();\n    let level = [hire(g, people, about, company, \"CEO\", city_ids)];\n    person_ids += level;\n    for d in 0..depth {\n        let reports = [];\n        for manager in level {\n            for r in 0..fanout {\n                let id = hire(g, people, about, company, people.job_title(), city_ids);\n                g.v(id).add_e(\"reports_to\").to(g.v(manager)).to_list();\n                reports.push(id);\n            }\n        }\n        person_ids += reports;\n        level = reports;\n    }\n}\n\n// Pick by index: pick() and sample() get a copy of the array, which is slow for a large one.\nfor k in 0..knows_edges {\n    let a = person_ids[social.int(0, person_ids.len() - 1)];\n    let b = person_ids[social.int(0, person_ids.len() - 1)];\n    if a != b {\n        g.v(a).add_e(\"knows\").property(\"since\", social.int(1990, 2026)).to(g.v(b)).to_list();\n    }\n}\n\nif compress_about && about_max > 0 {\n    g.define_compression(#{name: \"person_about\", label: \"person\", path: \"about\"});\n}\n\n#{\n    vertices: g.v().group_count().by(T.label).next(),\n    edges:    g.e().group_count().by(T.label).next(),\n    longest_chain: g.v().has_label(\"person\").has(\"title\", \"CEO\").limit(1)\n        .repeat(__.in(\"reports_to\")).emit().path().count(Scope.local).max().next(),\n    // the plain and the stored (compressed) bytes of \"about\"; compare compress_about = false\n    memory: g.memory_usage()\n}"
+  },
+  {
+    "group": "Nested objects (jpath)",
+    "graph": "modern",
+    "title": "jpath(): filter, sort and project on deep values",
+    "script": "// Give every person a nested profile (objects inside objects, arrays), then read deep values.\nlet profiles = #{\n    marko: #{ city: \"Berlin\", country: \"DE\", lat: 52.52, skills: [\"gremlin\", \"rust\"] },\n    vadas: #{ city: \"Paris\",  country: \"FR\", lat: 48.86, skills: [\"sql\"] },\n    josh:  #{ city: \"Munich\", country: \"DE\", lat: 48.14, skills: [\"rust\", \"wasm\", \"go\"] },\n    peter: #{ city: \"Oslo\",   country: \"NO\", lat: 59.91, skills: [\"java\"] },\n};\nfor name in profiles.keys() {\n    let p = profiles[name];\n    g.v().has(\"name\", name).property(\"profile\", #{\n        address: #{ city: p.city, country: p.country, geo: #{ lat: p.lat } },\n        skills: p.skills,\n    }).to_list();\n}\n\n// Filter, sort and project on values deep inside the object.\ng.v().has_label(\"person\")\n    .has(jpath(\"profile.address.geo.lat\"), P.lt(55.0))\n    .order().by(jpath(\"profile.address.geo.lat\"), Order.desc)\n    .project(\"name\", \"city\", \"first_skill\", \"last_skill\")\n    .by(\"name\")\n    .by(jpath(\"profile.address.city\"))\n    .by(jpath(\"profile.skills[0]\"))\n    .by(jpath(\"profile.skills[-1]\"))"
+  },
+  {
+    "group": "Nested objects (jpath)",
+    "graph": "modern",
+    "title": "jpath(): group by a nested key",
+    "script": "// Group by a nested key.\ng.v().has_label(\"person\").property(\"profile\", #{ address: #{ country: \"DE\" } }).to_list();\ng.v().has(\"name\", \"vadas\").property(jpath(\"profile.address.country\"), \"FR\").to_list();\ng.v().has_label(\"person\").group_count().by(jpath(\"profile.address.country\"))"
+  },
+  {
+    "group": "Nested objects (jpath)",
+    "graph": "modern",
+    "title": "jpath(): edit inside an object (replace, append, create, remove)",
+    "script": "// Edit inside a nested object without rewriting the whole property.\ng.v().has(\"name\", \"marko\").property(\"profile\", #{\n    address: #{ city: \"Berlin\", zip: \"10115\" },\n    skills: [\"gremlin\", \"rust\"],\n}).to_list();\n\ng.v().has(\"name\", \"marko\")\n    .property(jpath(\"profile.address.city\"), \"Hamburg\")   // replace a leaf\n    .property(jpath(\"profile.skills[2]\"), \"wasm\")         // append: index == length\n    .property(jpath(\"profile.links.github\"), \"okram\")     // missing objects are created\n    .remove_property(jpath(\"profile.address.zip\"))        // remove one nested key\n    .values(\"profile\")"
+  },
+  {
+    "group": "File tree (glob_path)",
+    "graph": "tree",
+    "title": "glob_path(): Rust files two levels below any author/*/some",
+    "script": "// File tree sample: walk the tree with a filesystem-style glob pattern.\ng.v(\"root\").glob_path(\"**/author/*/some/*.rs\").by(\"name\").by([\"directory\", \"file\"])\n  .order().by(T.id).id()"
+  },
+  {
+    "group": "File tree (glob_path)",
+    "graph": "tree",
+    "title": "glob_path(): directories that contain Markdown files",
+    "script": "g.v(\"root\").glob_path(\"*\").by(\"name\").by([\"directory\"])\n  .where(__.glob_path(\"*.md\").by(\"name\")).id()"
+  },
+  {
+    "group": "File tree (glob_path)",
+    "graph": "tree",
+    "title": "glob_path(): every .rs file, pruning the author subtrees",
+    "script": "g.v(\"root\").glob_path(\"**/*.rs\", #{prune: __.has(\"name\", \"author\")})\n  .by(\"name\").by([\"directory\", \"file\"]).order().by(T.id).id()"
+  },
+  {
+    "group": "Profiling and errors",
+    "graph": "modern",
+    "title": "Profile a pushed-down count",
+    "script": "g.v().has_label(\"person\").count().profile()"
+  },
+  {
+    "group": "Profiling and errors",
+    "graph": "modern",
+    "title": "Profile with memory columns",
+    "script": "g.v().out().out().values(\"name\").fold().profile(ProfileType.Memory)"
+  },
+  {
+    "group": "Profiling and errors",
+    "graph": "modern",
+    "title": "execute() with metrics and memory",
+    "script": "g.v().has_label(\"person\").values(\"age\").sum()\n  .execute(#{profile: true, profile_types: [\"memory\"]})"
+  },
+  {
+    "group": "Profiling and errors",
+    "graph": "modern",
+    "title": "Runtime error with a partial profile",
+    "script": "g.v().out(\"created\").values(\"name\").property(\"x\", 1)",
+    "expect": "error"
+  },
+  {
+    "group": "Profiling and errors",
+    "graph": "modern",
+    "title": "Error inside a nested traversal (union)",
+    "script": "g.v().has_label(\"person\")\n  .union(__.values(\"name\"), __.values(\"age\").property(\"x\", 1))",
+    "expect": "error"
+  },
+  {
+    "group": "Profiling and errors",
+    "graph": "modern",
+    "title": "Display limits for one query",
+    "script": "g.with(\"render.max_rows\", 3).v()"
+  },
+  {
+    "group": "Profiling and errors",
+    "graph": "modern",
+    "title": "Graph memory estimate",
+    "script": "g.memory_usage()"
+  },
+  {
+    "group": "Profiling and errors",
+    "graph": "modern",
+    "title": "A typo (see the help text)",
+    "script": "g.v().has_lable(\"person\")",
+    "expect": "error"
+  }
+]

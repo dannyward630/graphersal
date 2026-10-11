@@ -1,0 +1,20 @@
+name: Semver check
+
+# Manual-only (workflow_dispatch) until the first release exists on crates.io: cargo-semver-checks compares the public
+# API with a published baseline. After 0.1.0 is released, change the trigger to `pull_request` and make this job required.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  semver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: graphersal

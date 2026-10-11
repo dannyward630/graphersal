@@ -1,0 +1,131 @@
+{
+  "text": {
+    "request": {
+      "model": "claude-test",
+      "max_tokens": 512,
+      "system": [
+        {"type": "text", "text": "You answer questions about a graph.",
+         "cache_control": {"type": "ephemeral"}}
+      ],
+      "messages": [
+        {"role": "user", "content": [{"type": "text", "text": "Hello?"}]}
+      ]
+    },
+    "response": {
+      "status": 200,
+      "body": {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-test",
+        "content": [{"type": "text", "text": "Hello! Ask me about the graph."}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 5, "output_tokens": 9,
+                  "cache_read_input_tokens": 1200, "cache_creation_input_tokens": 0}
+      }
+    }
+  },
+  "tool_call": {
+    "request": {
+      "model": "claude-test",
+      "max_tokens": 512,
+      "system": [
+        {"type": "text", "text": "You answer questions about a graph.",
+         "cache_control": {"type": "ephemeral"}}
+      ],
+      "tools": [
+        {
+          "name": "query",
+          "description": "Runs a Graphersal script and returns its result.",
+          "input_schema": {
+            "type": "object",
+            "properties": {"script": {"type": "string"}},
+            "required": ["script"]
+          }
+        }
+      ],
+      "messages": [
+        {"role": "user", "content": [{"type": "text", "text": "How many people are there?"}]}
+      ]
+    },
+    "response": {
+      "status": 200,
+      "body": {
+        "id": "msg_2",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-test",
+        "content": [
+          {"type": "thinking", "thinking": "", "signature": "sig-1"},
+          {"type": "text", "text": "Let me count them."},
+          {"type": "tool_use", "id": "toolu_1", "name": "query",
+           "input": {"script": "g.v().has_label(\"person\").count()"}}
+        ],
+        "stop_reason": "tool_use",
+        "usage": {"input_tokens": 40, "output_tokens": 30,
+                  "cache_read_input_tokens": 0, "cache_creation_input_tokens": 1200}
+      }
+    }
+  },
+  "tool_result": {
+    "request": {
+      "model": "claude-test",
+      "max_tokens": 512,
+      "system": [
+        {"type": "text", "text": "You answer questions about a graph.",
+         "cache_control": {"type": "ephemeral"}}
+      ],
+      "tools": [
+        {
+          "name": "query",
+          "description": "Runs a Graphersal script and returns its result.",
+          "input_schema": {
+            "type": "object",
+            "properties": {"script": {"type": "string"}},
+            "required": ["script"]
+          }
+        }
+      ],
+      "messages": [
+        {"role": "user", "content": [{"type": "text", "text": "How many people are there?"}]},
+        {
+          "role": "assistant",
+          "content": [
+            {"type": "thinking", "thinking": "", "signature": "sig-1"},
+            {"type": "text", "text": "Let me count them."},
+            {"type": "tool_use", "id": "toolu_1", "name": "query",
+             "input": {"script": "g.v().has_label(\"person\").count()"}}
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": "[4]"}
+          ]
+        }
+      ]
+    },
+    "response": {
+      "status": 200,
+      "body": {
+        "id": "msg_3",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "There are 4 people."}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 20, "output_tokens": 7,
+                  "cache_read_input_tokens": 1200, "cache_creation_input_tokens": 0}
+      }
+    }
+  },
+  "error": {
+    "response": {
+      "status": 429,
+      "body": {
+        "type": "error",
+        "error": {"type": "rate_limit_error",
+                  "message": "Number of request tokens has exceeded your per-minute rate limit"}
+      }
+    }
+  }
+}

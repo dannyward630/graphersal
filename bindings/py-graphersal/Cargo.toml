@@ -1,0 +1,43 @@
+[package]
+name = "py-graphersal"
+version.workspace = true
+authors.workspace = true
+description = "PyO3 bindings that run Gremlin scripts through the Graphersal engine from Python"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# Published to PyPI through maturin, not to crates.io.
+publish = false
+
+[lib]
+# The Python-importable name (`import graphersal`), independent of the crate's Cargo name.
+name = "graphersal"
+crate-type = ["cdylib", "rlib"]
+# The lib name `graphersal` equals the dependency's; a doctest build would find two rlibs. No doctests here.
+doctest = false
+
+[dependencies]
+# `serde`: `Graph.dry_run` returns the serialized `ChangeSet` (with its type tags) as Python data.
+# `alloc-tracking`: `lib.rs` installs `TrackingAllocator` as the extension's global allocator, so
+# Memory profiles report exact (`tracked`) bytes and the memory budget reads the live Rust heap.
+graphersal = { workspace = true, features = ["io", "script", "serde", "persist", "alloc-tracking"] }
+pyo3 = { workspace = true, features = ["abi3-py310", "uuid"] }
+# Walks the serialized `ChangeSet` into Python dicts and lists (`Graph.dry_run`).
+serde_json = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+# `auto-initialize` boots an embedded interpreter for `Python::attach` in `#[cfg(test)]` code.
+# Cargo unifies features across a crate's normal- and dev-dependency edges, so this only turns on
+# for `cargo test`; the actual wheel (built by `maturin`, no dev-dependencies pulled in) never
+# links it in, since a Python process importing the extension module already has an interpreter.
+pyo3 = { workspace = true, features = ["auto-initialize"] }
+
+[features]
+# Kept out of `default` so `cargo test` links against libpython directly, per PyO3's documented
+# testing setup (https://pyo3.rs/latest/building-and-distribution.html#testing). `maturin` builds
+# the actual wheel with `--features extension-module` (see pyproject.toml), which is what a
+# Python interpreter loads: `cargo test -p py-graphersal` runs with this feature off.
+extension-module = ["pyo3/extension-module"]

@@ -1,0 +1,8 @@
+{
+  "provider": "openai",
+  "model": "qwen2.5:7b",
+  "base_url": "http://localhost:11434/v1",
+  "read_only": false,
+  "max_tool_calls_per_turn": 20,
+  "max_tokens": 4096
+}

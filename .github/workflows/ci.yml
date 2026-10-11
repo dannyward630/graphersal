@@ -1,0 +1,278 @@
+name: CI
+
+# Runs what local acceptance runs (CLAUDE.md "Commands").
+# The Python binding's tests and wheels live in python.yml, the DCO sign-off check in dco.yml.
+# Caches: Swatinem/rust-cache, one cache per job; only `main` saves (pull requests read main's
+# caches and do not evict them with their own).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Incremental compilation only costs time and cache space on a fresh CI runner.
+  CARGO_INCREMENTAL: 0
+  # The graphersal feature set of local acceptance (tests and rustdoc).
+  ACCEPTANCE_FEATURES: script,io,display,serde,persist,persist-zip
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # --workspace includes bindings/py-graphersal (PyO3, abi3-py310): it needs Python >= 3.10.
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        env:
+          PYO3_PYTHON: ${{ steps.python.outputs.python-path }}
+
+  # Feature hygiene (CLAUDE.md): every combination must compile on its own (features are strictly
+  # additive), natively and for wasm32 (the browser playground must keep building). The lists are
+  # CLAUDE.md's two loops plus `alloc-tracking` and the full acceptance set. One job per
+  # target, the combinations in a loop: they share one dependency build and one cache.
+  features:
+    name: features (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [native, wasm32-unknown-unknown]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Native feature combinations
+        if: matrix.target == 'native'
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          for f in "--no-default-features" "--features script" "--features display" \
+                   "--features serde" "--features io" "--features persist" "--features persist-zstd" \
+                   "--features persist-zip" "--features alloc-tracking" "--all-features" \
+                   "--no-default-features --features script,serde,display"; do
+            echo "::group::cargo check --package graphersal $f"
+            cargo check --package graphersal $f
+            echo "::endgroup::"
+          done
+      - name: wasm32 feature combinations
+        if: matrix.target == 'wasm32-unknown-unknown'
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          for f in "--no-default-features" "--no-default-features --features script" \
+                   "--no-default-features --features script,serde,display" \
+                   "--no-default-features --features io" \
+                   "--no-default-features --features persist-zstd" \
+                   "--no-default-features --features persist-zip" \
+                   "--no-default-features --features script,io,display,serde,persist" \
+                   "--no-default-features --features script,io,display,serde,persist,persist-zip"; do
+            echo "::group::cargo check --package graphersal --target wasm32-unknown-unknown $f"
+            cargo check --package graphersal --target wasm32-unknown-unknown $f
+            echo "::endgroup::"
+          done
+          # The session crate (shared by the playground and the dev server) for the browser.
+          cargo check --package graphersal-session --target wasm32-unknown-unknown
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Library tests: integration tests (incl. persistence and the fast robustness budget), the
+      # TinkerPop 3.8.2 conformance suite (tests/tinkerpop_features.rs) and the doctests.
+      - name: graphersal
+        run: cargo test --package graphersal --features "$ACCEPTANCE_FEATURES"
+      # The CLI contract, the dev server and its MCP endpoint (tests/server_tests.rs).
+      - name: graphersal-cli
+        run: cargo test --package graphersal-cli
+      - name: graphersal-session
+        run: cargo test --package graphersal-session
+      - name: graphersal-storage-tests
+        run: cargo test --package graphersal-storage-tests --features persist
+      # The playground engine's session logic, natively (the wasm32 run is in `playground`).
+      - name: graphersal-wasm (native)
+        run: cargo test --package graphersal-wasm
+      - name: TinkerPop report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tinkerpop-report-${{ matrix.os }}
+          path: target/tinkerpop-report.md
+          if-no-files-found: ignore
+
+  # The front ends over a storage that is not TraversalGraph (roadmap/generic-front-ends.md,
+  # the closing proof; book for_developers/custom_storage.md): the TinkerPop suite on `Forwarding`
+  # (same baseline and page, no scenario may change class; it never rewrites them), the DSL
+  # differential, snapshots and the Store on `Forwarding` over every backend, the session over
+  # `Forwarding` (same JSON) with the book's complete host example, and the GraphStorage
+  # conformance suite.
+  foreign-storage:
+    name: foreign storage proof
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: TinkerPop suite on Forwarding
+        run: cargo test --package graphersal --features "$ACCEPTANCE_FEATURES" --test tinkerpop_features
+        env:
+          GRAPHERSAL_TEST_STORAGE: forwarding
+      - name: DSL differential (foreign_storage_tests)
+        run: cargo test --package graphersal --features "$ACCEPTANCE_FEATURES" --test all foreign_storage_tests::
+      - name: Snapshots and the Store on Forwarding (generic_persist_tests, foreign_store_tests)
+        run: cargo test --package graphersal --features "$ACCEPTANCE_FEATURES" --test all -- generic_persist_tests:: foreign_store_tests::
+      - name: Session on Forwarding and the custom storage example
+        run: |
+          cargo test --package graphersal-session --lib storage::
+          cargo test --package graphersal-session --test custom_storage_example
+      - name: graphersal-storage-tests
+        run: cargo test --package graphersal-storage-tests --features persist
+      - name: TinkerPop report (Forwarding)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tinkerpop-report-forwarding
+          path: target/tinkerpop-report-forwarding.md
+          if-no-files-found: ignore
+
+  # rustdoc with -D warnings, and the doctests of the smaller feature set CLAUDE.md lists (the
+  # acceptance feature set's doctests run in `test`).
+  docs:
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo doc --package graphersal --no-deps
+      - run: cargo doc --package graphersal --no-deps --features "$ACCEPTANCE_FEATURES"
+      - run: cargo doc --package graphersal --no-deps --all-features
+      - run: cargo test --package graphersal --doc --features script,io
+
+  book:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned: book/book.toml uses the 0.4 format (mdBook 0.5 rejects `multilingual`).
+      - uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: "0.4.45"
+      - run: mdbook build book
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  # Minimum supported Rust version: keep in step with `rust-version` in the root Cargo.toml.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo check --package graphersal --all-features
+      - run: cargo check --package graphersal-session
+      - run: cargo check --package graphersal-cli
+      - run: cargo check --package graphersal-wasm --target wasm32-unknown-unknown
+
+  # The browser playground: its engine (crates/graphersal-wasm) under Node.js through
+  # wasm-bindgen-test (wasm-bindgen CLI pinned to the crate version, CLAUDE.md), the playground
+  # build (playground/build.sh), and the playground's own node tests.
+  playground:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      # Prebuilt binaries (wasm-bindgen, wasm-bindgen-test-runner); the version must equal the
+      # `wasm-bindgen` crate pinned in the root Cargo.toml.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.129
+      - name: Playground node tests
+        run: node --test playground/tests/*.test.mjs
+      - name: Playground scripts parse
+        run: for f in playground/js/*.js playground/js/*/*.js; do node --check "$f"; done
+      - run: cargo test --package graphersal-wasm --target wasm32-unknown-unknown
+      - name: Build the playground engine
+        run: playground/build.sh
+
+  third-party-licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo install --locked cargo-about --features cli
+      - run: cargo about generate --config about.toml --manifest-path crates/graphersal-cli/Cargo.toml about.hbs > THIRD-PARTY-LICENSES.html
+      - uses: actions/upload-artifact@v4
+        with:
+          name: THIRD-PARTY-LICENSES
+          path: THIRD-PARTY-LICENSES.html

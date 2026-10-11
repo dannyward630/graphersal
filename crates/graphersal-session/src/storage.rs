@@ -1,0 +1,965 @@
+//! The session over ANY storage (`roadmap/generic-front-ends.md` sections 2.2, 5.4 and 5.5): the
+//! object-safe boundary between [`Session`](crate::Session) and the storage it serves.
+//!
+//! The session never names a storage type. It holds
+//!
+//! - its graph as `Arc<dyn` [`SessionGraph`]`>`: a [`AnyGraph`] (the script layer's boundary,
+//!   reached by trait upcasting) plus one method per view, selection, edit, creation, saved
+//!   query and compression operation. Each method locks the graph once and runs the generic
+//!   helper of its module (`views`, `selection`, `edit`, `create`, `queries`, `compression`)
+//!   monomorphised for the storage, so the cost of the boundary is one indirect call per
+//!   operation, never one per element. It is blanket-implemented for every
+//!   [`Graph<S>`](Graph) with `S: GraphStorage + Default + Send + Sync + 'static`;
+//! - the host's choice of storage as `Arc<dyn` [`GraphFactory`]`>`: how a loaded graph (a
+//!   sample, a GraphML or GraphSON file, a `.gsnap` snapshot) becomes a graph of that storage,
+//!   and how a Store of it is created and opened. [`StorageKind<S>`](StorageKind) is the one
+//!   implementation: [`StorageKind::new`] for any storage (graphs only),
+//!   [`StorageKind::persistent`] for a [`PersistentStorage`] (graphs, `.gsnap` and Stores);
+//! - its stores as `Arc<dyn` [`SessionStore`]`>`, blanket-implemented for every
+//!   [`Store<S>`](Store): what the Store menu calls.
+//!
+//! A host serves its own storage with
+//! [`Session::with_storage`](crate::Session::with_storage)`(Arc::new(StorageKind::<MyStorage>::persistent()))`
+//! (or `StorageKind::new()` for a storage without persistence) and puts a graph it already holds
+//! in front of the session with [`Session::load_shared`](crate::Session::load_shared).
+//! [`Session::new`](crate::Session::new) serves [`TraversalGraph`], as the playground and the
+//! dev server do.
+
+use std::any::Any;
+use std::io::{Read, Write};
+use std::marker::PhantomData;
+use std::sync::Arc;
+
+use graphersal::catalog::{Definition, DefinitionKind, QueryDefinition};
+use graphersal::changes::{CommitHook, Mark, RollbackReason};
+use graphersal::error::format_diagnostic;
+use graphersal::exec::CancelToken;
+use graphersal::persist::{
+    BackupMarker, BackupMode, BackupReport, ChangesSince, CompactReport, CompactionAdvice,
+    DamagePolicy, DamageReport, ForkReport, FoundDamage, PersistError, PruneReport, ReadOptions,
+    RecoveryTarget, RollbackMode, RollbackReport, SnapshotInfo, Store, StoreDir, StoreInfo,
+    StoreOptions, VerifyReport,
+};
+use graphersal::prelude::{ElementProperty, GraphSchema, PropertyMap};
+use graphersal::storage::{
+    AnyGraph, ElementKind, Graph, GraphError, GraphStorage, PersistentStorage, TraversalGraph,
+    UnitChanges, UnitMark,
+};
+use serde_json::Value;
+
+use crate::display::{CompactGraph, InspectedElement};
+use crate::queries::FieldError;
+use crate::selection::{MetaGraph, NeighbourhoodRequest, SampleRequest, SelectionView};
+
+/// The text of an operation the session's storage does not support (`what`: "packed snapshots
+/// (.gsnap)", "stores", ...).
+pub fn unsupported_text(what: &str, storage: &str) -> String {
+    format!(
+        "This graph storage does not support {what}: the session serves {storage}, which is \
+         not a PersistentStorage (the host builds the session with \
+         StorageKind::persistent() for a storage that is one)"
+    )
+}
+
+// ------------------------------------------------------------------------------- SessionGraph
+
+/// The graph a [`Session`](crate::Session) serves, of any storage, as one object-safe type
+/// (`Arc<dyn SessionGraph>`). It is an [`AnyGraph`] (trait upcasting gives the script layer its
+/// `Arc<dyn AnyGraph>`) with one method per session operation; each locks the graph for that
+/// operation only and returns storage-independent data (JSON, the drawing's columns, field
+/// errors).
+///
+/// Blanket-implemented for every [`Graph<S>`](Graph) with `S: GraphStorage + Default + Send +
+/// Sync + 'static` (the `Default` of [`AnyGraph`]: a whole-script unit moves the storage out of
+/// the lock). Internal like the rest of this crate: methods are added as the session needs
+/// them.
+pub trait SessionGraph: AnyGraph {
+    /// The number of vertices.
+    fn vertex_count(&self) -> usize;
+
+    /// The number of edges.
+    fn edge_count(&self) -> usize;
+
+    /// The schema the stored data satisfies ([`GraphStorage::infer_schema`], mode `none`).
+    fn inferred_schema(&self) -> GraphSchema;
+
+    /// [`crate::views::schema_view`] of the graph.
+    fn schema_view(&self) -> Value;
+
+    /// [`crate::views::graph_view`] of the graph.
+    fn graph_view(&self, max_nodes: usize, max_edges: usize) -> CompactGraph;
+
+    /// [`crate::views::statistics_view`] of the graph.
+    fn statistics_view(&self) -> Value;
+
+    /// [`crate::views::memory_usage`] of the graph.
+    fn memory_view(&self) -> Value;
+
+    /// [`crate::display::element_of`]: one element for the inspector.
+    fn element(&self, kind: ElementKind, id: &str) -> Option<InspectedElement>;
+
+    /// [`crate::display::collect_subgraph`]: the elements `results` refer to.
+    fn subgraph(&self, results: &[ElementProperty], max_elements: usize) -> Option<CompactGraph>;
+
+    /// [`crate::selection::neighbourhood`].
+    fn neighbourhood(
+        &self,
+        request: &NeighbourhoodRequest,
+        cancel: &CancelToken,
+    ) -> Result<SelectionView, String>;
+
+    /// [`crate::selection::label_sample`].
+    fn label_sample(
+        &self,
+        request: &SampleRequest,
+        cancel: &CancelToken,
+    ) -> Result<SelectionView, String>;
+
+    /// [`crate::selection::meta_graph`].
+    fn meta_graph(&self, cancel: &CancelToken) -> Result<MetaGraph, String>;
+
+    /// [`crate::edit::element_view`]: the property editor's view of one element.
+    fn element_view(&self, kind: ElementKind, id: &str) -> Value;
+
+    /// The writes of an update request (`set`, `remove`; [`crate::edit`]) to the element `id`
+    /// of `kind` as ONE unit (`validate_only`: a dry run): `Ok(changed)` or the field errors.
+    fn update_element(
+        &self,
+        kind: ElementKind,
+        id: &str,
+        request: &Value,
+        validate_only: bool,
+    ) -> Result<bool, Vec<FieldError>>;
+
+    /// [`crate::create::label_choices_in`].
+    fn label_choices(&self, request: &Value) -> Result<Value, String>;
+
+    /// A creation request of `kind` ([`crate::create`]) as ONE unit (`validate_only`: a dry
+    /// run): `Ok(Some(id))` of the stored element, `Ok(None)` for a dry run, or the field
+    /// errors.
+    fn create_element(
+        &self,
+        kind: ElementKind,
+        request: &Value,
+        validate_only: bool,
+    ) -> Result<Option<String>, Vec<FieldError>>;
+
+    /// [`crate::create::drawn_in`].
+    fn drawn(&self, kind: ElementKind, id: &str) -> Value;
+
+    /// [`crate::create::incident_edges`].
+    fn incident_edges(&self, kind: ElementKind, id: &str) -> Option<usize>;
+
+    /// [`crate::create::delete_in`].
+    fn delete_element(
+        &self,
+        kind: ElementKind,
+        id: &str,
+        validate_only: bool,
+    ) -> Result<bool, GraphError>;
+
+    /// [`crate::queries::queries_in`].
+    fn queries(&self, folder: Option<&str>) -> Vec<(String, QueryDefinition)>;
+
+    /// [`crate::queries::query_in`].
+    fn query(&self, name: &str) -> Option<QueryDefinition>;
+
+    /// [`crate::queries::count_kind`].
+    fn count_kind(&self, kind: DefinitionKind) -> usize;
+
+    /// Stores a checked saved query with the editor's name rules, in ONE commit.
+    fn store_query(
+        &self,
+        definition: Definition,
+        is_edit: bool,
+        replaces: Option<&str>,
+    ) -> Result<(), Vec<FieldError>>;
+
+    /// [`crate::queries::remove_definition_in`].
+    fn drop_definition(&self, kind: DefinitionKind, name: &str) -> Result<bool, String>;
+
+    /// [`crate::queries::move_query_in`].
+    fn move_query_into(&self, name: &str, folder: Option<&str>) -> Result<(), String>;
+
+    /// [`crate::queries::catalog_text`].
+    fn catalog_text(&self) -> String;
+
+    /// [`crate::queries::load_catalog_in`].
+    fn load_catalog(&self, definitions: Vec<Definition>, replace: bool) -> Result<(), String>;
+
+    /// Copies `catalog` into the graph in one commit (a graph loaded from a file that carries
+    /// no catalog).
+    fn carry_catalog(&self, catalog: Vec<Definition>) -> Result<(), String>;
+
+    /// [`crate::compression::compressions_in`].
+    fn compressions(&self) -> Value;
+
+    /// [`crate::compression::compression_in`].
+    fn compression(&self, name: &str) -> Value;
+
+    /// Stores a checked compression rule with the form's name rules, in ONE commit.
+    fn store_compression(
+        &self,
+        definition: Definition,
+        is_edit: bool,
+        replaces: Option<&str>,
+    ) -> Result<(), Vec<FieldError>>;
+
+    /// [`crate::compression::recompress_in`]; a storage without compressed properties fails
+    /// with its `Unsupported` diagnostic.
+    fn recompress_rule(&self, name: &str) -> Result<(), String>;
+
+    /// Opens the unit of a whole run ([`GraphStorage::begin_unit`]).
+    fn begin_run(&self) -> UnitMark;
+
+    /// What the run's unit changed so far ([`GraphStorage::unit_changes`]).
+    fn run_changes(&self, mark: UnitMark) -> UnitChanges;
+
+    /// Commits the run's unit ([`GraphStorage::commit_unit`]).
+    fn commit_run(&self, mark: UnitMark) -> Result<(), GraphError>;
+
+    /// Rolls the run's unit back ([`GraphStorage::rollback_unit`]).
+    fn rollback_run(&self, mark: UnitMark, reason: &RollbackReason);
+
+    /// Registers a commit hook ([`GraphStorage::register_commit_hook`]): a read-only view's
+    /// refusal.
+    fn register_hook(&self, hook: Box<dyn CommitHook>) -> Result<(), GraphError>;
+}
+
+impl<S> SessionGraph for Graph<S>
+where
+    S: GraphStorage + Default + Send + Sync + 'static,
+{
+    fn vertex_count(&self) -> usize {
+        self.read().vertex_count()
+    }
+
+    fn edge_count(&self) -> usize {
+        self.read().edge_count()
+    }
+
+    fn inferred_schema(&self) -> GraphSchema {
+        self.read().infer_schema()
+    }
+
+    fn schema_view(&self) -> Value {
+        crate::views::schema_view(&*self.read())
+    }
+
+    fn graph_view(&self, max_nodes: usize, max_edges: usize) -> CompactGraph {
+        crate::views::graph_view(&*self.read(), max_nodes, max_edges)
+    }
+
+    fn statistics_view(&self) -> Value {
+        crate::views::statistics_view(&*self.read())
+    }
+
+    fn memory_view(&self) -> Value {
+        crate::views::memory_usage(&*self.read())
+    }
+
+    fn element(&self, kind: ElementKind, id: &str) -> Option<InspectedElement> {
+        crate::display::element_of(&*self.read(), kind, id)
+    }
+
+    fn subgraph(&self, results: &[ElementProperty], max_elements: usize) -> Option<CompactGraph> {
+        crate::display::collect_subgraph(&*self.read(), results, max_elements)
+    }
+
+    fn neighbourhood(
+        &self,
+        request: &NeighbourhoodRequest,
+        cancel: &CancelToken,
+    ) -> Result<SelectionView, String> {
+        crate::selection::neighbourhood(&*self.read(), request, cancel)
+    }
+
+    fn label_sample(
+        &self,
+        request: &SampleRequest,
+        cancel: &CancelToken,
+    ) -> Result<SelectionView, String> {
+        crate::selection::label_sample(&*self.read(), request, cancel)
+    }
+
+    fn meta_graph(&self, cancel: &CancelToken) -> Result<MetaGraph, String> {
+        crate::selection::meta_graph(&*self.read(), cancel)
+    }
+
+    fn element_view(&self, kind: ElementKind, id: &str) -> Value {
+        crate::edit::element_view(&*self.read(), kind, id)
+    }
+
+    fn update_element(
+        &self,
+        kind: ElementKind,
+        id: &str,
+        request: &Value,
+        validate_only: bool,
+    ) -> Result<bool, Vec<FieldError>> {
+        crate::edit::update_request_in(&mut *self.write(), kind, id, request, validate_only)
+    }
+
+    fn label_choices(&self, request: &Value) -> Result<Value, String> {
+        crate::create::label_choices_in(&*self.read(), request)
+    }
+
+    fn create_element(
+        &self,
+        kind: ElementKind,
+        request: &Value,
+        validate_only: bool,
+    ) -> Result<Option<String>, Vec<FieldError>> {
+        crate::create::create_request_in(&mut *self.write(), kind, request, validate_only)
+    }
+
+    fn drawn(&self, kind: ElementKind, id: &str) -> Value {
+        crate::create::drawn_in(&*self.read(), kind, id)
+    }
+
+    fn incident_edges(&self, kind: ElementKind, id: &str) -> Option<usize> {
+        crate::create::incident_edges(&*self.read(), kind, id)
+    }
+
+    fn delete_element(
+        &self,
+        kind: ElementKind,
+        id: &str,
+        validate_only: bool,
+    ) -> Result<bool, GraphError> {
+        crate::create::delete_in(&mut *self.write(), kind, id, validate_only)
+    }
+
+    fn queries(&self, folder: Option<&str>) -> Vec<(String, QueryDefinition)> {
+        crate::queries::queries_in(&*self.read(), folder)
+    }
+
+    fn query(&self, name: &str) -> Option<QueryDefinition> {
+        crate::queries::query_in(&*self.read(), name)
+    }
+
+    fn count_kind(&self, kind: DefinitionKind) -> usize {
+        crate::queries::count_kind(&*self.read(), kind)
+    }
+
+    fn store_query(
+        &self,
+        definition: Definition,
+        is_edit: bool,
+        replaces: Option<&str>,
+    ) -> Result<(), Vec<FieldError>> {
+        crate::queries::store_query(&mut *self.write(), definition, is_edit, replaces)
+    }
+
+    fn drop_definition(&self, kind: DefinitionKind, name: &str) -> Result<bool, String> {
+        crate::queries::remove_definition_in(&mut *self.write(), kind, name)
+    }
+
+    fn move_query_into(&self, name: &str, folder: Option<&str>) -> Result<(), String> {
+        crate::queries::move_query_in(&mut *self.write(), name, folder)
+    }
+
+    fn catalog_text(&self) -> String {
+        crate::queries::catalog_text(&*self.read())
+    }
+
+    fn load_catalog(&self, definitions: Vec<Definition>, replace: bool) -> Result<(), String> {
+        crate::queries::load_catalog_in(&mut *self.write(), definitions, replace)
+    }
+
+    fn carry_catalog(&self, catalog: Vec<Definition>) -> Result<(), String> {
+        crate::queries::carry_catalog(&mut *self.write(), catalog)
+    }
+
+    fn compressions(&self) -> Value {
+        crate::compression::compressions_in(&*self.read())
+    }
+
+    fn compression(&self, name: &str) -> Value {
+        crate::compression::compression_in(&*self.read(), name)
+    }
+
+    fn store_compression(
+        &self,
+        definition: Definition,
+        is_edit: bool,
+        replaces: Option<&str>,
+    ) -> Result<(), Vec<FieldError>> {
+        crate::compression::store_compression(&mut *self.write(), definition, is_edit, replaces)
+    }
+
+    fn recompress_rule(&self, name: &str) -> Result<(), String> {
+        crate::compression::recompress_in(&mut *self.write(), name)
+    }
+
+    fn begin_run(&self) -> UnitMark {
+        self.write().begin_unit()
+    }
+
+    fn run_changes(&self, mark: UnitMark) -> UnitChanges {
+        self.read().unit_changes(mark)
+    }
+
+    fn commit_run(&self, mark: UnitMark) -> Result<(), GraphError> {
+        self.write().commit_unit(mark)
+    }
+
+    fn rollback_run(&self, mark: UnitMark, reason: &RollbackReason) {
+        self.write().rollback_unit(mark, reason);
+    }
+
+    fn register_hook(&self, hook: Box<dyn CommitHook>) -> Result<(), GraphError> {
+        self.write().register_commit_hook(hook)
+    }
+}
+
+/// What [`Session::load_shared`](crate::Session::load_shared) accepts: an `Arc<Graph<S>>` of
+/// any served storage (a Store's graph, a graph the host keeps), or an `Arc<dyn SessionGraph>`.
+pub trait IntoSessionGraph {
+    /// The graph as the session holds it.
+    fn into_session_graph(self) -> Arc<dyn SessionGraph>;
+}
+
+impl<S> IntoSessionGraph for Arc<Graph<S>>
+where
+    S: GraphStorage + Default + Send + Sync + 'static,
+{
+    fn into_session_graph(self) -> Arc<dyn SessionGraph> {
+        self
+    }
+}
+
+impl IntoSessionGraph for Arc<dyn SessionGraph> {
+    fn into_session_graph(self) -> Arc<dyn SessionGraph> {
+        self
+    }
+}
+
+// ------------------------------------------------------------------------------- GraphFactory
+
+/// The host's storage for the graphs and stores a [`Session`](crate::Session) builds
+/// ([`Session::with_storage`](crate::Session::with_storage)): an empty graph, a loaded graph
+/// (the session reads every file format into a [`TraversalGraph`] first and hands it over
+/// here), a packed snapshot, and Stores. Object-safe; [`StorageKind`] implements it.
+pub trait GraphFactory: Send + Sync {
+    /// The storage's type name, for messages (not stable).
+    fn storage_name(&self) -> &'static str;
+
+    /// A new empty graph.
+    fn empty(&self) -> Arc<dyn SessionGraph>;
+
+    /// `graph` (a sample, or what a GraphML/GraphSON load built, with its schema and catalog)
+    /// as a graph of this storage: itself when the storage IS [`TraversalGraph`], otherwise a
+    /// copy (see [`StorageKind`]). An error as its diagnostic text.
+    fn adopt(&self, graph: TraversalGraph) -> Result<Arc<dyn SessionGraph>, String>;
+
+    /// A graph read from a packed snapshot (`.gsnap`): only for a [`PersistentStorage`],
+    /// otherwise the "not supported" error ([`unsupported_text`]).
+    fn load_snapshot(&self, reader: &mut dyn Read) -> Result<Arc<dyn SessionGraph>, String>;
+
+    /// Whether [`Self::create_store`] and [`Self::open_store`] work (a [`PersistentStorage`]).
+    fn supports_stores(&self) -> bool;
+
+    /// A new Store in `dir` whose first snapshot is `graph` (a graph of this factory that
+    /// nobody else holds: it is moved into the store). An error as its diagnostic text.
+    fn create_store(
+        &self,
+        dir: Arc<dyn StoreDir>,
+        graph: Arc<dyn SessionGraph>,
+        options: StoreOptions,
+    ) -> Result<Arc<dyn SessionStore>, String>;
+
+    /// Opens the Store in `dir` with this storage. An error as its diagnostic text.
+    fn open_store(
+        &self,
+        dir: Arc<dyn StoreDir>,
+        options: StoreOptions,
+    ) -> Result<Arc<dyn SessionStore>, String>;
+}
+
+/// A store of the session's storage, or why it could not be created or opened.
+type StoreResult = Result<Arc<dyn SessionStore>, PersistError>;
+
+/// What only a [`PersistentStorage`] can do, monomorphised by [`StorageKind::persistent`].
+struct PersistentOps<S: GraphStorage> {
+    read_snapshot: fn(&mut dyn Read) -> Result<S, PersistError>,
+    create_store: fn(Arc<dyn StoreDir>, S, StoreOptions) -> StoreResult,
+    open_store: fn(Arc<dyn StoreDir>, StoreOptions) -> StoreResult,
+}
+
+/// The [`GraphFactory`] of the storage `S` (EXPERIMENTAL, like the session's other boundary
+/// types). There is no specialisation, so the constructor says what `S` can do:
+///
+/// - [`StorageKind::new`] for any `S: GraphStorage + Default`: graphs only. A loaded graph is
+///   copied into `S::default()` through the [`GraphStorage`] write API (schema, catalog,
+///   vertices, edges in the source's order, outside any unit; the auto-id sequences raised to
+///   the source's; the commit position and lineage id are the storage's own). `.gsnap` loads
+///   and Stores fail with the "not supported by this storage" error, and the session serves
+///   its graphs without a Store (the Store menu says so).
+/// - [`StorageKind::persistent`] for `S: PersistentStorage + Default`: everything. A loaded
+///   graph is copied losslessly through the storage's load sink
+///   ([`PersistentStorage::load_vertex`], ..., in the source's order; lineage id, commit
+///   position and time, auto-id sequences carried); graphs are wrapped with
+///   [`Graph::new_persistent`] (so "Save graph" as `.gsnap` works); Stores are
+///   [`Store<S>`](Store) ([`Store::create_in`], [`Store::open_in`]).
+///
+/// When `S` is [`TraversalGraph`] nothing is copied: the loaded graph is served as it is
+/// ([`crate::Session::new`] uses `StorageKind::<TraversalGraph>::persistent()`).
+pub struct StorageKind<S: GraphStorage> {
+    wrap: fn(S) -> Graph<S>,
+    copy: fn(&TraversalGraph) -> Result<S, GraphError>,
+    persistent: Option<PersistentOps<S>>,
+    _storage: PhantomData<fn() -> S>,
+}
+
+impl<S> StorageKind<S>
+where
+    S: GraphStorage + Default + Send + Sync + 'static,
+{
+    /// The factory of a storage without persistence: graphs only (see [`StorageKind`]).
+    pub fn new() -> Self {
+        Self {
+            wrap: Graph::new,
+            copy: copy_plain::<S>,
+            persistent: None,
+            _storage: PhantomData,
+        }
+    }
+}
+
+impl<S> Default for StorageKind<S>
+where
+    S: GraphStorage + Default + Send + Sync + 'static,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<S> StorageKind<S>
+where
+    S: PersistentStorage + Default,
+{
+    /// The factory of a persistent storage: graphs, `.gsnap` loads and Stores (see
+    /// [`StorageKind`]).
+    pub fn persistent() -> Self {
+        Self {
+            wrap: Graph::new_persistent,
+            copy: copy_loaded::<S>,
+            persistent: Some(PersistentOps {
+                read_snapshot: |reader| {
+                    graphersal::persist::read_snapshot_into(
+                        reader,
+                        &ReadOptions::default(),
+                        S::default(),
+                    )
+                },
+                create_store: |dir, graph, options| {
+                    Store::<S>::create_in(dir, graph, options)
+                        .map(|store| Arc::new(store) as Arc<dyn SessionStore>)
+                },
+                open_store: |dir, options| {
+                    Store::<S>::open_in(dir, options, S::default)
+                        .map(|store| Arc::new(store) as Arc<dyn SessionStore>)
+                },
+            }),
+            _storage: PhantomData,
+        }
+    }
+}
+
+impl<S> GraphFactory for StorageKind<S>
+where
+    S: GraphStorage + Default + Send + Sync + 'static,
+{
+    fn storage_name(&self) -> &'static str {
+        std::any::type_name::<S>()
+    }
+
+    fn empty(&self) -> Arc<dyn SessionGraph> {
+        Arc::new((self.wrap)(S::default()))
+    }
+
+    fn adopt(&self, graph: TraversalGraph) -> Result<Arc<dyn SessionGraph>, String> {
+        let boxed: Box<dyn Any> = Box::new(graph);
+        let storage = match boxed.downcast::<S>() {
+            Ok(same) => *same,
+            Err(boxed) => match boxed.downcast::<TraversalGraph>() {
+                Ok(graph) => (self.copy)(&graph).map_err(|err| format_diagnostic(&err))?,
+                Err(_) => return Err("internal: a loaded graph of an unknown type".to_string()),
+            },
+        };
+        Ok(Arc::new((self.wrap)(storage)))
+    }
+
+    fn load_snapshot(&self, reader: &mut dyn Read) -> Result<Arc<dyn SessionGraph>, String> {
+        let Some(ops) = &self.persistent else {
+            return Err(unsupported_text(
+                "packed snapshots (.gsnap)",
+                self.storage_name(),
+            ));
+        };
+        let storage = (ops.read_snapshot)(reader).map_err(|err| format_diagnostic(&err))?;
+        Ok(Arc::new((self.wrap)(storage)))
+    }
+
+    fn supports_stores(&self) -> bool {
+        self.persistent.is_some()
+    }
+
+    fn create_store(
+        &self,
+        dir: Arc<dyn StoreDir>,
+        graph: Arc<dyn SessionGraph>,
+        options: StoreOptions,
+    ) -> Result<Arc<dyn SessionStore>, String> {
+        let Some(ops) = &self.persistent else {
+            return Err(unsupported_text("stores", self.storage_name()));
+        };
+        let any: Arc<dyn AnyGraph> = graph;
+        let shared = any
+            .into_any_arc()
+            .downcast::<Graph<S>>()
+            .map_err(|_| "internal: the graph is not of the session's storage".to_string())?;
+        let graph = Arc::try_unwrap(shared)
+            .map_err(|_| "the graph is shared with another owner".to_string())?
+            .into_inner();
+        (ops.create_store)(dir, graph, options).map_err(|err| format_diagnostic(&err))
+    }
+
+    fn open_store(
+        &self,
+        dir: Arc<dyn StoreDir>,
+        options: StoreOptions,
+    ) -> Result<Arc<dyn SessionStore>, String> {
+        let Some(ops) = &self.persistent else {
+            return Err(unsupported_text("stores", self.storage_name()));
+        };
+        (ops.open_store)(dir, options).map_err(|err| format_diagnostic(&err))
+    }
+}
+
+/// The properties of `map` with every value logical (a compressed string decompressed): what
+/// leaves a [`TraversalGraph`] for another storage.
+fn logical(map: Option<&PropertyMap>) -> PropertyMap {
+    map.map(|map| {
+        map.iter()
+            .map(|(key, value)| (key.clone(), value.to_logical()))
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Copies `src` into a new `S` through the write API, outside any unit: the schema first (the
+/// data satisfies it), the catalog, the vertices and edges in `src`'s order, then the auto-id
+/// sequences.
+fn copy_plain<S: GraphStorage + Default>(src: &TraversalGraph) -> Result<S, GraphError> {
+    let mut dst = S::default();
+    if let Some(schema) = GraphStorage::get_schema(src) {
+        dst.set_schema(schema)?;
+    }
+    for definition in GraphStorage::definitions(src) {
+        dst.set_definition(definition.clone())?;
+    }
+    for v in GraphStorage::vertices(src) {
+        let id = GraphStorage::vertex_id(src, v).unwrap_or_default();
+        dst.add_vertex(
+            Some(id.into()),
+            GraphStorage::vertex_labels(src, v).to_vec(),
+            logical(GraphStorage::vertex_properties(src, v)),
+        )?;
+    }
+    for e in GraphStorage::edges(src) {
+        let Some((from, to)) = GraphStorage::edge_endpoints(src, e) else {
+            continue;
+        };
+        let endpoint = |v| {
+            GraphStorage::vertex_id(src, v)
+                .and_then(|id| dst.get_vertex_by_id(id))
+                .ok_or_else(|| GraphError::unsupported("an edge whose endpoint was not copied"))
+        };
+        let (from, to) = (endpoint(from)?, endpoint(to)?);
+        dst.add_edge(
+            GraphStorage::edge_id(src, e).map(Into::into),
+            GraphStorage::edge_label(src, e).map(Into::into),
+            from,
+            to,
+            logical(GraphStorage::edge_properties(src, e)),
+        )?;
+    }
+    let (vertices, edges) = PersistentStorage::id_sequences(src);
+    dst.raise_id_sequences(vertices, edges)?;
+    Ok(dst)
+}
+
+/// Copies `src` into a new `S` through the load sink, losslessly and in `src`'s order: schema,
+/// catalog, vertices, edges, then the lineage id, the commit position and time, the auto-id
+/// sequences.
+fn copy_loaded<S: PersistentStorage + Default>(src: &TraversalGraph) -> Result<S, GraphError> {
+    let mut dst = S::default();
+    if let Some(schema) = GraphStorage::get_schema(src) {
+        dst.load_schema(schema)?;
+    }
+    for definition in GraphStorage::definitions(src) {
+        dst.load_definition(definition.clone())?;
+    }
+    for v in GraphStorage::vertices(src) {
+        dst.load_vertex(
+            GraphStorage::vertex_id(src, v).unwrap_or_default().into(),
+            GraphStorage::vertex_labels(src, v).to_vec(),
+            logical(GraphStorage::vertex_properties(src, v)),
+        )?;
+    }
+    for e in GraphStorage::edges(src) {
+        let Some((from, to)) = GraphStorage::edge_endpoints(src, e) else {
+            continue;
+        };
+        dst.load_edge(
+            GraphStorage::edge_id(src, e).unwrap_or_default().into(),
+            GraphStorage::edge_label(src, e).map(Into::into),
+            GraphStorage::vertex_id(src, from).unwrap_or_default(),
+            GraphStorage::vertex_id(src, to).unwrap_or_default(),
+            logical(GraphStorage::edge_properties(src, e)),
+        )?;
+    }
+    dst.finish_load();
+    dst.set_graph_id(PersistentStorage::graph_id(src));
+    dst.raise_position(
+        GraphStorage::last_commit_seq(src),
+        PersistentStorage::last_committed_at(src),
+    );
+    let (vertices, edges) = PersistentStorage::id_sequences(src);
+    dst.raise_id_sequences(vertices, edges)?;
+    Ok(dst)
+}
+
+// ------------------------------------------------------------------------------- SessionStore
+
+/// A read-only view of a past state of a store ([`SessionStore::read_only_view`]).
+pub struct StoreView {
+    /// The recovered graph (unpublished, without a journal).
+    pub graph: Arc<dyn SessionGraph>,
+    /// Its commit position.
+    pub commit_seq: u64,
+    /// The commit time of that position (microseconds since the epoch).
+    pub committed_at: i64,
+}
+
+/// A Store the session serves, of any storage, as one object-safe type (`Arc<dyn
+/// SessionStore>`): what the Store menu and the database list call. Blanket-implemented for
+/// every [`Store<S>`](Store); each method forwards to the [`Store`] method of the same name
+/// (directories as `Arc<dyn StoreDir>`, writers as `&mut dyn Write`).
+pub trait SessionStore: Send + Sync {
+    /// The store's live graph ([`Store::graph`]) as the session holds it.
+    fn session_graph(&self) -> Arc<dyn SessionGraph>;
+    /// [`Store::info`].
+    fn info(&self) -> Result<StoreInfo, PersistError>;
+    /// [`Store::location`].
+    fn location(&self) -> String;
+    /// [`Store::dir`].
+    fn dir(&self) -> &Arc<dyn StoreDir>;
+    /// [`Store::maintenance`].
+    fn maintenance(&self) -> Option<&DamageReport>;
+    /// [`Store::backup_marker`].
+    fn backup_marker(&self) -> Option<BackupMarker>;
+    /// [`Store::read_only_reason`].
+    fn read_only_reason(&self) -> Option<String>;
+    /// [`Store::is_frozen_by_damage`].
+    fn is_frozen_by_damage(&self) -> bool;
+    /// [`Store::damage_found`].
+    fn damage_found(&self) -> Vec<FoundDamage>;
+    /// [`Store::damage_policy`].
+    fn damage_policy(&self) -> DamagePolicy;
+    /// [`Store::wal_bytes_since_checkpoint`].
+    fn wal_bytes_since_checkpoint(&self) -> u64;
+    /// [`Store::last_auto_checkpoint_error`].
+    fn last_auto_checkpoint_error(&self) -> Option<String>;
+    /// [`Store::run_due_checkpoint`].
+    fn run_due_checkpoint(&self) -> Result<Option<SnapshotInfo>, PersistError>;
+    /// [`Store::checkpoint`].
+    fn checkpoint(&self, name: Option<&str>) -> Result<SnapshotInfo, PersistError>;
+    /// [`Store::mark`].
+    fn mark(&self, name: &str) -> Result<Mark, PersistError>;
+    /// [`Store::export_packed`].
+    fn export_packed(
+        &self,
+        commit_seq: Option<u64>,
+        writer: &mut dyn Write,
+    ) -> Result<SnapshotInfo, PersistError>;
+    /// [`Store::read_only_at`], served as a view (the session registers its refusal hook).
+    fn read_only_view(&self, target: RecoveryTarget) -> Result<StoreView, PersistError>;
+    /// [`Store::fork`].
+    fn fork(
+        &self,
+        target: RecoveryTarget,
+        new_dir: Arc<dyn StoreDir>,
+    ) -> Result<ForkReport, PersistError>;
+    /// [`Store::rollback_to`].
+    fn rollback_to(
+        &self,
+        target: RecoveryTarget,
+        mode: RollbackMode,
+    ) -> Result<RollbackReport, PersistError>;
+    /// [`Store::attic_changes`].
+    fn attic_changes(&self, id: &str) -> Result<ChangesSince, PersistError>;
+    /// [`Store::attic_can_restore`].
+    fn attic_can_restore(&self, id: &str) -> Result<(), PersistError>;
+    /// [`Store::attic_restore`].
+    fn attic_restore(&self, id: &str) -> Result<u64, PersistError>;
+    /// [`Store::attic_fork`].
+    fn attic_fork(&self, id: &str, new_dir: Arc<dyn StoreDir>) -> Result<ForkReport, PersistError>;
+    /// [`Store::attic_remove`].
+    fn attic_remove(&self, id: &str) -> Result<(), PersistError>;
+    /// [`Store::compaction_advice`].
+    fn compaction_advice(&self) -> Result<CompactionAdvice, PersistError>;
+    /// [`Store::compact`].
+    fn compact(&self) -> Result<CompactReport, PersistError>;
+    /// [`Store::prune`].
+    fn prune(&self, up_to: u64) -> Result<PruneReport, PersistError>;
+    /// [`Store::backup_with`].
+    fn backup_with(
+        &self,
+        target_dir: Arc<dyn StoreDir>,
+        mode: BackupMode,
+    ) -> Result<BackupReport, PersistError>;
+    /// [`Store::backup_from_memory`].
+    fn backup_from_memory(
+        &self,
+        target_dir: Arc<dyn StoreDir>,
+        mode: BackupMode,
+    ) -> Result<BackupReport, PersistError>;
+    /// [`Store::verify`].
+    fn verify(&self) -> Result<VerifyReport, PersistError>;
+    /// [`Store::shutdown`].
+    fn shutdown(&self) -> Result<(), PersistError>;
+}
+
+impl<S> SessionStore for Store<S>
+where
+    S: PersistentStorage + Default,
+{
+    fn session_graph(&self) -> Arc<dyn SessionGraph> {
+        Store::<S>::graph(self).clone()
+    }
+    fn info(&self) -> Result<StoreInfo, PersistError> {
+        Store::<S>::info(self)
+    }
+    fn location(&self) -> String {
+        Store::<S>::location(self)
+    }
+    fn dir(&self) -> &Arc<dyn StoreDir> {
+        Store::<S>::dir(self)
+    }
+    fn maintenance(&self) -> Option<&DamageReport> {
+        Store::<S>::maintenance(self)
+    }
+    fn backup_marker(&self) -> Option<BackupMarker> {
+        Store::<S>::backup_marker(self)
+    }
+    fn read_only_reason(&self) -> Option<String> {
+        Store::<S>::read_only_reason(self)
+    }
+    fn is_frozen_by_damage(&self) -> bool {
+        Store::<S>::is_frozen_by_damage(self)
+    }
+    fn damage_found(&self) -> Vec<FoundDamage> {
+        Store::<S>::damage_found(self)
+    }
+    fn damage_policy(&self) -> DamagePolicy {
+        Store::<S>::damage_policy(self)
+    }
+    fn wal_bytes_since_checkpoint(&self) -> u64 {
+        Store::<S>::wal_bytes_since_checkpoint(self)
+    }
+    fn last_auto_checkpoint_error(&self) -> Option<String> {
+        Store::<S>::last_auto_checkpoint_error(self)
+    }
+    fn run_due_checkpoint(&self) -> Result<Option<SnapshotInfo>, PersistError> {
+        Store::<S>::run_due_checkpoint(self)
+    }
+    fn checkpoint(&self, name: Option<&str>) -> Result<SnapshotInfo, PersistError> {
+        Store::<S>::checkpoint(self, name)
+    }
+    fn mark(&self, name: &str) -> Result<Mark, PersistError> {
+        Store::<S>::mark(self, name)
+    }
+    fn export_packed(
+        &self,
+        commit_seq: Option<u64>,
+        writer: &mut dyn Write,
+    ) -> Result<SnapshotInfo, PersistError> {
+        Store::<S>::export_packed(self, commit_seq, writer)
+    }
+    fn read_only_view(&self, target: RecoveryTarget) -> Result<StoreView, PersistError> {
+        let recovered = Store::<S>::read_only_at(self, target)?;
+        let commit_seq = GraphStorage::last_commit_seq(&recovered.graph);
+        Ok(StoreView {
+            graph: Arc::new(Graph::new_persistent(recovered.graph)),
+            commit_seq,
+            committed_at: recovered.report.committed_at,
+        })
+    }
+    fn fork(
+        &self,
+        target: RecoveryTarget,
+        new_dir: Arc<dyn StoreDir>,
+    ) -> Result<ForkReport, PersistError> {
+        Store::<S>::fork(self, target, new_dir)
+    }
+    fn rollback_to(
+        &self,
+        target: RecoveryTarget,
+        mode: RollbackMode,
+    ) -> Result<RollbackReport, PersistError> {
+        Store::<S>::rollback_to(self, target, mode)
+    }
+    fn attic_changes(&self, id: &str) -> Result<ChangesSince, PersistError> {
+        Store::<S>::attic_changes(self, id)
+    }
+    fn attic_can_restore(&self, id: &str) -> Result<(), PersistError> {
+        Store::<S>::attic_can_restore(self, id)
+    }
+    fn attic_restore(&self, id: &str) -> Result<u64, PersistError> {
+        Store::<S>::attic_restore(self, id)
+    }
+    fn attic_fork(&self, id: &str, new_dir: Arc<dyn StoreDir>) -> Result<ForkReport, PersistError> {
+        Store::<S>::attic_fork(self, id, new_dir)
+    }
+    fn attic_remove(&self, id: &str) -> Result<(), PersistError> {
+        Store::<S>::attic_remove(self, id)
+    }
+    fn compaction_advice(&self) -> Result<CompactionAdvice, PersistError> {
+        Store::<S>::compaction_advice(self)
+    }
+    fn compact(&self) -> Result<CompactReport, PersistError> {
+        Store::<S>::compact(self)
+    }
+    fn prune(&self, up_to: u64) -> Result<PruneReport, PersistError> {
+        Store::<S>::prune(self, up_to)
+    }
+    fn backup_with(
+        &self,
+        target_dir: Arc<dyn StoreDir>,
+        mode: BackupMode,
+    ) -> Result<BackupReport, PersistError> {
+        Store::<S>::backup_with(self, target_dir, mode)
+    }
+    fn backup_from_memory(
+        &self,
+        target_dir: Arc<dyn StoreDir>,
+        mode: BackupMode,
+    ) -> Result<BackupReport, PersistError> {
+        Store::<S>::backup_from_memory(self, target_dir, mode)
+    }
+    fn verify(&self) -> Result<VerifyReport, PersistError> {
+        Store::<S>::verify(self)
+    }
+    fn shutdown(&self) -> Result<(), PersistError> {
+        Store::<S>::shutdown(self)
+    }
+}
+
+#[cfg(test)]
+mod no_compression;
+#[cfg(test)]
+mod tests;

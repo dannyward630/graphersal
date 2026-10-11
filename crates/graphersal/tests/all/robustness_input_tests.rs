@@ -1,0 +1,1033 @@
+//! Malformed-input robustness (CLAUDE.md rule 1): GraphML and GraphSON documents, schema JSON, serialized
+//! `ChangeSet` journals, `jpath(...)` strings, `UUID.fromString(...)` and script parameters.
+//!
+//! Each input family has a handwritten corpus of adversarial cases plus seeded byte/structure
+//! mutations of a valid document. Every case runs through [`guarded`] (own thread,
+//! `catch_unwind`, watchdog); a panic or hang fails the test unless it is a known, documented
+//! finding with an ignored `BUG:` test in `robustness_bug_tests.rs`. After a successful parse the
+//! result is exercised further (traversal, export, schema visualization, replay), because a
+//! malformed value that is accepted must not crash a later step either.
+//!
+//! The mutation budget is small in the normal run; `ROBUSTNESS_INPUT_CASES=<n>` raises it:
+//!
+//! ```text
+//! ROBUSTNESS_INPUT_CASES=20000 cargo test --release --package graphersal \
+//!   --features script,io,display,serde --test all robustness_input_tests:: -- --nocapture
+//! ```
+#![cfg(all(feature = "io", feature = "serde", feature = "script"))]
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use graphersal::changes::ChangeSet;
+use graphersal::io::{GraphExport, GraphImport};
+use graphersal::prelude::*;
+use graphersal::schema::SchemaDiff;
+
+use crate::robustness_fuzz_tests::{Outcome, Rng, guarded};
+use crate::script_host::{ScriptLimits, eval_value_with_limits};
+
+const WATCHDOG: Duration = Duration::from_secs(30);
+
+fn budget(default: u64) -> u64 {
+    std::env::var("ROBUSTNESS_INPUT_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+/// Collects fatal outcomes (panic or hang) with a short description of the input.
+#[derive(Default)]
+struct Fatal(Vec<String>);
+
+impl Fatal {
+    fn check<T>(&mut self, what: &str, result: Result<T, Outcome>) {
+        if let Err(outcome) = result {
+            let input: String = what.chars().take(300).collect();
+            self.0.push(format!("{outcome:?} on {input:?}"));
+        }
+    }
+    fn assert_empty(self, family: &str) {
+        assert!(
+            self.0.is_empty(),
+            "{family}: {} fatal cases:\n{}",
+            self.0.len(),
+            self.0.join("\n")
+        );
+    }
+}
+
+/// Byte-level mutations of a valid document: truncation, a flipped byte, a duplicated slice and
+/// the insertion of an adversarial snippet.
+fn mutate(rng: &mut Rng, base: &[u8], snippets: &[&[u8]]) -> Vec<u8> {
+    let mut out = base.to_vec();
+    for _ in 0..1 + rng.below(3) {
+        if out.is_empty() {
+            break;
+        }
+        let at = rng.below(out.len());
+        match rng.below(5) {
+            0 => out.truncate(at),
+            1 => out[at] = *rng.pick(b"<>&\"'/=\0\xff\x80{}[]:,-09eE.\\ "),
+            2 => {
+                let end = (at + rng.below(64)).min(out.len());
+                let slice = out[at..end].to_vec();
+                out.splice(at..at, slice);
+            }
+            3 => {
+                let end = (at + rng.below(32)).min(out.len());
+                out.drain(at..end);
+            }
+            _ => {
+                let snippet = rng.pick(snippets).to_vec();
+                out.splice(at..at, snippet);
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------------------------
+// GraphML
+// ---------------------------------------------------------------------------------------------
+
+fn modern_graphml(with_schema: bool) -> Vec<u8> {
+    let graph = GraphSource::tinkerpop_modern();
+    if with_schema {
+        let schema = GraphSchema::from_json(
+            r#"{"mode": "open", "vertices": {"person": {"schema": {"type": "object",
+                "properties": {"name": {"type": "string", "pattern": "^[a-z]+$"},
+                               "age": {"type": ["integer", "null"], "minimum": 0}},
+                "required": ["name"]}}}}"#,
+        )
+        .expect("valid schema");
+        graph.write().set_schema(schema).expect("modern conforms");
+    }
+    let mut out = Vec::new();
+    graph.export_graphml_writer(&mut out).expect("export");
+    out
+}
+
+const GRAPHML_HEAD: &str =
+    r#"<?xml version="1.0"?><graphml xmlns="http://graphml.graphdrawing.org/xmlns">"#;
+
+fn graphml_doc(body: &str) -> Vec<u8> {
+    format!(r#"{GRAPHML_HEAD}{body}</graphml>"#).into_bytes()
+}
+
+fn graphml_corpus() -> Vec<Vec<u8>> {
+    let deep_nesting = format!(
+        r#"{GRAPHML_HEAD}<graph edgedefault="directed"><node id="a"><data key="d">{}x{}</data></node></graph></graphml>"#,
+        "<x>".repeat(50_000),
+        "</x>".repeat(50_000)
+    );
+    let deep_graphs = format!(
+        "{GRAPHML_HEAD}{}{}</graphml>",
+        r#"<graph edgedefault="directed"><node id="n">"#.repeat(5_000),
+        "</node></graph>".repeat(5_000)
+    );
+    let many_attrs = format!(
+        r#"{GRAPHML_HEAD}<graph><node id="a" {}/></graph></graphml>"#,
+        (0..20_000)
+            .map(|i| format!("a{i}=\"{i}\""))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let long_id = format!(
+        r#"{GRAPHML_HEAD}<graph><node id="{}"/></graph></graphml>"#,
+        "i".repeat(1_000_000)
+    );
+    let mut cases: Vec<Vec<u8>> = vec![
+        b"".to_vec(),
+        b"<".to_vec(),
+        b"<?xml".to_vec(),
+        b"<graphml".to_vec(),
+        b"\xff\xfe\x00<\x00g\x00".to_vec(),
+        b"<graphml><graph><node id=\"\xc3\x28\"/></graph></graphml>".to_vec(),
+        b"<graphml><graph><node id=\"a\"><data key=\"k\">\xf0\x28\x8c\xbc</data></node></graph></graphml>"
+            .to_vec(),
+        graphml_doc(""),
+        graphml_doc("<graph>"),
+        graphml_doc("<graph></graph><graph></graph>"),
+        graphml_doc(r#"<graph><node/></graph>"#),
+        graphml_doc(r#"<graph><node id=""/></graph>"#),
+        graphml_doc(r#"<graph><node id="a"/><node id="a"/></graph>"#),
+        graphml_doc(r#"<graph><edge source="a" target="b"/></graph>"#),
+        graphml_doc(r#"<graph><node id="a"/><edge source="a"/></graph>"#),
+        graphml_doc(r#"<graph><node id="a"/><edge target="a"/></graph>"#),
+        graphml_doc(r#"<graph><node id="a"/><edge id="e" source="a" target="a"/><edge id="e" source="a" target="a"/></graph>"#),
+        graphml_doc(r#"<graph><edge id="e" source="a" target="b"/><node id="a"/><node id="b"/></graph>"#),
+        graphml_doc(r#"<key id="k" for="node" attr.name="n" attr.type="long"/><graph><node id="a"><data key="k">99999999999999999999999999</data></node></graph>"#),
+        graphml_doc(r#"<key id="k" for="node" attr.name="n" attr.type="long"/><graph><node id="a"><data key="k">-9223372036854775809</data></node></graph>"#),
+        graphml_doc(r#"<key id="k" for="node" attr.name="n" attr.type="int"/><graph><node id="a"><data key="k">2147483648</data></node></graph>"#),
+        graphml_doc(r#"<key id="k" for="node" attr.name="n" attr.type="double"/><graph><node id="a"><data key="k">1e999999</data></node></graph>"#),
+        graphml_doc(r#"<key id="k" for="node" attr.name="n" attr.type="double"/><graph><node id="a"><data key="k">NaN</data></node></graph>"#),
+        graphml_doc(r#"<key id="k" for="node" attr.name="n" attr.type="float"/><graph><node id="a"><data key="k">-inf</data></node></graph>"#),
+        graphml_doc(r#"<key id="k" for="node" attr.name="n" attr.type="boolean"/><graph><node id="a"><data key="k">maybe</data></node></graph>"#),
+        graphml_doc(r#"<key id="k" for="node" attr.name="n" attr.type="weird"/><graph><node id="a"><data key="k">1</data></node></graph>"#),
+        graphml_doc(r#"<key id="k" for="nowhere" attr.name="n" attr.type="long"/><graph><node id="a"><data key="k">1</data></node></graph>"#),
+        graphml_doc(r#"<key id="k" for="node" attr.name="n" attr.type="long"/><key id="k" for="node" attr.name="m" attr.type="string"/><graph><node id="a"><data key="k">x</data></node></graph>"#),
+        graphml_doc(r#"<key id="k" for="node" attr.name="n" attr.type="long"><default>notanumber</default></key><graph><node id="a"/></graph>"#),
+        graphml_doc(r#"<graph><node id="a"><data key="undeclared">1</data></node></graph>"#),
+        graphml_doc(r#"<graph><node id="a"><data>1</data></node></graph>"#),
+        graphml_doc(r#"<key id="labelV" for="node" attr.name="labelV" attr.type="long"/><graph><node id="a"><data key="labelV">5</data></node></graph>"#),
+        graphml_doc(r#"<key id="labelV" for="node" attr.name="labelV" attr.type="string"/><graph><node id="a"><data key="labelV"></data></node></graph>"#),
+        graphml_doc(r#"<key id="labelV" for="node" attr.name="labelV" attr.type="string"/><graph><node id="a"><data key="labelV">a::b::::</data></node></graph>"#),
+        graphml_doc(r#"<key id="labelE" for="edge" attr.name="labelE" attr.type="string"/><graph><node id="a"/><edge source="a" target="a"><data key="labelE"></data></edge></graph>"#),
+        graphml_doc(r#"<graph><node id="&lt;&amp;&gt;"/></graph>"#),
+        graphml_doc(r#"<graph><node id="&#0;"/></graph>"#),
+        graphml_doc(r#"<graph><node id="&#xFFFFFFFF;"/></graph>"#),
+        graphml_doc(r#"<graph><node id="&#x110000;"/></graph>"#),
+        graphml_doc(r#"<graph><node id="&unknown;"/></graph>"#),
+        graphml_doc(r#"<graph><node id="a"><data key="k">&#55296;</data></node></graph>"#),
+        format!(r#"<?xml version="1.0"?><!DOCTYPE g [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;"><!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">]>{}"#,
+            r#"<graphml><graph><node id="&c;"/></graph></graphml>"#).into_bytes(),
+        br#"<?xml version="1.0"?><!DOCTYPE g [<!ENTITY x SYSTEM "file:///etc/passwd">]><graphml><graph><node id="&x;"/></graph></graphml>"#.to_vec(),
+        graphml_doc(r#"<graph><node id="a"><data key="k"><![CDATA[<node id="b"/>]]></data></node></graph>"#),
+        graphml_doc(r#"<graph><node id="a"><data key="k"><![CDATA[unterminated"#),
+        graphml_doc(r#"<graph><node id="a"><!-- comment --><?pi x?></node></graph>"#),
+        // A legacy graph-level schema value (no longer read): ignored like any graph-level data.
+        graphml_doc(r#"<key id="s" for="graph" attr.name="graphersal.schema" attr.type="string"/><graph><data key="s">{not json</data></graph>"#),
+        deep_nesting.into_bytes(),
+        deep_graphs.into_bytes(),
+        many_attrs.into_bytes(),
+        long_id.into_bytes(),
+    ];
+    let modern = modern_graphml(true);
+    // Truncated at every 97th byte.
+    for cut in (0..modern.len()).step_by(97) {
+        cases.push(modern[..cut].to_vec());
+    }
+    cases
+}
+
+const GRAPHML_SNIPPETS: &[&[u8]] = &[
+    br#"<node id="1"/>"#,
+    br#"<node id="zz"/>"#,
+    br#"<edge source="zz" target="1"/>"#,
+    br#"<edge id="7" source="1" target="1"/>"#,
+    br#"<data key="age">99999999999999999999999</data>"#,
+    br#"<data key="age">NaN</data>"#,
+    br#"<data key="age"></data>"#,
+    br#"<data key="labelV"></data>"#,
+    br#"<data key="labelV">a::b</data>"#,
+    br#"<key id="age" for="node" attr.name="age" attr.type="string"/>"#,
+    br#"<key id="x" for="node" attr.name="x" attr.type="weird"/>"#,
+    b"&lt;",
+    b"&#0;",
+    b"&#xD800;",
+    b"&nope;",
+    b"<![CDATA[x]]>",
+    b"\xc3\x28",
+    b"\xff",
+    br#"<graph edgedefault="undirected">"#,
+    b"</graph>",
+    b"</graphml>",
+    b"<graphml>",
+];
+
+/// Imports `bytes` into a fresh graph and, when accepted, also into a live modern graph (one
+/// captured unit), then reads and re-exports the result.
+fn exercise_graphml(bytes: Vec<u8>) {
+    if let Ok(graph) = GraphSource::from_graphml_reader(std::io::Cursor::new(bytes.clone())) {
+        let lock = graph.read();
+        let _ = lock.traversal().v(None::<()>).element_map(None).to_list();
+        let _ = lock.traversal().e(None::<()>).element_map(None).to_list();
+        drop(lock);
+        let mut out = Vec::new();
+        let _ = graph.export_graphml_writer(&mut out);
+        // The re-export of an accepted document must import again.
+        if !out.is_empty() {
+            let _ = GraphSource::from_graphml_reader(std::io::Cursor::new(out));
+        }
+    }
+    let mut live = GraphSource::tinkerpop_modern();
+    let _ = live.import_graphml_reader(std::io::Cursor::new(bytes));
+    let _ = live.read().traversal().v(None::<()>).count().next();
+}
+
+#[test]
+fn malformed_graphml_never_panics() {
+    let mut fatal = Fatal::default();
+    for case in graphml_corpus() {
+        let label = String::from_utf8_lossy(&case).into_owned();
+        fatal.check(&label, guarded(WATCHDOG, move || exercise_graphml(case)));
+    }
+    let bases = [modern_graphml(false), modern_graphml(true)];
+    let mut rng = Rng::new(0x6EA9_4D1E);
+    for _ in 0..budget(300) {
+        let base = rng.pick(&bases).clone();
+        let case = mutate(&mut rng, &base, GRAPHML_SNIPPETS);
+        let label = String::from_utf8_lossy(&case).into_owned();
+        fatal.check(&label, guarded(WATCHDOG, move || exercise_graphml(case)));
+    }
+    fatal.assert_empty("GraphML");
+}
+
+// ---------------------------------------------------------------------------------------------
+// GraphSON
+// ---------------------------------------------------------------------------------------------
+
+fn modern_graphson() -> Vec<u8> {
+    let mut out = Vec::new();
+    GraphSource::tinkerpop_modern()
+        .export_graphson_writer(&mut out)
+        .expect("export");
+    out
+}
+
+fn crew_graphson() -> Vec<u8> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/tinkerpop/data/tinkerpop-crew.json");
+    std::fs::read(path).expect("crew")
+}
+
+fn graphson_corpus() -> Vec<Vec<u8>> {
+    let deep_typed = format!(
+        r#"{{"id":"a","properties":{{"p":[{{"value":{}1{}}}]}}}}"#,
+        r#"{"@type":"g:List","@value":["#.repeat(5_000),
+        "]}".repeat(5_000)
+    );
+    let deep_plain = format!(
+        r#"{{"id":"a","x":{}{}}}"#,
+        "[".repeat(50_000),
+        "]".repeat(50_000)
+    );
+    let deep_meta = format!(
+        r#"{{"id":"a","properties":{{"p":[{{"value":1,"properties":{{"m":{}1{}}}}}]}}}}"#,
+        "{\"k\":".repeat(300),
+        "}".repeat(300)
+    );
+    let many_edges = format!(
+        r#"{{"id":"a","outE":{{"l":[{}]}}}}"#,
+        (0..2_000)
+            .map(|i| format!(r#"{{"id":"e{i}","inV":"a"}}"#))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let long_id = format!(r#"{{"id":"{}"}}"#, "x".repeat(100_000));
+    let mut cases: Vec<Vec<u8>> = vec![
+        b"".to_vec(),
+        b"\n\n\n".to_vec(),
+        b"\xef\xbb\xbf".to_vec(),
+        b"{".to_vec(),
+        b"}".to_vec(),
+        b"[]".to_vec(),
+        b"null".to_vec(),
+        b"\"vertex\"".to_vec(),
+        b"{}".to_vec(),
+        br#"{"vertices":null}"#.to_vec(),
+        br#"{"vertices":[1,2,3]}"#.to_vec(),
+        br#"{"vertices":[{"id":"a"},{"id":"a"}],"vertices":[]}"#.to_vec(),
+        br#"{"id":null,"label":null,"properties":null,"outE":null,"inE":null}"#.to_vec(),
+        br#"{"id":[],"label":[],"properties":[],"outE":[],"inE":[]}"#.to_vec(),
+        br#"{"id":{},"label":{},"properties":{"k":{}},"outE":{"l":{}},"inE":{"l":[[]]}}"#.to_vec(),
+        br#"{"id":"a","label":"::"}"#.to_vec(),
+        br#"{"id":"a","label":"a::b::::"}"#.to_vec(),
+        br#"{"id":"a","label":""}"#.to_vec(),
+        br#"{"id":"","label":"x"}"#.to_vec(),
+        br#"{"id":"a","outE":{"":[{"inV":"a"}]}}"#.to_vec(),
+        br#"{"id":"a","outE":{"l":[{"id":"e","inV":"a"},{"id":"e","inV":"a"}]},"inE":{"l":[{"id":"e","outV":"b"}]}}"#.to_vec(),
+        br#"{"id":"a","outE":{"l":[{"id":{"@type":"g:Int32","@value":1},"inV":{"@type":"g:Int64","@value":1}}]}}"#.to_vec(),
+        br#"{"id":{"@type":"g:Int32","@value":1}}
+{"id":"1"}
+{"id":1}
+{"id":1.0}"#
+            .to_vec(),
+        br#"{"id":"a","properties":{"p":[{"value":{"@type":"g:Map","@value":["k"]}}]}}"#.to_vec(),
+        br#"{"id":"a","properties":{"p":[{"value":{"@type":"g:Map","@value":[1,2]}}]}}"#.to_vec(),
+        br#"{"id":"a","properties":{"p":[{"value":{"@type":"g:Map","@value":["k",1,"k",2]}}]}}"#.to_vec(),
+        br#"{"id":"a","properties":{"p":[{"value":{"@type":"g:Double","@value":1e999}}]}}"#.to_vec(),
+        br#"{"id":"a","properties":{"p":[{"value":{"@type":"g:Int64","@value":99999999999999999999}}]}}"#.to_vec(),
+        br#"{"id":"a","properties":{"p":[{"value":{"@type":"g:Int64","@value":-0}}]}}"#.to_vec(),
+        br#"{"id":"a","properties":{"p":[{"value":{"@type":"g:Double","@value":-0.0}}]}}"#.to_vec(),
+        br#"{"id":"a","properties":{"p":[{"value":{"@type":"g:UUID","@value":"00000000-0000-0000-0000-00000000000g"}}]}}"#.to_vec(),
+        br#"{"id":"a","properties":{"p":[{"value":{"@type":null,"@value":null}}]}}"#.to_vec(),
+        br#"{"id":"a","properties":{"p":[{"value":{"@type":"g:List"}}]}}"#.to_vec(),
+        br#"{"id":"a","properties":{"_meta":[{"value":1}],"p":[{"value":1,"properties":{"m":2}}]}}"#.to_vec(),
+        br#"{"id":"a","properties":{"p":[{"value":"\ud800"}]}}"#.to_vec(),
+        br#"{"id":"a","properties":{"p":[{"value":"\u0000"}]}}"#.to_vec(),
+        b"{\"id\":\"\xc3\x28\"}".to_vec(),
+        b"{\"id\":\"a\"}\r{\"id\":\"b\"}".to_vec(),
+        br#"{"@class":"java.util.HashMap"}"#.to_vec(),
+        br#"{"mode":"NORMAL","vertices":[],"edges":[]}"#.to_vec(),
+        deep_typed.into_bytes(),
+        deep_plain.into_bytes(),
+        deep_meta.into_bytes(),
+        many_edges.into_bytes(),
+        long_id.into_bytes(),
+    ];
+    for base in [modern_graphson(), crew_graphson()] {
+        for cut in (0..base.len()).step_by(89) {
+            cases.push(base[..cut].to_vec());
+        }
+        // Wrapped and pretty-wrapped forms of the same document.
+        let text = String::from_utf8(base).expect("UTF-8");
+        let lines: Vec<&str> = text.lines().collect();
+        cases.push(format!(r#"{{"vertices":[{}]}}"#, lines.join(",")).into_bytes());
+        cases.push(format!("{{\"vertices\":[\n{}\n]}}", lines.join(",\n")).into_bytes());
+    }
+    cases
+}
+
+const GRAPHSON_SNIPPETS: &[&[u8]] = &[
+    br#"{"@type":"g:Date","@value":1}"#,
+    br#"{"@type":"g:Int32","@value":"x"}"#,
+    br#"{"@type":"g:Map","@value":[1]}"#,
+    br#"{"@type":"g:List","@value":[{"@type":"g:List","@value":[]}]}"#,
+    br#"{"@type":"g:UUID","@value":"41d2e28a-20a4-4ab0-b379-d810dede3786"}"#,
+    br#"{"@type":"x:Unknown","@value":{"a":[1]}}"#,
+    br#""_meta""#,
+    br#""outE""#,
+    br#""inE""#,
+    br#""inV":"zz""#,
+    br#""label":"a::b""#,
+    b"99999999999999999999",
+    b"1e999",
+    b"\\ud800",
+    b"\n",
+    b"\r\n",
+    b"\xc3\x28",
+    b"\xef\xbb\xbf",
+    b"[[[[[[[[",
+    b"{\"vertices\":[",
+];
+
+/// Imports `bytes` into a fresh graph and, when accepted, also into a live modern graph (one
+/// captured unit), then reads and re-exports the result; an accepted re-export must import
+/// again and give the same counts.
+fn exercise_graphson(bytes: Vec<u8>) {
+    if let Ok((graph, report)) = graphersal::io::GraphSONImport::new()
+        .with_max_text_bytes(1 << 20)
+        .load(std::io::Cursor::new(bytes.clone()))
+    {
+        let _ = report.to_string();
+        let lock = graph.read();
+        let _ = lock.traversal().v(None::<()>).element_map(None).to_list();
+        let _ = lock.traversal().e(None::<()>).element_map(None).to_list();
+        drop(lock);
+        let mut out = Vec::new();
+        graph
+            .export_graphson_writer(&mut out)
+            .expect("an imported graph exports");
+        let (again, _) = graphersal::io::GraphSONImport::new()
+            .load(std::io::Cursor::new(out))
+            .expect("a re-export imports");
+        assert_eq!(again.read().vertex_count(), graph.read().vertex_count());
+        assert_eq!(again.read().edge_count(), graph.read().edge_count());
+    }
+    let mut live = GraphSource::tinkerpop_modern();
+    let _ = live.import_graphson_reader(std::io::Cursor::new(bytes));
+    let _ = live.read().traversal().v(None::<()>).count().next();
+}
+
+#[test]
+fn malformed_graphson_never_panics() {
+    let mut fatal = Fatal::default();
+    for case in graphson_corpus() {
+        let label = String::from_utf8_lossy(&case).into_owned();
+        fatal.check(&label, guarded(WATCHDOG, move || exercise_graphson(case)));
+    }
+    let bases = [modern_graphson(), crew_graphson()];
+    let mut rng = Rng::new(0x6EA9_5011);
+    for _ in 0..budget(300) {
+        let base = rng.pick(&bases).clone();
+        let case = mutate(&mut rng, &base, GRAPHSON_SNIPPETS);
+        let label = String::from_utf8_lossy(&case).into_owned();
+        fatal.check(&label, guarded(WATCHDOG, move || exercise_graphson(case)));
+    }
+    fatal.assert_empty("GraphSON");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Schema JSON
+// ---------------------------------------------------------------------------------------------
+
+const SAMPLE_SCHEMA: &str = include_str!("../data/sample_ecommerce_schema.json");
+
+const MODERN_SCHEMA: &str = r#"{"mode": "closed",
+  "vertices": {
+    "person": {"schema": {"type": "object", "properties": {
+        "name": {"type": "string", "minLength": 1, "pattern": "^[a-z]+$"},
+        "age": {"type": ["integer", "null"], "minimum": 0, "maximum": 200}},
+      "required": ["name"]}},
+    "software": {"schema": {"type": "object", "properties": {
+        "name": {"type": "string"}, "lang": {"type": "string"}}, "required": ["name", "lang"]}}},
+  "edges": {
+    "knows": {"connections": [{"from": "person", "to": "person"}],
+              "schema": {"type": "object", "properties": {
+                "weight": {"type": "number", "minimum": 0.0, "maximum": 1.0}}, "required": ["weight"]}},
+    "created": {"connections": [{"from": "person", "to": "software"}],
+                "schema": {"type": "object", "properties": {"weight": {"type": "number"}}}}}}"#;
+
+fn schema_corpus() -> Vec<String> {
+    let label = |node: &str| {
+        format!(
+            r#"{{"mode":"open","vertices":{{"v":{{"schema":{{"type":"object","properties":{{"x":{node}}}}}}}}}}}"#
+        )
+    };
+    let deep_object = label(&format!(
+        "{}{{\"type\":\"integer\"}}{}",
+        r#"{"type":"object","properties":{"y":"#.repeat(2_000),
+        "}}".repeat(2_000)
+    ));
+    let deep_array = label(&format!(
+        "{}{{\"type\":\"integer\"}}{}",
+        r#"{"type":"array","items":"#.repeat(100),
+        "}".repeat(100)
+    ));
+    let deep_any_of = label(&format!(
+        "{}{{\"type\":\"integer\"}}{}",
+        r#"{"anyOf":["#.repeat(100),
+        "]}".repeat(100)
+    ));
+    // A chain of definitions that doubles at every level: inlining must stop at the node limit.
+    let defs = (0..40)
+        .map(|i| {
+            format!(
+                r##""D{i}":{{"type":"object","properties":{{"a":{{"$ref":"#/$defs/D{n}"}},"b":{{"$ref":"#/$defs/D{n}"}}}}}}"##,
+                n = i + 1
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let ref_bomb = format!(
+        r##"{{"vertices":{{"v":{{"schema":{{"$defs":{{{defs},"D40":{{"type":"integer"}}}},"type":"object","properties":{{"x":{{"$ref":"#/$defs/D0"}}}}}}}}}}}}"##
+    );
+    let ref_cycle = r##"{"vertices":{"v":{"schema":{"$defs":{"A":{"$ref":"#/$defs/B"},"B":{"anyOf":[{"$ref":"#/$defs/A"}]}},"type":"object","properties":{"x":{"$ref":"#/$defs/A"}}}}}}"##.to_string();
+    let many_labels = format!(
+        r#"{{"mode":"open","vertices":{{{}}}}}"#,
+        (0..20_000)
+            .map(|i| format!(r#""l{i}":{{}}"#))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let pattern = |p: &str| {
+        format!(
+            r#"{{"mode":"open","vertices":{{"person":{{"schema":{{"type":"object","properties":{{"name":{{"type":"string","pattern":{}}}}}}}}}}}}}"#,
+            serde_json::to_string(p).unwrap_or_default()
+        )
+    };
+    let field = |f: &str| {
+        format!(
+            r#"{{"mode":"closed","vertices":{{"person":{{"schema":{{"type":"object","properties":{{"name":{f}}}}}}}}}}}"#
+        )
+    };
+    let mut cases = vec![
+        String::new(),
+        "null".into(),
+        "[]".into(),
+        "{}".into(),
+        "1".into(),
+        r#""schema""#.into(),
+        r#"{"$schema":1}"#.into(),
+        r#"{"mode":"OPEN"}"#.into(),
+        r#"{"mode":null}"#.into(),
+        r#"{"meta":[1]}"#.into(),
+        r#"{"meta":{"a":{"b":[null,1e300,"\u0000"]}}}"#.into(),
+        r#"{"mode":"open","vertices":[]}"#.into(),
+        r#"{"mode":"open","vertices":{"":{}}}"#.into(),
+        label("{}"),
+        label(r#"{"type":"Int64"}"#),
+        label(r#"{"type":"array"}"#),
+        label(r#"{"anyOf":[]}"#),
+        label(r#"{"type":"integer","bogus":1}"#),
+        label(r#"{"type":["integer","integer"]}"#),
+        label(r##"{"$ref":"#/$defs/missing"}"##),
+        label(r##"{"$ref":"#/$defs/"}"##),
+        label(r#"{"type":"string","format":"date-time"}"#),
+        label(r#"{"type":"object","additionalProperties":{"type":"integer"}}"#),
+        label(r#"{"enum":[]}"#),
+        label(r#"{"const":{"a":[1,2,{"b":null}]}}"#),
+        label(r#"{"type":"object","required":["a","a"]}"#),
+        r#"{"mode":"open","vertices":{"v":{"schema":{"type":"object","properties":{"x":{"type":"integer"},"x":{"type":"string"}}}}}}"#.into(),
+        r#"{"mode":"open","edges":{"e":{"connections":[{"from":"nope","to":"*"}]}}}"#.into(),
+        r#"{"mode":"open","edges":{"e":{"connections":[{}]}}}"#.into(),
+        field(r#"{"type":"integer","minimum":9223372036854775807,"maximum":-9223372036854775808}"#),
+        field(r#"{"type":"integer","minimum":1e400}"#),
+        field(r#"{"type":"number","minimum":"NaN"}"#),
+        field(r#"{"type":"string","minLength":-1}"#),
+        field(r#"{"type":"string","minLength":9223372036854775807,"maxLength":0}"#),
+        field(r#"{"type":"array","items":{"type":"integer"},"minItems":5,"maxItems":1}"#),
+        field(r#"{"type":"string","examples":[1,{"b":null}],"default":[[]]}"#),
+        field(r#"{"type":"string","nullable":"yes"}"#),
+        field(r#"{"type":"string","format":"uuid","minimum":1}"#),
+        field(r#"{"type":"null"}"#),
+        field(r#"{"type":["string","null"],"exclusiveMinimum":0,"exclusiveMaximum":0}"#),
+        pattern("(a+)+$"),
+        pattern("(a|aa)*b"),
+        pattern("(a{1000}){1000}"),
+        pattern("[[[[[[[[[[["),
+        pattern(&"(".repeat(10_000)),
+        pattern(&format!("{}a{}", "(".repeat(300), ")".repeat(300))),
+        pattern(&"a?".repeat(5_000)),
+        pattern("\\p{Nonexistent}"),
+        pattern("(?<n>a)\\k<n>"),
+        pattern("^$"),
+        pattern(""),
+        deep_object,
+        deep_array,
+        deep_any_of,
+        ref_bomb,
+        ref_cycle,
+        many_labels,
+        "{".repeat(100_000),
+        "[".repeat(100_000),
+        SAMPLE_SCHEMA.into(),
+        MODERN_SCHEMA.into(),
+    ];
+    for cut in (0..MODERN_SCHEMA.len()).step_by(13) {
+        cases.push(MODERN_SCHEMA[..cut].to_string());
+    }
+    cases
+}
+const SCHEMA_SNIPPETS: &[&[u8]] = &[
+    br#""pattern":"(a+)+$","#,
+    br#""minimum":-1e308,"#,
+    br#""maxLength":0,"#,
+    br#""additionalProperties":false,"#,
+    br#""anyOf":[{"type":"integer"},{"type":"string"}],"#,
+    br##""$ref":"#/$defs/X","##,
+    br#""required":["name","age","x"],"#,
+    br#""type":["integer","null"],"#,
+    br#""type":"array","items":{"type":"object","properties":{}},"#,
+    br#""mode":"closed","#,
+    br#""mode":"none","#,
+    br#"{"from":"*","to":"*"},"#,
+    b"null,",
+    b"\"\\ud800\"",
+    b"\\u0000",
+    b"1e999999",
+];
+
+/// Parses `text` as a schema and, when accepted, applies it to a modern graph, validates,
+/// visualizes it in every format and round-trips it.
+fn exercise_schema(text: String) {
+    let Ok(schema) = GraphSchema::from_json(&text) else {
+        return;
+    };
+    let _ = schema.to_json();
+    let _ = schema.to_json_schema();
+    for format in [
+        VisualizeFormat::Table,
+        VisualizeFormat::Mermaid,
+        VisualizeFormat::PlantUML,
+        VisualizeFormat::JsonSchema,
+        VisualizeFormat::Json,
+        VisualizeFormat::Markdown,
+        VisualizeFormat::Tree,
+        VisualizeFormat::Auto,
+    ] {
+        let _ = schema.visualize(format);
+    }
+    let back = GraphSchema::from_json(&schema.to_json());
+    assert_eq!(
+        back.as_ref().ok(),
+        Some(&schema),
+        "the canonical form reads back"
+    );
+    let _ = schema.to_json_pretty();
+    let _ = schema.to_graph();
+    let _ = SchemaDiff::between(Some(&schema), &GraphSchema::new());
+    let _ = SchemaDiff::between(None, &schema);
+    let graph = GraphSource::tinkerpop_modern();
+    let applied = graph.write().set_schema(schema.clone()).is_ok();
+    if applied {
+        // Writes through the enforced schema: a valid-looking and an invalid-looking one.
+        let mut lock = graph.write();
+        let _ = lock
+            .traversal_mut()
+            .add_v("person")
+            .property("name", "zed")
+            .property("age", 3)
+            .to_list();
+        let _ = lock
+            .traversal_mut()
+            .v(None::<()>)
+            .property("name", ElementProperty::Null)
+            .to_list();
+        let _ = lock.traversal_mut().v(None::<()>).drop().to_list();
+    }
+    let empty = GraphSource::empty();
+    let _ = empty.write().set_schema(schema);
+}
+
+#[test]
+fn malformed_schema_json_never_panics() {
+    let mut fatal = Fatal::default();
+    for case in schema_corpus() {
+        let label = case.clone();
+        fatal.check(&label, guarded(WATCHDOG, move || exercise_schema(case)));
+    }
+    let bases = [
+        SAMPLE_SCHEMA.as_bytes().to_vec(),
+        MODERN_SCHEMA.as_bytes().to_vec(),
+    ];
+    let mut rng = Rng::new(0x5C4E_3A11);
+    for _ in 0..budget(300) {
+        let base = rng.pick(&bases).clone();
+        let case = String::from_utf8_lossy(&mutate(&mut rng, &base, SCHEMA_SNIPPETS)).into_owned();
+        let label = case.clone();
+        fatal.check(&label, guarded(WATCHDOG, move || exercise_schema(case)));
+    }
+    fatal.assert_empty("schema JSON");
+}
+
+// ---------------------------------------------------------------------------------------------
+// ChangeSet journals
+// ---------------------------------------------------------------------------------------------
+
+const VALUES: &[&str] = &[
+    "1",
+    "-9223372036854775808",
+    "9223372036854775807",
+    "18446744073709551616",
+    "1e308",
+    "1.5",
+    "null",
+    "true",
+    r#""x""#,
+    r#""""#,
+    "[]",
+    "[1,[2,[3]]]",
+    "{}",
+    r#"{"a":{"b":[1,"x",null]}}"#,
+    r#"{"@type":"g:UUID","@value":"00000000-0000-0000-0000-000000000001"}"#,
+    r#"{"@type":"g:UUID","@value":"zz"}"#,
+    r#"{"@type":"graphersal:Object","@value":{"@type":"g:UUID"}}"#,
+    r#"{"@type":"graphersal:Object","@value":{"@type":"graphersal:Object","@value":{}}}"#,
+    r#"{"@type":"g:Int32","@value":1}"#,
+    r#"{"@type":"g:UUID","@value":1}"#,
+];
+
+const IDS: &[&str] = &[
+    "1",
+    "2",
+    "3",
+    "4",
+    "7",
+    "9",
+    "12",
+    "x",
+    "",
+    "9223372036854775808",
+];
+
+fn json_str(text: &str) -> String {
+    serde_json::to_string(text).unwrap_or_default()
+}
+
+/// One random (often inconsistent) mutation as JSON.
+fn random_mutation(rng: &mut Rng) -> String {
+    let id = json_str(rng.pick(IDS));
+    let id2 = json_str(rng.pick(IDS));
+    let id3 = json_str(rng.pick(IDS));
+    let value = *rng.pick(VALUES);
+    let key = json_str(rng.pick(&["name", "age", "weight", "", "k", "T.id"]));
+    let label = json_str(rng.pick(&["person", "software", "knows", "", "x"]));
+    let kind = rng.pick(&["vertex", "edge", "Vertex", "graph"]);
+    let prop_choices = [
+        "{}".to_string(),
+        format!(r#"{{"name":{value}}}"#),
+        format!(r#"{{"age":{value},"name":"x"}}"#),
+        "[]".to_string(),
+    ];
+    let props = rng.pick(&prop_choices).clone();
+    match rng.below(12) {
+        0 => format!(r#"{{"op":"add_vertex","id":{id},"labels":[{label}],"properties":{props}}}"#),
+        1 => format!(
+            r#"{{"op":"drop_vertex","id":{id},"before":{{"labels":[{label}],"properties":{props}}}}}"#
+        ),
+        2 => format!(
+            r#"{{"op":"add_edge","id":{id},"label":{label},"out_id":{id2},"in_id":{id3},"properties":{props}}}"#
+        ),
+        3 => format!(
+            r#"{{"op":"drop_edge","id":{id},"before":{{"label":null,"out_id":{id2},"in_id":{id3},"properties":{props}}}}}"#
+        ),
+        4 => format!(
+            r#"{{"op":"set_property","element":{{"kind":"{kind}","id":{id}}},"key":{key},"after":{value}}}"#
+        ),
+        5 => format!(
+            r#"{{"op":"set_property","element":{{"kind":"{kind}","id":{id}}},"key":{key},"before":{value},"after":{value}}}"#
+        ),
+        6 => format!(
+            r#"{{"op":"remove_property","element":{{"kind":"{kind}","id":{id}}},"key":{key},"before":{value}}}"#
+        ),
+        7 => format!(r#"{{"op":"add_label","id":{id},"label":{label}}}"#),
+        8 => format!(r#"{{"op":"remove_label","id":{id},"label":{label}}}"#),
+        10 => format!(r#"{{"op":"set_edge_label","id":{id},"before":{label},"after":{label}}}"#),
+        9 => format!(
+            r#"{{"op":"set_schema","before":{{"version":1,"mode":"none"}},"after":{}}}"#,
+            rng.pick(&[
+                r#"{"version":1,"mode":"closed"}"#,
+                r#"{"version":1,"mode":"open","vertices":{"person":{"properties":{"age":{"type":"string"}}}}}"#,
+                r#"{"version":1,"mode":"none"}"#,
+                r#"{}"#,
+            ])
+        ),
+        _ => rng.pick(&[
+            r#"{"op":"unknown"}"#,
+            r#"{"op":"add_vertex"}"#,
+            r#"{}"#,
+            r#"null"#,
+            r#"{"op":"add_vertex","id":1,"labels":"x","properties":{}}"#,
+        ])
+        .to_string(),
+    }
+}
+
+fn changeset_json(rng: &mut Rng) -> String {
+    let seq = rng.pick(&["1", "0", "18446744073709551615", "-1", "1.5", "\"1\""]);
+    let n = rng.below(8);
+    let mutations: Vec<String> = (0..n).map(|_| random_mutation(rng)).collect();
+    format!(
+        r#"{{"commit_seq":{seq},"mutations":[{}]}}"#,
+        mutations.join(",")
+    )
+}
+
+/// Deserializes `text` and replays it into a fresh modern graph (and one with a closed schema),
+/// then reads the result.
+fn exercise_changeset(text: String) -> u8 {
+    let Ok(set) = serde_json::from_str::<ChangeSet>(&text) else {
+        return 0;
+    };
+    let mut status = 1;
+    let _ = serde_json::to_string(&set);
+    if let Ok(graph) = TraversalGraph::tinkerpop_modern().replay(&set) {
+        status = 2;
+        let _ = graph.traversal().v(None::<()>).element_map(None).to_list();
+        let _ = graph.traversal().e(None::<()>).element_map(None).to_list();
+        // Replay twice: the second application meets its own effects.
+        let _ = graph.replay(&set);
+    }
+    let mut closed = TraversalGraph::tinkerpop_modern();
+    if let Ok(schema) = GraphSchema::from_json(MODERN_SCHEMA)
+        && closed.set_schema(schema).is_ok()
+    {
+        let _ = closed.replay(&set);
+    }
+    let _ = TraversalGraph::new().replay(&set);
+    status
+}
+
+#[test]
+fn adversarial_changeset_journals_never_panic() {
+    let mut fatal = Fatal::default();
+    let handwritten = [
+        String::new(),
+        "{}".into(),
+        r#"{"commit_seq":1}"#.into(),
+        r#"{"commit_seq":1,"mutations":{}}"#.into(),
+        r#"{"commit_seq":1,"mutations":[{"op":"set_property","element":{"kind":"vertex","id":"1"},"key":"k","after":{"@type":"graphersal:Object","@value":[1]}}]}"#.into(),
+        format!(
+            r#"{{"commit_seq":1,"mutations":[{{"op":"set_property","element":{{"kind":"vertex","id":"1"}},"key":"k","after":{}1{}}}]}}"#,
+            "[".repeat(10_000),
+            "]".repeat(10_000)
+        ),
+        format!(
+            r#"{{"commit_seq":1,"mutations":[{{"op":"set_property","element":{{"kind":"vertex","id":"1"}},"key":"k","after":{}1{}}}]}}"#,
+            r#"{"@type":"graphersal:Object","@value":{"a":"#.repeat(200),
+            "}}".repeat(200)
+        ),
+        // Drop a vertex that still has edges, without dropping its edges first.
+        r#"{"commit_seq":1,"mutations":[{"op":"drop_vertex","id":"1","before":{"labels":["person"],"properties":{}}}]}"#.into(),
+        // An edge to a vertex that does not exist.
+        r#"{"commit_seq":1,"mutations":[{"op":"add_edge","id":"e","label":"x","out_id":"1","in_id":"nope","properties":{}}]}"#.into(),
+        // An id that collides with an existing element.
+        r#"{"commit_seq":1,"mutations":[{"op":"add_vertex","id":"1","labels":["person"],"properties":{}}]}"#.into(),
+        r#"{"commit_seq":1,"mutations":[{"op":"add_edge","id":"7","label":"x","out_id":"1","in_id":"2","properties":{}}]}"#.into(),
+        r#"{"commit_seq":1,"mutations":[{"op":"set_property","element":{"kind":"edge","id":"1"},"key":"k","after":1}]}"#.into(),
+        r#"{"commit_seq":1,"mutations":[{"op":"remove_label","id":"1","label":"person"},{"op":"remove_label","id":"1","label":"person"}]}"#.into(),
+        r#"{"commit_seq":1,"mutations":[{"op":"add_label","id":"1","label":""}]}"#.into(),
+        r#"{"commit_seq":1,"mutations":[{"op":"set_schema","before":{"version":1,"mode":"none"},"after":{"version":1,"mode":"closed"}},{"op":"add_vertex","id":"n","labels":["ghost"],"properties":{}}]}"#.into(),
+    ];
+    for case in handwritten {
+        let label = case.clone();
+        fatal.check(&label, guarded(WATCHDOG, move || exercise_changeset(case)));
+    }
+    let mut rng = Rng::new(0xC4A6_6E5E);
+    let mut seen = [0_u64; 3];
+    for _ in 0..budget(400) {
+        let case = changeset_json(&mut rng);
+        let label = case.clone();
+        let result = guarded(WATCHDOG, move || exercise_changeset(case));
+        if let Ok(status) = &result {
+            seen[usize::from(*status)] += 1;
+        }
+        fatal.check(&label, result);
+    }
+    fatal.assert_empty("ChangeSet");
+    // The generator must reach the replay, not only the deserializer.
+    assert!(seen[2] > 20, "parse failures / parsed / replayed: {seen:?}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// jpath, UUID.fromString and parameters (through the script entry)
+// ---------------------------------------------------------------------------------------------
+
+fn run_script(
+    script: &'static str,
+    params: HashMap<String, ElementProperty>,
+) -> Result<(), Outcome> {
+    guarded(WATCHDOG, move || {
+        let graph = Arc::new(GraphSource::tinkerpop_modern());
+        let _ = eval_value_with_limits(graph, script, params, &ScriptLimits::default());
+    })
+}
+
+fn random_text(rng: &mut Rng, alphabet: &[char], max: usize) -> String {
+    let len = rng.below(max + 1);
+    (0..len).map(|_| *rng.pick(alphabet)).collect()
+}
+
+const JPATH_ALPHABET: &[char] = &[
+    'a', 'b', '.', '.', '[', ']', '[', ']', '-', '0', '1', '9', '\'', '"', '$', '*', '\\', ' ',
+    'ü', '\u{0}', '?', '@', '(', ')', ':', ',', 'e',
+];
+
+#[test]
+fn random_jpath_strings_never_panic() {
+    let mut fatal = Fatal::default();
+    let mut texts: Vec<String> = [
+        "a[-9223372036854775807]",
+        "a[9223372036854775807]",
+        "a[99999999999999999999999]",
+        "a[-]",
+        "a[01]",
+        "a['\\u0000']",
+        "a['\\ud800']",
+        "a['\\",
+        "$['a'",
+        "$[\"a\"]",
+        "a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    // Long paths; a much deeper key path aborts the process today (robustness_bug_tests).
+    texts.push(format!("a{}", "[0]".repeat(10_000)));
+    texts.push(format!("a{}", ".b".repeat(500)));
+    let mut rng = Rng::new(0x1A7B_0001);
+    for _ in 0..budget(100) {
+        texts.push(random_text(&mut rng, JPATH_ALPHABET, 16));
+    }
+    for text in texts {
+        let label = text.clone();
+        let params: HashMap<String, ElementProperty> = [("p".to_string(), text.into())].into();
+        fatal.check(
+            &label,
+            run_script(
+                r#"let j = jpath(p);
+                   g.v().values(j).toList();
+                   g.v().has(j, 1).toList();
+                   g.v().properties(j).toList();
+                   g.v().property(j, [1, #{a: 2}]).values(j).toList();
+                   g.v().remove_property(j).toList();
+                   g.inject(#{a: [1, #{b: 2}]}).json_path(p).toList();"#,
+                params,
+            ),
+        );
+    }
+    fatal.assert_empty("jpath");
+}
+
+#[test]
+fn random_uuid_strings_never_panic() {
+    let mut fatal = Fatal::default();
+    let alphabet: Vec<char> = "0123456789abcdefABCDEF-{}xü ".chars().collect();
+    let mut texts: Vec<String> = [
+        "",
+        "00000000-0000-0000-0000-000000000000",
+        "ffffffff-ffff-ffff-ffff-ffffffffffff",
+        "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF",
+        "{00000000-0000-0000-0000-000000000000}",
+        "00000000000000000000000000000000",
+        "00000000-0000-0000-0000-00000000000",
+        "00000000-0000-0000-0000-0000000000000",
+        "0000000-00000-0000-0000-000000000000",
+        "urn:uuid:00000000-0000-0000-0000-000000000000",
+        "üüüüüüüü-üüüü-üüüü-üüüü-üüüüüüüüüüüü",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let mut rng = Rng::new(0x0000_0001);
+    for _ in 0..budget(100) {
+        let mut text = random_text(&mut rng, &alphabet, 40);
+        if rng.chance(50) {
+            // Near-canonical shape with random characters.
+            let shape: String = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                .chars()
+                .map(|c| if c == 'x' { *rng.pick(&alphabet) } else { c })
+                .collect();
+            text = shape;
+        }
+        texts.push(text);
+    }
+    for text in texts {
+        let label = text.clone();
+        let params: HashMap<String, ElementProperty> = [("p".to_string(), text.into())].into();
+        fatal.check(
+            &label,
+            run_script(
+                r#"let u = UUID.fromString(p);
+                   g.addV("x").property("u", u).values("u").toList();
+                   g.v().has("u", u).toList();
+                   g.inject(u).as_string().as_number().toList();"#,
+                params,
+            ),
+        );
+    }
+    fatal.assert_empty("UUID.fromString");
+}
+
+/// The adversarial parameter values, built inside the case thread (a huge value is neither
+/// cloned nor formatted on the test thread). Deep nesting is covered by `robustness_bug_tests`
+/// (it aborts the process today).
+fn param_value(index: usize) -> ElementProperty {
+    match index {
+        0 => ElementProperty::Null,
+        1 => f64::NAN.into(),
+        2 => f64::INFINITY.into(),
+        3 => i64::MIN.into(),
+        4 => "x".repeat(1_000_000).into(),
+        5 => ElementProperty::Array((0..200_000).map(ElementProperty::from).collect()),
+        6 => (0..100).fold(ElementProperty::from(1_i64), |inner, _| {
+            ElementProperty::Array(vec![inner])
+        }),
+        _ => ElementProperty::Uuid(u128::MAX),
+    }
+}
+
+#[test]
+fn adversarial_parameters_never_panic() {
+    let mut fatal = Fatal::default();
+    let names = [
+        "p", "g", "__", "_g", "P", "T", "keys", "first", "", " ", "1x", "a-b", "fn", "let", "this",
+        "ü",
+    ];
+    for name in names {
+        for index in 0..8 {
+            let label = format!("{name} = value #{index}");
+            let result = guarded(WATCHDOG, move || {
+                let params: HashMap<String, ElementProperty> =
+                    [(name.to_string(), param_value(index))].into();
+                let graph = Arc::new(GraphSource::tinkerpop_modern());
+                let _ = eval_value_with_limits(
+                    graph,
+                    r#"let x = if is_def_var("p") { p } else { 1 };
+                       g.inject(x).toList();
+                       g.addV("x").property("k", x).values("k").toList();
+                       g.v().has("name", x).toList();
+                       g.inject(x).unfold().toList();"#,
+                    params,
+                    &ScriptLimits::default(),
+                );
+            });
+            fatal.check(&label, result);
+        }
+    }
+    fatal.assert_empty("parameters");
+}

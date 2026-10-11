@@ -1,0 +1,79 @@
+name: Python wheels
+
+# Builds abi3 wheels (one wheel per platform covers Python 3.10+) and runs the binding's tests.
+# The five-platform wheels are built only on a push to `main` and on `v*` tags; a pull request runs
+# the binding's tests only (Python 3.10 and 3.13).
+# Wheels are uploaded as workflow artifacts only. Publishing to PyPI is a later, manual decision:
+# use PyPI Trusted Publishing (OIDC, `pypa/gh-action-pypi-publish`, `permissions: id-token: write`)
+# in a separate release workflow; no token is stored in this repository.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  wheels:
+    name: wheel (${{ matrix.name }})
+    # Not on pull requests: the wheels are needed for main and releases only.
+    if: github.event_name == 'push'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-latest, target: x86_64, manylinux: auto }
+          - { name: linux-aarch64, os: ubuntu-latest, target: aarch64, manylinux: auto }
+          - { name: macos-x86_64, os: macos-15-intel, target: x86_64, manylinux: auto }
+          - { name: macos-arm64, os: macos-latest, target: aarch64, manylinux: auto }
+          - { name: windows-x86_64, os: windows-latest, target: x64, manylinux: auto }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: bindings/py-graphersal
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: bindings/py-graphersal/dist
+
+  test:
+    # The binding's tests on the oldest and the newest supported Python (abi3-py310: one wheel
+    # covers 3.10+): pytest against a `maturin develop` build, then the crate's Rust tests with
+    # PYO3_PYTHON pointing at the same interpreter (CLAUDE.md).
+    name: test (python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: py${{ matrix.python }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build and test
+        working-directory: bindings/py-graphersal
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install maturin pytest
+          maturin develop
+          python -m pytest tests/
+      - name: Rust tests of the binding
+        run: PYO3_PYTHON="$PWD/bindings/py-graphersal/.venv/bin/python" cargo test --package py-graphersal

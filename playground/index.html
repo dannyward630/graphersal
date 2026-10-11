@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Graphersal Playground</title>
+  <meta name="description" content="Try Graphersal, an in-memory Gremlin-style graph traversal engine, in the browser.">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/app.css">
+
+  <!-- Apply the saved theme before first paint (no flash). Storage may be unavailable. -->
+  <script>
+    try {
+      var t = localStorage.getItem('graphersal.playground.theme');
+      if (t === '"light"' || t === '"dark"') document.documentElement.dataset.theme = JSON.parse(t);
+    } catch (e) { /* private mode or blocked storage: follow the system */ }
+  </script>
+
+  <!--
+    Libraries from CDNs, pinned to exact versions, with Subresource Integrity.
+    Classic scripts (global `Split`, `cytoscape`) come from cdnjs, which publishes SRI hashes.
+    ES modules are resolved through the import map below; its `integrity` section pins each
+    module's sha384 (computed from the pinned files; browsers without import-map integrity
+    support simply ignore it). CodeMirror 6 is loaded as its original ESM files from jsDelivr with
+    every bare import mapped to ONE pinned URL, so exactly one instance of @codemirror/state is
+    loaded (mixing instances breaks CodeMirror). See README.md for the list.
+  -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/split.js/1.6.5/split.min.js"
+          integrity="sha512-lNjb0qWDVvt1zfSiXufaxtlFtenve3BLbvljxuMXuSr0DE0HYp5OhX0u89uwNd6MvlX1bgJ8ulfG4JMGurs8UA=="
+          crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.34.3/cytoscape.min.js"
+          integrity="sha512-SQebVa91Tn1DeP45Wo74monK/I9wiQg59uKc7P8vp3T7KQ9l5e8IMjZ1GJTgZehUVQt7eS61DTqldQUb1EHfnw=="
+          crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "vue": "https://cdnjs.cloudflare.com/ajax/libs/vue/3.5.43/vue.esm-browser.prod.min.js",
+      "@codemirror/state": "https://cdn.jsdelivr.net/npm/@codemirror/state@6.7.6/dist/index.js",
+      "@codemirror/view": "https://cdn.jsdelivr.net/npm/@codemirror/view@6.43.13/dist/index.js",
+      "@codemirror/language": "https://cdn.jsdelivr.net/npm/@codemirror/language@6.12.4/dist/index.js",
+      "@codemirror/autocomplete": "https://cdn.jsdelivr.net/npm/@codemirror/autocomplete@6.20.3/dist/index.js",
+      "@codemirror/commands": "https://cdn.jsdelivr.net/npm/@codemirror/commands@6.11.1/dist/index.js",
+      "@codemirror/search": "https://cdn.jsdelivr.net/npm/@codemirror/search@6.5.11/dist/index.js",
+      "@lezer/highlight": "https://cdn.jsdelivr.net/npm/@lezer/highlight@1.2.5/dist/index.js",
+      "@lezer/common": "https://cdn.jsdelivr.net/npm/@lezer/common@1.5.3/dist/index.js",
+      "style-mod": "https://cdn.jsdelivr.net/npm/style-mod@4.1.4/src/style-mod.js",
+      "w3c-keyname": "https://cdn.jsdelivr.net/npm/w3c-keyname@2.2.8/index.js",
+      "crelt": "https://cdn.jsdelivr.net/npm/crelt@1.0.7/index.js",
+      "@marijn/find-cluster-break": "https://cdn.jsdelivr.net/npm/@marijn/find-cluster-break@1.0.4/src/index.js"
+    },
+    "integrity": {
+      "https://cdnjs.cloudflare.com/ajax/libs/vue/3.5.43/vue.esm-browser.prod.min.js": "sha512-C7zVve/Fm3eRIGISHxLbbt6hPadnLWdaiAgOglJqaiP63aFxsBeQrElHHkwA15h50AkM2hngaF2RWYp2muqCDQ==",
+      "https://cdn.jsdelivr.net/npm/@codemirror/state@6.7.6/dist/index.js": "sha384-KBT5ZqzMbN/F7Ft7ov9c9IQ1UfA6zFbSiZwmDRx7fQj/mhvH7w4rP2DRBbC/ZKdG",
+      "https://cdn.jsdelivr.net/npm/@codemirror/view@6.43.13/dist/index.js": "sha384-nrajK1eShnhS2itpVHjzRduUUtiAOgPEHT7ERiCCCsUpF5He5G5kZQ5xD7865pnu",
+      "https://cdn.jsdelivr.net/npm/@codemirror/language@6.12.4/dist/index.js": "sha384-fH0EScYl0c4Uf7xJQjJf3Wxri9GJGewYVJ4YN2vng34VZTSEtQNckaFQ4KpEIghI",
+      "https://cdn.jsdelivr.net/npm/@codemirror/autocomplete@6.20.3/dist/index.js": "sha384-lILZKDHNrs2NlTUn04mb4qn0w+q2EYfBmVPsbyTIO3CF9oCFeETwgqV56IDyZtex",
+      "https://cdn.jsdelivr.net/npm/@codemirror/commands@6.11.1/dist/index.js": "sha384-/nux/XwsK20ZZ9zDrHEqg3OCK5MQrEMIhRkx2Sk3S/jaLMNIVGuFJzWIg0fyzsSa",
+      "https://cdn.jsdelivr.net/npm/@codemirror/search@6.5.11/dist/index.js": "sha384-4P7SNEkvUNcenYRLp/jmgrZkWa5kKB2O4pCKX86lyOP2k8daF4AJy6SN3ugrOc8o",
+      "https://cdn.jsdelivr.net/npm/@lezer/highlight@1.2.5/dist/index.js": "sha384-AhSST8nABimpGBiyYoN2CKxmA2LyFJho0BGLMATR7ESGfe2mHayyvvgdEc2PMDp8",
+      "https://cdn.jsdelivr.net/npm/@lezer/common@1.5.3/dist/index.js": "sha384-Zy7Jb/kqR7PuNMXgIxSGY1aKQneVzBt6WJowkRX/hDfmCAK4svuZZmS5wMVQtEu1",
+      "https://cdn.jsdelivr.net/npm/style-mod@4.1.4/src/style-mod.js": "sha384-rqF4+xzPzekLfSh1VIm1tuCjJJvSSINrnjlJ60lWHH6g0Zdvtb6uTqWzrAo/VF/z",
+      "https://cdn.jsdelivr.net/npm/w3c-keyname@2.2.8/index.js": "sha384-1cLRGZ765v2w2cWNAbTW6QL/LIGcZsXoCv5mK85ze5/6X/PpExFxU1WvvzqSzr09",
+      "https://cdn.jsdelivr.net/npm/crelt@1.0.7/index.js": "sha384-Zv+vWZxpHh0WqinsK/YBypu+VHkIkHuzucxn7FTYhwtEImUKC/p7nxkC9Xt4mUgL",
+      "https://cdn.jsdelivr.net/npm/@marijn/find-cluster-break@1.0.4/src/index.js": "sha384-3qpESVchJPJodISe+BPT1snhn0/XtmMvCPAGUZqPqo61tFgUQufDxHwZQxFrPE6i"
+    }
+  }
+  </script>
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <div id="app">
+    <div class="boot">
+      <div class="boot-logo" aria-hidden="true"></div>
+      <p>Loading the playground…</p>
+      <noscript><p>The playground needs JavaScript.</p></noscript>
+    </div>
+  </div>
+</body>
+</html>

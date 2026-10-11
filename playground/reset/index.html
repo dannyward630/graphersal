@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Reset the Graphersal Playground</title>
+  <meta name="color-scheme" content="light dark">
+  <!--
+    The playground's escape hatch. This page deliberately loads NOTHING of the playground (no Vue,
+    no WebAssembly, no CDN script): when a saved state makes the playground freeze (for example a
+    huge graph drawing restored after every reload), this page still opens. It removes every
+    `graphersal.playground.*` localStorage key except the query history (`...history`), clears
+    session storage keys with that prefix and any Cache Storage / IndexedDB entry named
+    `graphersal*` (the playground uses none today; this keeps the page correct if it ever does),
+    then opens the playground with the Modern sample graph.
+    Served as /reset/; a server that redirects /reset to /reset/ works too, and the script finds
+    the playground root from the address either way, so /reset without a slash also works.
+  -->
+  <style>
+    :root { --bg: #f6f7f9; --surface: #ffffff; --text: #1d232b; --muted: #5b6573; --accent: #2f6fde; --border: #dde2e8; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #0f1318; --surface: #171c23; --text: #e6e9ee; --muted: #9aa4b2; --accent: #6c9eff; --border: #2a313b; }
+    }
+    html, body { margin: 0; background: var(--bg); color: var(--text); }
+    body { font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    main { max-width: 560px; margin: 12vh auto 0; padding: 24px 16px; }
+    .box { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px 22px; }
+    h1 { margin: 0 0 8px; font-size: 20px; }
+    p { margin: 8px 0; }
+    .muted { color: var(--muted); font-size: 13.5px; }
+    a { color: var(--accent); }
+    ul { margin: 8px 0; padding-left: 20px; color: var(--muted); font-size: 13.5px; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="box" role="status" aria-live="polite">
+      <h1>Resetting the playground…</h1>
+      <p id="status">Clearing the playground's saved state in this browser.</p>
+      <ul id="details" hidden></ul>
+      <p>If nothing happens, <a id="continue" href="../#/play">open the playground with the Modern sample graph</a>.</p>
+      <p class="muted">Your query history is kept. Graphs are never stored in the browser; use "Save graph" to keep one.</p>
+      <noscript>
+        <p>This page needs JavaScript. Without it, clear this site's data in the browser settings instead
+        (it removes the query history too), then <a href="../">open the playground</a>.</p>
+      </noscript>
+    </div>
+  </main>
+  <script>
+  // reset-script:begin (extracted and checked with `node --check`, see playground/README.md)
+  (function () {
+    'use strict';
+    var PREFIX = 'graphersal.playground.';
+    var KEEP = [PREFIX + 'history']; // the query history survives a reset
+    var REDIRECT_MS = 900;
+
+    var statusEl = document.getElementById('status');
+    var detailsEl = document.getElementById('details');
+    var link = document.getElementById('continue');
+
+    /** The playground root: this address without the trailing reset[/][index.html]. */
+    function playgroundRoot() {
+      var path = window.location.pathname.replace(/reset\/?(index\.html)?$/, '');
+      if (path.charAt(path.length - 1) !== '/') path += '/';
+      return window.location.origin + path;
+    }
+
+    /** Removes the prefixed keys of one Storage (except KEEP); returns how many were removed. */
+    function clearStorage(store) {
+      var removed = 0;
+      try {
+        var keys = [];
+        for (var i = 0; i < store.length; i++) {
+          var k = store.key(i);
+          if (k && k.indexOf(PREFIX) === 0 && KEEP.indexOf(k) < 0) keys.push(k);
+        }
+        keys.forEach(function (k) { store.removeItem(k); removed++; });
+      } catch (e) {
+        /* storage unavailable or blocked: nothing saved there either */
+      }
+      return removed;
+    }
+
+    function note(text) {
+      var li = document.createElement('li');
+      li.textContent = text;
+      detailsEl.appendChild(li);
+      detailsEl.hidden = false;
+    }
+
+    function clearCaches() {
+      try {
+        if (!window.caches || !caches.keys) return Promise.resolve(0);
+        return caches.keys().then(function (names) {
+          var ours = names.filter(function (n) { return /^graphersal/i.test(n); });
+          return Promise.all(ours.map(function (n) { return caches.delete(n); })).then(function () { return ours.length; });
+        }).catch(function () { return 0; });
+      } catch (e) {
+        return Promise.resolve(0);
+      }
+    }
+
+    function clearIndexedDb() {
+      try {
+        if (!window.indexedDB || !indexedDB.databases) return Promise.resolve(0);
+        return indexedDB.databases().then(function (dbs) {
+          var ours = dbs.filter(function (d) { return d && d.name && /^graphersal/i.test(d.name); });
+          ours.forEach(function (d) { indexedDB.deleteDatabase(d.name); });
+          return ours.length;
+        }).catch(function () { return 0; });
+      } catch (e) {
+        return Promise.resolve(0);
+      }
+    }
+
+    var target = playgroundRoot() + '#/play';
+    link.href = target;
+
+    var local = 0;
+    try { local = clearStorage(window.localStorage); } catch (e) { /* blocked */ }
+    try { clearStorage(window.sessionStorage); } catch (e) { /* blocked */ }
+    var restartWithModern = false;
+    try {
+      // The playground rebuilds the graph named here when it opens #/play.
+      window.localStorage.setItem(PREFIX + 'lastGraph', JSON.stringify('modern'));
+      restartWithModern = true;
+    } catch (e) {
+      /* storage blocked: #/play falls back to the start page */
+    }
+    if (!restartWithModern) {
+      target = playgroundRoot();
+      link.href = target;
+      link.textContent = 'open the playground';
+    }
+    note('Removed ' + local + ' saved setting' + (local === 1 ? '' : 's') + ' (layout, theme, limits, query tabs, views).');
+
+    var timeout = new Promise(function (resolve) { setTimeout(function () { resolve([0, 0]); }, 1500); });
+    Promise.race([Promise.all([clearCaches(), clearIndexedDb()]), timeout]).then(function (counts) {
+      if (counts[0] || counts[1]) note('Removed ' + counts[0] + ' cache(s) and ' + counts[1] + ' database(s).');
+      statusEl.textContent = 'Done. Opening the playground' + (restartWithModern ? ' with the Modern sample graph' : '') + '…';
+      setTimeout(function () { window.location.replace(target); }, REDIRECT_MS);
+    });
+  })();
+  // reset-script:end
+  </script>
+</body>
+</html>

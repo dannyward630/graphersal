@@ -1,0 +1,62 @@
+# Deploying the static sites
+
+The book and the WebAssembly playground are static files, served by nginx on one small
+DigitalOcean droplet:
+
+| Address | Content |
+|---|---|
+| `https://graphersal.dev/` | the book (`mdbook build book`) |
+| `https://graphersal.dev/schema/v1` | the schema meta-schema (`crates/graphersal/src/graph/schema/graphersal-schema-v1.json`), the URL every schema names in `"$schema"` |
+| `https://play.graphersal.dev/` | the playground (`playground/` with its `pkg/`) |
+| `www.*`, `graphersal.com`, `graphersal.org` | a permanent redirect to `https://graphersal.dev/` |
+
+## The droplet (once)
+
+1. Create an Ubuntu 24.04 LTS droplet with an SSH key and IPv6, and paste
+   [`droplet-setup.sh`](droplet-setup.sh) into **Startup Scripts** (set `LETSENCRYPT_EMAIL` in it
+   first if you want expiry warnings). It installs nginx, certbot, the firewall (SSH, HTTP,
+   HTTPS), automatic security updates, a `deploy` user that owns `/var/www/graphersal` and logs in
+   with the same key, and the nginx sites. Its log: `/var/log/cloud-init-output.log`.
+2. DNS (the registrar's DNS, which keeps its e-mail forwarding): A and AAAA records for `@`,
+   `www` and `play` of `graphersal.dev`, and for `@` and `www` of `graphersal.com` and
+   `graphersal.org`, all pointing at the droplet.
+3. When the names resolve: `ssh root@<droplet> graphersal-certs`. It requests the HTTPS
+   certificate for every name that points at the droplet and lists the others; run it again when
+   they resolve. certbot renews the certificate by itself.
+4. An SSH alias for the deploy script, in `~/.ssh/config`:
+
+   ```text
+   Host graphersal-web
+       HostName <droplet IP>
+       User deploy
+   ```
+
+## A deploy
+
+```bash
+deploy/build-site.sh       # target/site/: the book, the playground, the schema
+deploy/deploy.sh           # uploads it to graphersal-web (or: deploy/deploy.sh <ssh host>)
+```
+
+## Caching
+
+Browsers keep files long only where a changed file always gets a new URL:
+
+- The playground's files live under `/v/<version>/`, where the version is a hash of their
+  content (`build-site.sh`). nginx sends `Cache-Control: public, max-age=31536000, immutable`
+  there: a browser loads them once per release. Every path inside is relative (modules, the
+  worker and the wasm are resolved through `import.meta.url`), so the tree is copied as it is.
+- `index.html` (which names the version) and `reset/` are sent with `no-cache`: the browser asks
+  on every load and gets a `304 Not Modified` while nothing changed. A deploy is therefore
+  visible at the next load, and an old cached module is never combined with a new page.
+- The book (mdBook 0.4 names its files without hashes) is `no-cache` throughout, revalidated by
+  ETag; only its fonts are cached for a week. `deploy.sh` uploads by checksum and keeps the server
+  time of unchanged files, so their ETags stay and revalidation stays a 304.
+- `deploy.sh` uploads the new version before the `index.html` that names it, and keeps the newest
+  five versions, because an open tab loads some modules lazily from its own version.
+- The libraries from cdnjs and jsDelivr are pinned to exact versions in their URLs (with
+  Subresource Integrity), so the browser caches them as the CDNs say.
+
+A local check with the same headers: serve `target/site/play` with any static server that sends
+`no-cache` outside `/v/` (the development server `playground/serve.py` sends `no-store` for
+everything, which is right while editing).

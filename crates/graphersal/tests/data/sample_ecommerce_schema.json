@@ -1,0 +1,77 @@
+{
+  "$schema": "https://graphersal.dev/schema/v1",
+  "meta": { "title": "E-Commerce domain graph schema", "version": "1.0" },
+  "mode": "closed",
+  "vertices": {
+    "User": {
+      "schema": {
+        "type": "object",
+        "description": "Registered customer",
+        "properties": {
+          "id": { "type": "integer", "minimum": 1 },
+          "name": { "type": "string", "pattern": "^[a-zA-Z ]+$" },
+          "email": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]+$"
+          },
+          "created_at": { "type": "string" },
+          "address": {
+            "type": "object",
+            "properties": {
+              "street": { "type": "string" },
+              "city": { "type": "string" },
+              "zip": { "type": "string" }
+            },
+            "required": ["street", "city", "zip"]
+          },
+          "tags": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["id", "name", "email", "created_at", "address", "tags"]
+      }
+    },
+    "Product": {
+      "schema": {
+        "type": "object",
+        "description": "Store inventory item",
+        "properties": {
+          "sku": { "type": "string" },
+          "price": { "type": "number", "minimum": 0.0 },
+          "category": { "type": "string" }
+        },
+        "required": ["sku", "price", "category"]
+      }
+    },
+    "Order": {
+      "schema": {
+        "type": "object",
+        "description": "Customer order",
+        "properties": {
+          "order_id": { "type": "string" },
+          "total_amount": { "type": "number", "minimum": 0.0 },
+          "status": { "type": "string", "enum": ["PENDING", "PAID", "SHIPPED"] }
+        },
+        "required": ["order_id", "total_amount", "status"]
+      }
+    }
+  },
+  "edges": {
+    "PLACED": {
+      "connections": [{ "from": "User", "to": "Order" }],
+      "schema": {
+        "type": "object",
+        "description": "User placed an order",
+        "properties": { "timestamp": { "type": "string" } },
+        "required": ["timestamp"]
+      }
+    },
+    "CONTAINS": {
+      "connections": [{ "from": "Order", "to": "Product" }],
+      "schema": {
+        "type": "object",
+        "description": "Order contains a product",
+        "properties": { "quantity": { "type": "integer", "minimum": 1 } },
+        "required": ["quantity"]
+      }
+    }
+  }
+}

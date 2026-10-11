@@ -1,0 +1,99 @@
+[package]
+name = "graphersal"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "In-memory graph traversal engine modelled on Apache TinkerPop Gremlin, with a Rhai DSL, optimizer and GraphSON/GraphML I/O"
+readme = "README.md"
+keywords = ["graph", "gremlin", "tinkerpop", "traversal", "query"]
+categories = ["data-structures", "database-implementations"]
+include = ["/src/**", "/README.md", "/LICENSE-APACHE", "/NOTICE"]
+
+[dependencies]
+petgraph = { workspace = true }
+compact_str = { workspace = true }
+indexmap = { workspace = true }
+fnv = { workspace = true }
+rand = { workspace = true }
+floating-duration = { workspace = true }
+ordered-float = { workspace = true }
+bitmask-enum = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+web-time = { workspace = true }
+thiserror = { workspace = true }
+regex = { workspace = true }
+# LZ4 for compressed properties (`value/compressed.rs`): pure Rust, wasm32-safe, already the
+# chunk codec of `persist`; a compression rule is a core catalog definition, so it is not optional.
+lz4_flex = { workspace = true }
+
+serde = { workspace = true, optional = true, features = ["derive"] }
+serde_json = { workspace = true, optional = true }
+quick-xml = { workspace = true, optional = true }
+rhai = { workspace = true, optional = true }
+tabled = { workspace = true, optional = true }
+crc32c = { workspace = true, optional = true }
+ruzstd = { workspace = true, optional = true }
+
+[dev-dependencies]
+divan = { workspace = true }
+
+# The Store tests hold the BACKUP pin as another process would.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+fd-lock = { workspace = true }
+
+[[bench]]
+name = "graph"
+harness = false
+test = false
+required-features = ["io", "script", "display", "serde"]
+
+# `rand` (the `coin()` step) and `rhai` (through `ahash`) need an entropy source. The browser has
+# none by default: enable the JS backends of the getrandom versions in the tree, for wasm32 only.
+# getrandom 0.3 additionally needs `--cfg getrandom_backend="wasm_js"`, set in /.cargo/config.toml.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom02 = { workspace = true }
+getrandom03 = { workspace = true }
+
+# The OS lock of the Store's `FsDir` (`persist`, native only: in the browser a Store lives in a `MemDir`).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+fd-lock = { workspace = true, optional = true }
+
+# The free space of a single-file store's file system (`statvfs`; `persist`, Unix only).
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, optional = true }
+
+[features]
+default = []
+# GraphSON 3.0 (dependency-free, `value/physical.rs` JSON reader) and GraphML (`quick-xml`).
+io      = ["dep:quick-xml"]
+serde   = ["dep:serde", "dep:serde_json"]
+script  = ["dep:rhai"]
+display = ["dep:tabled"]
+# Persistence over streams (book/src/persistence/format.md): the binary value/record codec, the
+# packed single-file snapshot (`graph.write_snapshot`, `TraversalGraph::read_snapshot`), the
+# `Journal` commit hook (write-ahead log records) and `recover` to a commit, time or mark. LZ4
+# chunks and CRC-32C come with it. Builds for wasm32 (no fsync there).
+# It also brings the Store (one directory = one graph: WAL segments, checkpoints,
+# recovery on open, marks, fork, prune, verify, backup; `persist::Store`) and its OS lock (`fd-lock`).
+persist = ["dep:crc32c", "dep:fd-lock", "dep:rustix"]
+# zstd chunks (codec 2) on top of `persist`, through the pure-Rust `ruzstd`.
+persist-zstd = ["persist", "dep:ruzstd"]
+# Store backups as one ZIP archive (`Store::backup_zip`, `Store::restore_zip`): stored entries,
+# zip64, a small built-in writer and reader (no dependency); over any store directory.
+persist-zip = ["persist"]
+# Exact, allocator-level per-step memory figures for `.profile()`, in place of the default
+# `size_of`/capacity-based estimate. Additive and off by default, like every other feature above:
+# `graphersal`'s own build stays zero-cost. Built on `std::alloc` only, no new dependency. Only
+# takes effect once the *binary* installs `alloc_tracking::TrackingAllocator` as its
+# `#[global_allocator]` — a library crate cannot do this for a consumer (`graphersal` and
+# `graphersal-wasm` and `py-graphersal` all do, by default; see CLAUDE.md).
+alloc-tracking = []
+
+[[example]]
+name = "quick_start"
+required-features = ["script"]

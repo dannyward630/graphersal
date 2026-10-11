@@ -1,0 +1,49 @@
+// A plain table for {columns, rows}: sticky header, row numbers, typed cell styling.
+
+import { formatValue } from '../util.js';
+
+export const DataTable = {
+  props: {
+    table: { type: Object, required: true },
+    rowNumbers: { type: Boolean, default: true },
+    /**
+     * An action offered on some rows (`{label, title, applies(row, columns), run(row, columns)}`):
+     * a small button next to the row number.
+     */
+    rowAction: { type: Object, default: null },
+  },
+  setup() {
+    function cellClass(v) {
+      if (v === null || v === undefined) return 'cell-null';
+      if (typeof v === 'number') return 'num';
+      if (typeof v === 'boolean') return 'cell-bool';
+      if (typeof v === 'object') return 'cell-json';
+      return '';
+    }
+    function cellText(v) {
+      if (v === undefined) return '';
+      return formatValue(v);
+    }
+    return { cellClass, cellText };
+  },
+  template: `
+  <div class="data-table-wrap">
+    <table class="data-table" v-if="table.columns.length">
+      <thead>
+        <tr>
+          <th v-if="rowNumbers" aria-label="Row"></th>
+          <th v-for="c in table.columns" :key="c">{{ c }}</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="(row, i) in table.rows" :key="i">
+          <td v-if="rowNumbers" class="rownum">{{ i + 1 }}<button v-if="rowAction && rowAction.applies(row, table.columns)" type="button"
+              class="row-action" :title="rowAction.title" :aria-label="rowAction.title" @click="rowAction.run(row, table.columns)">{{ rowAction.label }}</button></td>
+          <td v-for="(v, j) in row" :key="j" :class="cellClass(v)" :title="cellText(v)">{{ cellText(v) }}</td>
+        </tr>
+      </tbody>
+    </table>
+    <div v-else class="placeholder">No rows.</div>
+  </div>
+  `,
+};

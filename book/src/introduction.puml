@@ -1,0 +1,12 @@
+@startuml person_movie_graph
+
+(person) --> (person): friends
+(person) -left-> (movie): likes
+
+@enduml
+
+@startmindmap Test Mind Map
+
++ Cloud Component Inventory TECHNOLOGY
+
+@endmindmap

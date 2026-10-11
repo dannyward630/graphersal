@@ -1,0 +1,109 @@
+# Configuration for `cargo deny check` (https://github.com/EmbarkStudios/cargo-deny).
+#
+# Checks the whole workspace dependency tree for licences compatible with distributing the
+# project under Apache-2.0, RustSec advisories, duplicate/banned crates and dependency sources.
+# The tool is not installed by default: `cargo install --locked cargo-deny`.
+
+[graph]
+# Check every feature of every workspace crate (the optional `io`, `script`, `display`, `serde`
+# and `alloc-tracking` dependencies included). No `targets` list: every target platform is
+# checked, so Windows-only dependencies (e.g. clipboard support of the line editor) count too.
+all-features = true
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------------------------
+# Advisories: the RustSec advisory database (https://rustsec.org).
+# ---------------------------------------------------------------------------------------------
+[advisories]
+# Vulnerabilities, unsound and yanked crates are always errors in cargo-deny 0.16+; unmaintained
+# crates are reported for the whole tree.
+unmaintained = "all"
+yanked = "deny"
+# Add an advisory id here only together with a comment that says why it does not apply and when
+# it will be revisited.
+ignore = [
+    # smartstring is unmaintained (archived upstream 2026-05-03) and has no fix: it is a mandatory
+    # dependency of rhai (the `script` feature). It is an unmaintained-crate notice, not a
+    # vulnerability. Revisit when rhai drops smartstring or when the next rhai release is adopted.
+    "RUSTSEC-2026-0249",
+]
+
+# ---------------------------------------------------------------------------------------------
+# Licences. Derived from the licences the dependency tree actually uses; every entry is
+# compatible with distributing the project (sources and binaries) under Apache-2.0. Copyleft
+# licences (GPL, AGPL, LGPL, ...) are deliberately absent, so a new dependency under one of them
+# fails the check.
+# ---------------------------------------------------------------------------------------------
+[licenses]
+allow = [
+    "Apache-2.0",
+    # Apache-2.0 with the LLVM exception (rustix, linux-raw-sys, wasi, target-lexicon): strictly
+    # more permissive than plain Apache-2.0.
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    # BSD 3-clause (subtle, via rustls in the CLI's `ai` feature): permissive, attribution only.
+    "BSD-3-Clause",
+    # ISC (ring, untrusted, rustls-webpki, via rustls in the CLI's `ai` feature): permissive,
+    # functionally equivalent to MIT.
+    "ISC",
+    # Boost Software License 1.0 (ryu, as an alternative; clipboard-win and error-code, Windows
+    # only, via rustyline): permissive, no attribution required in binaries.
+    "BSL-1.0",
+    # Public-domain dedications (aho-corasick, memchr, walkdir, ... as an alternative to MIT;
+    # tiny-keccak via ahash/const-random of rhai).
+    "Unlicense",
+    "CC0-1.0",
+    # Unicode data licence (icu_*, unicode-ident): permissive, require keeping the Unicode
+    # copyright and permission notice with redistributed data files.
+    "Unicode-3.0",
+]
+# A dependency whose licence is detected with lower confidence is reported, not guessed.
+confidence-threshold = 0.93
+
+# Per-crate exceptions for licences that are not on the allow list for the whole tree.
+exceptions = [
+    # MPL-2.0 is a weak, file-level copyleft licence. smartstring is a mandatory dependency of
+    # rhai (the `script` feature) and is linked unmodified, which MPL-2.0 permits in an
+    # Apache-2.0 work: the MPL-covered files stay under MPL-2.0 and their source remains
+    # available (crates.io). Modifying smartstring itself would require publishing those
+    # modifications under MPL-2.0. Allowed for this crate only, so a new MPL dependency is a
+    # conscious decision.
+    { allow = ["MPL-2.0"], crate = "smartstring" },
+    # CDLA-Permissive-2.0 is a permissive data licence (redistribution with the licence text, no
+    # copyleft). webpki-roots is the Mozilla root-certificate list the CLI's `ai` feature trusts
+    # for HTTPS (through ureq/rustls); the licence covers that data.
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+]
+
+[licenses.private]
+# Workspace crates that are not published are checked like any other crate (they all declare
+# Apache-2.0), so nothing is ignored here.
+ignore = false
+
+# ---------------------------------------------------------------------------------------------
+# Bans: duplicate versions and wildcard requirements.
+# ---------------------------------------------------------------------------------------------
+[bans]
+# Several versions of one crate cost build time and binary size but are no correctness or legal
+# problem, so they are reported, not fatal.
+multiple-versions = "warn"
+wildcards = "deny"
+# Internal path dependencies carry an explicit version in `[workspace.dependencies]`.
+allow-wildcard-paths = true
+highlight = "all"
+deny = []
+skip = []
+skip-tree = []
+
+# ---------------------------------------------------------------------------------------------
+# Sources: crates.io only. A git or alternative-registry dependency cannot be published to
+# crates.io anyway.
+# ---------------------------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
