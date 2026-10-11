@@ -15,3 +15,6 @@ bindings/py-graphersal/**/__pycache__
 
 # local Store directory used for trying the dev server (graphersal --graph data/ --server)
 /data/
+
+# session working notes (plans, reports): local only, never published
+/ai/
