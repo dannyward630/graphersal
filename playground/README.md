@@ -96,11 +96,13 @@ playground/
   tests/tiers.test.mjs         Node tests of the tier choice: thresholds, hysteresis, switch, no-WebGL, controls
   tests/fast-tier.test.mjs     Node tests of the tier switch (positions kept), drill-down helpers, Stop registry
   tests/ai-chat.test.mjs       Node tests of the AI Chat tab model and controller (fake server), the wasm stub, the HTTP calls
+  tests/link.test.mjs          Node tests of playground links: parse/build, graph data encoding, damage, share size
   tests/markdown.test.mjs      Node tests of the chat's Markdown renderer and the table -> Markdown copy
   js/
     main.js                Vue app root, global shortcuts, dialogs, toasts
     router.js              hash routing (#/ and #/play), applies playground links
-    link.js                playground links #/play?graph=..&q=..&run=1: parse and build (pure)
+    link.js                playground links #/play?graph=..&q=..&run=1 and links that carry a small graph
+                           (data=, schema=: GraphSON + schema, deflate-raw, base64url): parse, build, encode (pure)
     store.js               application state and actions (the only caller of the engine for load/run/stop/save)
     store-model.js         the Store menu's model: targets, actions, dialog texts, attic (pure, Node-tested)
     store-calendar.js      the Store menu's history calendar: marks/snapshots grouped by local day once,
@@ -158,6 +160,7 @@ playground/
       store-menu.js (the Store menu: newest 5 marks, then snapshots)  store-dialog.js  store-calendar.js (the history calendar dialog)
       store-task-label.js (a store action's button text: idle, or spinner + running text + elapsed time)
       element-editor.js (the Graph panel's property editor dialog)
+      share-dialog.js (Share link, the top bar's green button: the tab's query with the graph, small graphs only)
       ai-chat.js (the AI Chat tab)  markdown-view.js (assistant answers: the markdown.js tree as Vue nodes)
 ```
 

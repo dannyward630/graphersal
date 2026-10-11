@@ -2,11 +2,13 @@
 // middle-click or × to close, drag to reorder), "+" for a new tab and a menu with the tab actions.
 // A tab shows a pulsing dot while its query runs and an amber dot when its result is possibly
 // stale (another tab changed the graph after it ran). "+" opens a menu: a Query tab or an AI Chat
-// tab (its own accent colour; js/ai-chat.js). The state and the actions are in store.js.
+// tab (its own accent colour; js/ai-chat.js). "Share as link…" opens the share dialog, like the
+// top bar's Share button (components/share-dialog.js). The state and the actions are in store.js.
 
 import { ref, nextTick, watch } from 'vue';
 import {
   state, switchTab, newTab, newChatTab, closeTab, closeOtherTabs, duplicateTab, renameTab, moveTab, runAllTabs,
+  openShareDialog,
 } from '../store.js';
 import { modKey } from '../util.js';
 import { DropMenu } from './drop-menu.js';
@@ -77,7 +79,7 @@ export const QueryTabs = {
     expose({ rename: () => startRename(state.tab) });
 
     return {
-      state, editing, draftName, strip, modKey, tabTitle,
+      state, editing, draftName, strip, modKey, tabTitle, openShare: openShareDialog,
       switchTab, closeTab, closeOtherTabs, duplicateTab, runAllTabs,
       newTab: () => newTab(), newChatTab: () => newChatTab(), startRename, commitRename, cancelRename, onAux, onDragStart, onDrop,
     };
@@ -112,6 +114,8 @@ export const QueryTabs = {
       <button class="menu-item" @click="newChatTab">New AI Chat tab</button>
       <button class="menu-item" @click="duplicateTab()">Duplicate tab</button>
       <button class="menu-item" @click="startRename(state.tab)">Rename tab</button>
+      <div class="menu-sep"></div>
+      <button class="menu-item" @click="openShare()" :disabled="state.running || !state.graph" title="A link that opens this tab's query with the graph (small graphs only)">Share as link…</button>
       <div class="menu-sep"></div>
       <button class="menu-item" @click="runAllTabs()" :disabled="state.running">Run all tabs <span class="spacer"></span><kbd>{{ modKey }}+Shift+Enter</kbd></button>
       <div class="menu-sep"></div>

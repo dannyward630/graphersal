@@ -79,6 +79,8 @@ The **File tree** sample is a small directory tree: good for recursive traversal
 - a Store in memory with commits, marks, point-in-time views, forks and rollback (the **Store**
   menu);
 - downloads of the graph (GraphSON, GraphML, snapshot), the schema and the catalog.
+- the green **Share link** button in the top bar: a link that opens your query together with a small graph,
+  for example in a bug report ([Share a query with its graph](../users_guide/web_playground.md#share-a-query-with-its-graph)).
 
 Every feature is described in [Web Playground](../users_guide/web_playground.md). The same UI also
 runs against a graph on your disk, served by the command line tool:

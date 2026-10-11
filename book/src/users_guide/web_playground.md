@@ -115,25 +115,45 @@ file access, which the browser does not have (see [Permissions](permissions.md))
 
 ## Links to a query
 
-A link can open the playground on a sample graph with a query in the editor, and run it:
+A link can open the playground with a query in the editor, and run it, on a sample graph or on a
+small graph the link carries itself:
 
 ```text
 https://play.graphersal.dev/#/play?graph=modern&q=g.v().has_label(%22person%22).values(%22name%22)&run=1
+https://play.graphersal.dev/#/play?v=1&data=xZWxboMwEIb3PoZnFIFtSMOUoR36Al...&q=g.v().count()&run=1
 ```
 
 | Parameter | Meaning |
 |---|---|
 | `graph` | the sample graph: `modern` (the default), `empty`, `large`, `tree` |
+| `data` | instead of `graph`: the graph itself, as GraphSON 3.0 compressed with deflate and written as base64url |
+| `schema` | with `data` only: the graph's schema (the [schema format](schema_enforcement.md)), encoded the same way |
+| `v` | the format of `data` and `schema`; `1` (the default) is the only one so far |
 | `q` | the query, percent-encoded (`encodeURIComponent`; a literal `+` must be `%2B`) |
 | `title` | the name of the query tab (optional) |
 | `run` | `1` runs the query once it is in the editor |
 
-The parameters are in the fragment (after `#`), so the browser never sends them to a server. The
-query goes into a new tab when the current one holds your own text. When a graph is already open
-in the page, the playground asks before it replaces it; declined, the query is only put into the
-editor. The address then goes back to `#/play`, so a reload does not apply the link again. With
-the dev server a link only opens the query: the served graph is your own data, so nothing is
-replaced and nothing runs.
+The parameters are in the fragment (after `#`), so the browser never sends them to a server: a
+graph in a link goes only where you paste the link. The query goes into a new tab when the current
+one holds your own text. When a graph is already open in the page, the playground asks before it
+replaces it; declined, the query is only put into the editor. The address then goes back to
+`#/play`, so a reload does not apply the link again. With the dev server a link only opens the
+query: the served graph is your own data, so nothing is replaced and nothing runs. Parameters the
+playground does not know are ignored, so later additions keep older links working.
+
+### Share a query with its graph
+
+The green **Share link** button in the top bar (also **Share as link…** in the Query panel's tab
+menu) makes such a link for the active tab: its query and the graph. A sample graph that has not changed goes into the link by its name; any other
+graph goes into the link itself, with its schema. Saved queries and compression rules are not
+included. Copy the link into a bug report or a message; whoever opens it gets the same graph and
+query in their own browser.
+
+**Only small graphs fit into a link.** A link is at most 60,000 characters, so that it fits into
+the text of an issue: roughly a graph of a thousand elements, fewer with long property values. For
+a bug report, reduce the graph to the few vertices and edges that reproduce the problem and leave
+out everything else; a minimal graph is also the fastest to understand. For a larger graph, save it
+with **Save ▸ Data** (GraphSON) and attach the file instead.
 
 The book uses these links: every example that runs on a sample graph has a **▶** run button next
 to each of its queries (or a **Run in the playground** link under a block with one query).

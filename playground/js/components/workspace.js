@@ -6,7 +6,7 @@
 // sizes are saved in localStorage (best effort).
 
 import { reactive, ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
-import { state, reveal, cycleTheme, saveGraph, saveSchema, saveToSource, isServerMode, backToLiveGraph, runStoreTask, toast, refreshSavedQueries, refreshCompressions } from '../store.js';
+import { state, reveal, cycleTheme, saveGraph, saveSchema, saveToSource, isServerMode, backToLiveGraph, runStoreTask, toast, refreshSavedQueries, refreshCompressions, registerShareDialog, openShareDialog } from '../store.js';
 import { viewBanner, backupBanner } from '../store-model.js';
 import { mcpBadgeTitle } from '../change-feed.js';
 import { navigate } from '../router.js';
@@ -20,6 +20,7 @@ import { ProfilePanel } from './profile-panel.js';
 import { DropMenu, LAYOUT_EVENT } from './drop-menu.js';
 import { StoreMenu } from './store-menu.js';
 import { CatalogMenu, CatalogDialogs } from './catalog.js';
+import { ShareDialog } from './share-dialog.js';
 
 export const PANELS = [
   { id: 'editor', title: 'Query', column: 'left', key: 'Alt+1' },
@@ -64,10 +65,13 @@ const elementStyle = (dimension, size, gutterSize) => ({ 'flex-basis': `calc(${s
 const gutterStyle = (dimension, gutterSize) => ({ 'flex-basis': `${gutterSize}px` });
 
 export const Workspace = {
-  components: { QueryEditor, ResultsPanel, GraphPanel, SchemaPanel, ProfilePanel, DropMenu, StoreMenu, CatalogMenu, CatalogDialogs },
+  components: { QueryEditor, ResultsPanel, GraphPanel, SchemaPanel, ProfilePanel, DropMenu, StoreMenu, CatalogMenu, CatalogDialogs, ShareDialog },
   emits: ['help', 'settings'],
   setup(props, { emit }) {
     const layout = reactive(loadLayout());
+    const shareDialog = ref(null);
+    onMounted(() => registerShareDialog(() => shareDialog.value && shareDialog.value.open()));
+    onBeforeUnmount(() => registerShareDialog(null));
     const main = ref(null);
     const left = ref(null);
     const right = ref(null);
@@ -284,7 +288,7 @@ export const Workspace = {
     });
 
     return {
-      formatCount,
+      formatCount, shareDialog, openShareDialog,
       state, layout, main, left, right, narrow, leftCount, rightCount, PANELS,
       editorRef: panelRefs.editor, resultsRef: panelRefs.results, graphRef: panelRefs.graph,
       schemaRef: panelRefs.schema, profileRef: panelRefs.profile,
@@ -323,6 +327,11 @@ export const Workspace = {
         </span>
       </template>
       <span class="spacer"></span>
+      <button v-if="state.graph" type="button" class="btn share-btn" @click="openShareDialog" :disabled="state.running"
+              title="Share as link: a link that opens this tab's query with the graph (small graphs only)">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 9.5a3 3 0 0 0 4.2 0l2.6-2.6a3 3 0 0 0-4.2-4.2L8 3.8" /><path d="M9.5 6.5a3 3 0 0 0-4.2 0L2.7 9.1a3 3 0 0 0 4.2 4.2L8 12.2" /></svg>
+        <span>Share<span class="hide-narrow"> link</span></span>
+      </button>
       <drop-menu button-class="btn" title="Show, hide and collapse panels" menu-style="min-width: 260px">
         <template #trigger>View ▾</template>
           <div class="menu-title">Panels</div>
@@ -418,6 +427,7 @@ export const Workspace = {
       <button class="btn" @click="showAll">Show all panels</button>
     </div>
     <catalog-dialogs></catalog-dialogs>
+    <share-dialog ref="shareDialog"></share-dialog>
   </div>
   `,
 };

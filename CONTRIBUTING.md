@@ -1,7 +1,20 @@
 # Contributing to Graphersal
 
-Thanks for your interest. Graphersal is an in-memory graph traversal engine in Rust, modelled on Apache TinkerPop
-Gremlin. The agent-oriented rules live in `CLAUDE.md`; this file is the short human version.
+Thanks for your interest. Graphersal is an in-memory graph database and traversal engine in Rust, queried with
+Gremlin. The detailed rules and the architecture notes live in `CLAUDE.md` (written for coding agents, readable by
+humans); this file is the short human version.
+
+## Before you start
+
+- Bugs and wrong query results: open an issue with the query, the graph and what you expected. The easiest way is a
+  playground link: open the query in the [playground](https://play.graphersal.dev) and press the green **Share link**
+  button in the top bar; the link carries the query and the graph, and whoever opens it gets both.
+  **Only small graphs fit into a link** (at most 60,000 characters, roughly a thousand elements): reduce the graph
+  to the few vertices and edges that reproduce the problem first. That is the most useful bug report anyway. For a
+  larger graph, attach its GraphSON file (Save ▸ Data) instead.
+- A larger change (a new step, a new feature, a format change): open an issue first, so we can agree on the design
+  before you write it. Long-term plans are in `roadmap/`.
+- Security issues: never in public, see [SECURITY.md](SECURITY.md).
 
 ## Build and test
 
@@ -19,6 +32,24 @@ cargo test  --package graphersal-storage-tests
 cargo deny check                                                          # cargo install --locked cargo-deny
 ```
 
+Depending on what you touched:
+
+```bash
+cargo test -p graphersal-session -p graphersal-wasm          # playground session logic (also the book's examples)
+node --test playground/tests/*.test.mjs                       # playground UI models
+mdbook build book                                             # the book
+(cd bindings/py-graphersal && VIRTUAL_ENV=$PWD/.venv .venv/bin/maturin develop && .venv/bin/python -m pytest tests/)
+# the Python tests need a one-time venv with maturin and pytest: bindings/py-graphersal/README.md
+```
+
+Some files are generated and checked by tests; regenerate them instead of editing by hand and review the diff:
+
+| What | Regenerate with |
+|---|---|
+| the DSL surface snapshot (`tests/snapshots/script_surface.txt`) | `GRAPHERSAL_UPDATE_SURFACE=1 cargo test -p graphersal --features script,io,display,serde,persist --lib surface` |
+| the step reference pages of the book | `GRAPHERSAL_UPDATE_BOOK=1 cargo test -p graphersal-session --test book_step_reference` |
+| the TinkerPop baseline and compliance page | `TINKERPOP_UPDATE_BASELINE=1 cargo test -p graphersal --features script,io,display,serde,persist --test tinkerpop_features` |
+
 Feature hygiene (after touching `cfg(feature)` code or dependencies): `cargo check --package graphersal` for each of
 `--no-default-features`, `--features script`, `--features display`, `--features serde`, `--features io`,
 `--features persist`, `--features persist-zstd`, `--features persist-zip`, `--all-features`, and
@@ -34,7 +65,7 @@ unbounded memory. A seeded fuzzer checks this:
 
 - The fast budget (`crates/graphersal/tests/all/robustness_*`) runs with every `cargo test` above; a pull request must
   keep it green.
-- If your change touches steps, the Rhai bindings, value conversion, parsing (jpath, GraphML, schemas, change sets) or
+- If your change touches steps, the Rhai bindings, value conversion, parsing (jpath, GraphSON, GraphML, schemas, change sets) or
   limits, also run the long budget locally before opening the pull request (about 10-15 minutes on a laptop):
 
 ```bash
@@ -51,6 +82,17 @@ ROBUSTNESS_INPUT_CASES=20000 cargo test --release -p graphersal \
   `crates/graphersal/tests/all/robustness_bug_tests.rs` as an `#[ignore = "BUG: ..."]` test with the minimized
   repro, mentioned in the pull request.
 - A fix for a known robustness bug un-ignores its test there.
+- If your change touches persistence (`crates/graphersal/src/persist/`), run the two randomized persistence tests
+  with their long budgets as well:
+
+```bash
+MERGE_FUZZ_CASES=60000 MERGE_FUZZ_SEED=1 MERGE_FUZZ_THREADS=8 cargo test --release -p graphersal \
+  --features script,io,display,serde,persist,persist-zip --test all merge_checkpoint_fuzz_tests::
+BACKUP_FUZZ_CASES=60000 BACKUP_FUZZ_SEED=1 BACKUP_FUZZ_THREADS=8 cargo test --release -p graphersal \
+  --features script,io,display,serde,persist,persist-zip --test all backup_fuzz_tests::
+```
+
+  A failing case prints `MERGE_FUZZ_REPLAY=<seed>` or `BACKUP_FUZZ_REPLAY=<seed>` to replay it.
 
 ## The TinkerPop suite
 

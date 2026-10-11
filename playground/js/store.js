@@ -16,6 +16,7 @@ import { LayoutJobs } from './graph/layout-jobs.js';
 import { ChatController } from './ai-chat.js';
 import { runText, mapErrorPosition } from './editor/run-selection.js';
 import { taskStartText, taskEndText } from './store-model.js';
+import { PUBLIC_PLAYGROUND, MAX_SHARE_ELEMENTS, isUnchangedSample, shareLink, encodeLinkData } from './link.js';
 
 const HISTORY_MAX = 100;
 
@@ -536,6 +537,56 @@ export async function saveGraph(format = 'graphson') {
   } finally {
     state.saving = false;
   }
+}
+
+let shareDialogOpener = null;
+
+/** The workspace registers how to open the share dialog (components/share-dialog.js). */
+export function registerShareDialog(open) {
+  shareDialogOpener = open;
+}
+
+/** Opens the share dialog: the top bar's Share button and the tab menu's "Share as link…". */
+export function openShareDialog() {
+  if (shareDialogOpener) shareDialogOpener();
+}
+
+/**
+ * The link of the share dialog (components/share-dialog.js) for the active tab: its query and the
+ * graph, as a sample name when the graph is a sample that has not changed, otherwise the graph's
+ * GraphSON and schema compressed into the link (js/link.js). Saved queries and compression rules
+ * are not included. On the dev server the link points to the public playground.
+ * Resolves to `{url, chars, fits, sample, vertexCount, edgeCount, schema, tooMany}`.
+ * @param {{run?: boolean}} [options]
+ */
+export async function makeShareLink({ run = true } = {}) {
+  const tab = state.tab;
+  const graph = state.graph;
+  if (!state.engine || !graph || !tab) throw new Error('No graph is open.');
+  const script = tab.kind === 'ai' ? '' : tab.script.trim();
+  const base = isServerMode() ? PUBLIC_PLAYGROUND : window.location.href;
+  const title = tab.name;
+  const counts = { vertexCount: graph.vertexCount, edgeCount: graph.edgeCount };
+  let store = null;
+  if (!isServerMode() && typeof state.engine.storeInfo === 'function') {
+    try {
+      store = await state.engine.storeInfo();
+    } catch (err) {
+      store = null;
+    }
+  }
+  if (isUnchangedSample(graph, store, !!state.storeView)) {
+    const link = shareLink(base, { graph: graph.kind, script, title, run: run && script !== '' });
+    return { ...link, ...counts, sample: graph.kind, schema: false, tooMany: false };
+  }
+  if (graph.vertexCount + graph.edgeCount > MAX_SHARE_ELEMENTS) {
+    return { url: '', chars: 0, fits: false, ...counts, sample: null, schema: false, tooMany: true };
+  }
+  const saved = await state.engine.saveGraph('graphson');
+  const data = await encodeLinkData(saved.text);
+  const schema = saved.schema ? await encodeLinkData(saved.schema) : null;
+  const link = shareLink(base, { data, schema, script, title, run: run && script !== '' });
+  return { ...link, ...counts, sample: null, schema: !!saved.schema, tooMany: false };
 }
 
 /** Save ▸ Schema: downloads the stored schema as its own JSON file (or says there is none). */
