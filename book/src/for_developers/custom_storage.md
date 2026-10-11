@@ -143,7 +143,8 @@ handle types. Graphersal uses it to prove that the front ends are storage-indepe
   either storage;
 - `GRAPHERSAL_TEST_STORAGE=forwarding` runs the whole TinkerPop suite on it, gated against the
   same baseline;
-- the CI job "foreign storage proof" runs all four.
+- the first three run in every `cargo test` of the workspace; the TinkerPop run on `Forwarding` is a
+  check before every release.
 
 A host can follow the same pattern for its own storage: run the same scripts on a
 `Graph<TraversalGraph>` and on a `Graph<MyStorage>` loaded with the same data and compare the

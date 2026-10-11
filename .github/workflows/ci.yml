@@ -1,6 +1,8 @@
 name: CI
 
-# Runs what local acceptance runs (CLAUDE.md "Commands").
+# Runs the core of local acceptance (CLAUDE.md "Commands"): format, clippy, feature combinations,
+# the tests, the dependency audit, the MSRV and the playground. rustdoc, the book and the TinkerPop
+# suite on `Forwarding` are release checks (roadmap/first-public-release.md), not CI jobs.
 # The Python binding's tests and wheels live in python.yml, the DCO sign-off check in dco.yml.
 # Caches: Swatinem/rust-cache, one cache per job; a run on `main` saves them.
 # Manual only (a project decision: Actions minutes are limited): `gh workflow run CI`, or "Run
@@ -151,72 +153,6 @@ jobs:
           path: target/tinkerpop-report.md
           if-no-files-found: ignore
 
-  # The front ends over a storage that is not TraversalGraph (roadmap/generic-front-ends.md,
-  # the closing proof; book for_developers/custom_storage.md): the TinkerPop suite on `Forwarding`
-  # (same baseline and page, no scenario may change class; it never rewrites them), the DSL
-  # differential, snapshots and the Store on `Forwarding` over every backend, the session over
-  # `Forwarding` (same JSON) with the book's complete host example, and the GraphStorage
-  # conformance suite.
-  foreign-storage:
-    name: foreign storage proof
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: TinkerPop suite on Forwarding
-        run: cargo test --package graphersal --features "$ACCEPTANCE_FEATURES" --test tinkerpop_features
-        env:
-          GRAPHERSAL_TEST_STORAGE: forwarding
-      - name: DSL differential (foreign_storage_tests)
-        run: |
-          cargo test --package graphersal --features "$ACCEPTANCE_FEATURES" --test all foreign_storage_tests::
-      - name: Snapshots and the Store on Forwarding (generic_persist_tests, foreign_store_tests)
-        run: |
-          cargo test --package graphersal --features "$ACCEPTANCE_FEATURES" --test all -- generic_persist_tests:: foreign_store_tests::
-      - name: Session on Forwarding and the custom storage example
-        run: |
-          cargo test --package graphersal-session --lib storage::
-          cargo test --package graphersal-session --test custom_storage_example
-      - name: graphersal-storage-tests
-        run: cargo test --package graphersal-storage-tests --features persist
-      - name: TinkerPop report (Forwarding)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tinkerpop-report-forwarding
-          path: target/tinkerpop-report-forwarding.md
-          if-no-files-found: ignore
-
-  # rustdoc with -D warnings, and the doctests of the smaller feature set CLAUDE.md lists (the
-  # acceptance feature set's doctests run in `test`).
-  docs:
-    runs-on: ubuntu-latest
-    env:
-      RUSTDOCFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo doc --package graphersal --no-deps
-      - run: cargo doc --package graphersal --no-deps --features "$ACCEPTANCE_FEATURES"
-      - run: cargo doc --package graphersal --no-deps --all-features
-      - run: cargo test --package graphersal --doc --features script,io
-
-  book:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      # Pinned: book/book.toml uses the 0.4 format (mdBook 0.5 rejects `multilingual`).
-      - uses: peaceiris/actions-mdbook@v2
-        with:
-          mdbook-version: "0.4.45"
-      - run: mdbook build book
-
   deny:
     runs-on: ubuntu-latest
     steps:
@@ -269,18 +205,3 @@ jobs:
       - run: cargo test --package graphersal-wasm --target wasm32-unknown-unknown
       - name: Build the playground engine
         run: playground/build.sh
-
-  third-party-licenses:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo install --locked cargo-about --features cli
-      - run: cargo about generate --config about.toml --manifest-path crates/graphersal-cli/Cargo.toml about.hbs > THIRD-PARTY-LICENSES.html
-      - uses: actions/upload-artifact@v4
-        with:
-          name: THIRD-PARTY-LICENSES
-          path: THIRD-PARTY-LICENSES.html

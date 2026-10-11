@@ -77,8 +77,10 @@ compaction advice, and the `graphersal store` commands.
   duplicate crates, sources) becomes a CI gate.
 - **Release gates before a tag:** a benchmark baseline on a quiet machine (section 3), the long
   fuzz budgets (robustness, merge checkpoint, backups; the commands are in `CLAUDE.md`), a secrets
-  scan and `cargo publish --dry-run` of every published crate (`graphersal` first, then the crates
-  that depend on it).
+  scan, the checks CI leaves out (`RUSTDOCFLAGS="-D warnings" cargo doc` with the feature sets of
+  `CLAUDE.md`, `mdbook build book`, the TinkerPop suite with `GRAPHERSAL_TEST_STORAGE=forwarding`,
+  CI with `full` for Windows) and `cargo publish --dry-run` of every published crate (`graphersal`
+  first, then the crates that depend on it).
 - **Stability labels.** `GraphStorage`, `PersistentStorage`, `StoreDir` and
   `graphersal-storage-tests` are EXPERIMENTAL in 0.1.x; the JS API of the wasm crate is internal to
   the playground in 0.1.0. Versioning conventions: `book/src/for_developers/release_plan.md`.

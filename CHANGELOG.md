@@ -50,8 +50,7 @@ First public release.
   - The proof: `graphersal-storage-tests`' `Forwarding` storage (EXPERIMENTAL test helper: every method forwarded to
     a `TraversalGraph`, own handle types `ForwardVertexId`/`ForwardEdgeId`) passes the conformance suite, the
     TinkerPop suite with the same baseline, every documented DSL example and curated scripts, the snapshot and Store
-    tests on every backend and the session's tests with the same results as `TraversalGraph`, all in the CI job
-    "foreign storage proof"; a complete host example (`crates/graphersal-session/tests/custom_storage_example.rs`)
+    tests on every backend and the session's tests with the same results as `TraversalGraph`; a complete host example (`crates/graphersal-session/tests/custom_storage_example.rs`)
     is compiled, run and shown in the book.
 - **Store warnings on stderr**: `graphersal --server` and `graphersal store` print the library's `tracing` events
   (damage found, a read-only open, a failed automatic checkpoint, now logged as a warning) on stderr as
