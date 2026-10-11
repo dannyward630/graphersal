@@ -1,4 +1,4 @@
-//! The Rust quick start of the book (`book/src/getting_started/rust.md` includes this file by
+//! The Rust quick start of the book (`book/src/library/rust.md` includes this file by
 //! its `ANCHOR` markers, so the page always shows code that compiles and runs).
 //!
 //! Run it with `cargo run -p graphersal --example quick_start --features script`.

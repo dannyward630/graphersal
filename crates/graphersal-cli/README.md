@@ -1,73 +1,79 @@
 # graphersal-cli
 
-The command line front end of [Graphersal](https://crates.io/crates/graphersal), an in-memory
-graph traversal engine modelled on Apache TinkerPop Gremlin (compatible with and inspired by it,
-not endorsed by the Apache Software Foundation). It installs the binary `graphersal`: an
-interactive REPL and a one-shot query runner.
+The command line tool of [Graphersal](https://graphersal.dev), an in-memory graph database and
+traversal engine queried with Gremlin. It installs the binary `graphersal`: a one-shot query runner
+for shell scripts, an interactive REPL, a local server with the playground UI and an MCP endpoint
+for AI agents, and `graphersal store` for graphs kept on disk.
+
+**[Book](https://graphersal.dev)** · **[Playground](https://play.graphersal.dev)** ·
+**[Repository](https://github.com/graphersal/graphersal)**
 
 ```bash
 cargo install graphersal-cli
-
-graphersal                                   # interactive REPL (graphersal>)
-graphersal -e 'g.v().has_label("person").values("name").to_list()'
-echo 'g.v().values("age").max().next();' | graphersal --in --graph modern
-graphersal --graph ./mygraph.graphml --format mermaid -e 'g.infer_schema()'
-graphersal --graph ./tinkerpop-modern.json -e 'g.v().count().next()'   # GraphSON 3.0
 ```
 
-stdout carries only the result, stderr the diagnostics. Exit codes: `0` ok, `1` the script failed,
-`2` invalid invocation, `141` stdout closed before every result was written (`| head -1`). `--graph` takes `modern` (default), `empty`, `large`, or a GraphSON
-(`.json`, `.jsonl`, `.graphson`) or GraphML (`.xml`, `.graphml`) file; data a GraphSON import
-skips (dates, unsupported types) is listed in a note on stderr. `--schema schema.json
-[--schema-mode open|closed|none]` sets a schema (the schema format) on the new graph before the
-file is imported against it (declared `uuid`/`array`/`object` values come back typed, the mode is
-enforced; a violation exits with `1`); with a sample graph it is applied to it, with a Store or a
-`.gsnap` (they carry their own schema) it is refused.
-Run `graphersal --help` for display limits (`--max-rows`, `--no-limit`), `--timeout` and the
-script resource limits (`--safe-limits`, `--max-operations`, ...).
-
-## Dev server (DEV mode, unstable, local only)
+## One-shot queries
 
 ```bash
-graphersal --graph ./mygraph.json --server --port 8080 --timeout 5000
-# open http://127.0.0.1:8080/
+graphersal -e 'g.v().has("name", "marko").out("knows").values("name")'   # the TinkerPop "modern" sample
+graphersal --graph people.json -e 'g.v().has_label("person").count()'     # GraphSON (.json/.jsonl/.graphson)
+graphersal --graph people.graphml --format mermaid -e 'g.infer_schema()'  # GraphML (.xml/.graphml)
+echo 'g.v().values("age").max().next()' | graphersal --graph modern       # the query from stdin
 ```
 
-`--server` serves the Graphersal playground UI (embedded in the binary; `--ui-dir <DIR>`, default
-`./playground` when it exists, names a directory whose files win over the embedded copy) on the loopback (`127.0.0.1`, and `[::1]` when available) and answers its engine calls from this process:
-queries, profiles, schema, graph drawing, Stop (cancels the running query, which rolls back), and
-an explicit "Save to file" back to a `--graph` file (and the schema back to a `--schema` file). The limit options (`--timeout`,
-`--memory-limit`, `--max-*`, ...) apply to every query. No authentication and an internal HTTP API
-that changes without notice. Nothing persists unless `--graph` is a Store (below): then every
-commit is durable before the query answers. Build without it: `--no-default-features` (feature
-`dev-server`).
-
-`--mcp` adds a Model Context Protocol endpoint on the same graph and session, so an AI agent works
-next to you in the browser (`--mcp-read-only`: the agent may only read; `--mcp-token <secret>`:
-it must send `Authorization: Bearer <secret>`; `--mcp-query-tools`: every saved query is also a
-tool of its own, besides `list_saved_queries` and `run_saved_query`):
+stdout carries only the result, stderr only diagnostics. Exit codes: `0` ok, `1` the query failed,
+`2` invalid invocation, `141` stdout closed early (`| head -1`), so a script or a CI job can check
+a graph:
 
 ```bash
-graphersal --graph modern --server --port 9000 --mcp
-claude mcp add --transport http graphersal http://127.0.0.1:9000/mcp   # then start a new claude session
+graphersal --graph export.json -e 'g.v().has_label("server").has_not("owner").fail("a server without an owner")'
 ```
 
-The browser reloads by itself when the agent (or another tab) changed the graph. Tools,
-resources and protocol details: the book page "Dev Server and MCP"
-(`book/src/persistence/dev_server.md`).
+`--graph` takes `modern` (default), `empty`, `large` (about 110,000 elements), `tree`, a GraphSON or
+GraphML file, a `.gsnap` snapshot or a Store. `--schema schema.json [--schema-mode open|closed|none]`
+sets a schema on the new graph before the file is imported against it. Displayed results are cut
+at 100 rows (`--max-rows`, `--no-limit`); `--timeout`, `--memory-limit` and the script limits
+bound every query. `graphersal --help` lists every option.
 
-## The Store (persistence)
+## REPL
 
 ```bash
-graphersal store create data/ --from modern          # one directory (or data.gstore: one file) = one graph
-graphersal --graph data/ -e 'g.add_v("person").to_list()'   # every commit is durable before it returns
-graphersal --graph data/ --server                    # the dev server with a Store menu
-graphersal store help                                # info, list, marks, mark, checkpoint, verify, fork,
-                                                     # rollback, attic, backup, restore, export, prune,
-                                                     # compact, compact-advice, convert, repair
+graphersal --graph people.json
 ```
 
-Reference: the book's "Persistence" part (`book/src/persistence/store_cli.md` for every command);
-every command of the tool on one page: `book/src/users_guide/command_cheat_sheet.md`.
+`graphersal>` completes steps, tokens and commands with Tab and documents each of them with
+`/help <name>` (`/help has_label`, `/help P.eq`); `/help` lists the commands.
+
+## Dev server, MCP and AI Chat (local only, unstable)
+
+```bash
+graphersal --graph people.json --server --mcp          # open http://127.0.0.1:8080/
+claude mcp add --transport http graphersal http://127.0.0.1:8080/mcp
+```
+
+`--server` serves the playground UI (embedded in the binary) on the loopback interface and runs
+its queries in this process: tables, the graph drawing, schema, profile, Stop, and "Save to file"
+back to the `--graph` file. `--mcp` adds a Model Context Protocol endpoint on the same graph, so an
+AI agent works next to you in the browser (`--mcp-read-only`, `--mcp-token <secret>`); the page
+reloads when the agent changed the graph. `--ai config.json` enables the playground's AI Chat tab
+with your own LLM provider (experimental). There is no authentication and the HTTP API changes
+without notice. See [Dev Server, MCP and AI Chat](https://graphersal.dev/getting_started/server_mcp_ai.html).
+
+## The Store
+
+```bash
+graphersal store create data/ --from modern                # one directory (or data.gstore: one file) = one graph
+graphersal --graph data/ -e 'g.add_v("person").iterate()'  # every commit is durable before it returns
+graphersal --graph data/ --server                          # the dev server with a Store menu
+graphersal store help                                      # info, marks, checkpoint, verify, fork, rollback,
+                                                           # backup, restore, export, compact, repair, ...
+```
+
+Reference: [The Store from the Command Line](https://graphersal.dev/persistence/store_cli.html);
+every command on one page: the
+[Command Cheat Sheet](https://graphersal.dev/users_guide/command_cheat_sheet.html).
+
+Graphersal is compatible with, and inspired by, Apache TinkerPop Gremlin. It is an independent
+project: it is not part of Apache TinkerPop and is not endorsed by the Apache Software Foundation.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE-APACHE` and `NOTICE`).
