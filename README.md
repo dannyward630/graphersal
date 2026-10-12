@@ -18,10 +18,11 @@ AI moves faster than the tools around it. We built Graphersal so you don't have 
 lightweight, embeddable graph engine you can turn into whatever your AI solution needs — a library
 inside your application, a tool for your agents, or a full server with your own features on top.
 
-It works out of the box: a browser UI, an MCP endpoint for AI agents and an AI chat, durable
-storage and transactions, and the safety to run queries you did not write — permissions, read-only
-access, resource limits and timeouts. You start with a working system, not with a list of
-components to wire together.
+It works out of the box: a browser UI, an MCP endpoint for AI agents, an AI chat where you simply
+ask about your graph in plain language and it writes and runs the queries for you, durable storage
+and transactions, and the safety to run queries you did not write — permissions, read-only access,
+resource limits and timeouts. You start with a working system, not with a list of components to
+wire together.
 
 ## A first look
 
@@ -53,8 +54,9 @@ never leaves your browser.
 - **A command line tool.** One-shot queries for shell scripts, an interactive REPL with completion
   and help, and a local server that brings the playground UI to a graph on your disk.
 - **AI agents on your graph.** The server speaks the Model Context Protocol (MCP), so Claude Code or
-  another MCP client can query the graph you are looking at. The playground has an AI Chat tab as
-  well (experimental).
+  another MCP client can query the graph you are looking at. In the playground's AI Chat tab you ask
+  about your graph in plain language, and the model of your choice writes and runs the queries
+  (experimental).
 - **Safe by construction.** Every traversal is atomic: it commits completely or leaves nothing
   behind. Schemas (a subset of JSON Schema) are enforced on write. Limits, timeouts and permissions
   make it safe to run queries you did not write.
