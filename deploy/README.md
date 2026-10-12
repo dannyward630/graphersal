@@ -60,3 +60,22 @@ Browsers keep files long only where a changed file always gets a new URL:
 A local check with the same headers: serve `target/site/play` with any static server that sends
 `no-cache` outside `/v/` (the development server `playground/serve.py` sends `no-store` for
 everything, which is right while editing).
+
+## The mirror on GitHub Pages
+
+Some countries block the droplet's addresses. The same sites are mirrored on GitHub Pages, from
+the repository `github.com/graphersal/graphersal.github.io`:
+
+| Address | Content |
+|---|---|
+| `https://graphersal.github.io/` | the book |
+| `https://graphersal.github.io/play/` | the playground |
+
+```bash
+deploy/build-site.sh && deploy/mirror.sh    # after (or instead of) deploy/deploy.sh
+```
+
+`mirror.sh` copies `target/site/`, rewrites the links between the book and the playground to the
+mirror's addresses, and pushes it as ONE commit that replaces the previous one (no history of old
+playground versions). GitHub Pages serves every file with a 10-minute cache; the playground's
+`v/<version>/` layout keeps a page and its modules consistent anyway.
