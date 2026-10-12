@@ -696,7 +696,8 @@ mod fs_dir {
             Ok(())
         } else {
             fs::copy(source, target)?;
-            File::open(target)?.sync_all()
+            // Opened for writing: Windows refuses to flush a read-only handle (access denied).
+            fs::OpenOptions::new().write(true).open(target)?.sync_all()
         }
     }
 

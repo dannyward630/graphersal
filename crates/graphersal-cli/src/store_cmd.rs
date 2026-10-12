@@ -1099,7 +1099,11 @@ pub fn run(args: &[String]) -> i32 {
                 };
                 let result = Store::backup_zip_dir(dir, file);
                 if result.is_ok() {
-                    let _ = std::fs::File::open(target).and_then(|f| f.sync_all());
+                    // Opened for writing: Windows refuses to flush a read-only handle.
+                    let _ = std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(target)
+                        .and_then(|f| f.sync_all());
                 }
                 if result.is_err() {
                     let _ = std::fs::remove_file(target);
