@@ -41,6 +41,12 @@ fn run(args: &[&str], stdin: &str) -> Run {
 }
 
 /// A unique scratch path for tests that write a graph file.
+/// A path for a Rhai string literal: '/' separators (Windows accepts them; its '\\' would be
+/// an escape in the literal).
+fn script_path(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 fn temp_path(name: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!("graphersal_cli_{}_{}", std::process::id(), name));
@@ -320,7 +326,7 @@ fn unsupported_graph_file_extension_is_a_usage_error() {
 #[test]
 fn loads_a_graph_from_disk() {
     let path = temp_path("modern.graphml");
-    let path = path.to_string_lossy().to_string();
+    let path = script_path(&path);
 
     let exported = run(
         &[
@@ -348,7 +354,7 @@ fn graphson_export_reads_back_through_graph() {
         ("modern_camel.jsonl", "exportGraphson"),
     ] {
         let path = temp_path(name);
-        let path = path.to_string_lossy().to_string();
+        let path = script_path(&path);
         let exported = run(
             &["--graph", "modern", "-e", &format!("g.{call}(\"{path}\")")],
             "",
@@ -424,7 +430,7 @@ fn malformed_graphson_is_a_usage_error() {
 #[test]
 fn graphml_export_of_modern_reads_back_unchanged() {
     let path = temp_path("modern_roundtrip.graphml");
-    let path = path.to_string_lossy().to_string();
+    let path = script_path(&path);
 
     let exported = run(
         &[
