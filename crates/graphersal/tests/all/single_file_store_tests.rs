@@ -694,6 +694,18 @@ fn the_advice_is_false_while_the_store_cannot_change_and_auto_compaction_follows
 // Crash images of the file
 // ---------------------------------------------------------------------------------------------
 
+/// The bytes of a store file that is still open, as a crash would leave them. Byte 0 (the first
+/// byte of the preamble magic `GRSLFILE`, written once) is not read: on Windows the writer's OS
+/// lock covers it and is mandatory, so another handle cannot read it while the store is open.
+fn crash_image(path: &std::path::Path) -> Vec<u8> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(path).unwrap();
+    file.seek(SeekFrom::Start(1)).unwrap();
+    let mut bytes = vec![b'G'];
+    file.read_to_end(&mut bytes).unwrap();
+    bytes
+}
+
 #[test]
 fn every_cut_of_the_last_update_recovers_the_store() {
     let temp = Temp::new("cuts");
@@ -703,7 +715,7 @@ fn every_cut_of_the_last_update_recovers_the_store() {
     let complete = fs::metadata(&path).unwrap().len();
     add_person(&store, "bob");
     // The process dies: the file as it is (everything was written to the OS).
-    let crashed = fs::read(&path).unwrap();
+    let crashed = crash_image(&path);
     drop(store);
     let image = temp.join("image.gstore");
     let last = crashed.len() as u64 - 1;
@@ -779,7 +791,7 @@ fn damage_of_the_containers_records_opens_in_maintenance_mode() {
     add_person(&store, "bob");
     add_person(&store, "cy");
     // A crash image: the records after the last table, synced (EveryCommit).
-    let mut crashed = fs::read(&path).unwrap();
+    let mut crashed = crash_image(&path);
     drop(store);
     // A flipped bit in the frame header of the record of commit 1, which later durable
     // records follow.

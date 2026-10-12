@@ -2109,13 +2109,16 @@ impl SingleFileDir {
         &self.inner.path
     }
 
-    /// Whether `path` is an existing single-file store (its preamble is read).
+    /// Whether `path` is an existing single-file store (its preamble is read). Bytes 1..8 of
+    /// the magic are compared: on Windows the writer's OS lock covers byte 0 (`LockFileEx` of
+    /// one byte at offset 0) and is mandatory, so another process cannot read it while the
+    /// store is open.
     pub fn is_single_file(path: impl AsRef<Path>) -> bool {
-        let Ok(mut file) = File::open(path.as_ref()) else {
+        let Ok(file) = File::open(path.as_ref()) else {
             return false;
         };
-        let mut magic = [0u8; 8];
-        file.read_exact(&mut magic).is_ok() && &magic == PREAMBLE_MAGIC
+        let mut magic = [0u8; 7];
+        read_at(&file, &mut magic, 1).is_ok() && magic == PREAMBLE_MAGIC[1..]
     }
 }
 

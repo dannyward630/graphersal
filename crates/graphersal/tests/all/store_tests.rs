@@ -863,7 +863,8 @@ fn leftovers_of_an_interrupted_checkpoint_and_prune_are_cleaned_on_open() {
         .strip_prefix(crashed.path())
         .unwrap()
         .to_string_lossy()
-        .to_string();
+        // A logical store name ('/'-separated, format spec), also on Windows.
+        .replace('\\', "/");
     fs::write(
         crashed.join("INTENT"),
         format!(

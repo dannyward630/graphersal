@@ -718,12 +718,14 @@ mod tests {
             .to_str()
             .unwrap()
             .to_string();
+        // The path as a Rhai string literal: a Windows path's backslashes are escapes there.
+        let xml_literal = xml_path.replace('\\', "\\\\");
 
         let script_export = format!(
             r#"
             g.export_graphml("{}");
         "#,
-            xml_path
+            xml_literal
         );
 
         let result = eval(graph, &script_export);
@@ -737,7 +739,7 @@ mod tests {
             let g_xml = GraphSource::file("{}");
             g_xml.V().count().toList()
         "#,
-            xml_path
+            xml_literal
         );
 
         let result_import = eval(empty_graph, &script_import);
