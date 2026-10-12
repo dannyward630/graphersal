@@ -52,8 +52,9 @@ Before a version is tagged:
   each runs in every `cargo test`);
 - a benchmark run on a quiet machine shows no unexplained regression against the previous release;
 - `cargo publish --dry-run` succeeds for every published crate, `graphersal` first, then the crates that depend on it;
-- `CHANGELOG.md` has the version's section with its date, and the [release notes](../release_notes/release_notes_0.1.0.md)
-  summarize it.
+- the version's release notes (`book/src/release_notes/`, for 0.1.0
+  [Release Notes 0.1.0](../release_notes/release_notes_0.1.0.md)) describe what changed; they are the project's
+  record of changes (there is no separate `CHANGELOG.md`) and the text of the GitHub Release.
 
 The long fuzz budgets (release builds with overflow checks and debug assertions kept on):
 

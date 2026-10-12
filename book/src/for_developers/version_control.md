@@ -6,10 +6,11 @@ changes reach the repository.
 ## Branches and pull requests
 
 - `main` is the only long-lived branch; every change comes as a pull request against it.
-- A pull request keeps the CI workflow green (format, clippy, the test suites, the feature and wasm32 matrices).
-  When it adds or fixes a Gremlin step, the TinkerPop baseline is updated in the same pull request
+- A pull request keeps the CI workflow green (format, clippy, the test suites, the feature and wasm32 matrices);
+  CI runs on a manual start, so run the checks locally (`CONTRIBUTING.md`) and a maintainer starts CI for the
+  pull request. When it adds or fixes a Gremlin step, the TinkerPop baseline is updated in the same pull request
   ([TinkerPop Compliance](tinkerpop_compliance.md)).
-- A user-visible change adds a line to `CHANGELOG.md` under the upcoming version (Added, Changed, Removed or Fixed).
+- A user-visible change is described in the upcoming version's release notes (`book/src/release_notes/`).
 - Releases are tags on `main` ([Releases and Versioning](release_plan.md)).
 
 ## Commit messages

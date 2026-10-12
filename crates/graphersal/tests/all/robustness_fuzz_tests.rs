@@ -7,8 +7,10 @@
 //! huge lists, nested maps, `P`/`TextP` predicates, tokens, `jpath`, `UUID`, nested `__.`
 //! traversals, `repeat` with and without `times`, mutating steps). Each script runs on a fresh
 //! modern graph and on an empty graph, under the SAFE [`ScriptLimits`], a host
-//! `evaluationTimeout` and everything allowed, in its own thread under `catch_unwind` with a
-//! wall-clock watchdog.
+//! `evaluationTimeout` and everything allowed except files outside a fresh temporary directory
+//! (the case's file root: the generated `export_graphml("marko")` and friends write there and
+//! never into the working directory; the directory is removed after the case), in its own thread
+//! under `catch_unwind` with a wall-clock watchdog.
 //!
 //! Checked per case:
 //! - **panic**: `catch_unwind` caught one (always a failure);
@@ -50,7 +52,7 @@ use graphersal::exec::RenderOptions;
 use graphersal::prelude::*;
 use graphersal::script::rhai::Dynamic;
 
-use crate::script_host::{ScriptLimits, engine_with_options, graph_scope_with_options};
+use crate::script_host::ScriptLimits;
 
 // ---------------------------------------------------------------------------------------------
 // Deterministic RNG (SplitMix64): tiny, dependency-free and stable across toolchains, so a seed
@@ -1102,7 +1104,34 @@ pub(crate) enum Outcome {
 /// Host `evaluationTimeout` of every case, in milliseconds.
 const EVALUATION_TIMEOUT_MS: i64 = 1_000;
 
+/// A fresh, empty directory for one case: its file root. Removed by `Drop`.
+struct CaseDir(std::path::PathBuf);
+
+impl CaseDir {
+    fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "graphersal-fuzz-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create the case's temporary directory");
+        CaseDir(dir)
+    }
+}
+
+impl Drop for CaseDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn run_inner(script: &str, kind: GraphKind) -> Outcome {
+    // Files only inside the case's own temporary directory: a path that leaves it (`..`, an
+    // absolute path, a symbolic link) is denied, so a generated export never touches real files.
+    let case_dir = CaseDir::new();
+    let authorizer: Arc<dyn graphersal::auth::Authorizer> =
+        Arc::new(graphersal::auth::AccessPolicy::allow_all().with_file_root(&case_dir.0));
     let graph = Arc::new(match kind {
         GraphKind::Modern => GraphSource::tinkerpop_modern(),
         GraphKind::Empty => GraphSource::empty(),
@@ -1112,8 +1141,8 @@ fn run_inner(script: &str, kind: GraphKind) -> Outcome {
         "evaluationTimeout",
         ElementProperty::from(EVALUATION_TIMEOUT_MS),
     )];
-    let engine = engine_with_options(&limits, &presets);
-    let mut scope = graph_scope_with_options(graph, &presets);
+    let engine = graphersal::script::engine_with_options(&limits, authorizer.clone(), &presets);
+    let mut scope = graphersal::script::graph_scope_with_options(graph, &presets, authorizer);
     scope.push("nan", f64::NAN);
     scope.push("inf", f64::INFINITY);
     scope.push("ninf", f64::NEG_INFINITY);
@@ -1813,6 +1842,47 @@ fn step_table_covers_the_surface() {
         assert!(names.contains(step), "step table misses {step}: {names:?}");
     }
     assert!(table.len() > 150, "only {} steps parsed", table.len());
+}
+
+/// A case's files stay in its own temporary directory: a relative name is written there, a path
+/// that leaves it is denied with a located diagnostic (so the denial is no finding), and nothing
+/// reaches the working directory.
+#[test]
+fn case_files_stay_in_the_temporary_directory() {
+    let watchdog = Duration::from_secs(60);
+    let name = "graphersal-fuzz-file-root-probe.graphml";
+    assert!(
+        matches!(
+            run_case(
+                &format!(r#"g.export_graphml("{name}")"#),
+                GraphKind::Modern,
+                watchdog
+            ),
+            Outcome::Ok
+        ),
+        "a relative name is written inside the file root"
+    );
+    assert!(
+        !std::path::Path::new(name).exists(),
+        "nothing in the working directory"
+    );
+    for path in ["../escape.graphml", "/tmp/graphersal-fuzz-escape.graphml"] {
+        let outcome = run_case(
+            &format!(r#"g.export_graphml("{path}")"#),
+            GraphKind::Modern,
+            watchdog,
+        );
+        let Outcome::Error(text) = &outcome else {
+            panic!("{path}: expected a denial, got {outcome:?}");
+        };
+        assert!(text.contains("Permission denied"), "{path}: {text}");
+        assert!(
+            findings_of(&outcome).is_empty(),
+            "{path}: {:?}\n{text}",
+            findings_of(&outcome)
+        );
+    }
+    assert!(!std::path::Path::new("/tmp/graphersal-fuzz-escape.graphml").exists());
 }
 
 /// The same seed builds the same script (reproducibility of every reported finding).

@@ -1,9 +1,8 @@
 # Release 0.1.0
 
 The first public release of Graphersal: an in-memory graph traversal engine in Rust, modelled on Apache TinkerPop
-Gremlin, with a durable store, a command line, a Python binding and a browser playground. This page gives the
-highlights; the complete list of changes is `CHANGELOG.md` in the repository root. What 0.1.0 does not do yet is
-on [Current Limitations](../users_guide/current_limitations.md).
+Gremlin, with a durable store, a command line, a Python binding and a browser playground. What 0.1.0 does not do
+yet is on [Current Limitations](../users_guide/current_limitations.md).
 
 ## The engine and the query language
 
@@ -45,7 +44,8 @@ on [Current Limitations](../users_guide/current_limitations.md).
   and exit codes, and [`graphersal store`](../persistence/store_cli.md) to operate stores
   ([Command Cheat Sheet](../users_guide/command_cheat_sheet.md)).
 - **[Web playground](../users_guide/web_playground.md)**: the real engine compiled to WebAssembly, with a graph
-  drawing, a schema editor, saved queries and a store in memory; the same UI runs over the
+  drawing, a schema editor, saved queries, a store in memory and **Share link** (a query and a small graph in one
+  link, for example in a bug report); the same UI runs over the
   [dev server](../persistence/dev_server.md) (`graphersal --server`), which can also serve MCP to AI clients and an
   experimental AI Chat.
 - **Python**: the `graphersal` package (abi3 wheels for Python 3.10+) with graphs, schemas and the Store

@@ -5321,7 +5321,7 @@ fn permission_denied_help(step: &str, request: &crate::graph::AccessRequest<'_>)
     };
     format!(
         "'{step}' needs {request}, which the host running this script does not allow. \
-         Everything is allowed by default; the host decides with a graphersal::auth::Authorizer, for example \
+         Everything is allowed by default; the host decides with an Authorizer, for example \
          the ready-made AccessPolicy::read_only().allow(ActionKind::{action}, \
          ResourceKind::{resource}) passed to script::engine_with_limits(..) and \
          script::graph_scope_with_options(..) (or eval_value_with_limits), or \

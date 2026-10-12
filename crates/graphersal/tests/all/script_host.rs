@@ -5,7 +5,8 @@
 //! `Authorizer`. Almost every test exercises the DSL itself, not the authorization check, so it
 //! imports the script API from here: everything of `graphersal::script`, with those entry points
 //! shadowed by versions that pass `AllowAll`. `permission_tests.rs` uses `graphersal::script`
-//! directly.
+//! directly, and so does `robustness_fuzz_tests.rs` (its cases keep files in a temporary file
+//! root).
 #![cfg(feature = "script")]
 #![allow(dead_code, unused_imports)]
 
