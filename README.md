@@ -12,6 +12,19 @@
 **[Step reference](https://graphersal.dev/traversal/step_reference.html)** ·
 **[API docs](https://docs.rs/graphersal)**
 
+## Why Graphersal
+
+AI moves faster than the tools around it. We built Graphersal so you don't have to wait for them: a
+lightweight, embeddable graph engine you can turn into whatever your AI solution needs — a library
+inside your application, a tool for your agents, or a full server with your own features on top.
+
+It works out of the box: a browser UI, an MCP endpoint for AI agents and an AI chat, durable
+storage and transactions, and the safety to run queries you did not write — permissions, read-only
+access, resource limits and timeouts. You start with a working system, not with a list of
+components to wire together.
+
+## A first look
+
 [![The web playground: a recursive traversal over a directory tree, its results and the graph](book/src/images/getting_started/playground-tree.png)](https://play.graphersal.dev/#/play?graph=tree&q=%2F%2F%20every%20path%20below%20the%20src%20directory%0Ag.v().has(%22name%22%2C%20%22src%22)%0A%20%20.repeat(__.out()).emit()%0A%20%20.path().by(%22name%22)&run=1)
 
 You ask Graphersal questions in **Gremlin**, the query language of
