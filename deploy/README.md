@@ -63,8 +63,8 @@ everything, which is right while editing).
 
 ## The mirror on GitHub Pages
 
-Some countries block the droplet's addresses. The same sites are mirrored on GitHub Pages, from
-the repository `github.com/graphersal/graphersal.github.io`:
+The same sites are mirrored on GitHub Pages, from the repository
+`github.com/graphersal/graphersal.github.io`:
 
 | Address | Content |
 |---|---|

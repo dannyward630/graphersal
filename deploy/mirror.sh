@@ -1,5 +1,5 @@
 #!/bin/bash
-# Publishes the mirror on GitHub Pages, for the countries that block the droplet's addresses:
+# Publishes the mirror on GitHub Pages:
 #
 #   https://graphersal.github.io/        the book            (primary: https://graphersal.dev/)
 #   https://graphersal.github.io/play/   the playground      (primary: https://play.graphersal.dev/)

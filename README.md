@@ -11,7 +11,7 @@
 **[Playground](https://play.graphersal.dev)** · **[Book](https://graphersal.dev)** ·
 **[Step reference](https://graphersal.dev/traversal/step_reference.html)** ·
 **[API docs](https://docs.rs/graphersal)** ·
-[Mirror](https://graphersal.github.io) (book and [playground](https://graphersal.github.io/play/), where graphersal.dev is blocked)
+[Mirror on GitHub Pages](https://graphersal.github.io)
 
 ## Why Graphersal
 
