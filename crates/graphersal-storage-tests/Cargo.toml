@@ -13,6 +13,10 @@ keywords = ["graph", "gremlin", "storage", "conformance", "testing"]
 categories = ["development-tools::testing", "database-implementations"]
 include = ["/src/**", "/README.md", "/LICENSE-APACHE", "/NOTICE"]
 
+[package.metadata.docs.rs]
+# docs.rs documents every feature (with `persist`: the PersistentStorage items of `Forwarding`).
+all-features = true
+
 [dependencies]
 # Everything, the label and id types of the `GraphStorage` signatures included, comes through
 # `graphersal`'s public facade (`graphersal::storage::CompactString`).

@@ -13,6 +13,10 @@ keywords = ["graph", "gremlin", "tinkerpop", "traversal", "query"]
 categories = ["data-structures", "database-implementations"]
 include = ["/src/**", "/README.md", "/LICENSE-APACHE", "/NOTICE"]
 
+[package.metadata.docs.rs]
+# docs.rs documents every feature (every feature is off by default, so without this docs.rs would show only the core API).
+all-features = true
+
 [dependencies]
 petgraph = { workspace = true }
 compact_str = { workspace = true }
