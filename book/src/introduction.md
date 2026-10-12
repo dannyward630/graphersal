@@ -1,8 +1,10 @@
 # Introduction
 
 **Graphersal** is an in-memory graph database and traversal engine written in Rust. You ask it
-questions in **Gremlin**, the query language of [Apache TinkerPop&trade;](https://tinkerpop.apache.org):
-start somewhere in a graph, walk along its edges, filter, group and count.
+questions in **plain language** or in **Gremlin**. In the AI chat you simply write what you want to
+know, and the model of your choice turns it into queries, runs them and answers. Gremlin is the
+query language of [Apache TinkerPop&trade;](https://tinkerpop.apache.org): start somewhere in a
+graph, walk along its edges, filter, group and count.
 
 ## Why Graphersal
 

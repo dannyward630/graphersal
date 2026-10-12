@@ -28,9 +28,10 @@ wire together.
 
 [![The web playground: a recursive traversal over a directory tree, its results and the graph](book/src/images/getting_started/playground-tree.png)](https://play.graphersal.dev/#/play?graph=tree&q=%2F%2F%20every%20path%20below%20the%20src%20directory%0Ag.v().has(%22name%22%2C%20%22src%22)%0A%20%20.repeat(__.out()).emit()%0A%20%20.path().by(%22name%22)&run=1)
 
-You ask Graphersal questions in **Gremlin**, the query language of
-[Apache TinkerPop&trade;](https://tinkerpop.apache.org): start somewhere in a graph, walk along its
-edges, filter, group and count.
+You ask Graphersal questions in **plain language** or in **Gremlin**. In the AI chat you simply
+write what you want to know, and the model of your choice turns it into queries, runs them and
+answers. Gremlin is the query language of [Apache TinkerPop&trade;](https://tinkerpop.apache.org):
+start somewhere in a graph, walk along its edges, filter, group and count.
 
 ```groovy
 // who created software together with marko?
