@@ -119,14 +119,14 @@ impl PathKeys {
     pub(crate) fn append<S: GraphStorage>(
         &self,
         props: Option<&PropertyMap>,
-        keys: &mut Vec<CompactString>,
+        keys: &mut Vec<RecordKey>,
         values: &mut Vec<TraverserValue<S>>,
         wrap: impl Fn(ElementProperty) -> TraverserValue<S>,
     ) {
         let Some(props) = props else { return };
         for (path, text) in &self.paths {
             if let Some(leaf) = descend_properties(props, path.segments()) {
-                keys.push(text.clone());
+                keys.push(RecordKey::Name(text.clone()));
                 values.push(wrap(leaf.to_logical()));
             }
         }
@@ -137,12 +137,12 @@ impl PathKeys {
         &self,
         context: &TraverserContext<'_, S>,
         value: &TraverserValue<S>,
-        keys: &mut Vec<CompactString>,
+        keys: &mut Vec<RecordKey>,
         values: &mut Vec<TraverserValue<S>>,
     ) {
         for (path, text) in &self.paths {
             if let Some(leaf) = TraverserValue::resolve_json_path(context, value, path.segments()) {
-                keys.push(text.clone());
+                keys.push(RecordKey::Name(text.clone()));
                 values.push(leaf);
             }
         }

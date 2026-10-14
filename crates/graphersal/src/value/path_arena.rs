@@ -451,8 +451,10 @@ impl<'a, S: GraphStorage> PathObject<'a, S> {
     fn resolve(storage: &'a S, value: &'a TraverserValue<S>) -> Self {
         match value {
             TraverserValue::Computed(property, _) => PathObject::Value(property),
-            TraverserValue::VertexProperty(key, vertex, _) if key != "id" => {
-                if key == "label" {
+            TraverserValue::VertexProperty(key, vertex, kind)
+                if !matches!(kind, PropertyHandleKind::Id | PropertyHandleKind::Labels) =>
+            {
+                if *kind == PropertyHandleKind::Label {
                     return match storage.vertex_label(*vertex) {
                         Some(label) => PathObject::Str(label),
                         None => PathObject::Raw(value),
@@ -466,8 +468,10 @@ impl<'a, S: GraphStorage> PathObject<'a, S> {
                     None => PathObject::Raw(value),
                 }
             }
-            TraverserValue::EdgeProperty(key, edge, _) if key != "id" => {
-                if key == "label" {
+            TraverserValue::EdgeProperty(key, edge, kind)
+                if !matches!(kind, PropertyHandleKind::Id | PropertyHandleKind::Labels) =>
+            {
+                if *kind == PropertyHandleKind::Label {
                     return match storage.edge_label(*edge) {
                         Some(label) => PathObject::Str(label),
                         None => PathObject::Raw(value),

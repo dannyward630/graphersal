@@ -3,7 +3,7 @@
 
 `label` · category: [Values and properties](../../traversal/step_reference.md#values-and-properties)
 
-Yields the label of each vertex or edge.
+Yields the label of each vertex or edge, never a property named label.
 
 ## Forms
 

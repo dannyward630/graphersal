@@ -76,7 +76,9 @@ impl StepSelectColumn {
                 Ok(TraverserValue::Array(match self.column {
                     Column::Keys => keys
                         .iter()
-                        .map(|k| TraverserValue::Computed(ElementProperty::String(k.clone()), None))
+                        .map(|k| {
+                            TraverserValue::Computed(ElementProperty::String(k.to_compact()), None)
+                        })
                         .collect(),
                     Column::Values => values,
                 }))

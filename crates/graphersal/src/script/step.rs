@@ -261,6 +261,8 @@ pub(super) enum Step {
     RTrim,
     Select(Vec<CompactString>),
     SelectColumn(Column),
+    /// `select(T.id)` / `select(T.label)` / `select(Direction.OUT)` / `select(Direction.IN)`.
+    SelectToken(crate::value::RecordKey),
     /// `select(Pop.x, "a", ...)`: path labels read with a [`Pop`].
     SelectPop(Pop, Vec<CompactString>),
     /// `select(Pop.x, <traversal>)` / `select(<traversal>)` (`Pop::Last`): the key is the first

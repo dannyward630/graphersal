@@ -19,7 +19,7 @@ g.V().group().by("name").by(__.out().count()).select(Column.keys).unfold()    //
 ```
 
 The order is the map's own order. `group()` keeps first-seen order. The index-backed
-`group_count().by("label")` pushdown does not guarantee any order.
+`group_count().by(T.label)` pushdown does not guarantee any order.
 
 ## `unfold()` of a map
 
@@ -29,7 +29,7 @@ other value passes through unchanged. An entry is its own kind of stream value (
 single-key map, which is how the Gremlin console prints `marko=3`:
 
 ```rhai,graph=modern
-g.V().groupCount().by("label").unfold().toList()
+g.V().groupCount().by(T.label).unfold().toList()
 // #{"person": 4}
 // #{"software": 2}
 ```

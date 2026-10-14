@@ -51,7 +51,7 @@ impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepLabels {
                 TraverserValue::VertexProperty(
                     CompactString::new("labels"),
                     *node_index,
-                    PropertyHandleKind::Value,
+                    PropertyHandleKind::Labels,
                 ),
                 source.path,
                 source.bulk,
@@ -62,7 +62,7 @@ impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepLabels {
                 TraverserValue::EdgeProperty(
                     CompactString::new("labels"),
                     *edge_index,
-                    PropertyHandleKind::Value,
+                    PropertyHandleKind::Labels,
                 ),
                 source.path,
                 source.bulk,

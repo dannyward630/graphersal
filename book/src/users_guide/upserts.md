@@ -19,9 +19,9 @@ g.mergeV(#{"T.label": "person", "name": "marko"}).option(Merge.onCreate, #{"age"
 // modern graph
 g.mergeV(#{"T.id": "1"}).values("name").toList()                       // "marko"
 g.mergeE(#{"T.label": "knows", "Direction.OUT": "1", "Direction.IN": "2"}).elementMap().toList()
-// #{"id": "0", "label": "knows", "weight": 0.5}: the existing edge
+// #{"IN": #{"id": "2", "label": "person"}, "OUT": #{"id": "1", "label": "person"}, "id": "0", "label": "knows", "weight": 0.5}: the existing edge
 g.mergeE(#{"T.label": "knows", "Direction.OUT": "2", "Direction.IN": "1"}).option(Merge.onCreate, #{"weight": 0.1}).elementMap().toList()
-// #{"id": "6", "label": "knows", "weight": 0.1}: created
+// #{"IN": #{"id": "1", "label": "person"}, "OUT": #{"id": "2", "label": "person"}, "id": "6", "label": "knows", "weight": 0.1}: created
 ```
 
 In Rust the steps are `merge_v(map)`, `merge_v_by(traversal)`, `merge_e(map)`, `merge_e_by(traversal)`

@@ -72,61 +72,31 @@ impl<'g, S: GraphStorage + 'g> GraphStepModulator<'g, S> for StepBy<'g, S> {
 
 impl<'g, S: GraphStorage + 'g> From<&str> for By<'g, S> {
     fn from(value: &str) -> Self {
-        if value.eq("label") {
-            By::Label
-        } else if value.eq("id") {
-            By::Id
-        } else {
-            By::Property(CompactString::new(value))
-        }
+        By::Property(CompactString::new(value))
     }
 }
 
 impl<'g, S: GraphStorage + 'g> From<&String> for By<'g, S> {
     fn from(value: &String) -> Self {
-        if value.eq("label") {
-            By::Label
-        } else if value.eq("id") {
-            By::Id
-        } else {
-            By::Property(CompactString::new(value))
-        }
+        By::Property(CompactString::new(value))
     }
 }
 
 impl<'g, S: GraphStorage + 'g> From<String> for By<'g, S> {
     fn from(value: String) -> Self {
-        if value.eq("label") {
-            By::Label
-        } else if value.eq("id") {
-            By::Id
-        } else {
-            By::Property(CompactString::new(value))
-        }
+        By::Property(CompactString::new(value))
     }
 }
 
 impl<'g, S: GraphStorage + 'g> From<&CompactString> for By<'g, S> {
     fn from(value: &CompactString) -> Self {
-        if value.eq("label") {
-            By::Label
-        } else if value.eq("id") {
-            By::Id
-        } else {
-            By::Property(value.clone())
-        }
+        By::Property(value.clone())
     }
 }
 
 impl<'g, S: GraphStorage + 'g> From<CompactString> for By<'g, S> {
     fn from(value: CompactString) -> Self {
-        if value.eq("label") {
-            By::Label
-        } else if value.eq("id") {
-            By::Id
-        } else {
-            By::Property(value)
-        }
+        By::Property(value)
     }
 }
 

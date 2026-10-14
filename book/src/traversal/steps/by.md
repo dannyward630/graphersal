@@ -4,6 +4,18 @@
 group it. The arguments and the steps that take `by()` are described in
 [The by() Modulator](../../users_guide/by_modulator_single.md).
 
+## `by("label")` and `by(T.label)`
+
+A string is always a property key: `by("label")` and `by("id")` read a property of that name (as
+in TinkerPop) and are unproductive on an element without one. The element's label and id are the
+tokens `by(T.label)` and `by(T.id)`. See
+[Properties Named id or label](../../users_guide/id_and_label_keys.md).
+
+```rhai,graph=modern
+g.V().groupCount().by(T.label).next()    // {"person": 4, "software": 2}
+g.V().groupCount().by("label").next()    // {}: no vertex has a property named label
+```
+
 ## `by()` without an argument
 
 A bare `by()` is the identity: TinkerPop's `by()` is `by(__.identity())`, and Graphersal lowers it to

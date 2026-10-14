@@ -5,7 +5,7 @@ use crate::*;
 
 struct StepProject<'g, S: GraphStorage + 'g> {
     args: Option<Vec<String>>,
-    precomputed_keys: Option<Arc<Vec<CompactString>>>,
+    precomputed_keys: Option<Arc<Vec<RecordKey>>>,
     by: Option<Vec<By<'g, S>>>,
     by_check: ByModulatorCheck,
 }
@@ -25,7 +25,7 @@ impl<'g, S: GraphStorage + 'g> StepProject<'g, S> {
     fn new(args: Option<Vec<String>>) -> Self {
         let precomputed_keys = args
             .as_ref()
-            .map(|a| Arc::new(a.iter().map(|s| CompactString::new(s)).collect()));
+            .map(|a| Arc::new(a.iter().map(|s| RecordKey::from(s.as_str())).collect()));
         Self {
             args,
             precomputed_keys,
@@ -116,7 +116,7 @@ impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepProject<'g, S> {
 
         let mut values = Vec::with_capacity(keys.len());
         // Allocated only once some key's `by()` turns out unproductive: the keys that stay.
-        let mut kept: Option<Vec<CompactString>> = None;
+        let mut kept: Option<Vec<RecordKey>> = None;
         for (i, key) in keys.iter().enumerate() {
             let produced = if by_list.is_empty() {
                 Some(source.value.clone())

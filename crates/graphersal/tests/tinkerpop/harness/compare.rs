@@ -8,9 +8,10 @@
 //!    those named vertices. Forms without a faithful Graphersal counterpart fail resolution with a
 //!    precise reason (the scenario is then classified `translate`, never passed):
 //!    `vp[..]` (Graphersal's `properties()` yields bare values, not vertex properties),
-//!    a `BigDecimal` outside `f64`, a `BigInteger` outside `i64`, `dt[..]`, `D[..]`/`M[..]` tokens as values or map
-//!    keys, `t[..]` tokens as values. `t[id]` / `t[label]` *map keys* resolve to the `"id"` /
-//!    `"label"` keys that `elementMap()` returns.
+//!    a `BigDecimal` outside `f64`, a `BigInteger` outside `i64`, `dt[..]`, `D[..]` tokens as
+//!    values, `M[..]` tokens as values or map keys, `t[..]` tokens as values. `t[id]` /
+//!    `t[label]` / `D[OUT]` / `D[IN]` *map keys* resolve to the `"id"` / `"label"` / `"OUT"` /
+//!    `"IN"` keys an `elementMap()` result is written with.
 //! 2. [`matches`] compares a [`Resolved`] value with an actual [`ElementProperty`], on values,
 //!    never on rendered text:
 //!    - elements by identity: kind (vertex/edge) and the `id` entry of the element;
@@ -292,12 +293,8 @@ pub fn resolve(expected: &Expected, lookup: &dyn Lookup) -> Result<Resolved, Str
                     Expected::Str(s) => Key::Str(s.clone()),
                     Expected::TokenT(TToken::Id) => Key::IdToken,
                     Expected::TokenT(TToken::Label) => Key::Str("label".to_string()),
-                    Expected::Direction(d) => {
-                        return Err(format!(
-                            "map key D[{}]: Graphersal element maps carry no in/out vertex entries",
-                            dir_name(*d)
-                        ));
-                    }
+                    // An edge's `elementMap()` endpoints: written "OUT" / "IN".
+                    Expected::Direction(d) => Key::Str(dir_name(*d).to_string()),
                     Expected::Merge(_) => {
                         return Err("map key M[..]: no Merge tokens in results".to_string());
                     }
@@ -927,8 +924,15 @@ mod tests {
         );
         assert!(r("D[OUT]").is_err());
         assert!(r("t[id]").is_err());
-        let edge_map = r(r#"m[{"t[id]": "d[7].i", "D[IN]": "v[vadas]"}]"#);
-        assert!(edge_map.unwrap_err().contains("D[IN]"));
+        let edge_map = rr(r#"m[{"t[id]": "d[7].i", "D[IN]": "d[1].i"}]"#);
+        assert_eq!(
+            edge_map,
+            Resolved::Map(vec![
+                (Key::IdToken, Resolved::Int(7)),
+                (Key::Str("IN".to_string()), Resolved::Int(1)),
+            ]),
+            "a D[IN] map key is the \"IN\" key"
+        );
         assert_eq!(
             rr("d[5].n"),
             Resolved::Int(5),

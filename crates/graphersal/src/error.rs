@@ -2529,7 +2529,11 @@ impl DiagnosticError for ScriptError {
                  Pop are strings (or one array of strings), and at least one is required. The key \
                  can also be computed by a traversal, with exactly one key: \
                  select(Pop.all, __.constant(\"a\")) or select(__.constant(\"a\")); its first \
-                 result must be a string."
+                 result must be a string. The id and label entries of an elementMap() or \
+                 valueMap(true) map are tokens, read with ONE token alone: select(T.id), \
+                 select(T.label) (select(\"label\") reads a property named label), and \
+                 select(Direction.OUT) / select(Direction.IN) for an edge's endpoints, for \
+                 example g.v().element_map().select(T.label)."
                     .to_string(),
             ),
             ScriptError::ArgumentMismatch { step_name, actual, .. }

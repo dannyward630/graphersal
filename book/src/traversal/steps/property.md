@@ -5,6 +5,19 @@ or a child traversal (its first result; no result leaves the property untouched)
 a `jpath(..)` ([Path Keys](../../users_guide/jpath_keys.md)), and `property(Cardinality, key, value)` and
 `property(map)` exist as well.
 
+## A key named `id` or `label`
+
+`property("id", ..)` and `property("label", ..)` store ordinary properties; they never change the
+element's id or label (TinkerPop accepts these keys too). `values("label")`, `by("label")` and
+`select("label")` on an `element_map()` read such a property, `label()`, `by(T.label)` and
+`select(T.label)` the element's label. Where a map leaves the engine with both (an `element_map()`
+result in a table or as JSON), the property wins under `"label"`. See
+[Properties Named id or label](../../users_guide/id_and_label_keys.md).
+
+```rhai,graph=modern
+g.V("1").property("label", "CUSTOM").project("p", "t").by("label").by(T.label).next()   // {"p": "CUSTOM", "t": "person"}
+```
+
 ## `property(traversal, value)`
 
 The key is the first result of a child traversal run on the incoming traverser (TinkerPop's

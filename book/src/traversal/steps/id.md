@@ -3,7 +3,7 @@
 
 `id` · category: [Values and properties](../../traversal/step_reference.md#values-and-properties)
 
-Yields the id of each vertex or edge (a string).
+Yields the id of each vertex or edge (a string), never a property named id.
 
 ## Forms
 

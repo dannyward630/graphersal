@@ -131,9 +131,16 @@ impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepLength {
         };
         let length = match &value {
             TraverserValue::Computed(value, _) => string_length_of(value)?,
-            TraverserValue::VertexProperty(prop, vertex_node, _) => {
-                if prop.eq("label") {
+            TraverserValue::VertexProperty(prop, vertex_node, kind) => {
+                if *kind == crate::value::PropertyHandleKind::Label {
                     context.storage.vertex_label(*vertex_node).map(char_count)
+                } else if *kind == crate::value::PropertyHandleKind::Id {
+                    Some(char_count(crate::graph::storage::stored_vertex_id(
+                        &*context.storage,
+                        *vertex_node,
+                    )?))
+                } else if !kind.reads_property() {
+                    None
                 } else {
                     match context
                         .storage
@@ -145,9 +152,16 @@ impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepLength {
                     }
                 }
             }
-            TraverserValue::EdgeProperty(prop, edge_index, _) => {
-                if prop.eq("label") {
+            TraverserValue::EdgeProperty(prop, edge_index, kind) => {
+                if *kind == crate::value::PropertyHandleKind::Label {
                     context.storage.edge_label(*edge_index).map(char_count)
+                } else if *kind == crate::value::PropertyHandleKind::Id {
+                    Some(char_count(crate::graph::storage::stored_edge_id(
+                        &*context.storage,
+                        *edge_index,
+                    )?))
+                } else if !kind.reads_property() {
+                    None
                 } else {
                     match context
                         .storage

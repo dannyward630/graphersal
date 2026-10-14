@@ -114,7 +114,17 @@ fn element_and_map_tokens_keep_working() {
         "6"
     );
     assert_eq!(
-        run(r#"g.V().elementMap().order().by(T.label).limit(1).select("label").next()"#),
+        run(r#"g.V().elementMap().order().by(T.label).limit(1).select(T.label).next()"#),
         "\"person\""
+    );
+}
+
+/// The label of an element map is the `T.label` token, not the string key `"label"`: without a
+/// property named `label`, `select("label")` finds nothing (TinkerPop).
+#[test]
+fn an_element_map_has_no_string_label_key() {
+    assert_eq!(
+        run(r#"g.V().elementMap().order().by(T.label).limit(1).select("label").toList()"#),
+        "[]"
     );
 }

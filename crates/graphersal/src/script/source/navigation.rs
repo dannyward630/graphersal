@@ -439,6 +439,9 @@ impl ScriptGraphTraversalSource {
             // `select(traversal)`: TinkerPop's `TraversalSelectStep` with `Pop.last`.
             return Ok(self.add_step(Step::SelectTraversal(Pop::Last, try_dynamic_to_gts(arg)?)));
         }
+        if let Some(key) = select_token(&arg)? {
+            return Ok(self.add_step(Step::SelectToken(key)));
+        }
         self.select(vec![arg])
     }
 
@@ -457,6 +460,12 @@ impl ScriptGraphTraversalSource {
             .and_then(|a| a.read_lock::<Pop>().map(|p| *p));
         let Some(pop) = pop else {
             let all: Vec<Dynamic> = first.into_iter().chain(args).collect();
+            if let Some(token) = all
+                .iter()
+                .find(|a| select_token(a).ok().flatten().is_some())
+            {
+                return Err(select_token_mismatch(&token_text(token)));
+            }
             if let Some(position) = all.iter().position(|a| a.is::<Pop>()) {
                 return Err(select_pop_mismatch(format!(
                     "a {} in position {} (Pop must be the first argument)",
@@ -680,4 +689,44 @@ impl ScriptGraphTraversalSource {
     // pub fn where_(&mut self, arg: ScriptGraphTraversalSource) -> Self {
     //     self.add_step(Step::Where(arg))
     // }
+}
+
+/// The token key of `select(T.id)`, `select(T.label)`, `select(Direction.OUT)` or
+/// `select(Direction.IN)`; `None` for any other argument. `T.key`, `T.value` and
+/// `Direction.BOTH` name no map entry and are an argument error.
+fn select_token(
+    arg: &Dynamic,
+) -> Result<Option<crate::value::RecordKey>, Box<rhai::EvalAltResult>> {
+    use crate::value::RecordKey;
+    if let Some(by) = arg.read_lock::<ArgBy>() {
+        return match &*by {
+            ArgBy::Id => Ok(Some(RecordKey::Id)),
+            ArgBy::Label => Ok(Some(RecordKey::Label)),
+            _ => Err(select_token_mismatch(&token_text(arg))),
+        };
+    }
+    if let Some(direction) = arg.read_lock::<Direction>() {
+        return match *direction {
+            Direction::Out => Ok(Some(RecordKey::Out)),
+            Direction::In => Ok(Some(RecordKey::In)),
+            Direction::Both => Err(select_token_mismatch(&token_text(arg))),
+        };
+    }
+    Ok(None)
+}
+
+/// The argument error of a token `select()` cannot read.
+fn select_token_mismatch(got: &str) -> Box<rhai::EvalAltResult> {
+    script_error_from_script(crate::error::ScriptError::ArgumentMismatch {
+        step_name: "select".to_string(),
+        expected: "select(T.id), select(T.label), select(Direction.OUT) or select(Direction.IN): \
+                   one token alone, reading that entry of an elementMap()/valueMap(true) map"
+            .to_string(),
+        actual: got.to_string(),
+    })
+}
+
+/// A token argument as its DSL literal (`T.key`, `Direction.BOTH`).
+fn token_text(arg: &Dynamic) -> String {
+    crate::script::render::token_literal(arg).unwrap_or_else(|| dynamic_text(arg))
 }

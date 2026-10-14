@@ -47,6 +47,8 @@ pub mod predicate;
 mod prop_key;
 /// [`PropertyMap`], a graph element's property map.
 pub mod property_map;
+/// [`RecordKey`], a key of a record map (`elementMap()`, `project()`, ...).
+pub mod record_key;
 pub(crate) mod sack;
 pub(crate) mod scalar;
 /// [`Scope`], the `Scope.local`/`Scope.global` token of scoped steps.
@@ -80,6 +82,7 @@ pub(crate) use predicate::TextRegex;
 pub use predicate::{P, PValue};
 pub use prop_key::{PropKey, PropKeys};
 pub use property_map::PropertyMap;
+pub use record_key::RecordKey;
 pub(crate) use sack::{SackArena, SackRef, SackSpec};
 pub use scope::Scope;
 pub use stream_map::StreamMap;
@@ -993,18 +996,58 @@ impl std::hash::Hash for ElementProperty {
 /// What a lazy property handle ([`TraverserValue::VertexProperty`]/[`TraverserValue::EdgeProperty`])
 /// stands for.
 ///
-/// Both kinds read the same stored property; they differ in what the handle *is* to the steps that
-/// treat it as an object rather than as its value (`dedup()`, `as_string()`, set side effects).
-/// The kind is ignored by equality: two handles of one (key, element) are equal either way.
-/// A closed set by definition (an element or a value).
+/// `Element` and `Value` read the same stored property; they differ in what the handle *is* to the
+/// steps that treat it as an object rather than as its value (`dedup()`, `as_string()`, set side
+/// effects), and equality ignores the difference: two handles of one (key, element) are equal
+/// either way. `Id`, `Label` and `Labels` read the element's id, label or label set instead of a
+/// property (the handle's key is then only their display name), so a property named `id` or
+/// `label` never stands in for them, nor they for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum PropertyHandleKind {
     /// A TinkerPop property element, as `properties()` yields it: it has an identity (its
     /// element and key), a `toString` form (`vp[name->marko]`) and is not its value.
     Element,
-    /// A property value read lazily, as `values()`, `id()`, `label()` yield it. It behaves as
-    /// the plain value it will be read as; the handle only defers the read.
+    /// A property value read lazily, as `values()` yields it. It behaves as the plain value it
+    /// will be read as; the handle only defers the read.
     Value,
+    /// The element's id read lazily, as `id()` yields it. Never a property: a property named
+    /// `id` is a [`PropertyHandleKind::Value`] handle and reads the property.
+    Id,
+    /// The element's (primary) label read lazily, as `label()` yields it. Never a property: a
+    /// property named `label` is a [`PropertyHandleKind::Value`] handle and reads the property.
+    Label,
+    /// The element's label set read lazily, as `labels()` yields it. Never a property.
+    Labels,
+}
+
+impl PropertyHandleKind {
+    /// Whether the handle reads a stored property (`Element`, `Value`) rather than the element's
+    /// id, label or label set (`Id`, `Label`, `Labels`).
+    pub fn reads_property(self) -> bool {
+        match self {
+            PropertyHandleKind::Element | PropertyHandleKind::Value => true,
+            PropertyHandleKind::Id | PropertyHandleKind::Label | PropertyHandleKind::Labels => {
+                false
+            }
+        }
+    }
+
+    /// Whether the handle stands for the plain value it reads (every kind but `Element`).
+    pub fn is_value(self) -> bool {
+        !matches!(self, PropertyHandleKind::Element)
+    }
+
+    /// What the handle reads, for equality and hashing: `Element` and `Value` read the same
+    /// stored property and compare equal; `Id`, `Label` and `Labels` each read something else.
+    pub(crate) fn reading(self) -> u8 {
+        match self {
+            PropertyHandleKind::Element | PropertyHandleKind::Value => 0,
+            PropertyHandleKind::Id => 1,
+            PropertyHandleKind::Label => 2,
+            PropertyHandleKind::Labels => 3,
+        }
+    }
 }
 
 /// Values carried by `Traverser` items during step evaluation.
@@ -1035,8 +1078,9 @@ pub enum TraverserValue<S: GraphStorage> {
     Path(TraverserPath<S>),
     /// Lazy structured record with a shared static key schema.
     Record {
-        /// The record's field names, shared across every row of the same shape.
-        keys: Arc<Vec<CompactString>>,
+        /// The record's keys, shared across every row of the same shape: names, and the tokens
+        /// `T.id`/`T.label`/`Direction.OUT`/`Direction.IN` of `elementMap()`/`valueMap(true)`.
+        keys: Arc<Vec<RecordKey>>,
         /// The record's values, positionally aligned with `keys`.
         values: Vec<TraverserValue<S>>,
     },
@@ -1140,12 +1184,14 @@ impl<S: GraphStorage> PartialEq<TraverserValue<S>> for TraverserValue<S> {
     fn eq(&self, other: &TraverserValue<S>) -> bool {
         match (self, other) {
             (Self::Computed(l0, _), Self::Computed(r0, _)) => l0 == r0,
-            (Self::VertexProperty(l0, l1, _), Self::VertexProperty(r0, r1, _)) => {
-                l0 == r0 && l1 == r1
+            (Self::VertexProperty(l0, l1, l2), Self::VertexProperty(r0, r1, r2)) => {
+                l0 == r0 && l1 == r1 && l2.reading() == r2.reading()
             }
             (Self::Vertex(l0), Self::Vertex(r0)) => l0 == r0,
             (Self::Edge(l0), Self::Edge(r0)) => l0 == r0,
-            (Self::EdgeProperty(l0, l1, _), Self::EdgeProperty(r0, r1, _)) => l0 == r0 && l1 == r1,
+            (Self::EdgeProperty(l0, l1, l2), Self::EdgeProperty(r0, r1, r2)) => {
+                l0 == r0 && l1 == r1 && l2.reading() == r2.reading()
+            }
             (Self::Path(l0), Self::Path(r0)) => l0 == r0,
             (Self::Object(l0), Self::Object(r0)) => l0 == r0,
             (Self::PathProperty(l0), Self::PathProperty(r0)) => l0 == r0,
@@ -1187,7 +1233,8 @@ impl<S: GraphStorage> PartialEq<TraverserValue<S>> for TraverserValue<S> {
                     return false;
                 }
                 for (k, v) in keys.iter().zip(values.iter()) {
-                    let key_tv = TraverserValue::Computed(ElementProperty::String(k.clone()), None);
+                    let key_tv =
+                        TraverserValue::Computed(ElementProperty::String(k.to_compact()), None);
                     match obj.get(&key_tv) {
                         Some(obj_val) => {
                             if obj_val != v {
@@ -1209,15 +1256,17 @@ impl<S: GraphStorage> std::hash::Hash for TraverserValue<S> {
         core::mem::discriminant(self).hash(state);
         match self {
             TraverserValue::Computed(value, _) => value.hash(state),
-            TraverserValue::VertexProperty(property, node_index, _) => {
+            TraverserValue::VertexProperty(property, node_index, kind) => {
                 property.hash(state);
                 node_index.hash(state);
+                kind.reading().hash(state);
             }
             TraverserValue::Vertex(vertex) => vertex.hash(state),
             TraverserValue::Edge(edge) => edge.hash(state),
-            TraverserValue::EdgeProperty(property, edge_index, _) => {
+            TraverserValue::EdgeProperty(property, edge_index, kind) => {
                 property.hash(state);
                 edge_index.hash(state);
+                kind.reading().hash(state);
             }
             TraverserValue::Path(path) => path.hash(state),
             TraverserValue::Object(obj) => value_map::hash_entries_unordered(obj.iter(), state),
@@ -1383,18 +1432,22 @@ impl<S: GraphStorage> TraverserValue<S> {
             TraverserValue::Record { keys, values } => {
                 let mut res: PropertyMap = PropertyMap::with_capacity(keys.len());
                 for (key, val) in keys.iter().zip(values.iter()) {
-                    match val {
+                    // A token key is written as `id`/`label`/`OUT`/`IN`; a name key of the same
+                    // text (a property named `id` or `label`) wins over it.
+                    if key.is_token() && res.contains_key(key.as_str()) {
+                        continue;
+                    }
+                    let value = match val {
                         TraverserValue::Array(array) => {
                             let mut array_vals = Vec::with_capacity(array.len());
                             for v in array {
                                 array_vals.push(v.into_node_property(storage)?);
                             }
-                            res.insert(key.clone(), ElementProperty::Array(array_vals));
+                            ElementProperty::Array(array_vals)
                         }
-                        v => {
-                            res.insert(key.clone(), v.into_node_property(storage)?);
-                        }
-                    }
+                        v => v.into_node_property(storage)?,
+                    };
+                    res.insert(key.to_compact(), value);
                 }
                 Ok(ElementProperty::Object(Box::new(res)))
             }
@@ -1442,12 +1495,12 @@ impl<S: GraphStorage> TraverserValue<S> {
 
             TraverserValue::Edge(edge_index) => Self::materialize_edge(storage, edge_index),
 
-            TraverserValue::VertexProperty(property, node_index, _) => {
-                Self::materialize_vertex_property(storage, property, node_index)
+            TraverserValue::VertexProperty(property, node_index, kind) => {
+                Self::materialize_vertex_property(storage, property, node_index, *kind)
             }
 
-            TraverserValue::EdgeProperty(property, edge_index, _) => {
-                Self::materialize_edge_property(storage, property, edge_index)
+            TraverserValue::EdgeProperty(property, edge_index, kind) => {
+                Self::materialize_edge_property(storage, property, edge_index, *kind)
             }
 
             TraverserValue::Path(path) => {
@@ -1547,17 +1600,18 @@ impl<S: GraphStorage> TraverserValue<S> {
         storage: &S,
         property: &CompactString,
         node_index: &S::VertexId,
+        kind: PropertyHandleKind,
     ) -> TraverserResult<ElementProperty> {
-        if property.eq("id") {
+        if kind == PropertyHandleKind::Id {
             let id = crate::graph::storage::stored_vertex_id(storage, *node_index)?.to_string();
             Ok(ElementProperty::String(CompactString::new(id)))
-        } else if property.eq("label") {
+        } else if kind == PropertyHandleKind::Label {
             Ok(
                 crate::graph::storage::stored_vertex_label(storage, *node_index)?
                     .map(|l| ElementProperty::String(CompactString::new(l)))
                     .unwrap_or(ElementProperty::Null),
             )
-        } else if property.eq("labels") {
+        } else if kind == PropertyHandleKind::Labels {
             Ok(ElementProperty::Array(
                 crate::graph::storage::stored_vertex_labels(storage, *node_index)?
                     .iter()
@@ -1583,17 +1637,18 @@ impl<S: GraphStorage> TraverserValue<S> {
         storage: &S,
         property: &CompactString,
         edge_index: &S::EdgeId,
+        kind: PropertyHandleKind,
     ) -> TraverserResult<ElementProperty> {
-        if property.eq("id") {
+        if kind == PropertyHandleKind::Id {
             let id = crate::graph::storage::stored_edge_id(storage, *edge_index)?.to_string();
             Ok(ElementProperty::String(CompactString::new(id)))
-        } else if property.eq("label") {
+        } else if kind == PropertyHandleKind::Label {
             Ok(
                 crate::graph::storage::stored_edge_label(storage, *edge_index)?
                     .map(|l| ElementProperty::String(CompactString::new(l)))
                     .unwrap_or(ElementProperty::Null),
             )
-        } else if property.eq("labels") {
+        } else if kind == PropertyHandleKind::Labels {
             // An edge carries exactly one label; `labels()` still returns a list (D4), for
             // parity with the vertex side and a future Cypher relation pattern.
             Ok(ElementProperty::Array(
@@ -1638,8 +1693,10 @@ impl<S: GraphStorage> TraverserValue<S> {
         value: &TraverserValue<S>,
     ) -> Box<crate::error::TraverserError> {
         let actual = match value {
-            TraverserValue::VertexProperty(_, _, PropertyHandleKind::Value)
-            | TraverserValue::EdgeProperty(_, _, PropertyHandleKind::Value) => {
+            TraverserValue::VertexProperty(_, _, kind)
+            | TraverserValue::EdgeProperty(_, _, kind)
+                if kind.is_value() =>
+            {
                 crate::traversal::step::local_scope::stored_value(context, value).map_or_else(
                     || "null".to_string(),
                     |stored| TraverserValue::<S>::Computed(stored.clone(), None).kind_name(),
@@ -1773,10 +1830,12 @@ impl<S: GraphStorage> TraverserValue<S> {
                 }
                 true
             }
-            // Value handles hold scalars (`label()`/`id()` output); `label`/`id` handles are
-            // resolved by the fetch itself.
-            TraverserValue::VertexProperty(key, _, PropertyHandleKind::Value)
-            | TraverserValue::EdgeProperty(key, _, _) => key == "label" || key == "id",
+            // Value handles hold scalars; the `label()`/`id()` output handles are resolved by
+            // the fetch itself.
+            TraverserValue::VertexProperty(_, _, kind)
+            | TraverserValue::EdgeProperty(_, _, kind) => {
+                matches!(kind, PropertyHandleKind::Id | PropertyHandleKind::Label)
+            }
             TraverserValue::Computed(..)
             | TraverserValue::Path(_)
             | TraverserValue::Entry(_)
@@ -1792,8 +1851,10 @@ impl<S: GraphStorage> TraverserValue<S> {
             reason: format!(
                 "{token} can only be read from a vertex, an edge or a vertex property, not from a {}",
                 match value {
-                    TraverserValue::VertexProperty(_, _, PropertyHandleKind::Value)
-                    | TraverserValue::EdgeProperty(..) => "property value",
+                    TraverserValue::VertexProperty(_, _, kind) if kind.is_value() => {
+                        "property value"
+                    }
+                    TraverserValue::EdgeProperty(..) => "property value",
                     other => other.type_name(),
                 }
             ),
@@ -1883,7 +1944,9 @@ impl<S: GraphStorage> TraverserValue<S> {
             TraverserValue::Record { keys, values } => Some(TraverserValue::Array(match column {
                 Column::Keys => keys
                     .iter()
-                    .map(|key| TraverserValue::Computed(ElementProperty::String(key.clone()), None))
+                    .map(|key| {
+                        TraverserValue::Computed(ElementProperty::String(key.to_compact()), None)
+                    })
                     .collect(),
                 Column::Values => values.clone(),
             })),
@@ -1994,6 +2057,14 @@ impl<S: GraphStorage> TraverserValue<S> {
                 ElementProperty::Boolean(_) => None,
                 ElementProperty::Uuid(_) => None,
             }),
+            // An `id()`/`label()`/`labels()` handle stands for a string or a list: no named
+            // property.
+            TraverserValue::VertexProperty(_, _, kind)
+            | TraverserValue::EdgeProperty(_, _, kind)
+                if !kind.reads_property() =>
+            {
+                Ok(None)
+            }
             TraverserValue::VertexProperty(vertex_property, vertex_index, _) => {
                 let v = context.storage.vertex_properties(*vertex_index);
                 let v = v.and_then(|v| v.get(vertex_property));
@@ -2103,8 +2174,8 @@ impl<S: GraphStorage> TraverserValue<S> {
                 )?);
                 Some(id)
             }
-            TraverserValue::VertexProperty(prop, vertex_index, _) => {
-                if prop == "id" {
+            TraverserValue::VertexProperty(_, vertex_index, kind) => {
+                if *kind == PropertyHandleKind::Id {
                     let id = Cow::Borrowed(crate::graph::storage::stored_vertex_id(
                         &*context.storage,
                         *vertex_index,
@@ -2114,8 +2185,8 @@ impl<S: GraphStorage> TraverserValue<S> {
                     None
                 }
             }
-            TraverserValue::EdgeProperty(prop, edge_index, _) => {
-                if prop == "id" {
+            TraverserValue::EdgeProperty(_, edge_index, kind) => {
+                if *kind == PropertyHandleKind::Id {
                     let id = Cow::Borrowed(crate::graph::storage::stored_edge_id(
                         &*context.storage,
                         *edge_index,
@@ -2139,7 +2210,7 @@ impl<S: GraphStorage> TraverserValue<S> {
                 }
             }
             TraverserValue::Record { keys, values } => {
-                if let Some(idx) = keys.iter().position(|k| k == "id") {
+                if let Some(idx) = keys.iter().position(|k| *k == RecordKey::Id) {
                     match &values[idx] {
                         TraverserValue::Computed(ElementProperty::String(id), _) => {
                             Some(Cow::Borrowed(id.as_str()))
@@ -2183,16 +2254,16 @@ impl<S: GraphStorage> TraverserValue<S> {
                 Some(Cow::Borrowed(key.as_str()))
             }
             TraverserValue::PathProperty(prop) => Some(Cow::Borrowed(prop.0.as_str())),
-            TraverserValue::VertexProperty(prop, vertex_index, PropertyHandleKind::Value) => {
-                if prop == "label" {
+            TraverserValue::VertexProperty(_, vertex_index, kind) => {
+                if *kind == PropertyHandleKind::Label {
                     crate::graph::storage::stored_vertex_label(&*context.storage, *vertex_index)?
                         .map(Cow::Borrowed)
                 } else {
                     None
                 }
             }
-            TraverserValue::EdgeProperty(prop, edge_index, _) => {
-                if prop == "label" {
+            TraverserValue::EdgeProperty(_, edge_index, kind) => {
+                if *kind == PropertyHandleKind::Label {
                     crate::graph::storage::stored_edge_label(&*context.storage, *edge_index)?
                         .map(Cow::Borrowed)
                 } else {
@@ -2219,7 +2290,7 @@ impl<S: GraphStorage> TraverserValue<S> {
                 }
             }
             TraverserValue::Record { keys, values } => {
-                if let Some(idx) = keys.iter().position(|k| k == "label") {
+                if let Some(idx) = keys.iter().position(|k| *k == RecordKey::Label) {
                     match &values[idx] {
                         TraverserValue::Computed(ElementProperty::String(label), _) => {
                             Some(Cow::Borrowed(label.as_str()))

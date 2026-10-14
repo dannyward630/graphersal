@@ -263,10 +263,6 @@ reason = "unsupported literal type: datetime"
 class = "translate"
 reason = "unsupported literal type: datetime"
 
-["map/ElementMap.feature::g_EX11X_elementMap"]
-class = "translate"
-reason = "map key D[OUT]: Graphersal element maps carry no in/out vertex entries"
-
 ["map/Properties.feature::g_V_hasXageX_properties_hasXid_nameIdAsStringX_value"]
 class = "skipped"
 reason = "unsupported test (upstream)"

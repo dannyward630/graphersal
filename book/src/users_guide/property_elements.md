@@ -90,8 +90,9 @@ element, `has(jpath("meta.a"), P.eq(1))`, see [Path Keys (jpath)](jpath_keys.md)
 
 ## valueMap tokens
 
-`valueMap(true, keys..)` starts each map with the element's `id` and `label` entries, which are plain
-values, not lists. `by()` modulates only the property lists, never the tokens. A leading `false` is the
+`valueMap(true, keys..)` starts each map with the element's `T.id` and `T.label` entries, which are
+plain values, not lists (written `"id"` and `"label"` outside the engine; a property named `id` or
+`label` is an entry of its own, see [Properties Named id or label](id_and_label_keys.md)). `by()` modulates only the property lists, never the tokens. A leading `false` is the
 plain `valueMap(keys..)`. A `null` key (`()` in Rhai) matches no property and is dropped.
 
 ```rhai,graph=modern
@@ -138,7 +139,5 @@ In Rust: `value_map_with_tokens(args)`.
   [deliberate incompatibilities](../for_developers/tinkerpop_compliance.md#deliberate-incompatibilities).
 - **`label()` and `hasLabel()` work for vertex-property elements only.** Edge properties are plain
   properties in TinkerPop and stay errors, as do value handles from `values()`.
-- **The `valueMap(true)` tokens are the strings `id` and `label`**, not the `T.id`/`T.label` tokens. A property
-  named `id` or `label` therefore produces a second entry with the same key, the same limit `elementMap()` has.
 - **`valueMap(null)` alone means all keys.** In Java the single-null varargs call is ambiguous; here a null
   key is dropped wherever it stands, so a lone null leaves no key and selects every property.

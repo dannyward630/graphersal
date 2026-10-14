@@ -3,7 +3,7 @@
 
 `element_map` · `elementMap` · category: [Values and properties](../../traversal/step_reference.md#values-and-properties)
 
-Turns each vertex or edge into a map of its id, label and the given (or all) properties; an edge also gets its endpoints.
+Turns each vertex or edge into a map of the T.id and T.label tokens (an edge also Direction.OUT and Direction.IN) and the given (or all) properties, written "id", "label", "OUT", "IN" outside the engine where a property of the same name wins (see the book page Properties Named id or label).
 
 ## Forms
 

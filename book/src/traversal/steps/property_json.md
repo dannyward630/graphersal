@@ -3,7 +3,7 @@
 
 `property_json` · `propertyJson` · category: [Changing the graph](../../traversal/step_reference.md#changing-the-graph)
 
-Sets every key of the given map (or JSON object) as a property of the incoming vertex (Graphersal extension).
+Sets every key of the given map (or JSON object) as a property of the incoming vertex (Graphersal extension); a key id or label makes an ordinary property, never the element's id or label.
 
 ## Forms
 

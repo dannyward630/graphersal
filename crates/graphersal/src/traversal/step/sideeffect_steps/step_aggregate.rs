@@ -51,8 +51,10 @@ pub(crate) fn push_side_effect_n<S: GraphStorage>(
         // and key) and containers keep their identity. (TinkerPop compares an edge property by
         // key and value; here it stays by identity, see book "Property Elements".)
         let value = match value {
-            TraverserValue::VertexProperty(_, _, PropertyHandleKind::Value)
-            | TraverserValue::EdgeProperty(_, _, PropertyHandleKind::Value) => {
+            TraverserValue::VertexProperty(_, _, kind)
+            | TraverserValue::EdgeProperty(_, _, kind)
+                if kind.is_value() =>
+            {
                 TraverserValue::Computed(value.into_node_property(storage)?, None)
             }
             other => other,

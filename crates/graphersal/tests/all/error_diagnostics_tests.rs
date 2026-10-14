@@ -725,6 +725,32 @@ fn select_pop_argument_mismatch_help_shows_the_forms() {
     }
 }
 
+/// A token `select()` that names no map entry (`T.key`) or is mixed with labels is an
+/// `ArgumentMismatch` whose help shows `select(T.label)` and says `select("label")` reads a
+/// property.
+#[test]
+#[cfg(feature = "script")]
+fn select_token_argument_mismatch_help_names_the_token_forms() {
+    use crate::script_host::eval;
+
+    for script in [
+        r#"g.v().element_map().select(T.key)"#,
+        r#"g.v().element_map().select(T.label, "name")"#,
+        r#"g.v().element_map().select(Direction.BOTH)"#,
+    ] {
+        let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+        let report = eval(graph, script).expect_err(script).to_string();
+        for form in [
+            "Argument mismatch for step 'select'",
+            "select(T.id), select(T.label)",
+            "select(\"label\") reads a property named label",
+            "g.v().element_map().select(T.label)",
+        ] {
+            assert!(report.contains(form), "{script}: missing {form}: {report}");
+        }
+    }
+}
+
 /// `by("name")` over a list (what `select(Pop.all, "a")` returns) points at the child traversal
 /// that reads the property of each element.
 #[test]

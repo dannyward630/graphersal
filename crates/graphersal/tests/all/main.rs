@@ -116,6 +116,7 @@ mod reducer_widening_tests;
 mod remove_property_tests;
 mod repeat_state_tests;
 mod repeat_tests;
+mod reserved_name_property_tests;
 mod resource_limit_tests;
 mod robustness_bug_tests;
 mod robustness_fuzz_tests;

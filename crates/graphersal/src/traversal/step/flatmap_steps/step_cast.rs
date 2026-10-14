@@ -600,13 +600,12 @@ fn read_value<S: GraphStorage>(
     match source {
         TraverserValue::Computed(value, _) => Ok((Some(value.clone()), ValueSource::Anonymous)),
 
-        TraverserValue::VertexProperty(prop, vertex_index, _) => {
+        TraverserValue::VertexProperty(prop, vertex_index, kind) => {
             let origin = ValueSource::Vertex(*vertex_index, Some(prop.clone()));
             // `id` and `label` are not stored as properties; every step that reads them renders
             // them as strings.
-            if prop.eq("id") || prop.eq("label") {
-                let rendered = Traverser::as_string(context, source)?;
-                return Ok((Some(to_property(rendered)), origin));
+            if !kind.reads_property() {
+                return Ok((Some(source.into_node_property(context.storage)?), origin));
             }
             let value = context
                 .storage
@@ -617,11 +616,10 @@ fn read_value<S: GraphStorage>(
             Ok((Some(value), origin))
         }
 
-        TraverserValue::EdgeProperty(prop, edge_index, _) => {
+        TraverserValue::EdgeProperty(prop, edge_index, kind) => {
             let origin = ValueSource::Edge(*edge_index, Some(prop.clone()));
-            if prop.eq("id") || prop.eq("label") {
-                let rendered = Traverser::as_string(context, source)?;
-                return Ok((Some(to_property(rendered)), origin));
+            if !kind.reads_property() {
+                return Ok((Some(source.into_node_property(context.storage)?), origin));
             }
             let value = context
                 .storage
@@ -645,14 +643,6 @@ fn read_value<S: GraphStorage>(
         | TraverserValue::Graph(_) => Ok((None, ValueSource::Anonymous)),
         TraverserValue::PathProperty(prop) => Ok((Some(prop.1.clone()), ValueSource::Anonymous)),
     }
-}
-
-/// Turns an absent rendering into an explicit null, so a missing value is converted rather than
-/// silently dropped.
-fn to_property(rendered: Option<String>) -> ElementProperty {
-    rendered
-        .map(ElementProperty::from)
-        .unwrap_or(ElementProperty::Null)
 }
 
 /// Attaches the offending value and its element to a conversion failure.

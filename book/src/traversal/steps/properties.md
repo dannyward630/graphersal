@@ -3,7 +3,7 @@
 
 `properties` · category: [Values and properties](../../traversal/step_reference.md#values-and-properties)
 
-Yields the property elements of vertices/edges (all, or the given keys).
+Yields the property elements of vertices/edges (all, or the given keys; a property named id or label is one of them, never the element's id or label).
 
 ## Forms
 

@@ -308,7 +308,7 @@ fn t4_zero_allocation_indicator() {
     let group_stats = g2
         .v(None::<()>)
         .group()
-        .by("label")
+        .by(By::Label)
         .profile_with(ProfileType::Memory)
         .unwrap();
     #[allow(unused_variables)]
@@ -337,7 +337,11 @@ fn t5_nested_steps_sum_correctly() {
 
     let stats = g
         .v(None::<()>)
-        .repeat(graphersal::prelude::__::out(None::<()>).group().by("label"))
+        .repeat(
+            graphersal::prelude::__::out(None::<()>)
+                .group()
+                .by(By::Label),
+        )
         .times(1)
         .profile_with(ProfileType::Memory)
         .unwrap();
@@ -404,7 +408,7 @@ fn t9_feature_off_is_always_estimated() {
     let stats = g
         .v(None::<()>)
         .group()
-        .by("label")
+        .by(By::Label)
         .profile_with(ProfileType::Memory)
         .unwrap();
 
@@ -444,7 +448,7 @@ fn t8_alloc_tracking_labels_every_node_tracked() {
     let stats = g
         .v(None::<()>)
         .group()
-        .by("label")
+        .by(By::Label)
         .profile_with(ProfileType::Memory)
         .unwrap();
 
@@ -490,7 +494,7 @@ fn t10_feature_off_retained_and_alloc_count_are_none() {
     let stats = g
         .v(None::<()>)
         .group()
-        .by("label")
+        .by(By::Label)
         .profile_with(ProfileType::Memory)
         .unwrap();
 
@@ -519,7 +523,7 @@ fn t11_alloc_tracking_labels_every_node_with_retained_and_alloc_count() {
     let stats = g
         .v(None::<()>)
         .group()
-        .by("label")
+        .by(By::Label)
         .profile_with(ProfileType::Memory)
         .unwrap();
 
@@ -559,7 +563,7 @@ fn t12_bare_profile_never_requests_memory() {
     let graph = GraphSource::tinkerpop_modern();
     let lock = graph.read();
     let g = lock.traversal();
-    let stats = g.v(None::<()>).group().by("label").profile().unwrap();
+    let stats = g.v(None::<()>).group().by(By::Label).profile().unwrap();
 
     fn assert_all_not_requested(nodes: &[Metrics]) {
         for node in nodes {

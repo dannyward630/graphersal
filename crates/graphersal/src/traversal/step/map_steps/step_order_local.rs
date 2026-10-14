@@ -121,7 +121,12 @@ impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepOrderLocal<'g, S> {
         let path = source.path;
         let bulk = source.bulk;
         let sack = source.sack;
-        let record = matches!(source.value, TraverserValue::Record { .. });
+        // A record's keys may be tokens (`elementMap()`): sorting works on their string form,
+        // so the original keys are kept to rebuild the record with them.
+        let record = match &source.value {
+            TraverserValue::Record { keys, values } => Some((Arc::clone(keys), values.clone())),
+            _ => None,
+        };
         let value = match classify(context, source.value)? {
             LocalShape::List(items) => {
                 TraverserValue::Array(self.sort_items(context, path, sack, items)?)
@@ -147,8 +152,8 @@ impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepOrderLocal<'g, S> {
                     | TraverserValue::Schema(_)
                     | TraverserValue::Graph(_) => None,
                 });
-                if record {
-                    rebuild_record(pairs)
+                if let Some(original) = record {
+                    rebuild_record(pairs, original)
                 } else {
                     TraverserValue::Object(pairs.collect::<StreamMap<S>>())
                 }
@@ -191,24 +196,35 @@ impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepOrderLocal<'g, S> {
 /// kind.
 fn rebuild_record<S: GraphStorage>(
     pairs: impl Iterator<Item = (TraverserValue<S>, TraverserValue<S>)>,
+    (original_keys, original_values): (Arc<Vec<RecordKey>>, Vec<TraverserValue<S>>),
 ) -> TraverserValue<S> {
-    let (keys, values): (Vec<_>, Vec<_>) = pairs.unzip();
-    let names: Option<Vec<compact_str::CompactString>> = keys
-        .iter()
-        .map(|key| {
-            if let TraverserValue::Computed(ElementProperty::String(name), _) = key {
-                Some(name.clone())
-            } else {
-                None
+    let mut used = vec![false; original_keys.len()];
+    let mut keys = Vec::with_capacity(original_keys.len());
+    let mut values = Vec::with_capacity(original_keys.len());
+    for (key, value) in pairs {
+        let TraverserValue::Computed(ElementProperty::String(text), _) = &key else {
+            continue;
+        };
+        // The original entry of this sorted one: same key text and value (a token and a name
+        // key of one text, e.g. `T.label` and a property `label`, are told apart by value; when
+        // the values are equal too, either choice gives the same map).
+        let same_text = |i: usize| !used[i] && original_keys[i].as_str() == text.as_str();
+        let found = (0..original_keys.len())
+            .find(|&i| same_text(i) && original_values[i] == value)
+            .or_else(|| (0..original_keys.len()).find(|&i| same_text(i)));
+        let record_key = match found {
+            Some(i) => {
+                used[i] = true;
+                original_keys[i].clone()
             }
-        })
-        .collect();
-    match names {
-        Some(names) => TraverserValue::Record {
-            keys: Arc::new(names),
-            values,
-        },
-        None => TraverserValue::Object(keys.into_iter().zip(values).collect()),
+            None => RecordKey::Name(text.clone()),
+        };
+        keys.push(record_key);
+        values.push(value);
+    }
+    TraverserValue::Record {
+        keys: Arc::new(keys),
+        values,
     }
 }
 

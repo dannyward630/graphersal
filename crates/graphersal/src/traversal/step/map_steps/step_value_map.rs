@@ -41,7 +41,7 @@ struct StepValueMap<'g, S: GraphStorage + 'g> {
     /// both for `valueMap(true, ..)` / `with(WithOptions.tokens)`, one for
     /// `with(WithOptions.tokens, WithOptions.ids | labels)`, none by default.
     tokens: u8,
-    precomputed_keys: Option<Arc<Vec<CompactString>>>,
+    precomputed_keys: Option<Arc<Vec<RecordKey>>>,
     /// The `jpath(..)` key arguments, if any; `None` for a plain-name call.
     path_keys: Option<PathKeys>,
     /// Every `by()` received, in order. A rejected one is kept (and `by_check` fails the step),
@@ -95,12 +95,12 @@ impl<'g, S: GraphStorage + 'g> StepValueMap<'g, S> {
             .map(|a| {
                 let mut k = Vec::with_capacity(a.len() + 2);
                 if tokens & TOKEN_IDS != 0 {
-                    k.push(CompactString::new("id"));
+                    k.push(RecordKey::Id);
                 }
                 if tokens & TOKEN_LABELS != 0 {
-                    k.push(CompactString::new("label"));
+                    k.push(RecordKey::Label);
                 }
-                k.extend(a.iter().map(|s| CompactString::new(s)));
+                k.extend(a.iter().map(|s| RecordKey::from(s.as_str())));
                 Arc::new(k)
             });
     }
@@ -123,20 +123,20 @@ impl<'g, S: GraphStorage + 'g> StepValueMap<'g, S> {
         &self,
         id_and_label: Option<(String, Option<&str>)>,
         props: Option<&PropertyMap>,
-    ) -> (Vec<CompactString>, Vec<TraverserValue<S>>, usize) {
+    ) -> (Vec<RecordKey>, Vec<TraverserValue<S>>, usize) {
         let capacity = props.map(|p| p.len()).unwrap_or(0) + 2;
-        let mut keys: Vec<CompactString> = Vec::with_capacity(capacity);
+        let mut keys: Vec<RecordKey> = Vec::with_capacity(capacity);
         let mut values: Vec<TraverserValue<S>> = Vec::with_capacity(capacity);
         if let Some((id, label)) = id_and_label {
             if self.tokens & TOKEN_IDS != 0 {
-                keys.push(CompactString::new("id"));
+                keys.push(RecordKey::Id);
                 values.push(TraverserValue::Computed(
                     ElementProperty::String(CompactString::new(id)),
                     None,
                 ));
             }
             if let Some(label) = label.filter(|_| self.tokens & TOKEN_LABELS != 0) {
-                keys.push(CompactString::new("label"));
+                keys.push(RecordKey::Label);
                 values.push(TraverserValue::Computed(
                     ElementProperty::String(CompactString::new(label)),
                     None,
@@ -147,7 +147,7 @@ impl<'g, S: GraphStorage + 'g> StepValueMap<'g, S> {
         if let Some(props) = props {
             for (k, v) in props {
                 if self.selects(k.as_str()) {
-                    keys.push(k.clone());
+                    keys.push(RecordKey::Name(k.clone()));
                     values.push(TraverserValue::Array(vec![v.to_logical().into()]));
                 }
             }
@@ -167,7 +167,7 @@ impl<'g, S: GraphStorage + 'g> StepValueMap<'g, S> {
         &self,
         context: &mut TraverserContext<'_, S>,
         source: &Traverser<S>,
-        (mut keys, mut values, token_count): (Vec<CompactString>, Vec<TraverserValue<S>>, usize),
+        (mut keys, mut values, token_count): (Vec<RecordKey>, Vec<TraverserValue<S>>, usize),
     ) -> TraverserResult<TraverserValue<S>> {
         if !self.by.is_empty() {
             let mut modulated_keys = Vec::with_capacity(keys.len());

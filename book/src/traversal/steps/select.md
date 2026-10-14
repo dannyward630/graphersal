@@ -3,7 +3,7 @@
 
 `select` · category: [Labels and paths](../../traversal/step_reference.md#labels-and-paths)
 
-Selects path labels, map keys or side effects (one label: the value, several: a map; an undeclared label is an error, see the book page Repeated Labels: select with Pop).
+Selects path labels, map keys or side effects (one label: the value, several: a map; an undeclared label is an error, see the book page Repeated Labels: select with Pop); select(T.id)/select(T.label) read the token entries of an element_map() map, select("label") a property named label.
 
 ## Forms
 

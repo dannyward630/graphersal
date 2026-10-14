@@ -49,7 +49,7 @@ fn by_and_expansion_after_a_keyed_tree() {
         count(r#"g.v("1").out().out().both().both().count().next()"#)
     );
     let by_label =
-        text(r#"g.V("1").out().out().tree("a").by("label").both().both().cap("a").next()"#);
+        text(r#"g.V("1").out().out().tree("a").by(T.label).both().both().cap("a").next()"#);
     assert!(by_label.contains("person"), "{by_label}");
 }
 

@@ -253,9 +253,9 @@ fn resolve_vertex<S: GraphStorage>(
     match &value {
         TraverserValue::Vertex(index) => return Ok(*index),
         // A lazily read value (`values("name")`, `id()`), as opposed to a property element.
-        TraverserValue::Computed(..)
-        | TraverserValue::VertexProperty(_, _, PropertyHandleKind::Value)
-        | TraverserValue::EdgeProperty(_, _, PropertyHandleKind::Value) => {}
+        TraverserValue::Computed(..) => {}
+        TraverserValue::VertexProperty(_, _, kind) | TraverserValue::EdgeProperty(_, _, kind)
+            if kind.is_value() => {}
         other => return Err(not_a_vertex(kind_of(other))),
     }
     let id: CompactString = match value.into_node_property(context.storage)? {

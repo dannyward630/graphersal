@@ -36,6 +36,7 @@ pub(crate) use step_sample_local::sample_local_step;
 mod step_sack;
 pub(crate) mod step_select;
 mod step_select_column;
+mod step_select_token;
 mod step_select_traversal;
 mod step_split;
 mod step_substring;

@@ -40,13 +40,13 @@ Scope of this run:
 <!-- tinkerpop:begin headline -->
 | | Scenarios | Share |
 |---|---:|---:|
-| **Passed** | **1599** / 1675 | **95.5 %** |
+| **Passed** | **1600** / 1675 | **95.5 %** |
 | Skipped | 5 / 1675 | 0.3 % |
-| Unsupported (not implemented) | 71 / 1675 | 4.2 % |
+| Unsupported (not implemented) | 70 / 1675 | 4.2 % |
 | **Wrong behaviour of supported steps** | **0** / 1675 | **0.0 %** |
-| Passed of executed (non-skipped) | 1599 / 1670 | 95.7 % |
+| Passed of executed (non-skipped) | 1600 / 1670 | 95.8 % |
 
-Unsupported = translate 51, missing 20. Wrong behaviour = runtime 0, wrong_result 0, wrong_error 0, timeout 0, panic 0.
+Unsupported = translate 50, missing 20. Wrong behaviour = runtime 0, wrong_result 0, wrong_error 0, timeout 0, panic 0.
 <!-- tinkerpop:end headline -->
 
 Every remaining non-pass is a missing step, overload or token, or a literal type the translator cannot
@@ -60,10 +60,10 @@ express (see [Classes](#classes)); the scenarios that ran but differed on purpos
 | `data` | 78.3 % | 65 | 83 | · | 18 | · |
 | `filter` | 98.3 % | 356 | 362 | · | 6 | · |
 | `integrated` | 100.0 % | 4 | 4 | · | · | · |
-| `map` | 94.2 % | 737 | 782 | 3 | 42 | · |
+| `map` | 94.4 % | 738 | 782 | 3 | 41 | · |
 | `semantics` | 97.2 % | 103 | 106 | · | 3 | · |
 | `sideEffect` | 98.0 % | 192 | 196 | 2 | 2 | · |
-| **all** | **95.5 %** | **1599** | **1675** | 5 | 71 | · |
+| **all** | **95.5 %** | **1600** | **1675** | 5 | 70 | · |
 <!-- tinkerpop:end categories -->
 
 <!-- tinkerpop:begin inventory -->

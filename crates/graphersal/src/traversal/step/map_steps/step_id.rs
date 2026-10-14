@@ -61,7 +61,7 @@ impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepId {
                 TraverserValue::VertexProperty(
                     CompactString::new("id"),
                     *node_index,
-                    PropertyHandleKind::Value,
+                    PropertyHandleKind::Id,
                 ),
                 source.path,
                 source.bulk,
@@ -72,7 +72,7 @@ impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepId {
                 TraverserValue::EdgeProperty(
                     CompactString::new("id"),
                     *edge_index,
-                    PropertyHandleKind::Value,
+                    PropertyHandleKind::Id,
                 ),
                 source.path,
                 source.bulk,

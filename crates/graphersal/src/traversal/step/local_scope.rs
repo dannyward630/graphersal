@@ -36,6 +36,12 @@ pub(crate) fn stored_value<'c, S: GraphStorage>(
     value: &TraverserValue<S>,
 ) -> Option<&'c ElementProperty> {
     match value {
+        // An `id()`/`label()`/`labels()` handle reads no stored property.
+        TraverserValue::VertexProperty(_, _, kind) | TraverserValue::EdgeProperty(_, _, kind)
+            if !kind.reads_property() =>
+        {
+            None
+        }
         TraverserValue::VertexProperty(property, node, _) => context
             .storage
             .vertex_properties(*node)
@@ -111,8 +117,9 @@ pub(crate) fn classify<S: GraphStorage>(
         TraverserValue::Object(map) => LocalShape::Map(map.into_iter().collect()),
         TraverserValue::Record { keys, values } => LocalShape::Map(
             keys.iter()
-                .cloned()
-                .map(|key| TraverserValue::Computed(ElementProperty::String(key), None))
+                .map(|key| {
+                    TraverserValue::Computed(ElementProperty::String(key.to_compact()), None)
+                })
                 .zip(values)
                 .collect(),
         ),

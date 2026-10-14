@@ -3,7 +3,7 @@
 
 `values` · category: [Values and properties](../../traversal/step_reference.md#values-and-properties)
 
-Yields the values of the given (or all) properties; a jpath() key reads a nested value.
+Yields the values of the given (or all) properties; a jpath() key reads a nested value; values("label") reads a property named label, never the element's label.
 
 ## Forms
 

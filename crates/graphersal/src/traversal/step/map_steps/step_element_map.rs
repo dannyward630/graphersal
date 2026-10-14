@@ -7,7 +7,7 @@ use crate::*;
 #[derive(Default, Clone)]
 struct StepElementMap {
     args: Option<Vec<String>>,
-    precomputed_keys: Option<Arc<Vec<CompactString>>>,
+    precomputed_keys: Option<Arc<Vec<RecordKey>>>,
     /// The `jpath(..)` key arguments, if any; `None` for a plain-name call.
     path_keys: Option<PathKeys>,
 }
@@ -17,9 +17,9 @@ impl StepElementMap {
         let (args, path_keys) = PathKeys::split(keys);
         let precomputed_keys = args.as_ref().filter(|_| path_keys.is_none()).map(|a| {
             let mut k = Vec::with_capacity(a.len() + 2);
-            k.push(CompactString::new("id"));
-            k.push(CompactString::new("label"));
-            k.extend(a.iter().map(|s| CompactString::new(s)));
+            k.push(RecordKey::Id);
+            k.push(RecordKey::Label);
+            k.extend(a.iter().map(|s| RecordKey::from(s.as_str())));
             Arc::new(k)
         });
         Self {
@@ -40,8 +40,13 @@ impl fmt::Display for StepElementMap {
 }
 
 impl<'g, S: GraphStorage + 'g> GraphTraversalSource<'g, S> {
-    /// `id`/`label` plus all (or the named) properties as a map. A key may be a
-    /// [`JsonPath`]: the entry's key is the canonical path text
+    /// The element as a map: its id and label under the token keys [`RecordKey::Id`] and
+    /// [`RecordKey::Label`] (an edge also its endpoints under [`RecordKey::Out`] and
+    /// [`RecordKey::In`], each a map of the vertex's id and label), then all (or the named)
+    /// properties under [`RecordKey::Name`]. A property named `id` or `label` is its own entry:
+    /// `select("label")` reads it, `select(RecordKey::Label)` the label. Materialized (a
+    /// terminal), the tokens are written `id`, `label`, `OUT`, `IN` and a property of the same
+    /// name wins. A key may be a [`JsonPath`]: the entry's key is the canonical path text
     /// (`$.meta.k`), a missing path adds no entry.
     pub fn element_map<T: Into<PropKeys>>(self, args: T) -> Self {
         let args = args.into();
@@ -53,8 +58,9 @@ impl<'g, S: GraphStorage + 'g> GraphTraversalSource<'g, S> {
 }
 
 impl __ {
-    /// Turns each vertex or edge into a map of its id, label and the given (or all) properties; an
-    /// edge also gets its endpoints. Starts an anonymous traversal (`__.element_map()`).
+    /// Turns each vertex or edge into a map of its id and label (token keys), the given (or all)
+    /// properties and, for an edge, its endpoints; see [`GraphTraversalSource::element_map`].
+    /// Starts an anonymous traversal (`__.element_map()`).
     pub fn element_map<'g, S: GraphStorage + 'g, T: Into<PropKeys>>(
         args: T,
     ) -> AnonymousTraversal<'g, S> {
@@ -63,13 +69,81 @@ impl __ {
 }
 
 impl<'g, S: GraphStorage + 'g> AnonymousTraversal<'g, S> {
-    /// Turns each vertex or edge into a map of its id, label and the given (or all) properties; an
-    /// edge also gets its endpoints.
+    /// Turns each vertex or edge into a map of its id and label (token keys), the given (or all)
+    /// properties and, for an edge, its endpoints; see [`GraphTraversalSource::element_map`].
     pub fn element_map<T: Into<PropKeys>>(self, args: T) -> Self {
         let args = args.into();
         let step = GraphStep::Map("element_map", Box::new(StepElementMap::new(args)));
         self.push_step(step)
     }
+}
+
+impl StepElementMap {
+    /// Appends all (or the named) properties and then the `jpath(..)` keys.
+    fn push_properties<S: GraphStorage>(
+        &self,
+        props: Option<&PropertyMap>,
+        keys: &mut Vec<RecordKey>,
+        values: &mut Vec<TraverserValue<S>>,
+    ) {
+        if let Some(props) = props {
+            for (k, v) in props {
+                if self
+                    .args
+                    .as_ref()
+                    .is_none_or(|args| args.iter().any(|arg| arg == k.as_str()))
+                {
+                    keys.push(RecordKey::Name(k.clone()));
+                    values.push(v.to_logical().into());
+                }
+            }
+        }
+        if let Some(path_keys) = &self.path_keys {
+            path_keys.append(props, keys, values, TraverserValue::from);
+        }
+    }
+
+    /// The record of `keys`/`values`, sharing the precomputed key list when it matches.
+    fn record<S: GraphStorage>(
+        &self,
+        keys: Vec<RecordKey>,
+        values: Vec<TraverserValue<S>>,
+        source: &Traverser<S>,
+    ) -> Traverser<S> {
+        let keys = match &self.precomputed_keys {
+            Some(precomputed) if keys == **precomputed => Arc::clone(precomputed),
+            _ => Arc::new(keys),
+        };
+        Traverser::with_parts(
+            TraverserValue::Record { keys, values },
+            source.path,
+            source.bulk,
+            source.sack,
+        )
+    }
+}
+
+/// Appends a vertex's `T.id` and (when it has one) `T.label` entries.
+fn push_vertex_tokens<S: GraphStorage>(
+    storage: &S,
+    vertex: S::VertexId,
+    keys: &mut Vec<RecordKey>,
+    values: &mut Vec<TraverserValue<S>>,
+) -> TraverserResult<()> {
+    let id = crate::graph::storage::stored_vertex_id(storage, vertex)?;
+    keys.push(RecordKey::Id);
+    values.push(TraverserValue::Computed(
+        ElementProperty::String(CompactString::new(id)),
+        None,
+    ));
+    if let Some(label) = storage.vertex_label(vertex) {
+        keys.push(RecordKey::Label);
+        values.push(TraverserValue::Computed(
+            ElementProperty::String(CompactString::new(label)),
+            None,
+        ));
+    }
+    Ok(())
 }
 
 impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepElementMap {
@@ -87,129 +161,59 @@ impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepElementMap {
     ) -> TraverserResult<Traverser<S>> {
         match &source.value {
             TraverserValue::Vertex(node_index) => {
-                let id = crate::graph::storage::stored_vertex_id(&*context.storage, *node_index)?
-                    .to_string();
-                let label = context.storage.vertex_label(*node_index);
                 let props = context.storage.vertex_properties(*node_index);
-
-                let mut keys: Vec<CompactString> =
+                let mut keys: Vec<RecordKey> =
                     Vec::with_capacity(props.map(|p| p.len()).unwrap_or(0) + 2);
                 let mut values: Vec<TraverserValue<S>> = Vec::with_capacity(keys.capacity());
-
-                keys.push(CompactString::new("id"));
-                values.push(TraverserValue::Computed(
-                    ElementProperty::String(CompactString::new(id)),
-                    None,
-                ));
-
-                if let Some(label) = label {
-                    keys.push(CompactString::new("label"));
-                    values.push(TraverserValue::Computed(
-                        ElementProperty::String(CompactString::new(label)),
-                        None,
-                    ));
-                }
-
-                if let Some(props) = props {
-                    for (k, v) in props {
-                        if let Some(args) = &self.args {
-                            if args.iter().any(|arg| arg == k.as_str()) {
-                                keys.push(k.clone());
-                                values.push(v.to_logical().into());
-                            }
-                        } else {
-                            keys.push(k.clone());
-                            values.push(v.to_logical().into());
-                        }
-                    }
-                }
-
-                if let Some(path_keys) = &self.path_keys {
-                    path_keys.append(props, &mut keys, &mut values, TraverserValue::from);
-                }
-
-                let keys_arc = if let Some(precomputed) = &self.precomputed_keys {
-                    if keys == **precomputed {
-                        Arc::clone(precomputed)
-                    } else {
-                        Arc::new(keys)
-                    }
-                } else {
-                    Arc::new(keys)
-                };
-
-                Ok(Traverser::with_parts(
-                    TraverserValue::Record {
-                        keys: keys_arc,
-                        values,
-                    },
-                    source.path,
-                    source.bulk,
-                    source.sack,
-                ))
+                push_vertex_tokens(context.storage, *node_index, &mut keys, &mut values)?;
+                self.push_properties(props, &mut keys, &mut values);
+                Ok(self.record(keys, values, &source))
             }
 
             TraverserValue::Edge(edge_index) => {
-                let id = crate::graph::storage::stored_edge_id(&*context.storage, *edge_index)?
-                    .to_string();
+                let id = crate::graph::storage::stored_edge_id(&*context.storage, *edge_index)?;
                 let label = context.storage.edge_label(*edge_index);
                 let props = context.storage.edge_properties(*edge_index);
 
-                let mut keys: Vec<CompactString> =
-                    Vec::with_capacity(props.map(|p| p.len()).unwrap_or(0) + 2);
+                let mut keys: Vec<RecordKey> =
+                    Vec::with_capacity(props.map(|p| p.len()).unwrap_or(0) + 4);
                 let mut values: Vec<TraverserValue<S>> = Vec::with_capacity(keys.capacity());
 
-                keys.push(CompactString::new("id"));
+                keys.push(RecordKey::Id);
                 values.push(TraverserValue::Computed(
                     ElementProperty::String(CompactString::new(id)),
                     None,
                 ));
-
                 if let Some(label) = label {
-                    keys.push(CompactString::new("label"));
+                    keys.push(RecordKey::Label);
                     values.push(TraverserValue::Computed(
                         ElementProperty::String(CompactString::new(label)),
                         None,
                     ));
                 }
-
-                if let Some(props) = props {
-                    for (k, v) in props {
-                        if let Some(args) = &self.args {
-                            if args.iter().any(|arg| arg == k.as_str()) {
-                                keys.push(k.clone());
-                                values.push(v.to_logical().into());
-                            }
-                        } else {
-                            keys.push(k.clone());
-                            values.push(v.to_logical().into());
-                        }
+                // The endpoints, as TinkerPop's `Direction.OUT`/`Direction.IN` entries: a map of
+                // the vertex's `T.id` and `T.label`.
+                if let Some((out_vertex, in_vertex)) = context.storage.edge_endpoints(*edge_index) {
+                    for (direction, vertex) in
+                        [(RecordKey::Out, out_vertex), (RecordKey::In, in_vertex)]
+                    {
+                        let mut end_keys = Vec::with_capacity(2);
+                        let mut end_values = Vec::with_capacity(2);
+                        push_vertex_tokens(
+                            context.storage,
+                            vertex,
+                            &mut end_keys,
+                            &mut end_values,
+                        )?;
+                        keys.push(direction);
+                        values.push(TraverserValue::Record {
+                            keys: Arc::new(end_keys),
+                            values: end_values,
+                        });
                     }
                 }
-
-                if let Some(path_keys) = &self.path_keys {
-                    path_keys.append(props, &mut keys, &mut values, TraverserValue::from);
-                }
-
-                let keys_arc = if let Some(precomputed) = &self.precomputed_keys {
-                    if keys == **precomputed {
-                        Arc::clone(precomputed)
-                    } else {
-                        Arc::new(keys)
-                    }
-                } else {
-                    Arc::new(keys)
-                };
-
-                Ok(Traverser::with_parts(
-                    TraverserValue::Record {
-                        keys: keys_arc,
-                        values,
-                    },
-                    source.path,
-                    source.bulk,
-                    source.sack,
-                ))
+                self.push_properties(props, &mut keys, &mut values);
+                Ok(self.record(keys, values, &source))
             }
 
             TraverserValue::Record {
@@ -220,7 +224,12 @@ impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepElementMap {
                     let mut keys = Vec::new();
                     let mut values = Vec::new();
                     for (k, v) in rec_keys.iter().zip(rec_vals.iter()) {
-                        if args.iter().any(|arg| arg == k.as_str()) || k == "id" || k == "label" {
+                        if k.is_token()
+                            || k == "id"
+                            || k == "label"
+                            || k.name()
+                                .is_some_and(|name| args.iter().any(|arg| arg == name))
+                        {
                             keys.push(k.clone());
                             values.push(v.clone());
                         }
@@ -260,11 +269,11 @@ impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepElementMap {
                                 || k_str == "id"
                                 || k_str == "label"
                             {
-                                keys.push(k_str.clone());
+                                keys.push(RecordKey::Name(k_str.clone()));
                                 values.push(v.clone());
                             }
                         } else {
-                            keys.push(k_str.clone());
+                            keys.push(RecordKey::Name(k_str.clone()));
                             values.push(v.clone());
                         }
                     }

@@ -2,7 +2,7 @@ use crate::error::{TraverserError, TraverserResult};
 use crate::graph::GraphStorage;
 use crate::traversal::TraverserContext;
 use crate::traversal::optimizer::path_analysis::PathMode;
-use crate::value::{PathArena, PathRef, SackRef, TraverserValue};
+use crate::value::{PathArena, PathRef, PropertyHandleKind, SackRef, TraverserValue};
 
 /// One item flowing through a traversal: its current value and a handle to its path.
 ///
@@ -166,9 +166,13 @@ impl<S: GraphStorage> Traverser<S> {
     ) -> String {
         let stored = match traverser_value {
             TraverserValue::Computed(value, _) => Some(value),
-            TraverserValue::VertexProperty(prop, vertex_index, _) => {
-                if prop.eq("id") || prop.eq("label") {
-                    return "string".to_string();
+            TraverserValue::VertexProperty(prop, vertex_index, kind) => {
+                match kind {
+                    PropertyHandleKind::Id | PropertyHandleKind::Label => {
+                        return "string".to_string();
+                    }
+                    PropertyHandleKind::Labels => return "array".to_string(),
+                    PropertyHandleKind::Element | PropertyHandleKind::Value => {}
                 }
                 match context
                     .storage
@@ -179,9 +183,13 @@ impl<S: GraphStorage> Traverser<S> {
                     None => return "null".to_string(),
                 }
             }
-            TraverserValue::EdgeProperty(prop, edge_index, _) => {
-                if prop.eq("id") || prop.eq("label") {
-                    return "string".to_string();
+            TraverserValue::EdgeProperty(prop, edge_index, kind) => {
+                match kind {
+                    PropertyHandleKind::Id | PropertyHandleKind::Label => {
+                        return "string".to_string();
+                    }
+                    PropertyHandleKind::Labels => return "array".to_string(),
+                    PropertyHandleKind::Element | PropertyHandleKind::Value => {}
                 }
                 match context
                     .storage
@@ -200,72 +208,12 @@ impl<S: GraphStorage> Traverser<S> {
         }
     }
 
-    pub(crate) fn as_string(
-        context: &TraverserContext<'_, S>,
-        traverser_value: &TraverserValue<S>,
-    ) -> TraverserResult<Option<String>> {
-        match traverser_value {
-            TraverserValue::Computed(value, _) => Ok(value.text().map(|s| s.into_owned())),
-            TraverserValue::VertexProperty(prop, vertex_index, _) => {
-                if prop.eq("label") {
-                    Ok(context
-                        .storage
-                        .vertex_label(*vertex_index)
-                        .map(|s| s.to_string()))
-                } else if prop.eq("id") {
-                    let id =
-                        crate::graph::storage::stored_vertex_id(&*context.storage, *vertex_index)?
-                            .to_string();
-                    Ok(Some(id))
-                } else {
-                    let value = context
-                        .storage
-                        .vertex_properties(*vertex_index)
-                        .and_then(|p| p.get(prop.as_str()))
-                        .and_then(|p| p.text())
-                        .map(|s| s.into_owned());
-                    Ok(value)
-                }
-            }
-            TraverserValue::EdgeProperty(prop, edge_index, _) => {
-                if prop.eq("label") {
-                    Ok(context
-                        .storage
-                        .edge_label(*edge_index)
-                        .map(|s| s.to_string()))
-                } else if prop.eq("id") {
-                    let id = crate::graph::storage::stored_edge_id(&*context.storage, *edge_index)?
-                        .to_string();
-                    Ok(Some(id))
-                } else {
-                    let value = context
-                        .storage
-                        .edge_properties(*edge_index)
-                        .and_then(|p| p.get(prop.as_str()))
-                        .and_then(|p| p.text())
-                        .map(|s| s.into_owned());
-                    Ok(value)
-                }
-            }
-            t => Err(Box::new(TraverserError::cast_exception(
-                &["computed", "vertexProperty", "edgeProperty"],
-                t,
-            ))),
-        }
-    }
-
-    /// Borrowing sibling of [`Traverser::as_string`], for callers that only need the string for
-    /// an immediate comparison (e.g. `P::test()`'s `Eq`/`Neq` arms) and would otherwise discard
-    /// the owned `String` right after it. Every value stored in the graph is already backed by a
-    /// `&str` reachable from `context`, so every case borrows at zero cost; a vertex/edge without
-    /// a stored id is an `InvalidElementState` error, never a made-up id. The [`std::borrow::Cow`]
-    /// return type leaves room for a future case that has to allocate.
-    ///
-    /// `as_string()` itself keeps its own `Option<String>` contract: every one of its other call
-    /// sites (`cast()`, and the `StartingWith`/`EndingWith`/`Containing`/`WithIn` predicate
-    /// arms; the string steps now borrow through this function) either mutates the string
-    /// or needs to own it past the point where `context`'s borrow ends, so changing its contract
-    /// would just move the allocation to those call sites instead of removing it.
+    /// The string a stream value holds, borrowed: a string property, an element id or label
+    /// read through an `id()`/`label()` handle, or a computed string. Every value stored in the
+    /// graph is already backed by a `&str` reachable from `context`, so every case borrows at
+    /// zero cost; a vertex/edge without a stored id is an `InvalidElementState` error, never a
+    /// made-up id. The [`std::borrow::Cow`] return type leaves room for a future case that has
+    /// to allocate.
     pub(crate) fn as_string_ref<'ctx>(
         context: &'ctx TraverserContext<'_, S>,
         traverser_value: &'ctx TraverserValue<S>,
@@ -274,18 +222,20 @@ impl<S: GraphStorage> Traverser<S> {
 
         match traverser_value {
             TraverserValue::Computed(value, _) => Ok(value.text()),
-            TraverserValue::VertexProperty(prop, vertex_index, _) => {
-                if prop.eq("label") {
+            TraverserValue::VertexProperty(prop, vertex_index, kind) => {
+                if *kind == PropertyHandleKind::Label {
                     Ok(context
                         .storage
                         .vertex_label(*vertex_index)
                         .map(Cow::Borrowed))
-                } else if prop.eq("id") {
+                } else if *kind == PropertyHandleKind::Id {
                     let id = Cow::Borrowed(crate::graph::storage::stored_vertex_id(
                         &*context.storage,
                         *vertex_index,
                     )?);
                     Ok(Some(id))
+                } else if !kind.reads_property() {
+                    Ok(None)
                 } else {
                     let value = context
                         .storage
@@ -295,15 +245,17 @@ impl<S: GraphStorage> Traverser<S> {
                     Ok(value)
                 }
             }
-            TraverserValue::EdgeProperty(prop, edge_index, _) => {
-                if prop.eq("label") {
+            TraverserValue::EdgeProperty(prop, edge_index, kind) => {
+                if *kind == PropertyHandleKind::Label {
                     Ok(context.storage.edge_label(*edge_index).map(Cow::Borrowed))
-                } else if prop.eq("id") {
+                } else if *kind == PropertyHandleKind::Id {
                     let id = Cow::Borrowed(crate::graph::storage::stored_edge_id(
                         &*context.storage,
                         *edge_index,
                     )?);
                     Ok(Some(id))
+                } else if !kind.reads_property() {
+                    Ok(None)
                 } else {
                     let value = context
                         .storage

@@ -114,14 +114,14 @@ fn select_keys_on_a_whole_map_emits_one_list() {
         .traversal()
         .v(None::<()>)
         .group_count()
-        .by("label")
+        .by(By::Label)
         .select(Column::Values)
         .to_list()
         .unwrap();
     assert_eq!(values.len(), 1);
     match &values[0] {
         ElementProperty::Array(items) => {
-            // The pushed-down `group_count().by("label")` does not guarantee a key order.
+            // The pushed-down `group_count().by(T.label)` does not guarantee a key order.
             let mut counts: Vec<Option<i64>> = items.iter().map(|v| v.as_i64()).collect();
             counts.sort_unstable();
             assert_eq!(counts, vec![Some(2), Some(4)]);

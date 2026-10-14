@@ -226,7 +226,7 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "Routes each traverser by the value its child traversal yields to the matching option().",
         "g.v().has_label(\"person\").branch(__.values(\"age\")).option(29, __.values(\"name\")).option(Pick.none, __.constant(\"other\")).to_list()" => "[\"marko\", \"other\", \"other\", \"other\"]";
     "traversal" "by":
-        "Modulates the step before it: the key, token or child traversal a value is read with, and for order() the direction.",
+        "Modulates the step before it: the key, token or child traversal a value is read with, and for order() the direction; by(\"label\") reads a property named label, by(T.label) the label (see the book page Properties Named id or label).",
         "g.v().has_label(\"person\").order().by(\"age\", Order.desc).values(\"name\").to_list()" => "[\"peter\", \"josh\", \"marko\", \"vadas\"]";
     "traversal" "cap":
         "Emits the value of the named side effect(s) (one map for several keys) after the stream is exhausted.",
@@ -310,7 +310,7 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "Moves from a property to the vertex or edge that owns it.",
         "g.v(1).properties(\"name\").element().values(\"age\").next()" => "29";
     "traversal" "element_map":
-        "Turns each vertex or edge into a map of its id, label and the given (or all) properties; an edge also gets its endpoints.",
+        "Turns each vertex or edge into a map of the T.id and T.label tokens (an edge also Direction.OUT and Direction.IN) and the given (or all) properties, written \"id\", \"label\", \"OUT\", \"IN\" outside the engine where a property of the same name wins (see the book page Properties Named id or label).",
         "g.v(1).element_map(\"name\").next()" => "#{\"id\": \"1\", \"label\": \"person\", \"name\": \"marko\"}";
     "traversal" "emit":
         "Within repeat(): also emits the traversers of intermediate iterations (all, or those that match the child traversal or predicate).",
@@ -388,7 +388,7 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "Graphersal form of has_value(predicate): keeps properties whose value matches the predicate.",
         "g.v().properties(\"age\").has_value_p(P.gt(30)).value().to_list()" => "[32, 35]";
     "traversal" "id":
-        "Yields the id of each vertex or edge (a string).",
+        "Yields the id of each vertex or edge (a string), never a property named id.",
         "g.v().has(\"name\", \"josh\").id().to_list()" => "[\"4\"]";
     "traversal" "identity":
         "Passes every traverser through unchanged.",
@@ -436,7 +436,7 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "Removes leading whitespace (Unicode White_Space) from each string.",
         "g.inject(\"  a \").l_trim().next()" => "a ";
     "traversal" "label":
-        "Yields the label of each vertex or edge.",
+        "Yields the label of each vertex or edge, never a property named label.",
         "g.v(1).out_e().label().to_list()" => "[\"knows\", \"created\", \"knows\"]";
     "traversal" "labels":
         "Yields the full label set of each vertex as a list (Graphersal multi-label vertices).",
@@ -541,13 +541,13 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "Turns each traverser into a map with the given keys, one by() per key in order.",
         "g.v(1).project(\"name\", \"degree\").by(\"name\").by(__.both().count()).next()" => "#{\"degree\": 3, \"name\": \"marko\"}";
     "traversal" "properties":
-        "Yields the property elements of vertices/edges (all, or the given keys).",
+        "Yields the property elements of vertices/edges (all, or the given keys; a property named id or label is one of them, never the element's id or label).",
         "g.v(1).properties(\"age\").value().next()" => "29";
     "traversal" "property":
-        "Sets a property on the incoming element (Cardinality.single only); a null value is stored as null, use remove_property() to remove.",
+        "Sets a property on the incoming element (Cardinality.single only); a null value is stored as null, use remove_property() to remove; a key id or label makes an ordinary property, never the element's id or label (see the book page Properties Named id or label).",
         "g.v(1).property(\"age\", 30).values(\"age\").next()" => "30";
     "traversal" "property_json":
-        "Sets every key of the given map (or JSON object) as a property of the incoming vertex (Graphersal extension).",
+        "Sets every key of the given map (or JSON object) as a property of the incoming vertex (Graphersal extension); a key id or label makes an ordinary property, never the element's id or label.",
         "g.v(1).property_json(#{age: 30, tags: [\"a\", \"b\"]}).values(\"tags\").next()" => "[\"a\", \"b\"]";
     "traversal" "queries":
         "Lists the saved queries (of a folder and its subfolders) as maps: name, folder, description, params, status.",
@@ -583,7 +583,7 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "Passes on n traversers drawn at random (weighted by by(), see the book page Step - sample); with Scope.local samples inside each collection.",
         "g.v().sample(2).count().next()" => "2";
     "traversal" "select":
-        "Selects path labels, map keys or side effects (one label: the value, several: a map; an undeclared label is an error, see the book page Repeated Labels: select with Pop).",
+        "Selects path labels, map keys or side effects (one label: the value, several: a map; an undeclared label is an error, see the book page Repeated Labels: select with Pop); select(T.id)/select(T.label) read the token entries of an element_map() map, select(\"label\") a property named label.",
         "g.v(1).as(\"a\").out(\"created\").as(\"b\").select(\"a\", \"b\").by(\"name\").next()" => "#{\"a\": \"marko\", \"b\": \"lop\"}";
     "traversal" "set_label":
         "Changes the label of each incoming edge and passes it on (Graphersal extension; vertices use add_label()/drop_label()).",
@@ -697,10 +697,10 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "Yields the value of each property.",
         "g.v(1).properties(\"name\").value().next()" => "marko";
     "traversal" "value_map":
-        "Turns each element into a map of its properties (each value in a list); value_map(true) adds id and label.",
+        "Turns each element into a map of its properties (each value in a list); value_map(true) adds the T.id and T.label tokens, written \"id\" and \"label\" outside the engine where a property of the same name wins.",
         "g.v(1).value_map(\"name\").next()" => "#{\"name\": [\"marko\"]}";
     "traversal" "values":
-        "Yields the values of the given (or all) properties; a jpath() key reads a nested value.",
+        "Yields the values of the given (or all) properties; a jpath() key reads a nested value; values(\"label\") reads a property named label, never the element's label.",
         "g.v(1).values(\"name\", \"age\").to_list()" => "[\"marko\", 29]";
     "traversal" "visualize":
         "Runs the traversal and renders its results in the given V format (default: the session's).",

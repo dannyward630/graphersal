@@ -998,16 +998,18 @@ impl<T: Into<PValue> + Debug + Clone> P<T> {
         Ok(match value {
             TraverserValue::Computed(property, _) => Scalar::of(property),
             TraverserValue::PathProperty(prop) => Scalar::of(&prop.1),
-            TraverserValue::VertexProperty(prop, vertex_index, _) => {
-                if prop.eq("label") {
+            TraverserValue::VertexProperty(prop, vertex_index, kind) => {
+                if *kind == crate::value::PropertyHandleKind::Label {
                     context
                         .storage
                         .vertex_label(*vertex_index)
                         .map(|l| Scalar::Str(Cow::Borrowed(l)))
-                } else if prop.eq("id") {
+                } else if *kind == crate::value::PropertyHandleKind::Id {
                     let id =
                         crate::graph::storage::stored_vertex_id(&*context.storage, *vertex_index)?;
                     Some(Scalar::Str(Cow::Borrowed(id)))
+                } else if !kind.reads_property() {
+                    None
                 } else {
                     match context
                         .storage
@@ -1019,15 +1021,17 @@ impl<T: Into<PValue> + Debug + Clone> P<T> {
                     }
                 }
             }
-            TraverserValue::EdgeProperty(prop, edge_index, _) => {
-                if prop.eq("label") {
+            TraverserValue::EdgeProperty(prop, edge_index, kind) => {
+                if *kind == crate::value::PropertyHandleKind::Label {
                     context
                         .storage
                         .edge_label(*edge_index)
                         .map(|l| Scalar::Str(Cow::Borrowed(l)))
-                } else if prop.eq("id") {
+                } else if *kind == crate::value::PropertyHandleKind::Id {
                     let id = crate::graph::storage::stored_edge_id(&*context.storage, *edge_index)?;
                     Some(Scalar::Str(Cow::Borrowed(id)))
+                } else if !kind.reads_property() {
+                    None
                 } else {
                     match context
                         .storage
@@ -1084,10 +1088,17 @@ impl<T: Into<PValue> + Debug + Clone> P<T> {
                 Ok(type_of(&prop.1).is_some_and(|observed| target.matches(&observed)))
             }
 
-            TraverserValue::VertexProperty(prop, vertex_index, _) => {
+            TraverserValue::VertexProperty(prop, vertex_index, kind) => {
                 // `id` and `label` are rendered as strings by every step that reads them.
-                if prop.eq("id") || prop.eq("label") {
+                if matches!(
+                    kind,
+                    crate::value::PropertyHandleKind::Id | crate::value::PropertyHandleKind::Label
+                ) {
                     return Ok(target.matches(&ValueType::String));
+                }
+                if !kind.reads_property() {
+                    let value = arg_value.into_node_property(context.storage)?;
+                    return Ok(type_of(&value).is_some_and(|observed| target.matches(&observed)));
                 }
                 let observed = context
                     .storage
@@ -1097,9 +1108,16 @@ impl<T: Into<PValue> + Debug + Clone> P<T> {
                 Ok(observed.is_some_and(|observed| target.matches(&observed)))
             }
 
-            TraverserValue::EdgeProperty(prop, edge_index, _) => {
-                if prop.eq("id") || prop.eq("label") {
+            TraverserValue::EdgeProperty(prop, edge_index, kind) => {
+                if matches!(
+                    kind,
+                    crate::value::PropertyHandleKind::Id | crate::value::PropertyHandleKind::Label
+                ) {
                     return Ok(target.matches(&ValueType::String));
+                }
+                if !kind.reads_property() {
+                    let value = arg_value.into_node_property(context.storage)?;
+                    return Ok(type_of(&value).is_some_and(|observed| target.matches(&observed)));
                 }
                 let observed = context
                     .storage

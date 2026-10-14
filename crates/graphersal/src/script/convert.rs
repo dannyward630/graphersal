@@ -245,6 +245,7 @@ impl ScriptGraphTraversalSource {
                     }
                 }
                 Step::SelectColumn(column) => graph.select(*column),
+                Step::SelectToken(key) => graph.select(key.clone()),
                 Step::SelectPop(pop, arg) => graph.select_pop(*pop, strings(arg)),
                 Step::SelectTraversal(pop, key) => {
                     graph.select_traversal(*pop, key.ast_convert_to_anonymous())

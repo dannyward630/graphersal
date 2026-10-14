@@ -3,7 +3,7 @@
 
 `value_map` · `valueMap` · category: [Values and properties](../../traversal/step_reference.md#values-and-properties)
 
-Turns each element into a map of its properties (each value in a list); value_map(true) adds id and label.
+Turns each element into a map of its properties (each value in a list); value_map(true) adds the T.id and T.label tokens, written "id" and "label" outside the engine where a property of the same name wins.
 
 ## Forms
 

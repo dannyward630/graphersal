@@ -1624,14 +1624,22 @@ fn by_a_path_rust_api() {
             .select("k")),
         ["1", "2"]
     );
-    // PropKey::Name keeps the string meaning, including the label/id tokens
+    // PropKey::Name keeps the string meaning: a property key, never the label/id token
+    assert_eq!(
+        rust_values(&g, |t| t
+            .v("1")
+            .order()
+            .by(PropKey::from("name"))
+            .values("name")),
+        ["marko"]
+    );
     assert_eq!(
         rust_values(&g, |t| t
             .v("1")
             .order()
             .by(PropKey::from("label"))
             .values("name")),
-        ["marko"]
+        Vec::<String>::new()
     );
     let counts = rust_json(&g, |t| t.v(None).group_count().by(jp("meta.k")));
     match &counts[0] {

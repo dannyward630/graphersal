@@ -103,7 +103,8 @@ impl<'g, S: GraphStorage + 'g> GraphStepFlatMap<'g, S> for StepUnfold {
             }
             TraverserValue::Record { keys, values } => {
                 output.extend(keys.iter().zip(values).map(|(key, value)| {
-                    let key = TraverserValue::Computed(ElementProperty::String(key.clone()), None);
+                    let key =
+                        TraverserValue::Computed(ElementProperty::String(key.to_compact()), None);
                     Traverser::with_parts(
                         TraverserValue::Entry(Box::new((key, value))),
                         source.path,
@@ -153,7 +154,7 @@ impl<'g, S: GraphStorage + 'g> GraphStepFlatMap<'g, S> for StepUnfold {
             // `values("list")` yields a lazy handle: read the stored value now and flatten it when
             // it is a list or a map; a scalar (or a missing value) passes through unchanged.
             TraverserValue::VertexProperty(prop, node, kind) => {
-                let stored = if prop.eq("id") || prop.eq("label") {
+                let stored = if !kind.reads_property() {
                     None
                 } else {
                     context
@@ -177,7 +178,7 @@ impl<'g, S: GraphStorage + 'g> GraphStepFlatMap<'g, S> for StepUnfold {
                 }
             }
             TraverserValue::EdgeProperty(prop, edge, kind) => {
-                let stored = if prop.eq("id") || prop.eq("label") {
+                let stored = if !kind.reads_property() {
                     None
                 } else {
                     context

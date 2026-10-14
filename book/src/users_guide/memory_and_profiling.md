@@ -96,7 +96,7 @@ its columns are opt-in through the `ProfileType` bitmask: `.profile_with(Profile
 forms). `.profile()` is `.profile_with(ProfileType::none())`.
 
 ```rhai,graph=modern
-g.v().group().by("label").profile(ProfileType::Memory)
+g.v().group().by(T.label).profile(ProfileType::Memory)
 ```
 
 In the playground, tick **Memory** next to **Profile** in the Query toolbar: the Steps tab gets

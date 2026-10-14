@@ -12,7 +12,7 @@ pub(super) struct StepSelect<'g, S: GraphStorage + 'g> {
     /// matching TinkerPop's `SelectStep`, which builds its result in a `LinkedHashMap` keyed by
     /// `selectKeys` — a repeated key collapses to one map entry, keeping its first position but
     /// the last `by()`-ring value written to it.
-    precomputed_keys: Option<Arc<Vec<CompactString>>>,
+    precomputed_keys: Option<Arc<Vec<RecordKey>>>,
     /// For each position in `args` (same length, same order), the index into
     /// `precomputed_keys`/the runtime `values` vector that position writes to. Several positions
     /// share a slot exactly when `args` repeats a key.
@@ -55,10 +55,10 @@ impl<'g, S: GraphStorage + 'g> StepSelect<'g, S> {
     fn new(args: Option<Vec<String>>, pop: Pop) -> Self {
         let (precomputed_keys, position_to_slot) = match &args {
             Some(a) if a.len() > 1 => {
-                let mut keys: Vec<CompactString> = Vec::with_capacity(a.len());
+                let mut keys: Vec<RecordKey> = Vec::with_capacity(a.len());
                 let mut slots: Vec<usize> = Vec::with_capacity(a.len());
                 for raw in a {
-                    let key = CompactString::new(raw);
+                    let key = RecordKey::from(raw.as_str());
                     let slot = match keys.iter().position(|k| *k == key) {
                         Some(existing) => existing,
                         None => {
@@ -276,6 +276,10 @@ pub enum SelectArgs {
     Labels(ArgStrings),
     /// `select(Column::Keys)` / `select(Column::Values)`: the keys or values of a map or entry.
     Column(Column),
+    /// `select(RecordKey::Label)` (DSL `select(T.label)`), `RecordKey::Id`, `Out`, `In`: the
+    /// token entry of a map built by `element_map()` / `value_map(true)`. A Graphersal
+    /// extension; a [`RecordKey::Name`] is the same as `select(name)`.
+    Token(RecordKey),
 }
 
 /// Argument accepted by `select()`: anything convertible into label strings, or a [`Column`].
@@ -296,6 +300,12 @@ impl IntoSelectArgs for Column {
     }
 }
 
+impl IntoSelectArgs for RecordKey {
+    fn into_select_args(self) -> SelectArgs {
+        SelectArgs::Token(self)
+    }
+}
+
 /// Builds the physical step for `select(args)`: the label/key `StepSelect`, or the
 /// `select(Column)` step, which reads nothing from the path.
 fn select_step<'g, S: GraphStorage + 'g>(args: SelectArgs, pop: Pop) -> GraphStep<'g, S> {
@@ -309,6 +319,11 @@ fn select_step<'g, S: GraphStorage + 'g>(args: SelectArgs, pop: Pop) -> GraphSte
             GraphStep::Map("select", Box::new(StepSelect::new(labels, pop)))
         }
         SelectArgs::Column(column) => super::step_select_column::select_column_step(column),
+        SelectArgs::Token(RecordKey::Name(name)) => GraphStep::Map(
+            "select",
+            Box::new(StepSelect::new(Some(vec![name.to_string()]), pop)),
+        ),
+        SelectArgs::Token(key) => super::step_select_token::select_token_step(key),
     }
 }
 
