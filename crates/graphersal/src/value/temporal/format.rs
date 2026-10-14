@@ -62,7 +62,7 @@ pub(crate) fn write_offset(f: &mut impl Write, offset_seconds: i32) -> fmt::Resu
     let sign = if offset_seconds < 0 { '-' } else { '+' };
     let abs = offset_seconds.unsigned_abs();
     write!(f, "{sign}{:02}:{:02}", abs / 3600, abs / 60 % 60)?;
-    if abs % 60 != 0 {
+    if !abs.is_multiple_of(60) {
         write!(f, ":{:02}", abs % 60)?;
     }
     Ok(())

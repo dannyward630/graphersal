@@ -823,7 +823,7 @@ fn a_store_in_use_is_refused() {
     let before = store_files(&shared(&source));
     let lock = source.lock(LockKind::Writer).unwrap().unwrap();
     assert!(matches!(
-        Store::upgrade(&source, &MemDir::new()),
+        Store::upgrade(&source, MemDir::new()),
         Err(PersistError::Locked { .. })
     ));
     assert!(matches!(
@@ -843,10 +843,10 @@ fn a_current_newer_or_pre_release_store_is_refused() {
         .close()
         .unwrap();
     assert_eq!(
-        store_cause(Store::upgrade(&current, &MemDir::new())),
+        store_cause(Store::upgrade(&current, MemDir::new())),
         StoreFailure::AlreadyCurrent
     );
-    let err = Store::upgrade(&current, &MemDir::new()).unwrap_err();
+    let err = Store::upgrade(&current, MemDir::new()).unwrap_err();
     assert!(graphersal::error::format_diagnostic(&err).contains("store convert"));
     assert!(Store::upgrade_in_place(&current).unwrap().already_current);
 
@@ -863,7 +863,7 @@ fn a_current_newer_or_pre_release_store_is_refused() {
     let newer = fixture_mem("store");
     rewrite(&newer, persist_version() + 1);
     for result in [
-        Store::upgrade(&newer, &MemDir::new()),
+        Store::upgrade(&newer, MemDir::new()),
         Store::upgrade_in_place(&newer),
     ] {
         assert!(
@@ -875,7 +875,7 @@ fn a_current_newer_or_pre_release_store_is_refused() {
     let pre_release = fixture_mem("store");
     rewrite(&pre_release, 1);
     for result in [
-        Store::upgrade(&pre_release, &MemDir::new()),
+        Store::upgrade(&pre_release, MemDir::new()),
         Store::upgrade_in_place(&pre_release),
     ] {
         match result {
@@ -889,7 +889,7 @@ fn a_current_newer_or_pre_release_store_is_refused() {
     }
     // Not a store.
     assert!(matches!(
-        Store::upgrade(&MemDir::new(), &MemDir::new()),
+        Store::upgrade(MemDir::new(), MemDir::new()),
         Err(PersistError::NotAStore { .. })
     ));
 }
@@ -1006,7 +1006,7 @@ fn a_copying_upgrade_survives_a_crash_after_every_write() {
             .entry_kind("upgrade-in-progress.tmp")
             .unwrap()
             .is_some();
-        let complete = Store::is_store(&shared(image));
+        let complete = Store::is_store(shared(image));
         if complete {
             assert_store_fixture(&open_holds(&image.deep_copy()), &original);
         }

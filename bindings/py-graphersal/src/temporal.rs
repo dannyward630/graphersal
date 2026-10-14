@@ -78,6 +78,7 @@ impl Interval {
     }
 
     /// The ISO 8601 text (`P1Y2M3DT4H`), the engine's canonical form.
+    #[allow(clippy::wrong_self_convention)] // a #[pymethods] receiver cannot be `self`
     fn to_iso(&self) -> String {
         self.duration.to_string()
     }

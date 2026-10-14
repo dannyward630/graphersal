@@ -1433,17 +1433,17 @@ mod randomized {
                 .unwrap()
                 .into(),
             _ => {
-                let months = if rng.next() % 3 == 0 {
+                let months = if rng.next().is_multiple_of(3) {
                     0
                 } else {
                     rng.range(i32::MIN as i64, i32::MAX as i64) as i32
                 };
-                let days = if rng.next() % 3 == 0 {
+                let days = if rng.next().is_multiple_of(3) {
                     0
                 } else {
                     rng.range(i32::MIN as i64, i32::MAX as i64) as i32
                 };
-                let micros = if rng.next() % 3 == 0 {
+                let micros = if rng.next().is_multiple_of(3) {
                     0
                 } else {
                     rng.next() as i64
