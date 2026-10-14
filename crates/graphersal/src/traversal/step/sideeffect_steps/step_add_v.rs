@@ -368,8 +368,8 @@ mod tests {
         let result = graph.traversal_mut().add_v(None).next().unwrap().unwrap();
         match result {
             ElementProperty::Vertex(vertex) => {
-                assert_eq!(vertex.get("id"), Some(&ElementProperty::String("1".into())));
-                assert_eq!(vertex.get("label"), None);
+                assert_eq!(vertex.id(), "1");
+                assert_eq!(vertex.label(), None);
             }
             _ => panic!(),
         }
@@ -386,11 +386,8 @@ mod tests {
             .unwrap();
         match result {
             ElementProperty::Vertex(vertex) => {
-                assert_eq!(vertex.get("id"), Some(&ElementProperty::String("1".into())));
-                assert_eq!(
-                    vertex.get("label"),
-                    Some(&ElementProperty::String("product".into()))
-                );
+                assert_eq!(vertex.id(), "1");
+                assert_eq!(vertex.label(), Some("product"));
             }
             _ => panic!(),
         }
@@ -408,8 +405,8 @@ mod tests {
             .unwrap();
         match result {
             ElementProperty::Vertex(vertex) => {
-                assert_eq!(vertex.get("id"), Some(&ElementProperty::String("2".into())));
-                assert_eq!(vertex.get("label"), None);
+                assert_eq!(vertex.id(), "2");
+                assert_eq!(vertex.label(), None);
             }
             _ => panic!(),
         }
@@ -427,11 +424,8 @@ mod tests {
             .unwrap();
         match result {
             ElementProperty::Vertex(vertex) => {
-                assert_eq!(vertex.get("id"), Some(&ElementProperty::String("2".into())));
-                assert_eq!(
-                    vertex.get("label"),
-                    Some(&ElementProperty::String("product".into()))
-                );
+                assert_eq!(vertex.id(), "2");
+                assert_eq!(vertex.label(), Some("product"));
             }
             _ => panic!(),
         }
@@ -462,12 +456,9 @@ mod tests {
             .unwrap();
         match result {
             ElementProperty::Vertex(vertex) => {
-                assert_eq!(vertex.get("id"), Some(&ElementProperty::String("1".into())));
+                assert_eq!(vertex.id(), "1");
                 // elementMap()'s "label" key stays single-valued: the primary (first) label.
-                assert_eq!(
-                    vertex.get("label"),
-                    Some(&ElementProperty::String("Person".into()))
-                );
+                assert_eq!(vertex.label(), Some("Person"));
             }
             _ => panic!(),
         }

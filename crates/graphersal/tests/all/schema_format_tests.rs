@@ -86,11 +86,10 @@ fn type_of_reports_exact_logical_types() {
         Some(ValueType::Uuid),
         "a real uuid is uuid"
     );
-    let element = || Box::new(graphersal::prelude::PropertyMap::default());
-    assert_eq!(type_of(&ElementProperty::Vertex(element())), None);
+    assert_eq!(type_of(&ElementProperty::Vertex(Box::default())), None);
     assert_eq!(
         type_of(&ElementProperty::Array(vec![ElementProperty::Edge(
-            element()
+            Box::default()
         )])),
         None
     );

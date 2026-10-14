@@ -126,7 +126,7 @@ fn infix_right_operand_runs_to_the_end_of_the_traversal() {
     // TinkerPop's ConnectiveStrategy: everything after `and()` is the right operand, so the
     // trailing `values("name")` is inside the and() and the vertex comes out.
     assert_eq!(
-        run(r#"g.V().has("name", "marko").and().has("age", 29).values("name").next()["id"]"#),
+        run(r#"g.V().has("name", "marko").and().has("age", 29).values("name").next().id"#),
         r#""1""#
     );
     assert_eq!(
@@ -142,7 +142,7 @@ fn infix_operands_exclude_the_start_step_and_its_labels() {
     // `as("a")` labels V(), not the left operand: select("a") inside the right operand sees it.
     assert_eq!(
         run(
-            r#"g.V().as("a").out("knows").and().out("created").in("created").as("a").to_list().map(|v| v["id"])"#
+            r#"g.V().as("a").out("knows").and().out("created").in("created").as("a").to_list().map(|v| v.id)"#
         ),
         r#"["1"]"#
     );

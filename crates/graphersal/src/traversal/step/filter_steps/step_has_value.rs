@@ -76,9 +76,11 @@ impl StepHasValue {
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
             | ElementProperty::Uuid(_) => self.value.eq(value),
-            ElementProperty::Object(nested)
-            | ElementProperty::Vertex(nested)
-            | ElementProperty::Edge(nested) => nested.values().any(|r| self.value.eq(r)),
+            ElementProperty::Object(_) | ElementProperty::Vertex(_) | ElementProperty::Edge(_) => {
+                value
+                    .map_entries()
+                    .is_some_and(|nested| nested.values().any(|r| self.value.eq(r)))
+            }
             ElementProperty::Map(nested) => nested.values().any(|r| self.value.eq(r)),
         }
     }
@@ -361,11 +363,11 @@ impl<B: Into<PValue> + Debug + Clone + Send + Sync> StepHasValueP<B> {
                 let candidate = TraverserValue::Computed(value.to_logical(), None);
                 self.predicate.test(context, &candidate, path)
             }
-            ElementProperty::Object(nested)
-            | ElementProperty::Vertex(nested)
-            | ElementProperty::Edge(nested) => {
-                let values: Vec<ElementProperty> =
-                    nested.values().map(ElementProperty::to_logical).collect();
+            ElementProperty::Object(_) | ElementProperty::Vertex(_) | ElementProperty::Edge(_) => {
+                let values: Vec<ElementProperty> = value
+                    .map_entries()
+                    .map(|nested| nested.values().map(ElementProperty::to_logical).collect())
+                    .unwrap_or_default();
                 for v in &values {
                     if self.matches_value(context, v, path)? {
                         return Ok(true);
@@ -634,10 +636,10 @@ impl StepHasValueAny {
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
             | ElementProperty::Uuid(_) => self.values.iter().any(|v| v.eq(value)),
-            ElementProperty::Object(nested)
-            | ElementProperty::Vertex(nested)
-            | ElementProperty::Edge(nested) => {
-                nested.values().any(|r| self.values.iter().any(|v| v.eq(r)))
+            ElementProperty::Object(_) | ElementProperty::Vertex(_) | ElementProperty::Edge(_) => {
+                value.map_entries().is_some_and(|nested| {
+                    nested.values().any(|r| self.values.iter().any(|v| v.eq(r)))
+                })
             }
             ElementProperty::Map(nested) => {
                 nested.values().any(|r| self.values.iter().any(|v| v.eq(r)))

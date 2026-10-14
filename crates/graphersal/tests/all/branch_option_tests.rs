@@ -84,8 +84,11 @@ fn choose_passes_unmatched_traversers_through() {
     let q = r#"g.V().choose(__.out().count()).option(2, __.values("name")).option(3, __.values("age")).toList()"#;
     let out = run(q).unwrap().into_array().unwrap();
     assert_eq!(out.len(), 6);
-    let maps = out.iter().filter(|v| v.is_map()).count();
-    assert_eq!(maps, 4, "{out:?}");
+    let vertices = out
+        .iter()
+        .filter(|v| v.is::<graphersal::script::ScriptVertex>())
+        .count();
+    assert_eq!(vertices, 4, "{out:?}");
     // The Rust API gives the same.
     let graph = GraphSource::tinkerpop_modern();
     let lock = graph.read();
@@ -107,7 +110,13 @@ fn choose_unproductive_selector_passes_through_even_with_none() {
     let q = r#"g.V().choose(__.values("age")).option(P.between(26, 30), __.values("name")).option(Pick.none, __.values("name")).toList()"#;
     let out = run(q).unwrap().into_array().unwrap();
     assert_eq!(out.len(), 6);
-    assert_eq!(out.iter().filter(|v| v.is_map()).count(), 2, "{out:?}");
+    assert_eq!(
+        out.iter()
+            .filter(|v| v.is::<graphersal::script::ScriptVertex>())
+            .count(),
+        2,
+        "{out:?}"
+    );
     let q = r#"g.V().choose(__.values("age")).option(P.between(26, 30), __.values("name")).option(Pick.none, __.discard()).toList()"#;
     if let Ok(out) = run(q) {
         assert_eq!(out.into_array().unwrap().len(), 4);

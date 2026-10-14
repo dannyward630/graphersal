@@ -156,6 +156,7 @@ pub(crate) use registry::{display_type_name, display_type_names_in};
 fn register_all(registry: &mut Registry) {
     types::register_graph_source(registry);
     tokens::register(registry);
+    crate::script::tokens::register_element_types(registry);
     types::register_values(registry);
     types::register_schema(registry);
     terminals::register(registry);

@@ -64,13 +64,13 @@ export const ResultsPanel = {
       run(t.lastScript, t.id, { selection: t.result && t.result.selection });
     }
 
-    /** Vertex rows (an `id` and a `label` column, no `_from`): draw the vertex's neighbourhood. */
+    /** Vertex rows (an `id` and a `label` column, no edge `outV`): draw the vertex's neighbourhood. */
     const vertexAction = {
       label: '⌖',
       title: 'Draw this vertex and its neighbours in the Graph panel',
       applies(row, columns) {
         const id = columns.indexOf('id');
-        if (id < 0 || !columns.includes('label') || columns.includes('_from')) return false;
+        if (id < 0 || !columns.includes('label') || columns.includes('outV')) return false;
         return typeof row[id] === 'string' || typeof row[id] === 'number';
       },
       run(row, columns) {

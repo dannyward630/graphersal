@@ -12,6 +12,7 @@
 {"displayName":"ColumnTokens","typeName":"graphersal::script::tokens::column::ScriptColumn"}
 {"displayName":"Direction","typeName":"graphersal::value::direction::Direction"}
 {"displayName":"DirectionTokens","typeName":"graphersal::script::tokens::direction::ScriptDirection"}
+{"displayName":"Edge","typeName":"graphersal::script::tokens::element::ScriptEdge"}
 {"displayName":"Execution","typeName":"graphersal::script::execution::ScriptExecution"}
 {"displayName":"Fake","typeName":"graphersal::script::fake::ScriptFake"}
 {"displayName":"GType","typeName":"graphersal::value::gtype::GType"}
@@ -47,6 +48,8 @@
 {"displayName":"UUIDTokens","typeName":"graphersal::script::tokens::uuid::ScriptUuidTokens"}
 {"displayName":"Uuid","typeName":"graphersal::script::tokens::uuid::ScriptUuid"}
 {"displayName":"V","typeName":"graphersal::script::tokens::visualizer::ScriptV"}
+{"displayName":"Vertex","typeName":"graphersal::script::tokens::element::ScriptVertex"}
+{"displayName":"VertexRef","typeName":"graphersal::script::tokens::element::ScriptVertexRef"}
 {"displayName":"VisualizeFormat","typeName":"graphersal::graph::schema::visualize::VisualizeFormat"}
 {"displayName":"WithOptions","typeName":"graphersal::value::with_options::WithOptions"}
 {"displayName":"WithOptionsTokens","typeName":"graphersal::script::tokens::with_options::ScriptWithOptions"}
@@ -1293,23 +1296,31 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 {"access":"public","docComments":["/// Yields the values of the given (or all) properties; a jpath() key reads a nested value; values(\"label\") reads a property named label, never the element's label.","///","/// Example: `g.v(1).values(\"name\", \"age\").to_list()` returns `[\"marko\", 29]`"],"name":"values","namespace":"global","numParams":9,"params":[{"type":"&mut GraphTraversalSource"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"}],"returnType":"GraphTraversalSource"}
 {"access":"public","docComments":["/// g.with_bulk(false) makes every merge keep bulk 1, so equal traversers collapse at barrier().","///","/// Example: `g.with_bulk(false).v().out().barrier().count().next()` returns `4`"],"name":"withBulk","namespace":"global","numParams":2,"params":[{"type":"&mut GraphTraversalSource"},{"type":"bool"}],"returnType":"GraphTraversalSource"}
 {"access":"public","docComments":["/// g.with_bulk(false) makes every merge keep bulk 1, so equal traversers collapse at barrier().","///","/// Example: `g.with_bulk(false).v().out().barrier().count().next()` returns `4`"],"name":"with_bulk","namespace":"global","numParams":2,"params":[{"type":"&mut GraphTraversalSource"},{"type":"bool"}],"returnType":"GraphTraversalSource"}
+{"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"Edge"},{"type":"Edge"}],"returnType":"bool"}
 {"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"JsonPath"},{"type":"JsonPath"}],"returnType":"bool"}
 {"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"Map"},{"type":"Map"}],"returnType":"bool"}
 {"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"RenderedText"},{"type":"RenderedText"}],"returnType":"bool"}
 {"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"RenderedText"},{"type":"string"}],"returnType":"bool"}
 {"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"Uuid"},{"type":"Uuid"}],"returnType":"bool"}
 {"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"Uuid"},{"type":"string"}],"returnType":"bool"}
+{"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"Vertex"},{"type":"Vertex"}],"returnType":"bool"}
+{"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"VertexRef"},{"type":"VertexRef"}],"returnType":"bool"}
 {"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"string"},{"type":"RenderedText"}],"returnType":"bool"}
 {"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"string"},{"type":"Uuid"}],"returnType":"bool"}
 {"access":"public","name":"+","namespace":"global","numParams":2,"params":[{"type":"RenderedText"},{"type":"RenderedText"}],"returnType":"string"}
 {"access":"public","name":"+","namespace":"global","numParams":2,"params":[{"type":"RenderedText"},{"type":"string"}],"returnType":"string"}
 {"access":"public","name":"+","namespace":"global","numParams":2,"params":[{"type":"string"},{"type":"RenderedText"}],"returnType":"string"}
+{"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"Edge"},{"type":"Edge"}],"returnType":"bool"}
 {"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"JsonPath"},{"type":"JsonPath"}],"returnType":"bool"}
 {"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"Map"},{"type":"Map"}],"returnType":"bool"}
 {"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"RenderedText"},{"type":"RenderedText"}],"returnType":"bool"}
 {"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"RenderedText"},{"type":"string"}],"returnType":"bool"}
 {"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"Uuid"},{"type":"Uuid"}],"returnType":"bool"}
 {"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"Uuid"},{"type":"string"}],"returnType":"bool"}
+{"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"Vertex"},{"type":"Vertex"}],"returnType":"bool"}
+{"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"Vertex"},{"type":"VertexRef"}],"returnType":"bool"}
+{"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"VertexRef"},{"type":"Vertex"}],"returnType":"bool"}
+{"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"VertexRef"},{"type":"VertexRef"}],"returnType":"bool"}
 {"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"string"},{"type":"RenderedText"}],"returnType":"bool"}
 {"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"string"},{"type":"Uuid"}],"returnType":"bool"}
 {"access":"public","name":"between","namespace":"global","numParams":2,"params":[{"name":"val","type":"Dynamic"},{"name":"val1","type":"Dynamic"}],"returnType":"ArgP"}
@@ -1378,16 +1389,25 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 {"access":"public","name":"get$first","namespace":"global","numParams":1,"params":[{"type":"&mut PopTokens"}],"returnType":"Pop"}
 {"access":"public","name":"get$from","namespace":"global","numParams":1,"params":[{"type":"&mut DirectionTokens"}],"returnType":"Direction"}
 {"access":"public","name":"get$global","namespace":"global","numParams":1,"params":[{"type":"&mut ScopeTokens"}],"returnType":"Scope"}
+{"access":"public","name":"get$id","namespace":"global","numParams":1,"params":[{"type":"&mut Edge"}],"returnType":"string"}
 {"access":"public","name":"get$id","namespace":"global","numParams":1,"params":[{"type":"&mut TTokens"}],"returnType":"By"}
+{"access":"public","name":"get$id","namespace":"global","numParams":1,"params":[{"type":"&mut Vertex"}],"returnType":"string"}
+{"access":"public","name":"get$id","namespace":"global","numParams":1,"params":[{"type":"&mut VertexRef"}],"returnType":"string"}
 {"access":"public","name":"get$ids","namespace":"global","numParams":1,"params":[{"type":"&mut WithOptionsTokens"}],"returnType":"WithOptions"}
+{"access":"public","name":"get$inV","namespace":"global","numParams":1,"params":[{"type":"&mut Edge"}],"returnType":"graphersal::script::tokens::element::ScriptVertexRef"}
 {"access":"public","name":"get$inV","namespace":"global","numParams":1,"params":[{"type":"&mut MergeTokens"}],"returnType":"Merge"}
+{"access":"public","name":"get$in_v","namespace":"global","numParams":1,"params":[{"type":"&mut Edge"}],"returnType":"graphersal::script::tokens::element::ScriptVertexRef"}
 {"access":"public","name":"get$indexer","namespace":"global","numParams":1,"params":[{"type":"&mut WithOptionsTokens"}],"returnType":"WithOptions"}
 {"access":"public","name":"get$isOk","namespace":"global","numParams":1,"params":[{"type":"&mut Execution"}],"returnType":"bool"}
 {"access":"public","name":"get$is_ok","namespace":"global","numParams":1,"params":[{"type":"&mut Execution"}],"returnType":"bool"}
 {"access":"public","name":"get$key","namespace":"global","numParams":1,"params":[{"type":"&mut TTokens"}],"returnType":"By"}
 {"access":"public","name":"get$keys","namespace":"global","numParams":1,"params":[{"type":"&mut ColumnTokens"}],"returnType":"Column"}
 {"access":"public","name":"get$keys","namespace":"global","numParams":1,"params":[{"type":"&mut WithOptionsTokens"}],"returnType":"WithOptions"}
+{"access":"public","name":"get$label","namespace":"global","numParams":1,"params":[{"type":"&mut Edge"}],"returnType":"types::dynamic::Dynamic"}
 {"access":"public","name":"get$label","namespace":"global","numParams":1,"params":[{"type":"&mut TTokens"}],"returnType":"By"}
+{"access":"public","name":"get$label","namespace":"global","numParams":1,"params":[{"type":"&mut Vertex"}],"returnType":"types::dynamic::Dynamic"}
+{"access":"public","name":"get$label","namespace":"global","numParams":1,"params":[{"type":"&mut VertexRef"}],"returnType":"types::dynamic::Dynamic"}
+{"access":"public","name":"get$labels","namespace":"global","numParams":1,"params":[{"type":"&mut Vertex"}],"returnType":"array"}
 {"access":"public","name":"get$labels","namespace":"global","numParams":1,"params":[{"type":"&mut WithOptionsTokens"}],"returnType":"WithOptions"}
 {"access":"public","name":"get$last","namespace":"global","numParams":1,"params":[{"type":"&mut PopTokens"}],"returnType":"Pop"}
 {"access":"public","name":"get$list","namespace":"global","numParams":1,"params":[{"type":"&mut CardinalityTokens"}],"returnType":"Cardinality"}
@@ -1410,8 +1430,12 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 {"access":"public","name":"get$open","namespace":"global","numParams":1,"params":[{"type":"&mut SchemaModeTokens"}],"returnType":"SchemaMode"}
 {"access":"public","name":"get$optimizer_rules_applied","namespace":"global","numParams":1,"params":[{"type":"&mut TraversalMetrics"}],"returnType":"array"}
 {"access":"public","name":"get$or","namespace":"global","numParams":1,"params":[{"type":"&mut OperatorTokens"}],"returnType":"Operator"}
+{"access":"public","name":"get$outV","namespace":"global","numParams":1,"params":[{"type":"&mut Edge"}],"returnType":"graphersal::script::tokens::element::ScriptVertexRef"}
 {"access":"public","name":"get$outV","namespace":"global","numParams":1,"params":[{"type":"&mut MergeTokens"}],"returnType":"Merge"}
+{"access":"public","name":"get$out_v","namespace":"global","numParams":1,"params":[{"type":"&mut Edge"}],"returnType":"graphersal::script::tokens::element::ScriptVertexRef"}
 {"access":"public","name":"get$profile","namespace":"global","numParams":1,"params":[{"type":"&mut Execution"}],"returnType":"types::dynamic::Dynamic"}
+{"access":"public","name":"get$properties","namespace":"global","numParams":1,"params":[{"type":"&mut Edge"}],"returnType":"map"}
+{"access":"public","name":"get$properties","namespace":"global","numParams":1,"params":[{"type":"&mut Vertex"}],"returnType":"map"}
 {"access":"public","name":"get$results","namespace":"global","numParams":1,"params":[{"type":"&mut Execution"}],"returnType":"array"}
 {"access":"public","name":"get$set","namespace":"global","numParams":1,"params":[{"type":"&mut CardinalityTokens"}],"returnType":"Cardinality"}
 {"access":"public","name":"get$shuffle","namespace":"global","numParams":1,"params":[{"type":"&mut Order"}],"returnType":"Order"}
@@ -1426,8 +1450,10 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 {"access":"public","name":"get$values","namespace":"global","numParams":1,"params":[{"type":"&mut WithOptionsTokens"}],"returnType":"WithOptions"}
 {"access":"public","name":"gt","namespace":"global","numParams":1,"params":[{"name":"val","type":"Dynamic"}],"returnType":"ArgP"}
 {"access":"public","name":"gte","namespace":"global","numParams":1,"params":[{"name":"val","type":"Dynamic"}],"returnType":"ArgP"}
+{"access":"public","name":"index$get$","namespace":"global","numParams":2,"params":[{"type":"&mut Edge"},{"type":"string"}],"returnType":"types::dynamic::Dynamic"}
 {"access":"public","name":"index$get$","namespace":"global","numParams":2,"params":[{"type":"&mut Map"},{"type":"string"}],"returnType":"types::dynamic::Dynamic"}
 {"access":"public","name":"index$get$","namespace":"global","numParams":2,"params":[{"type":"&mut Map"},{"type":"types::dynamic::Dynamic"}],"returnType":"core::result::Result<rhai::types::dynamic::Dynamic,alloc::boxed::Box<rhai::types::error::EvalAltResult>>"}
+{"access":"public","name":"index$get$","namespace":"global","numParams":2,"params":[{"type":"&mut Vertex"},{"type":"string"}],"returnType":"types::dynamic::Dynamic"}
 {"access":"public","name":"inside","namespace":"global","numParams":2,"params":[{"name":"val","type":"Dynamic"},{"name":"val1","type":"Dynamic"}],"returnType":"ArgP"}
 {"access":"public","name":"lt","namespace":"global","numParams":1,"params":[{"name":"val","type":"Dynamic"}],"returnType":"ArgP"}
 {"access":"public","name":"lte","namespace":"global","numParams":1,"params":[{"name":"val","type":"Dynamic"}],"returnType":"ArgP"}
@@ -1452,6 +1478,7 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 {"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut CastPolicy"}],"returnType":"string"}
 {"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut ColumnTokens"}],"returnType":"string"}
 {"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut DirectionTokens"}],"returnType":"string"}
+{"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut Edge"}],"returnType":"string"}
 {"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut Execution"}],"returnType":"string"}
 {"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut Fake"}],"returnType":"string"}
 {"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut GTypeTokens"}],"returnType":"string"}
@@ -1477,6 +1504,8 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 {"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut UUIDTokens"}],"returnType":"string"}
 {"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut Uuid"}],"returnType":"string"}
 {"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut V"}],"returnType":"string"}
+{"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut Vertex"}],"returnType":"string"}
+{"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut VertexRef"}],"returnType":"string"}
 {"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut WithOptionsTokens"}],"returnType":"string"}
 {"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"name":"v","type":"&mut VisualizeFormat"}],"returnType":"String"}
 {"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut BarrierTokens"}],"returnType":"string"}
@@ -1485,6 +1514,7 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 {"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut CastPolicy"}],"returnType":"string"}
 {"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut ColumnTokens"}],"returnType":"string"}
 {"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut DirectionTokens"}],"returnType":"string"}
+{"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut Edge"}],"returnType":"string"}
 {"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut Execution"}],"returnType":"string"}
 {"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut Fake"}],"returnType":"string"}
 {"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut GTypeTokens"}],"returnType":"string"}
@@ -1510,6 +1540,8 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 {"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut UUIDTokens"}],"returnType":"string"}
 {"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut Uuid"}],"returnType":"string"}
 {"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut V"}],"returnType":"string"}
+{"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut Vertex"}],"returnType":"string"}
+{"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut VertexRef"}],"returnType":"string"}
 {"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut WithOptionsTokens"}],"returnType":"string"}
 {"access":"public","name":"typeOf","namespace":"global","numParams":1,"params":[{"name":"val","type":"GType"}],"returnType":"ArgP"}
 {"access":"public","name":"within","namespace":"global","numParams":1,"params":[{"name":"val","type":"Dynamic"}],"returnType":"ArgP"}
@@ -1535,22 +1567,30 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 {"access":"public","name":"|","namespace":"global","numParams":2,"params":[{"type":"ProfileType"},{"type":"ProfileType"}],"returnType":"ProfileType"}
 
 ## signatures (gen_fn_signatures(false))
+!=(_: Edge, _: Edge) -> bool
 !=(_: JsonPath, _: JsonPath) -> bool
 !=(_: RenderedText, _: RenderedText) -> bool
 !=(_: RenderedText, _: string) -> bool
 !=(_: Uuid, _: Uuid) -> bool
 !=(_: Uuid, _: string) -> bool
+!=(_: Vertex, _: Vertex) -> bool
+!=(_: VertexRef, _: VertexRef) -> bool
 !=(_: map, _: map) -> bool
 !=(_: string, _: RenderedText) -> bool
 !=(_: string, _: Uuid) -> bool
 +(_: RenderedText, _: RenderedText) -> string
 +(_: RenderedText, _: string) -> string
 +(_: string, _: RenderedText) -> string
+==(_: Edge, _: Edge) -> bool
 ==(_: JsonPath, _: JsonPath) -> bool
 ==(_: RenderedText, _: RenderedText) -> bool
 ==(_: RenderedText, _: string) -> bool
 ==(_: Uuid, _: Uuid) -> bool
 ==(_: Uuid, _: string) -> bool
+==(_: Vertex, _: Vertex) -> bool
+==(_: Vertex, _: VertexRef) -> bool
+==(_: VertexRef, _: Vertex) -> bool
+==(_: VertexRef, _: VertexRef) -> bool
 ==(_: map, _: map) -> bool
 ==(_: string, _: RenderedText) -> bool
 ==(_: string, _: Uuid) -> bool
@@ -2146,16 +2186,25 @@ get$error(_: &mut Execution) -> types::dynamic::Dynamic
 get$first(_: &mut PopTokens) -> Pop
 get$from(_: &mut DirectionTokens) -> Direction
 get$global(_: &mut ScopeTokens) -> Scope
+get$id(_: &mut Edge) -> string
 get$id(_: &mut TTokens) -> By
+get$id(_: &mut Vertex) -> string
+get$id(_: &mut VertexRef) -> string
 get$ids(_: &mut WithOptionsTokens) -> WithOptions
+get$inV(_: &mut Edge) -> graphersal::script::tokens::element::ScriptVertexRef
 get$inV(_: &mut MergeTokens) -> Merge
+get$in_v(_: &mut Edge) -> graphersal::script::tokens::element::ScriptVertexRef
 get$indexer(_: &mut WithOptionsTokens) -> WithOptions
 get$isOk(_: &mut Execution) -> bool
 get$is_ok(_: &mut Execution) -> bool
 get$key(_: &mut TTokens) -> By
 get$keys(_: &mut ColumnTokens) -> Column
 get$keys(_: &mut WithOptionsTokens) -> WithOptions
+get$label(_: &mut Edge) -> types::dynamic::Dynamic
 get$label(_: &mut TTokens) -> By
+get$label(_: &mut Vertex) -> types::dynamic::Dynamic
+get$label(_: &mut VertexRef) -> types::dynamic::Dynamic
+get$labels(_: &mut Vertex) -> array
 get$labels(_: &mut WithOptionsTokens) -> WithOptions
 get$last(_: &mut PopTokens) -> Pop
 get$list(_: &mut CardinalityTokens) -> Cardinality
@@ -2178,8 +2227,12 @@ get$onMatch(_: &mut MergeTokens) -> Merge
 get$open(_: &mut SchemaModeTokens) -> SchemaMode
 get$optimizer_rules_applied(_: &mut TraversalMetrics) -> array
 get$or(_: &mut OperatorTokens) -> Operator
+get$outV(_: &mut Edge) -> graphersal::script::tokens::element::ScriptVertexRef
 get$outV(_: &mut MergeTokens) -> Merge
+get$out_v(_: &mut Edge) -> graphersal::script::tokens::element::ScriptVertexRef
 get$profile(_: &mut Execution) -> types::dynamic::Dynamic
+get$properties(_: &mut Edge) -> map
+get$properties(_: &mut Vertex) -> map
 get$results(_: &mut Execution) -> array
 get$set(_: &mut CardinalityTokens) -> Cardinality
 get$shuffle(_: &mut Order) -> Order
@@ -2377,6 +2430,8 @@ in_e(_: &mut GraphTraversalSource, _: types::dynamic::Dynamic, _: types::dynamic
 in_e(_: &mut GraphTraversalSource, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic) -> GraphTraversalSource
 in_e(_: &mut GraphTraversalSource, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic) -> GraphTraversalSource
 in_v(_: &mut GraphTraversalSource) -> GraphTraversalSource
+index$get$(_: &mut Edge, _: string) -> types::dynamic::Dynamic
+index$get$(_: &mut Vertex, _: string) -> types::dynamic::Dynamic
 index$get$(_: &mut map, _: string) -> types::dynamic::Dynamic
 index$get$(_: &mut map, _: types::dynamic::Dynamic) -> core::result::Result<rhai::types::dynamic::Dynamic,alloc::boxed::Box<rhai::types::error::EvalAltResult>>
 index(_: &mut GraphTraversalSource) -> GraphTraversalSource
@@ -2768,6 +2823,7 @@ to_debug(_: &mut CardinalityTokens) -> string
 to_debug(_: &mut CastPolicy) -> string
 to_debug(_: &mut ColumnTokens) -> string
 to_debug(_: &mut DirectionTokens) -> string
+to_debug(_: &mut Edge) -> string
 to_debug(_: &mut Execution) -> string
 to_debug(_: &mut Fake) -> string
 to_debug(_: &mut GTypeTokens) -> string
@@ -2792,6 +2848,8 @@ to_debug(_: &mut TraversalMetrics) -> string
 to_debug(_: &mut UUIDTokens) -> string
 to_debug(_: &mut Uuid) -> string
 to_debug(_: &mut V) -> string
+to_debug(_: &mut Vertex) -> string
+to_debug(_: &mut VertexRef) -> string
 to_debug(_: &mut WithOptionsTokens) -> string
 to_debug(_: &mut map) -> string
 to_debug(arg_p: &mut ArgP) -> String
@@ -2832,6 +2890,7 @@ to_string(_: &mut CardinalityTokens) -> string
 to_string(_: &mut CastPolicy) -> string
 to_string(_: &mut ColumnTokens) -> string
 to_string(_: &mut DirectionTokens) -> string
+to_string(_: &mut Edge) -> string
 to_string(_: &mut Execution) -> string
 to_string(_: &mut Fake) -> string
 to_string(_: &mut GTypeTokens) -> string
@@ -2856,6 +2915,8 @@ to_string(_: &mut TraversalMetrics) -> string
 to_string(_: &mut UUIDTokens) -> string
 to_string(_: &mut Uuid) -> string
 to_string(_: &mut V) -> string
+to_string(_: &mut Vertex) -> string
+to_string(_: &mut VertexRef) -> string
 to_string(_: &mut WithOptionsTokens) -> string
 to_string(_: &mut map) -> string
 to_string(arg_p: &mut ArgP) -> String

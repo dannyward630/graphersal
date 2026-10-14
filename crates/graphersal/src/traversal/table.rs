@@ -5,11 +5,8 @@ use crate::error::TraverserResult;
 use crate::graph::schema::visualize::VisualizeFormat;
 use crate::traversal::render::{CUT_MARKER, ItemLimit, RenderOptions, cut_nested};
 use crate::value::ElementProperty;
-
-/// Formats a single `ElementProperty` value for a table cell.
-pub fn format_table_cell_value(prop: &ElementProperty) -> String {
-    format_cell(prop, &ItemLimit::unlimited())
-}
+#[cfg(feature = "display")]
+use crate::value::PropertyMap;
 
 /// Formats a table cell, cutting every nested collection to the item limit and marking the cut
 /// with `…` (for example `[1, 2, 3, …]`).
@@ -69,32 +66,14 @@ pub(crate) fn format_cell(prop: &ElementProperty, limit: &ItemLimit) -> String {
             }
             format!("{{{}}}", items.join(", "))
         }
-        ElementProperty::Vertex(v) => {
-            let id = v
-                .get("id")
-                .map(format_table_cell_value)
-                .unwrap_or_else(|| "-".to_string());
-            format!("v[{}]", id)
-        }
-        ElementProperty::Edge(e) => {
-            let id = e
-                .get("id")
-                .map(format_table_cell_value)
-                .unwrap_or_else(|| "-".to_string());
-            let from = e
-                .get("_from")
-                .map(format_table_cell_value)
-                .unwrap_or_else(|| "-".to_string());
-            let label = e
-                .get("label")
-                .map(format_table_cell_value)
-                .unwrap_or_else(|| "-".to_string());
-            let to = e
-                .get("_to")
-                .map(format_table_cell_value)
-                .unwrap_or_else(|| "-".to_string());
-            format!("e[{}][{}-{}->{}]", id, from, label, to)
-        }
+        ElementProperty::Vertex(v) => format!("v[{}]", v.id()),
+        ElementProperty::Edge(e) => format!(
+            "e[{}][{}-{}->{}]",
+            e.id(),
+            e.out_v().id(),
+            e.label().unwrap_or("-"),
+            e.in_v().id()
+        ),
     }
 }
 
@@ -185,6 +164,39 @@ fn map_cells(map: &crate::value::ValueMap) -> Vec<(String, &ElementProperty)> {
         .collect()
 }
 
+/// The columns of a vertex table that are the vertex's own, before its properties.
+#[cfg(feature = "display")]
+const VERTEX_COLUMNS: &[&str] = &["id", "label"];
+/// The columns of an edge table that are the edge's own (GraphSON's names), before its properties.
+#[cfg(feature = "display")]
+const EDGE_COLUMNS: &[&str] = &["id", "label", "outV", "inV"];
+/// The header suffix of a property whose name is one of the element's own columns.
+#[cfg(feature = "display")]
+const PROPERTY_SUFFIX: &str = " (property)";
+
+/// The column header of the property `key`: the key itself, or `key (property)` when the
+/// element's own columns already use that name (a property named `id` or `label`).
+#[cfg(feature = "display")]
+fn property_column(fixed: &[&str], key: &str) -> String {
+    if fixed.contains(&key) {
+        format!("{key}{PROPERTY_SUFFIX}")
+    } else {
+        key.to_string()
+    }
+}
+
+/// The cell of a property column `col` (see [`property_column`]).
+#[cfg(feature = "display")]
+fn property_cell(fixed: &[&str], properties: &PropertyMap, col: &str, limit: &ItemLimit) -> String {
+    let key = col
+        .strip_suffix(PROPERTY_SUFFIX)
+        .filter(|key| fixed.contains(key))
+        .unwrap_or(col);
+    properties
+        .get(key)
+        .map_or_else(|| "-".to_string(), |val| format_cell(val, limit))
+}
+
 /// Discovers the ordered column schema for a slice of `ElementProperty` items.
 #[cfg(feature = "display")]
 fn discover_columns(elements: &[ElementProperty]) -> Vec<String> {
@@ -206,43 +218,26 @@ fn discover_columns(elements: &[ElementProperty]) -> Vec<String> {
         .iter()
         .any(|e| matches!(e, ElementProperty::Map(_)));
 
-    if is_vertex {
-        let mut fixed_headers = vec!["id".to_string(), "label".to_string()];
+    if is_vertex || is_edge {
+        let fixed: &[&str] = if is_vertex {
+            VERTEX_COLUMNS
+        } else {
+            EDGE_COLUMNS
+        };
         let mut prop_keys = BTreeSet::new();
-
         for el in elements {
-            if let ElementProperty::Vertex(v) = el {
-                for key in v.keys() {
-                    if key != "id" && key != "label" {
-                        prop_keys.insert(key.to_string());
-                    }
-                }
+            let properties = match el {
+                ElementProperty::Vertex(v) if is_vertex => v.properties(),
+                ElementProperty::Edge(e) if !is_vertex => e.properties(),
+                _ => continue,
+            };
+            for key in properties.keys() {
+                prop_keys.insert(property_column(fixed, key));
             }
         }
-
-        fixed_headers.extend(prop_keys);
-        fixed_headers
-    } else if is_edge {
-        let mut fixed_headers = vec![
-            "id".to_string(),
-            "label".to_string(),
-            "_from".to_string(),
-            "_to".to_string(),
-        ];
-        let mut prop_keys = BTreeSet::new();
-
-        for el in elements {
-            if let ElementProperty::Edge(e) = el {
-                for key in e.keys() {
-                    if key != "id" && key != "label" && key != "_from" && key != "_to" {
-                        prop_keys.insert(key.to_string());
-                    }
-                }
-            }
-        }
-
-        fixed_headers.extend(prop_keys);
-        fixed_headers
+        let mut headers: Vec<String> = fixed.iter().map(|c| c.to_string()).collect();
+        headers.extend(prop_keys);
+        headers
     } else if is_object {
         let mut prop_keys = BTreeSet::new();
         for el in elements {
@@ -289,20 +284,18 @@ fn extract_cell_value(
     }
 
     match element {
-        ElementProperty::Vertex(v) => {
-            if let Some(val) = v.get(col) {
-                format_cell(val, limit)
-            } else {
-                "-".to_string()
-            }
-        }
-        ElementProperty::Edge(e) => {
-            if let Some(val) = e.get(col) {
-                format_cell(val, limit)
-            } else {
-                "-".to_string()
-            }
-        }
+        ElementProperty::Vertex(v) => match col {
+            "id" => v.id().to_string(),
+            "label" => v.label().unwrap_or("-").to_string(),
+            _ => property_cell(VERTEX_COLUMNS, v.properties(), col, limit),
+        },
+        ElementProperty::Edge(e) => match col {
+            "id" => e.id().to_string(),
+            "label" => e.label().unwrap_or("-").to_string(),
+            "outV" => e.out_v().id().to_string(),
+            "inV" => e.in_v().id().to_string(),
+            _ => property_cell(EDGE_COLUMNS, e.properties(), col, limit),
+        },
         ElementProperty::Object(obj) => {
             if let Some(val) = obj.get(col) {
                 format_cell(val, limit)

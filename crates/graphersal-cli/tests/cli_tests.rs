@@ -477,12 +477,8 @@ fn empty_graph_accepts_mutations() {
     );
 
     assert_eq!(res.code, 0, "stderr: {}", res.stderr);
-    // The added vertex is echoed by `next()`, the count by the second script.
-    assert!(
-        res.stdout.contains("\"name\": \"bob\""),
-        "stdout: {}",
-        res.stdout
-    );
+    // The added vertex is echoed by `next()` (as `v[<id>]`), the count by the second script.
+    assert!(res.stdout.contains("v["), "stdout: {}", res.stdout);
     assert_eq!(res.stdout.lines().last(), Some("1"));
 }
 
@@ -3358,7 +3354,7 @@ fn a_graph_value_as_the_final_value_lists_its_elements() {
         res.stdout
     );
     assert!(
-        res.stdout.contains(r#""_from": "6""#),
+        res.stdout.contains(r#""outV": "6""#),
         "stdout: {}",
         res.stdout
     );

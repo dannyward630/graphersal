@@ -391,10 +391,9 @@ pub(crate) fn parse_entries(
                             "{key} cannot take the placeholder {other}; use {own}"
                         )));
                     }
-                    ElementProperty::Vertex(vertex) => match vertex.get("id").and_then(id_text) {
-                        Some(id) => EndpointRef::Id(id),
-                        None => return Err(invalid(format!("{key} names a vertex without an id"))),
-                    },
+                    ElementProperty::Vertex(vertex) => {
+                        EndpointRef::Id(CompactString::new(vertex.id()))
+                    }
                     value => match id_text(value) {
                         Some(id) => EndpointRef::Id(id),
                         None => {

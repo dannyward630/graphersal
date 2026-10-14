@@ -18,6 +18,7 @@ fn names(values: &[ElementProperty]) -> Vec<String> {
             ElementProperty::String(s) => s.to_string(),
             ElementProperty::Number(n) => n.to_string(),
             ElementProperty::Vertex(v) => v
+                .properties()
                 .get("name")
                 .and_then(|n| n.as_string())
                 .unwrap_or("?")

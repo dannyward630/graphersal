@@ -38,11 +38,11 @@ fn test_edge_to_table_default() {
 
     let table = g.e(None::<()>).to_table().unwrap();
     assert!(!table.is_empty());
-    // Columns for edge: id, label, _from, _to, weight
+    // Columns for edge: id, label, outV, inV, weight
     assert!(table.contains("id"));
     assert!(table.contains("label"));
-    assert!(table.contains("_from"));
-    assert!(table.contains("_to"));
+    assert!(table.contains("outV"));
+    assert!(table.contains("inV"));
     assert!(table.contains("weight"));
     assert!(table.contains("knows"));
     assert!(table.contains("created"));

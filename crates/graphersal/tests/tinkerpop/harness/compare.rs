@@ -149,20 +149,19 @@ impl GraphIndex {
                 .to_typed_list()
                 .map_err(|e| format!("index {script}: {e}"))
         };
-        let text = |element: &graphersal::prelude::PropertyMap, key: &str| -> Option<String> {
-            element
-                .get(key)
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-        };
-
         let mut index = GraphIndex::default();
         let mut names: HashMap<String, String> = HashMap::new();
         for vertex in elements("g.V()")? {
             let ElementProperty::Vertex(element) = vertex else {
                 continue;
             };
-            if let (Some(id), Some(name)) = (text(&element, "id"), text(&element, "name")) {
+            let name = element
+                .properties()
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            if let Some(name) = name {
+                let id = element.id().to_string();
                 names.insert(id.clone(), name.clone());
                 index.vertices.entry(name).or_default().push(id);
             }
@@ -171,14 +170,14 @@ impl GraphIndex {
             let ElementProperty::Edge(element) = edge else {
                 continue;
             };
-            let (Some(id), Some(label), Some(from), Some(to)) = (
-                text(&element, "id"),
-                text(&element, "label"),
-                text(&element, "_from"),
-                text(&element, "_to"),
-            ) else {
+            let Some(label) = element.label().map(str::to_string) else {
                 continue;
             };
+            let id = element.id().to_string();
+            let (from, to) = (
+                element.out_v().id().to_string(),
+                element.in_v().id().to_string(),
+            );
             if let (Some(out), Some(inv)) = (names.get(&from), names.get(&to)) {
                 index
                     .edges
@@ -405,10 +404,6 @@ pub fn matches(expected: &Resolved, actual: &ElementProperty, ids: IdMode) -> bo
     matches_at(expected, actual, ids, ids == IdMode::Scenario)
 }
 
-fn element_id(element: &graphersal::prelude::PropertyMap) -> Option<&str> {
-    element.get("id").and_then(|v| v.as_str())
-}
-
 /// `true` when two `f64` values are equal or adjacent floats (at most 1 ulp apart).
 ///
 /// `NaN` equals `NaN` (and nothing else), infinities compare exactly, `+0` equals `-0`, and values
@@ -429,8 +424,8 @@ pub fn floats_within_one_ulp(a: f64, b: f64) -> bool {
 
 fn matches_at(expected: &Resolved, actual: &ElementProperty, ids: IdMode, id_pos: bool) -> bool {
     match (expected, actual) {
-        (Resolved::Vertex(id), ElementProperty::Vertex(e))
-        | (Resolved::Edge(id), ElementProperty::Edge(e)) => element_id(e) == Some(id.as_str()),
+        (Resolved::Vertex(id), ElementProperty::Vertex(e)) => e.id() == id.as_str(),
+        (Resolved::Edge(id), ElementProperty::Edge(e)) => e.id() == id.as_str(),
         (Resolved::Id(id), ElementProperty::String(s)) => s.as_str() == id,
         (Resolved::Int(n), ElementProperty::Number(num)) => num.as_i64() == Some(*n),
         (Resolved::Int(n), ElementProperty::String(s)) => id_pos && s.as_str() == n.to_string(),
@@ -610,10 +605,10 @@ fn write_short(out: &mut String, value: &ElementProperty) {
             let _ = write!(out, "uuid[{u:032x}]");
         }
         ElementProperty::Vertex(e) => {
-            let _ = write!(out, "v[{}]", element_id(e).unwrap_or("?"));
+            let _ = write!(out, "v[{}]", e.id());
         }
         ElementProperty::Edge(e) => {
-            let _ = write!(out, "e[{}]", element_id(e).unwrap_or("?"));
+            let _ = write!(out, "e[{}]", e.id());
         }
         ElementProperty::Array(items) => {
             out.push('[');
@@ -805,7 +800,7 @@ pub fn short_tree(actual: &ElementProperty) -> String {
 mod tests {
     use super::*;
     use crate::harness::notation;
-    use graphersal::prelude::{Number, PropertyMap};
+    use graphersal::prelude::{EdgeValue, Number, PropertyMap, VertexRef, VertexValue};
 
     fn modern() -> GraphIndex {
         GraphIndex::from_parts(
@@ -845,11 +840,21 @@ mod tests {
     }
 
     fn vertex(id: &str) -> ElementProperty {
-        ElementProperty::Vertex(element(&[("id", s(id)), ("label", s("person"))]))
+        ElementProperty::Vertex(Box::new(VertexValue::new(
+            id,
+            vec!["person".into()],
+            PropertyMap::default(),
+        )))
     }
 
     fn edge(id: &str) -> ElementProperty {
-        ElementProperty::Edge(element(&[("id", s(id)), ("label", s("knows"))]))
+        ElementProperty::Edge(Box::new(EdgeValue::new(
+            id,
+            Some("knows".into()),
+            VertexRef::default(),
+            VertexRef::default(),
+            PropertyMap::default(),
+        )))
     }
 
     fn arr(items: Vec<ElementProperty>) -> ElementProperty {

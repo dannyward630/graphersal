@@ -236,6 +236,8 @@ pub(super) fn ids_from_dynamic(
                     )));
                 }
             }
+        } else if let Some(id) = element_id_of(&arg) {
+            out.push(id);
         } else {
             out.push(dynamic_to_compact_string(arg));
         }
@@ -379,9 +381,9 @@ pub(crate) fn element_property_to_dynamic(value: ElementProperty) -> Dynamic {
                 .map(element_property_to_dynamic)
                 .collect::<Vec<Dynamic>>(),
         ),
-        ElementProperty::Object(element)
-        | ElementProperty::Vertex(element)
-        | ElementProperty::Edge(element) => Dynamic::from_map(element_to_map(*element)),
+        ElementProperty::Object(element) => Dynamic::from_map(element_to_map(*element)),
+        ElementProperty::Vertex(vertex) => Dynamic::from(ScriptVertex(*vertex)),
+        ElementProperty::Edge(edge) => Dynamic::from(ScriptEdge(*edge)),
         ElementProperty::Map(map) => Dynamic::from(ScriptMap(*map)),
     }
 }
@@ -611,6 +613,22 @@ fn convert_bounded(arg: Dynamic, levels: usize) -> Result<ElementProperty, TooDe
         ElementProperty::Null
     } else if let Some(uuid) = arg.read_lock::<ScriptUuid>() {
         ElementProperty::Uuid(uuid.0)
+    } else if let Some(vertex) = arg.read_lock::<ScriptVertex>() {
+        ElementProperty::Vertex(Box::new(vertex.0.clone()))
+    } else if let Some(edge) = arg.read_lock::<ScriptEdge>() {
+        ElementProperty::Edge(Box::new(edge.0.clone()))
+    } else if let Some(vertex) = arg.read_lock::<ScriptVertexRef>() {
+        // An endpoint stands for its vertex: id and label, no properties.
+        ElementProperty::Vertex(Box::new(crate::value::VertexValue::new(
+            vertex.0.id(),
+            vertex
+                .0
+                .label()
+                .map(CompactString::new)
+                .into_iter()
+                .collect(),
+            crate::value::PropertyMap::default(),
+        )))
     } else if let Some(map) = arg.read_lock::<ScriptMap>() {
         // An engine map value: already a property, measured without recursion.
         let property = map.0.clone().into_property();
@@ -1218,3 +1236,16 @@ pub(super) fn try_vec_dynamic_to_gts(
 //         ArgP::NotContaining(dynamic) => func(P::NotContaining(dynamic_to_pvalue(dynamic))),
 //     }
 // }
+
+/// The id of a vertex, an edge or an edge endpoint value (`g.V(v)`, `has_id(e)`); `None` for any
+/// other value.
+pub(crate) fn element_id_of(arg: &Dynamic) -> Option<CompactString> {
+    if let Some(vertex) = arg.read_lock::<ScriptVertex>() {
+        Some(CompactString::new(vertex.0.id()))
+    } else if let Some(edge) = arg.read_lock::<ScriptEdge>() {
+        Some(CompactString::new(edge.0.id()))
+    } else {
+        arg.read_lock::<ScriptVertexRef>()
+            .map(|vertex| CompactString::new(vertex.0.id()))
+    }
+}

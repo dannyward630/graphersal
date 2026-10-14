@@ -64,6 +64,7 @@ fn sorted_text(values: &[ElementProperty]) -> Vec<String> {
         .iter()
         .map(|value| match value {
             ElementProperty::Vertex(v) => v
+                .properties()
                 .get("name")
                 .and_then(|n| n.as_string())
                 .unwrap_or("?")

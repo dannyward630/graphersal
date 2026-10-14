@@ -379,12 +379,12 @@ impl<'a, S: GraphStorage> Cursor<'a, S> {
                 .map(Cursor::Property),
             (
                 Cursor::Property(
-                    ElementProperty::Object(map)
-                    | ElementProperty::Vertex(map)
-                    | ElementProperty::Edge(map),
+                    value @ (ElementProperty::Object(_)
+                    | ElementProperty::Vertex(_)
+                    | ElementProperty::Edge(_)),
                 ),
                 PathSeg::Key(key),
-            ) => map.get(key.as_str()).map(Cursor::Property),
+            ) => value.map_entries()?.get(key.as_str()).map(Cursor::Property),
             // A non-string key is unreachable by path: only string keys are addressed.
             (Cursor::Property(ElementProperty::Map(map)), PathSeg::Key(key)) => {
                 map.get_str(key.as_str()).map(Cursor::Property)
@@ -427,10 +427,12 @@ impl<'a, S: GraphStorage> Cursor<'a, S> {
                     .map_or_else(Vec::new, |p| p.keys().map(|k| k.to_string()).collect()),
             ),
             Cursor::Property(
-                ElementProperty::Object(map)
-                | ElementProperty::Vertex(map)
-                | ElementProperty::Edge(map),
-            ) => Some(map.keys().map(|k| k.to_string()).collect()),
+                value @ (ElementProperty::Object(_)
+                | ElementProperty::Vertex(_)
+                | ElementProperty::Edge(_)),
+            ) => value
+                .map_entries()
+                .map(|map| map.keys().map(|k| k.to_string()).collect()),
             _ => None,
         };
         let len = match at {

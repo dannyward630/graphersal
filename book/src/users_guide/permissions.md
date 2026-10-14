@@ -41,7 +41,8 @@ What each step requests is decided in one place in the engine (`GraphStep::for_e
 | `E()` / `out_e()`, `in_e()`, `both_e()` | `Read` on `Data(edge)` |
 | `out()`, `in()`, `both()` | `Read` on `Data(edge)` and on `Data(vertex)` |
 | `subgraph("sg")` | `Read` on `Data(vertex)` (it copies the endpoints of the edges it receives) |
-| every other step (`has()`, `values()`, `limit()`, `count()`, `inject()`, `constant()`, `math()`, `as()`, `by()`, ...) | nothing |
+| `inject(v)` of a vertex / an edge value | `Read` on `Data(vertex)` / `Data(edge)` (it emits the stored element of that id) |
+| every other step (`has()`, `values()`, `limit()`, `count()`, `inject()` of plain values, `constant()`, `math()`, `as()`, `by()`, ...) | nothing |
 | `addV("person")`, `addV(["a", "b"])` | `Create` on `Data(vertex "person")`, one request per label (`Data(vertex)` without a static label) |
 | `addE("knows")` | `Create` on `Data(edge "knows")` |
 | `mergeV(..)` / `mergeE(..)` | `Create` and `Update` on `Data(vertex)` / `Data(edge)` |
@@ -79,8 +80,11 @@ Only steps that **reach graph data** ask for a read: the sources (`V()`, `E()`, 
 of a traversal) and the adjacency steps. A value-only step works on what earlier steps produced,
 so it asks nothing: `g.V().has("age", P.gt(30)).values("name").limit(2)` asks exactly once, for
 `Read` on `Data(vertex)`, and `g.inject(1, 2).sum()` runs under `AccessPolicy::deny_all()`. No
-live element handle survives a run: `let v = g.V().next()` is the vertex materialized as a map
-and `inject()` takes values, so `g.inject(v)` reads that copy and asks nothing.
+live element handle survives a run: `let v = g.V().next()` is a detached copy of the vertex
+(see [Vertices and Edges as Values](vertex_and_edge_values.md)), and reading the copy (`v.name`,
+`v["age"]`) asks nothing. Passing it back (`g.inject(v)`, also an edge's endpoint `e.out_v`)
+reaches the stored element of its id, so it asks `Read` on `Data(vertex)` (`Data(edge)` for an
+edge) like `V()`: a copy cannot open a way to data the policy hides.
 
 Labels of reads are not reported: a request reports what the plan states, and a plan cannot say
 statically which labels a read reaches. Element- and label-level read security is a later storage

@@ -11,14 +11,64 @@ __all__ = [
     "AccessPolicy",
     "DryRunResult",
     "Store",
+    "Vertex",
+    "Edge",
     "GraphersalError",
     "PermissionDeniedError",
     "CommitRejectedError",
     "ReturnedClosureError",
 ]
 
-#: A value a script parameter may take.
-_ParamValue = Union[int, float, str, bool, None, uuid.UUID]
+#: A value a script parameter may take (a ``Vertex``/``Edge`` by its id and label).
+_ParamValue = Union[int, float, str, bool, None, uuid.UUID, "Vertex", "Edge"]
+
+class Vertex:
+    """A vertex a query returned (detached: id, labels and a snapshot of its properties), like
+    gremlin-python's ``Vertex``. ``id``, ``label`` and ``labels`` are the vertex's own;
+    ``properties`` and ``v["name"]`` are its properties only, so a property named ``label`` is
+    ``v["label"]`` and never hides ``v.label``. Equal to (and hashed like) another vertex of the
+    same id; ``repr`` is ``v[1]``. Can be passed back as a parameter (``g.V(v)``)."""
+
+    @property
+    def id(self) -> str: ...
+    @property
+    def label(self) -> Optional[str]:
+        """The primary label, ``None`` for a vertex without a label."""
+    @property
+    def labels(self) -> list[str]:
+        """The full label set, primary label first."""
+    @property
+    def properties(self) -> dict[str, Any]:
+        """The properties (never the id or the label)."""
+    def __getitem__(self, key: str) -> Any:
+        """The property ``key``; ``KeyError`` when the vertex has none of that name."""
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+
+class Edge:
+    """An edge a query returned (detached: id, label, endpoints and a snapshot of its
+    properties), like gremlin-python's ``Edge``. ``out_v``/``in_v`` are vertices without
+    properties; ``properties`` and ``e["weight"]`` are the edge's properties only. Equal to (and
+    hashed like) another edge of the same id; ``repr`` is ``e[0][1-knows->2]``."""
+
+    @property
+    def id(self) -> str: ...
+    @property
+    def label(self) -> Optional[str]:
+        """The edge's label, ``None`` for an edge without a label."""
+    @property
+    def out_v(self) -> Vertex:
+        """The outgoing vertex (id and label only)."""
+    @property
+    def in_v(self) -> Vertex:
+        """The incoming vertex (id and label only)."""
+    @property
+    def properties(self) -> dict[str, Any]:
+        """The properties (never the id, the label or the endpoints)."""
+    def __getitem__(self, key: str) -> Any:
+        """The property ``key``; ``KeyError`` when the edge has none of that name."""
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
 
 #: The name of an action kind of an ``AccessPolicy`` rule (``"*"``: every one).
 _Action = Literal["read", "create", "update", "delete", "execute", "custom", "*"]

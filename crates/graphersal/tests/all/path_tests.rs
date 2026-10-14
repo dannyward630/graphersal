@@ -25,11 +25,8 @@ fn ids(value: &ElementProperty) -> Vec<String> {
         ElementProperty::Array(items) => items
             .iter()
             .map(|item| match item {
-                ElementProperty::Vertex(v) | ElementProperty::Edge(v) => v
-                    .get("id")
-                    .and_then(|id| id.as_string())
-                    .unwrap_or("?")
-                    .to_string(),
+                ElementProperty::Vertex(v) => v.id().to_string(),
+                ElementProperty::Edge(e) => e.id().to_string(),
                 other => format!("{other:?}"),
             })
             .collect(),
@@ -369,7 +366,7 @@ fn add_e_reads_labels() {
         let ElementProperty::Edge(edge) = edge else {
             panic!("expected an edge");
         };
-        assert_eq!(edge.get("_from").and_then(|v| v.as_string()), Some("1"));
+        assert_eq!(edge.out_v().id(), "1");
     }
 }
 

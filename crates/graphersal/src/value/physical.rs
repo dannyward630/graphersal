@@ -26,7 +26,7 @@ use crate::graph::schema::PropertySchema;
 use crate::graph::schema::coerce::{coerce_to_declared, conforms_to};
 use crate::graph::schema::types::{ValueType, value_type_name};
 use crate::value::uuid::format_canonical;
-use crate::value::{ElementProperty, N, Number, PropertyMap};
+use crate::value::{EdgeValue, ElementProperty, N, Number, PropertyMap, VertexValue};
 
 /// A value made of JSON types only.
 #[derive(Debug, Clone, PartialEq)]
@@ -158,8 +158,10 @@ pub(crate) fn encoding_of(ty: &ValueType) -> Option<Encoding> {
 
 /// Lowers a logical value to its physical form, borrowing wherever it can.
 ///
-/// `Vertex`/`Edge` values (query results, never stored properties) lower to the object of their
-/// element map, which is how every visualizer renders them.
+/// `Vertex`/`Edge` values (query results, never stored properties) lower to the untyped
+/// GraphSON 3 shape: a vertex `{"id", "label", "properties"}` (plus `"labels"` for a vertex with
+/// several labels, a Graphersal extension), an edge `{"id", "label", "inVLabel", "outVLabel",
+/// "inV", "outV", "properties"}`; a property named `id` or `label` stays inside `"properties"`.
 pub(crate) fn lower(value: &ElementProperty) -> PhysicalValue<'_> {
     match value {
         ElementProperty::Null => PhysicalValue::Null,
@@ -174,9 +176,9 @@ pub(crate) fn lower(value: &ElementProperty) -> PhysicalValue<'_> {
             PhysicalValue::String(Cow::Owned(format_canonical(*u).into_string()))
         }
         ElementProperty::Array(items) => PhysicalValue::Array(items.iter().map(lower).collect()),
-        ElementProperty::Object(map)
-        | ElementProperty::Vertex(map)
-        | ElementProperty::Edge(map) => lower_map(map),
+        ElementProperty::Object(map) => lower_map(map),
+        ElementProperty::Vertex(vertex) => lower_vertex(vertex),
+        ElementProperty::Edge(edge) => lower_edge(edge),
         // GraphSON 3 shape: `{"@type": "g:Map", "@value": [k1, v1, k2, v2, ...]}`. Output only: `lift` does
         // not interpret the tag (a value-keyed map is never storable, so it never needs to be read back).
         ElementProperty::Map(map) => {
@@ -201,6 +203,60 @@ fn lower_number(number: &Number) -> PhysicalValue<'static> {
         N::NegInt(i) => PhysicalValue::Int(i),
         N::Float(f) => PhysicalValue::Float(f.into_inner()),
     }
+}
+
+fn lower_text(text: Option<&str>) -> PhysicalValue<'_> {
+    text.map_or(PhysicalValue::Null, |text| {
+        PhysicalValue::String(Cow::Borrowed(text))
+    })
+}
+
+/// A vertex as untyped GraphSON 3: `{"id", "label", "properties"}`; `"labels"` follows `"label"`
+/// only for a vertex with more than one label.
+fn lower_vertex(vertex: &VertexValue) -> PhysicalValue<'_> {
+    let mut fields = Vec::with_capacity(4);
+    fields.push((
+        Cow::Borrowed("id"),
+        PhysicalValue::String(Cow::Borrowed(vertex.id())),
+    ));
+    fields.push((Cow::Borrowed("label"), lower_text(vertex.label())));
+    if vertex.labels().len() > 1 {
+        fields.push((
+            Cow::Borrowed("labels"),
+            PhysicalValue::Array(
+                vertex
+                    .labels()
+                    .iter()
+                    .map(|label| PhysicalValue::String(Cow::Borrowed(label.as_str())))
+                    .collect(),
+            ),
+        ));
+    }
+    fields.push((Cow::Borrowed("properties"), lower_map(vertex.properties())));
+    PhysicalValue::Object(fields)
+}
+
+/// An edge as untyped GraphSON 3: `{"id", "label", "inVLabel", "outVLabel", "inV", "outV",
+/// "properties"}`.
+fn lower_edge(edge: &EdgeValue) -> PhysicalValue<'_> {
+    PhysicalValue::Object(vec![
+        (
+            Cow::Borrowed("id"),
+            PhysicalValue::String(Cow::Borrowed(edge.id())),
+        ),
+        (Cow::Borrowed("label"), lower_text(edge.label())),
+        (Cow::Borrowed("inVLabel"), lower_text(edge.in_v().label())),
+        (Cow::Borrowed("outVLabel"), lower_text(edge.out_v().label())),
+        (
+            Cow::Borrowed("inV"),
+            PhysicalValue::String(Cow::Borrowed(edge.in_v().id())),
+        ),
+        (
+            Cow::Borrowed("outV"),
+            PhysicalValue::String(Cow::Borrowed(edge.out_v().id())),
+        ),
+        (Cow::Borrowed("properties"), lower_map(edge.properties())),
+    ])
 }
 
 fn lower_map(map: &PropertyMap) -> PhysicalValue<'_> {
@@ -341,17 +397,12 @@ pub(crate) fn to_json_text(value: &ElementProperty) -> Result<String, PhysicalEr
 ///
 /// Display only: two different values may print the same text (`"29"` and `29`), so never use it as a key.
 pub(crate) fn to_display_text(value: &ElementProperty) -> CompactString {
-    fn element_id(element: &PropertyMap) -> CompactString {
-        element
-            .get("id")
-            .map_or_else(CompactString::default, to_display_text)
-    }
     match value {
-        ElementProperty::Vertex(element) => {
-            return CompactString::from(format!("v[{}]", element_id(element)));
+        ElementProperty::Vertex(vertex) => {
+            return CompactString::from(format!("v[{}]", vertex.id()));
         }
-        ElementProperty::Edge(element) => {
-            return CompactString::from(format!("e[{}]", element_id(element)));
+        ElementProperty::Edge(edge) => {
+            return CompactString::from(format!("e[{}]", edge.id()));
         }
         ElementProperty::Number(number) => {
             if let N::Float(f) = number.n
@@ -1136,10 +1187,18 @@ mod tests {
 
         let mut map = PropertyMap::default();
         map.insert("name", ElementProperty::String("marko".into()));
-        let vertex = ElementProperty::Vertex(Box::new(map));
+        let vertex =
+            ElementProperty::Vertex(Box::new(VertexValue::new("1", vec!["person".into()], map)));
         assert_eq!(
             lower(&vertex),
-            PhysicalValue::Object(vec![(Cow::Borrowed("name"), pstr("marko"))])
+            PhysicalValue::Object(vec![
+                (Cow::Borrowed("id"), pstr("1")),
+                (Cow::Borrowed("label"), pstr("person")),
+                (
+                    Cow::Borrowed("properties"),
+                    PhysicalValue::Object(vec![(Cow::Borrowed("name"), pstr("marko"))])
+                ),
+            ])
         );
     }
 

@@ -116,7 +116,7 @@ mod tests {
             assert: |res| {
                 match &res[0] {
                     ElementProperty::Vertex(vertex) => {
-                        assert_eq!(vertex["id"], ElementProperty::String("1".into()));
+                        assert_eq!(vertex.id(), "1");
                     },
                     _ => panic!(),
                 }
@@ -136,7 +136,7 @@ mod tests {
             assert: |res| {
                 match &res[0] {
                     ElementProperty::Vertex(vertex) => {
-                        assert_eq!(vertex["id"], ElementProperty::String("1".into()));
+                        assert_eq!(vertex.id(), "1");
                     },
                     _ => panic!(),
                 }
@@ -156,7 +156,7 @@ mod tests {
             assert: |res| {
                 match &res[0] {
                     ElementProperty::Vertex(vertex) => {
-                        assert_eq!(vertex["id"], ElementProperty::String("1".into()));
+                        assert_eq!(vertex.id(), "1");
                     },
                     _ => panic!(),
                 }
@@ -176,7 +176,7 @@ mod tests {
             assert: |res| {
                 match &res[0] {
                     ElementProperty::Vertex(vertex) => {
-                        assert_eq!(vertex["id"], ElementProperty::String("1".into()));
+                        assert_eq!(vertex.id(), "1");
                     },
                     _ => panic!(),
                 }
@@ -196,7 +196,7 @@ mod tests {
             assert: |res| {
                 match &res[0] {
                     ElementProperty::Edge(vertex) => {
-                        assert_eq!(vertex["id"], ElementProperty::String("1".into()));
+                        assert_eq!(vertex.id(), "1");
                     },
                     _ => panic!(),
                 }
@@ -216,7 +216,7 @@ mod tests {
             assert: |res| {
                 match &res[0] {
                     ElementProperty::Edge(vertex) => {
-                        assert_eq!(vertex["id"], ElementProperty::String("1".into()));
+                        assert_eq!(vertex.id(), "1");
                     },
                     _ => panic!(),
                 }

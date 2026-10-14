@@ -76,6 +76,7 @@
   - [Multi-Label Vertices](users_guide/multi_label_vertices.md)
   - [Property Elements](users_guide/property_elements.md)
   - [Properties Named id or label](users_guide/id_and_label_keys.md)
+  - [Vertices and Edges as Values](users_guide/vertex_and_edge_values.md)
 - [Traversal Patterns](dsl/traversal_patterns.md)
   - [Recursive Traversals](users_guide/recursive_traversals.md)
   - [Bulk and Barriers](users_guide/bulk_and_barriers.md)

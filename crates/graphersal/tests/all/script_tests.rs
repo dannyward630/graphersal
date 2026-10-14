@@ -1927,7 +1927,7 @@ mod tests {
         .expect("count evaluation failed");
         assert_eq!(count.as_int().expect("count must be an integer"), 4);
 
-        // Vertices arrive as object maps addressable by property key.
+        // Vertices arrive as Vertex values whose properties are addressable by key.
         let name = eval_value(graph.clone(), r#"g.V("1").toList()[0].name"#)
             .expect("vertex property access failed");
         assert_eq!(name.into_string().expect("name must be a string"), "marko");
@@ -1935,12 +1935,15 @@ mod tests {
         // Edges keep their endpoints and label.
         let edge = eval_value(graph.clone(), r#"g.E("0").toList()[0]"#)
             .expect("edge evaluation failed")
-            .cast::<rhai::Map>();
-        assert_eq!(edge["label"].clone().into_string().unwrap(), "knows");
-        assert_eq!(edge["_from"].clone().into_string().unwrap(), "1");
-        assert_eq!(edge["_to"].clone().into_string().unwrap(), "2");
+            .cast::<graphersal::script::ScriptEdge>();
+        let edge = edge.as_edge_value();
+        assert_eq!(edge.label(), Some("knows"));
+        assert_eq!(edge.out_v().id(), "1");
+        assert_eq!(edge.in_v().id(), "2");
         assert_eq!(
-            edge["weight"].as_float().expect("weight must be a float"),
+            edge.properties()["weight"]
+                .as_f64()
+                .expect("weight must be a float"),
             0.5
         );
 
@@ -1986,7 +1989,7 @@ mod tests {
         let graph = Arc::new(GraphSource::tinkerpop_modern());
         let by_vertex = eval_value(
             graph.clone(),
-            r#"g.V("1").groupCount().by(__.identity()).next().keys()[0]["id"]"#,
+            r#"g.V("1").groupCount().by(__.identity()).next().keys()[0].id"#,
         )
         .expect("groupCount() by vertex failed");
         assert_eq!(
@@ -4213,7 +4216,7 @@ mod bounded_rendering {
     #[test]
     fn a_final_list_is_cut_but_data_terminals_are_not() {
         let limits = RenderOptions::new().with_max_rows(2).with_max_items(1);
-        let value = eval_in_session(None, "g.v().to_list()").unwrap();
+        let value = eval_in_session(None, "g.v().element_map().to_list()").unwrap();
         let rendered = try_render_value(value, VisualizeFormat::Auto, &limits).unwrap();
         assert_eq!(rendered.text.lines().count(), 2, "{}", rendered.text);
         assert!(

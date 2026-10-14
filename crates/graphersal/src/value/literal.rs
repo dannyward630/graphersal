@@ -192,8 +192,16 @@ fn write_literal(out: &mut String, value: &ElementProperty) {
             }
             close_cut(out, '}', map.len());
         }
-        ElementProperty::Vertex(element) => write_element(out, 'v', element),
-        ElementProperty::Edge(element) => write_element(out, 'e', element),
+        ElementProperty::Vertex(vertex) => {
+            out.push_str("v[");
+            out.push_str(vertex.id());
+            out.push(']');
+        }
+        ElementProperty::Edge(edge) => {
+            out.push_str("e[");
+            out.push_str(edge.id());
+            out.push(']');
+        }
     }
 }
 
@@ -206,17 +214,6 @@ fn close_cut(out: &mut String, close: char, total: usize) {
     } else {
         out.push(close);
     }
-}
-
-fn write_element(out: &mut String, kind: char, element: &crate::value::PropertyMap) {
-    out.push(kind);
-    out.push('[');
-    match element.get("id") {
-        Some(ElementProperty::String(id)) => out.push_str(id),
-        Some(other) => write_literal(out, other),
-        None => {}
-    }
-    out.push(']');
 }
 
 /// A property key as the DSL writes it: `"name"` or `jpath("$.a.b")`.

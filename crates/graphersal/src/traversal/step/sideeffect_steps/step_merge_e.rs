@@ -218,7 +218,7 @@ impl<'g, S: GraphStorage + 'g> StepMergeE<'g, S> {
         }
         let value = value.into_node_property(context.storage)?;
         let id = match &value {
-            ElementProperty::Vertex(vertex) => vertex.get("id").and_then(id_text),
+            ElementProperty::Vertex(vertex) => Some(CompactString::new(vertex.id())),
             other => id_text(other),
         };
         match id {

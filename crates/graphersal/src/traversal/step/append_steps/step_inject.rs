@@ -62,34 +62,34 @@ impl<'g, S: GraphStorage + 'g> AnonymousTraversal<'g, S> {
 
 impl<'g, S: GraphStorage + 'g> GraphStepAppend<'g, S> for StepInject {
     #[inline]
+    fn reads_elements(&self) -> (bool, bool) {
+        (
+            self.values
+                .iter()
+                .any(|value| matches!(value, ElementProperty::Vertex(_))),
+            self.values
+                .iter()
+                .any(|value| matches!(value, ElementProperty::Edge(_))),
+        )
+    }
+
     fn process(&self, context: &mut TraverserContext<'_, S>) -> TraverserResult<Vec<Traverser<S>>> {
         let mut res: Vec<Traverser<S>> = vec![];
         for r in self.values.iter() {
             match r {
+                // A vertex or an edge value is injected as the stored element of its id.
                 ElementProperty::Vertex(vertex) => {
-                    let id = vertex.get("id");
-                    if let Some(id) = id
-                        && let Some(id) = id.as_string()
-                    {
-                        let vertex = context.storage.get_vertex_by_id(id);
-                        if let Some(vertex_idx) = vertex {
-                            res.push(Traverser::start(
-                                context,
-                                TraverserValue::Vertex(vertex_idx),
-                            ));
-                        }
+                    if let Some(vertex_idx) = context.storage.get_vertex_by_id(vertex.id()) {
+                        res.push(Traverser::start(
+                            context,
+                            TraverserValue::Vertex(vertex_idx),
+                        ));
                     }
                 }
 
                 ElementProperty::Edge(edge) => {
-                    let id = edge.get("id");
-                    if let Some(id) = id
-                        && let Some(id) = id.as_string()
-                    {
-                        let edge = context.storage.get_edge_by_id(id);
-                        if let Some(edge_idx) = edge {
-                            res.push(Traverser::start(context, TraverserValue::Edge(edge_idx)));
-                        }
+                    if let Some(edge_idx) = context.storage.get_edge_by_id(edge.id()) {
+                        res.push(Traverser::start(context, TraverserValue::Edge(edge_idx)));
                     }
                 }
 
@@ -246,13 +246,13 @@ mod tests {
         assert_eq!(result.len(), 2);
         match &result[0] {
             ElementProperty::Vertex(vertex) => {
-                assert_eq!(vertex.get("id").unwrap().as_string(), Some("2"));
+                assert_eq!(Some(vertex.id()), Some("2"));
             }
             _ => panic!(),
         }
         match &result[1] {
             ElementProperty::Vertex(vertex) => {
-                assert_eq!(vertex.get("id").unwrap().as_string(), Some("1"));
+                assert_eq!(Some(vertex.id()), Some("1"));
             }
             _ => panic!(),
         }

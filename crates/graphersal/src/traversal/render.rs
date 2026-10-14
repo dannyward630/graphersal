@@ -257,6 +257,8 @@ impl ItemLimit {
         }
     }
 
+    /// No limit: every item is kept. Used by the script renderer and the tree tests.
+    #[cfg_attr(not(feature = "script"), allow(dead_code))]
     pub(crate) fn unlimited() -> Self {
         Self::new(None)
     }
@@ -318,11 +320,15 @@ pub(crate) fn cut_nested(prop: &ElementProperty, limit: &ItemLimit) -> ElementPr
         }
         // A vertex or edge is one row whose properties are its columns: its property set is not a
         // nested collection, but collections inside its property values are.
-        ElementProperty::Vertex(obj) => {
-            ElementProperty::Vertex(Box::new(cut_entries(obj, limit, false)))
+        ElementProperty::Vertex(vertex) => {
+            let mut vertex = vertex.clone();
+            *vertex.properties_mut() = cut_entries(vertex.properties(), limit, false);
+            ElementProperty::Vertex(vertex)
         }
-        ElementProperty::Edge(obj) => {
-            ElementProperty::Edge(Box::new(cut_entries(obj, limit, false)))
+        ElementProperty::Edge(edge) => {
+            let mut edge = edge.clone();
+            *edge.properties_mut() = cut_entries(edge.properties(), limit, false);
+            ElementProperty::Edge(edge)
         }
     }
 }

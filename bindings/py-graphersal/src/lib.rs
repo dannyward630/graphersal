@@ -16,6 +16,7 @@ static ALLOC: ::graphersal::alloc_tracking::TrackingAllocator =
     ::graphersal::alloc_tracking::TrackingAllocator::new();
 
 mod convert;
+mod element;
 mod error;
 mod graph;
 mod policy;
@@ -24,6 +25,7 @@ mod store;
 
 use pyo3::prelude::*;
 
+pub use element::{Edge, Vertex};
 pub use error::{
     CommitRejectedError, GraphersalError, PermissionDeniedError, ReturnedClosureError,
 };
@@ -39,6 +41,8 @@ fn graphersal(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AccessPolicy>()?;
     m.add_class::<DryRunResult>()?;
     m.add_class::<Store>()?;
+    m.add_class::<Vertex>()?;
+    m.add_class::<Edge>()?;
     let error_type = py.get_type::<GraphersalError>();
     // A class-level default so every `GraphersalError` has `.help` even when raised through a
     // path that never calls `error::new_graphersal_error` (e.g. the `Dynamic` conversion

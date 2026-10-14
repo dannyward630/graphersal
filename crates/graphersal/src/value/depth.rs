@@ -49,12 +49,12 @@ pub(crate) fn property_exceeds_depth(value: &ElementProperty, max: usize) -> boo
             ElementProperty::Array(items) => {
                 stack.extend(items.iter().filter(|c| is_container(c)).map(|c| (c, child)));
             }
-            ElementProperty::Object(element)
-            | ElementProperty::Vertex(element)
-            | ElementProperty::Edge(element) => {
+            ElementProperty::Object(_) | ElementProperty::Vertex(_) | ElementProperty::Edge(_) => {
                 stack.extend(
-                    element
-                        .values()
+                    current
+                        .map_entries()
+                        .into_iter()
+                        .flat_map(|element| element.values())
                         .filter(|c| is_container(c))
                         .map(|c| (c, child)),
                 );

@@ -21,12 +21,9 @@ fn test_v_group_by_label_vertex_materialization() {
             for p in person_array {
                 match p {
                     ElementProperty::Vertex(v_map) => {
-                        assert!(v_map.contains_key("id"));
-                        assert_eq!(
-                            v_map.get("label").and_then(|l| l.as_string()),
-                            Some("person")
-                        );
-                        assert!(v_map.contains_key("name"));
+                        assert!(!v_map.id().is_empty());
+                        assert_eq!(v_map.label(), Some("person"));
+                        assert!(v_map.properties().contains_key("name"));
                     }
                     _ => panic!("Expected ElementProperty::Vertex, got {:?}", p),
                 }
@@ -41,12 +38,9 @@ fn test_v_group_by_label_vertex_materialization() {
             for s in software_array {
                 match s {
                     ElementProperty::Vertex(v_map) => {
-                        assert!(v_map.contains_key("id"));
-                        assert_eq!(
-                            v_map.get("label").and_then(|l| l.as_string()),
-                            Some("software")
-                        );
-                        assert!(v_map.contains_key("name"));
+                        assert!(!v_map.id().is_empty());
+                        assert_eq!(v_map.label(), Some("software"));
+                        assert!(v_map.properties().contains_key("name"));
                     }
                     _ => panic!("Expected ElementProperty::Vertex, got {:?}", s),
                 }
@@ -76,13 +70,10 @@ fn test_e_group_by_label_edge_materialization() {
             for e in knows_array {
                 match e {
                     ElementProperty::Edge(e_map) => {
-                        assert!(e_map.contains_key("id"));
-                        assert_eq!(
-                            e_map.get("label").and_then(|l| l.as_string()),
-                            Some("knows")
-                        );
-                        assert!(e_map.contains_key("_from"));
-                        assert!(e_map.contains_key("_to"));
+                        assert!(!e_map.id().is_empty());
+                        assert_eq!(e_map.label(), Some("knows"));
+                        assert!(!e_map.out_v().id().is_empty());
+                        assert!(!e_map.in_v().id().is_empty());
                     }
                     _ => panic!("Expected ElementProperty::Edge, got {:?}", e),
                 }
@@ -97,13 +88,10 @@ fn test_e_group_by_label_edge_materialization() {
             for e in created_array {
                 match e {
                     ElementProperty::Edge(e_map) => {
-                        assert!(e_map.contains_key("id"));
-                        assert_eq!(
-                            e_map.get("label").and_then(|l| l.as_string()),
-                            Some("created")
-                        );
-                        assert!(e_map.contains_key("_from"));
-                        assert!(e_map.contains_key("_to"));
+                        assert!(!e_map.id().is_empty());
+                        assert_eq!(e_map.label(), Some("created"));
+                        assert!(!e_map.out_v().id().is_empty());
+                        assert!(!e_map.in_v().id().is_empty());
                     }
                     _ => panic!("Expected ElementProperty::Edge, got {:?}", e),
                 }

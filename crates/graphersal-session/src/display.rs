@@ -123,14 +123,9 @@ pub fn bounded_display(results: &[ElementProperty], as_rows: bool, bounds: &Boun
     }
 }
 
-/// The entries of a map-like value (a map, a materialized vertex or edge).
+/// The entries of a map-like value (a map, or a materialized vertex's or edge's properties).
 fn entries_of(value: &ElementProperty) -> Option<&PropertyMap> {
-    match value {
-        ElementProperty::Object(map)
-        | ElementProperty::Vertex(map)
-        | ElementProperty::Edge(map) => Some(map),
-        _ => None,
-    }
+    value.map_entries()
 }
 
 fn cut_nested(
@@ -156,6 +151,23 @@ fn cut_nested(
         }
         return ElementProperty::Array(out);
     }
+    // A vertex or an edge keeps its kind; its property values are cut, not its property set
+    // (a row's columns).
+    match value {
+        ElementProperty::Vertex(vertex) => {
+            let mut vertex = vertex.clone();
+            let cut_properties = cut_values(vertex.properties(), max_items, cut);
+            *vertex.properties_mut() = cut_properties;
+            return ElementProperty::Vertex(vertex);
+        }
+        ElementProperty::Edge(edge) => {
+            let mut edge = edge.clone();
+            let cut_properties = cut_values(edge.properties(), max_items, cut);
+            *edge.properties_mut() = cut_properties;
+            return ElementProperty::Edge(edge);
+        }
+        _ => {}
+    }
     if let Some(map) = entries_of(value) {
         let mut out: PropertyMap = map
             .iter()
@@ -174,8 +186,75 @@ fn cut_nested(
     value.clone()
 }
 
-/// Column layout: rows that are all maps get one column per key, in first-seen order (element
-/// keys `id`, `label`, `_from`, `_to` first); anything else is a single `value` column.
+/// Every value of `map` cut by [`cut_nested`], all keys kept.
+fn cut_values(map: &PropertyMap, max_items: Option<usize>, cut: &mut bool) -> PropertyMap {
+    map.iter()
+        .map(|(k, v)| (k.clone(), cut_nested(v, max_items, cut)))
+        .collect()
+}
+
+/// The columns of a vertex row that are the vertex's own, before its properties.
+const VERTEX_COLUMNS: [&str; 2] = ["id", "label"];
+/// The columns of an edge row that are the edge's own (GraphSON's names), before its properties.
+const EDGE_COLUMNS: [&str; 4] = ["id", "label", "outV", "inV"];
+
+/// The cells of one table row by column name: a map's entries; a vertex's id and label, an
+/// edge's id, label, `outV` and `inV`, then the element's properties, where a property named
+/// like one of those columns is headed `<name> (property)`. `None` for a value that is no row of
+/// columns.
+fn row_cells(value: &ElementProperty) -> Option<Vec<(String, ElementProperty)>> {
+    fn with_properties(
+        own: Vec<(&str, ElementProperty)>,
+        properties: &PropertyMap,
+    ) -> Vec<(String, ElementProperty)> {
+        let own_names: Vec<&str> = own.iter().map(|(name, _)| *name).collect();
+        let mut cells: Vec<(String, ElementProperty)> = own
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), value))
+            .collect();
+        for (key, value) in properties.iter() {
+            let column = if own_names.contains(&key.as_str()) {
+                format!("{key} (property)")
+            } else {
+                key.to_string()
+            };
+            cells.push((column, value.clone()));
+        }
+        cells
+    }
+    let text = |text: Option<&str>| text.map_or(ElementProperty::Null, ElementProperty::from);
+    match value {
+        ElementProperty::Vertex(vertex) => Some(with_properties(
+            VERTEX_COLUMNS
+                .into_iter()
+                .zip([ElementProperty::from(vertex.id()), text(vertex.label())])
+                .collect(),
+            vertex.properties(),
+        )),
+        ElementProperty::Edge(edge) => Some(with_properties(
+            EDGE_COLUMNS
+                .into_iter()
+                .zip([
+                    ElementProperty::from(edge.id()),
+                    text(edge.label()),
+                    ElementProperty::from(edge.out_v().id()),
+                    ElementProperty::from(edge.in_v().id()),
+                ])
+                .collect(),
+            edge.properties(),
+        )),
+        ElementProperty::Object(map) => Some(
+            map.iter()
+                .map(|(key, value)| (key.to_string(), value.clone()))
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+/// Column layout: rows that are all maps, vertices or edges get one column per key, in first-seen
+/// order (`id` and `label` first, then an edge's `outV`, `inV`, see [`row_cells`]); anything else
+/// is a single `value` column.
 pub fn table_of(rows: &[ElementProperty]) -> Table {
     if rows.is_empty() {
         return Table {
@@ -183,27 +262,35 @@ pub fn table_of(rows: &[ElementProperty]) -> Table {
             rows: Vec::new(),
         };
     }
-    let maps: Option<Vec<&PropertyMap>> = rows.iter().map(entries_of).collect();
-    if let Some(maps) = maps {
+    let cells: Option<Vec<Vec<(String, ElementProperty)>>> = rows.iter().map(row_cells).collect();
+    if let Some(cells) = cells {
         let mut keys: Vec<String> = Vec::new();
-        for first in ["id", "label", "_from", "_to"] {
-            if maps.iter().any(|m| m.contains_key(first)) {
+        // A map naming an element (`element_map()`) shows its `id` and `label` first.
+        for first in ["id", "label"] {
+            if cells
+                .iter()
+                .any(|row| row.iter().any(|(key, _)| key == first))
+            {
                 keys.push(first.to_string());
             }
         }
-        for map in &maps {
-            for key in map.keys() {
-                if !keys.iter().any(|k| k == key.as_str()) {
-                    keys.push(key.to_string());
+        for row in &cells {
+            for (key, _) in row {
+                if !keys.contains(key) {
+                    keys.push(key.clone());
                 }
             }
         }
         if keys.len() <= MAX_COLUMNS {
-            let rows = maps
+            let rows = cells
                 .iter()
-                .map(|m| {
+                .map(|row| {
                     keys.iter()
-                        .map(|k| m.get(k.as_str()).cloned().unwrap_or(ElementProperty::Null))
+                        .map(|k| {
+                            row.iter()
+                                .find(|(key, _)| key == k)
+                                .map_or(ElementProperty::Null, |(_, value)| value.clone())
+                        })
                         .collect()
                 })
                 .collect();
@@ -431,8 +518,9 @@ fn vertex_bytes<S: GraphStorage>(g: &S, v: S::VertexId) -> usize {
     g.vertex_id(v).map_or(0, str::len) + name + 12
 }
 
-/// The vertices and edges `results` refer to, as a [`CompactGraph`]: every map with a string
-/// `id` and `label` that names a stored element (an edge has `_from`/`_to`), searched through
+/// The vertices and edges `results` refer to, as a [`CompactGraph`]: every vertex or edge value,
+/// and every map with a string `id` and `label` that names a stored element (an edge's
+/// `element_map()` has `OUT`/`IN`), searched through
 /// nested lists and maps (paths, projections). Edge endpoints are included so the drawing is
 /// connected. At most `max_elements` vertices + edges (clamped to [`SUBGRAPH_MAX_ELEMENTS`])
 /// and about [`SUBGRAPH_MAX_BYTES`] of columns; `truncated` and `stopped_by` say when the
@@ -463,18 +551,31 @@ pub fn collect_subgraph<S: GraphStorage>(
             stack.extend(items.iter().rev());
             continue;
         }
-        let Some(map) = entries_of(value) else {
-            continue;
-        };
-        let id = map.get("id").and_then(ElementProperty::as_str);
-        // `label` is a string, or null for an element without a label.
-        let label = match map.get("label") {
-            Some(ElementProperty::Null) => Some(None),
-            Some(other) => other.as_str().map(Some),
-            None => None,
+        // A vertex or an edge value names its element by its own id (and label), which a
+        // property can never shadow; its properties may hold further elements.
+        let (id, label, is_edge) = match value {
+            ElementProperty::Vertex(vertex) => (Some(vertex.id()), Some(vertex.label()), false),
+            ElementProperty::Edge(edge) => (Some(edge.id()), Some(edge.label()), true),
+            // A map naming an element (`element_map()`): a string `id` and a `label` (null for
+            // an element without one); an edge's map has its `OUT`/`IN` endpoints.
+            _ => {
+                let Some(map) = entries_of(value) else {
+                    continue;
+                };
+                let label = match map.get("label") {
+                    Some(ElementProperty::Null) => Some(None),
+                    Some(other) => other.as_str().map(Some),
+                    None => None,
+                };
+                (
+                    map.get("id").and_then(ElementProperty::as_str),
+                    label,
+                    map.contains_key("OUT") && map.contains_key("IN"),
+                )
+            }
         };
         if let (Some(id), Some(label)) = (id, label) {
-            if map.contains_key("_from") && map.contains_key("_to") {
+            if is_edge {
                 if let Some(e) = g.get_edge_by_id(id)
                     && g.edge_label(e).filter(|l| !l.is_empty()) == label.filter(|l| !l.is_empty())
                     && seen_e.insert(e)
@@ -498,7 +599,9 @@ pub fn collect_subgraph<S: GraphStorage>(
                 vertices.push(v);
             }
         }
-        stack.extend(map.values());
+        if let Some(map) = entries_of(value) {
+            stack.extend(map.values());
+        }
     }
     if vertices.is_empty() && edges.is_empty() {
         return None;
@@ -584,12 +687,15 @@ mod tests {
         };
         let results = vec![
             element(&[("id", "4"), ("label", "person")]),
-            ElementProperty::Array(vec![element(&[
-                ("id", "0"),
-                ("label", "knows"),
-                ("_from", "1"),
-                ("_to", "2"),
-            ])]),
+            ElementProperty::Array(vec![ElementProperty::Edge(Box::new(
+                graphersal::prelude::EdgeValue::new(
+                    "0",
+                    Some("knows".into()),
+                    graphersal::prelude::VertexRef::new("1", Some("person".into())),
+                    graphersal::prelude::VertexRef::new("2", Some("person".into())),
+                    PropertyMap::default(),
+                ),
+            ))]),
         ];
         let tg_view = collect_subgraph(&tg, &results, 100).unwrap();
         let fw_view = collect_subgraph(&fw, &results, 100).unwrap();

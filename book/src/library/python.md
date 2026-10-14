@@ -2,7 +2,8 @@
 
 The Python package `graphersal` embeds the engine into the Python process. Queries are Gremlin
 text, the same DSL as everywhere else, and results come back as plain Python values (`list`,
-`dict`, `int`, `float`, `str`, `bool`, `None`, `uuid.UUID`).
+`dict`, `int`, `float`, `str`, `bool`, `None`, `uuid.UUID`); a vertex or an edge comes back as a
+`graphersal.Vertex` / `graphersal.Edge` (see [Vertices and Edges as Values](../users_guide/vertex_and_edge_values.md#in-python)).
 
 ## Install
 

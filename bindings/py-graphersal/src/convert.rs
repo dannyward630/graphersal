@@ -4,7 +4,7 @@
 use graphersal::prelude::{CompactString, ElementProperty, Number};
 use graphersal::profile::TraversalMetrics;
 use graphersal::script::rhai::Dynamic;
-use graphersal::script::{ScriptExecution, ScriptUuid, metrics_to_map};
+use graphersal::script::{ScriptEdge, ScriptExecution, ScriptUuid, ScriptVertex, metrics_to_map};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyInt, PyList};
@@ -14,8 +14,8 @@ use std::collections::HashMap;
 ///
 /// Every `Dynamic` a terminal (`to_list()`/`next()`) can produce funnels through
 /// `element_property_to_dynamic` in `graphersal::script`, whose output is exactly the set of
-/// variants matched below (unit, bool, int, float, string, array, map, `ScriptUuid`); vertices,
-/// edges and projections are already flattened into plain maps before conversion. A variant this
+/// variants matched below (unit, bool, int, float, string, array, map, `ScriptUuid`, and a vertex
+/// or an edge, which become a `Vertex` / `Edge`; projections are plain maps). A variant this
 /// matcher does not recognize raises `GraphersalError` naming it, rather than falling back to
 /// `Debug` formatting (CLAUDE.md rule 14).
 pub(crate) fn dynamic_to_pyobject(py: Python<'_>, value: Dynamic) -> PyResult<Py<PyAny>> {
@@ -73,7 +73,84 @@ pub(crate) fn dynamic_to_pyobject(py: Python<'_>, value: Dynamic) -> PyResult<Py
         let uuid = uuid::Uuid::from_u128(uuid.as_u128());
         return Ok(uuid.into_pyobject(py)?.into_any().unbind());
     }
+    if value.is::<ScriptVertex>() {
+        let vertex = value.cast::<ScriptVertex>();
+        return Ok(crate::element::vertex_to_python(
+            py,
+            vertex.as_vertex_value(),
+            property_to_pyobject,
+        )?
+        .into_any());
+    }
+    if value.is::<ScriptEdge>() {
+        let edge = value.cast::<ScriptEdge>();
+        return Ok(
+            crate::element::edge_to_python(py, edge.as_edge_value(), property_to_pyobject)?
+                .into_any(),
+        );
+    }
     Err(type_name_error(&value))
+}
+
+/// Converts a property value of a vertex or an edge into the closest native Python value, the
+/// same mapping [`dynamic_to_pyobject`] applies to script values (a map with a non-string key
+/// becomes a dict with those keys).
+fn property_to_pyobject(py: Python<'_>, value: &ElementProperty) -> PyResult<Py<PyAny>> {
+    Ok(match value.to_logical() {
+        ElementProperty::Null => py.None(),
+        ElementProperty::Boolean(b) => b.into_pyobject(py)?.to_owned().into_any().unbind(),
+        ElementProperty::Number(n) => match n.as_i64() {
+            Some(i) if n.is_i64() => i.into_pyobject(py)?.into_any().unbind(),
+            _ => n
+                .as_f64()
+                .unwrap_or(f64::NAN)
+                .into_pyobject(py)?
+                .into_any()
+                .unbind(),
+        },
+        ElementProperty::String(s) => s.as_str().into_pyobject(py)?.into_any().unbind(),
+        ElementProperty::Uuid(u) => uuid::Uuid::from_u128(u)
+            .into_pyobject(py)?
+            .into_any()
+            .unbind(),
+        ElementProperty::Array(items) => {
+            let items = items
+                .iter()
+                .map(|item| property_to_pyobject(py, item))
+                .collect::<PyResult<Vec<_>>>()?;
+            PyList::new(py, items)?.into_any().unbind()
+        }
+        ElementProperty::Object(map) => {
+            let dict = PyDict::new(py);
+            for (key, item) in map.iter() {
+                dict.set_item(key.as_str(), property_to_pyobject(py, item)?)?;
+            }
+            dict.into_any().unbind()
+        }
+        ElementProperty::Map(map) => {
+            let dict = PyDict::new(py);
+            for (key, item) in map.iter() {
+                dict.set_item(
+                    property_to_pyobject(py, key)?,
+                    property_to_pyobject(py, item)?,
+                )?;
+            }
+            dict.into_any().unbind()
+        }
+        ElementProperty::Vertex(vertex) => {
+            crate::element::vertex_to_python(py, &vertex, property_to_pyobject)?.into_any()
+        }
+        ElementProperty::Edge(edge) => {
+            crate::element::edge_to_python(py, &edge, property_to_pyobject)?.into_any()
+        }
+        // `to_logical()` leaves no compressed string; a later value kind is reported, never
+        // guessed (CLAUDE.md rule 14).
+        _ => {
+            return Err(crate::error::GraphersalError::new_err(
+                "unsupported property value kind: py-graphersal's property -> Python matcher does not recognize it",
+            ));
+        }
+    })
 }
 
 /// Converts a serialized `ChangeSet` into plain Python data: `dict`/`list`/`str`/`int`/
@@ -103,7 +180,8 @@ fn type_name_error(value: &Dynamic) -> PyErr {
 
 /// Converts the `params` keyword argument into named `ElementProperty` bindings.
 ///
-/// Only scalars are accepted in v1 (`int`, `float`, `str`, `bool`, `None`, `uuid.UUID`); a
+/// Only scalars (`int`, `float`, `str`, `bool`, `None`, `uuid.UUID`) and a `Vertex` / `Edge` (by its
+/// id and label) are accepted; a
 /// `list`/`dict` value raises `GraphersalError` naming the offending key, per the design spec.
 pub(crate) fn python_params_to_element_properties(
     params: &Bound<'_, PyDict>,
@@ -147,8 +225,11 @@ fn python_value_to_element_property(value: &Bound<'_, PyAny>) -> Result<ElementP
     if let Ok(u) = value.extract::<uuid::Uuid>() {
         return Ok(ElementProperty::Uuid(u.as_u128()));
     }
+    if let Some(element) = crate::element::python_element_to_property(value) {
+        return Ok(element);
+    }
     Err(format!(
-        "unsupported parameter type '{}'; only int, float, str, bool, None and uuid.UUID are accepted",
+        "unsupported parameter type '{}'; only int, float, str, bool, None, uuid.UUID, Vertex and Edge are accepted",
         value
             .get_type()
             .name()

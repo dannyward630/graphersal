@@ -21,6 +21,8 @@ pub mod compressed;
 pub(crate) mod depth;
 /// [`Direction`], the `Direction.OUT/IN/BOTH` edge-direction token.
 pub mod direction;
+/// [`VertexValue`]/[`EdgeValue`], a vertex or an edge returned as a value.
+pub mod element_value;
 /// Glob pattern compiler and segment matcher for the `glob_path()` step.
 pub(crate) mod glob_path;
 /// [`GType`], type tokens used by casts and predicates.
@@ -68,6 +70,7 @@ pub use column::Column;
 pub use compact_str::CompactString;
 pub use compressed::CompressedText;
 pub use direction::Direction;
+pub use element_value::{EdgeValue, VertexRef, VertexValue};
 pub use gtype::{GType, StreamKind};
 pub use json_path::{JsonPath, JsonPathSegment};
 pub use merge::Merge;
@@ -113,10 +116,12 @@ pub enum ElementProperty {
     Object(Box<PropertyMap>),
     /// A list of values.
     Array(Vec<ElementProperty>),
-    /// A vertex, as a stream value (never storable as a property).
-    Vertex(Box<PropertyMap>),
-    /// An edge, as a stream value (never storable as a property).
-    Edge(Box<PropertyMap>),
+    /// A vertex returned as a value: id, labels and properties kept apart (never storable as a
+    /// property).
+    Vertex(Box<VertexValue>),
+    /// An edge returned as a value: id, label, endpoints and properties kept apart (never
+    /// storable as a property).
+    Edge(Box<EdgeValue>),
     /// A map with at least one non-string key (`{29: 1}`, `{["josh"]: 1}`), insertion-ordered.
     ///
     /// Invariant: a `Map` always has a non-string key; a map whose keys are all strings is an
@@ -277,13 +282,18 @@ impl ElementProperty {
                 map.values_mut().for_each(ElementProperty::make_logical);
                 ElementProperty::Object(map)
             }
-            ElementProperty::Vertex(mut map) => {
-                map.values_mut().for_each(ElementProperty::make_logical);
-                ElementProperty::Vertex(map)
+            ElementProperty::Vertex(mut vertex) => {
+                vertex
+                    .properties_mut()
+                    .values_mut()
+                    .for_each(ElementProperty::make_logical);
+                ElementProperty::Vertex(vertex)
             }
-            ElementProperty::Edge(mut map) => {
-                map.values_mut().for_each(ElementProperty::make_logical);
-                ElementProperty::Edge(map)
+            ElementProperty::Edge(mut edge) => {
+                edge.properties_mut()
+                    .values_mut()
+                    .for_each(ElementProperty::make_logical);
+                ElementProperty::Edge(edge)
             }
             ElementProperty::Map(map) => {
                 if map
@@ -331,9 +341,15 @@ impl ElementProperty {
             ElementProperty::Array(items) => items
                 .iter()
                 .any(|item| item.holds_compressed_within(depth + 1)),
-            ElementProperty::Object(map)
-            | ElementProperty::Vertex(map)
-            | ElementProperty::Edge(map) => map
+            ElementProperty::Object(map) => map
+                .values()
+                .any(|value| value.holds_compressed_within(depth + 1)),
+            ElementProperty::Vertex(vertex) => vertex
+                .properties()
+                .values()
+                .any(|value| value.holds_compressed_within(depth + 1)),
+            ElementProperty::Edge(edge) => edge
+                .properties()
                 .values()
                 .any(|value| value.holds_compressed_within(depth + 1)),
             ElementProperty::Map(map) => map.iter().any(|(k, v)| {
@@ -356,9 +372,9 @@ impl ElementProperty {
             match current {
                 ElementProperty::Compressed(_) => return true,
                 ElementProperty::Array(items) => stack.extend(items.iter()),
-                ElementProperty::Object(map)
-                | ElementProperty::Vertex(map)
-                | ElementProperty::Edge(map) => stack.extend(map.values()),
+                ElementProperty::Object(map) => stack.extend(map.values()),
+                ElementProperty::Vertex(vertex) => stack.extend(vertex.properties().values()),
+                ElementProperty::Edge(edge) => stack.extend(edge.properties().values()),
                 ElementProperty::Map(map) => {
                     for (key, value) in map.iter() {
                         stack.push(key);
@@ -506,16 +522,27 @@ impl ElementProperty {
         }
     }
 
-    /// This value as a vertex's property map, or `None` if it isn't a vertex.
-    pub fn as_vertex(&self) -> Option<&PropertyMap> {
+    /// The property entries of a map-shaped value: an object's entries, or a vertex's or an
+    /// edge's properties (never their id, label or endpoints); `None` for any other value.
+    pub fn map_entries(&self) -> Option<&PropertyMap> {
+        match self {
+            ElementProperty::Object(map) => Some(map),
+            ElementProperty::Vertex(vertex) => Some(vertex.properties()),
+            ElementProperty::Edge(edge) => Some(edge.properties()),
+            _ => None,
+        }
+    }
+
+    /// This value as a vertex, or `None` if it isn't a vertex.
+    pub fn as_vertex(&self) -> Option<&VertexValue> {
         match self {
             ElementProperty::Vertex(value) => Some(value),
             _ => None,
         }
     }
 
-    /// This value as an edge's property map, or `None` if it isn't an edge.
-    pub fn as_edge(&self) -> Option<&PropertyMap> {
+    /// This value as an edge, or `None` if it isn't an edge.
+    pub fn as_edge(&self) -> Option<&EdgeValue> {
         match self {
             ElementProperty::Edge(value) => Some(value),
             _ => None,
@@ -566,9 +593,16 @@ impl ElementProperty {
                         .map(ElementProperty::estimated_heap_bytes)
                         .sum::<u64>()
             }
-            ElementProperty::Object(element)
-            | ElementProperty::Vertex(element)
-            | ElementProperty::Edge(element) => estimated_element_heap_bytes(element),
+            ElementProperty::Object(element) => estimated_element_heap_bytes(element),
+            ElementProperty::Vertex(vertex) => {
+                estimated_element_heap_bytes(vertex.properties())
+                    + vertex
+                        .labels()
+                        .iter()
+                        .map(|label| label.capacity() as u64)
+                        .sum::<u64>()
+            }
+            ElementProperty::Edge(edge) => estimated_element_heap_bytes(edge.properties()),
             ElementProperty::Map(map) => {
                 let entry_size = std::mem::size_of::<(ElementProperty, ElementProperty)>() as u64;
                 map.len() as u64 * entry_size
@@ -651,21 +685,21 @@ fn compare_elements(a: &PropertyMap, b: &PropertyMap) -> std::cmp::Ordering {
     }
 }
 
-/// Orders two vertices or two edges the way TinkerPop does, by id: the stored `id` entries are
-/// compared first (strings as strings, never parsed into numbers, rule 7), and only when an id
-/// is missing or equal does the structural [`compare_elements`] decide.
+/// Orders two vertices or two edges the way TinkerPop does, by id (strings as strings, never
+/// parsed into numbers, rule 7); only when the ids are equal do the properties decide
+/// (structurally, [`compare_elements`]).
 ///
 /// **Deviation from TinkerPop 3.8.2** (user's guide: "Predicates: Comparison and Resolution"):
 /// ids are stored as strings, so they order lexicographically (`"10"` before `"9"`); TinkerPop's
 /// numeric ids order numerically.
-fn compare_elements_by_id(a: &PropertyMap, b: &PropertyMap) -> std::cmp::Ordering {
-    if let (Some(a_id), Some(b_id)) = (a.get("id"), b.get("id")) {
-        match compare_element_property(a_id, b_id) {
-            std::cmp::Ordering::Equal => {}
-            other => return other,
-        }
+fn compare_elements_by_id(
+    (a_id, a): (&str, &PropertyMap),
+    (b_id, b): (&str, &PropertyMap),
+) -> std::cmp::Ordering {
+    match a_id.cmp(b_id) {
+        std::cmp::Ordering::Equal => compare_elements(a, b),
+        other => other,
     }
-    compare_elements(a, b)
 }
 
 /// Total-order comparison across [`ElementProperty`] values, the shared comparator the `order()`
@@ -745,8 +779,12 @@ pub(crate) fn compare_element_property(
                 };
             }
         }
-        (ElementProperty::Vertex(a), ElementProperty::Vertex(b)) => compare_elements_by_id(a, b),
-        (ElementProperty::Edge(a), ElementProperty::Edge(b)) => compare_elements_by_id(a, b),
+        (ElementProperty::Vertex(a), ElementProperty::Vertex(b)) => {
+            compare_elements_by_id((a.id(), a.properties()), (b.id(), b.properties()))
+        }
+        (ElementProperty::Edge(a), ElementProperty::Edge(b)) => {
+            compare_elements_by_id((a.id(), a.properties()), (b.id(), b.properties()))
+        }
         (a, b) => type_rank(a).cmp(&type_rank(b)),
     }
 }
@@ -783,21 +821,15 @@ impl fmt::Debug for ElementProperty {
             ElementProperty::String(value) => write!(f, "\"{}\"", value),
             ElementProperty::Object(obj) => write!(f, "{:?}", obj),
             ElementProperty::Map(map) => write!(f, "{:?}", map),
-            ElementProperty::Vertex(vertex) => write!(
+            ElementProperty::Vertex(vertex) => write!(f, "v[{}]", vertex.id()),
+            ElementProperty::Edge(edge) => write!(
                 f,
-                "v[{:?}]",
-                vertex.get("id").unwrap_or(&ElementProperty::Null)
+                "e[{}][{}-{}->{}]",
+                edge.id(),
+                edge.out_v().id(),
+                edge.label().unwrap_or(""),
+                edge.in_v().id()
             ),
-            ElementProperty::Edge(edge) => {
-                write!(
-                    f,
-                    "e[{:?}][{:?}-{:?}->{:?}]",
-                    edge.get("id").unwrap_or(&ElementProperty::Null),
-                    edge.get("_from").unwrap_or(&ElementProperty::Null),
-                    edge.get("label").unwrap_or(&ElementProperty::Null),
-                    edge.get("_to").unwrap_or(&ElementProperty::Null)
-                )
-            }
             ElementProperty::Array(array) => write!(f, "{:?}", array),
             ElementProperty::Number(value) => write!(f, "{}", value),
             ElementProperty::Boolean(value) => write!(f, "{}", value),
@@ -979,11 +1011,13 @@ impl std::hash::Hash for ElementProperty {
             }
             ElementProperty::Vertex(val) => {
                 state.write_u8(7);
-                value_map::hash_entries_unordered(val.iter(), state);
+                val.id().hash(state);
+                value_map::hash_entries_unordered(val.properties().iter(), state);
             }
             ElementProperty::Edge(val) => {
                 state.write_u8(8);
-                value_map::hash_entries_unordered(val.iter(), state);
+                val.id().hash(state);
+                value_map::hash_entries_unordered(val.properties().iter(), state);
             }
             ElementProperty::Map(val) => {
                 state.write_u8(9);
@@ -1311,13 +1345,16 @@ impl<S: GraphStorage> From<&ElementProperty> for TraverserValue<S> {
             ElementProperty::Array(value) => {
                 TraverserValue::Array(value.iter().map(|r| r.into()).collect())
             }
-            ElementProperty::Object(obj)
-            | ElementProperty::Vertex(obj)
-            | ElementProperty::Edge(obj) => TraverserValue::Object(
+            ElementProperty::Object(obj) => TraverserValue::Object(
                 obj.iter()
                     .map(|(k, v)| (TraverserValue::from(k.clone()), TraverserValue::from(v)))
                     .collect(),
             ),
+            // A vertex or an edge value stays one value (an element, not a map): its properties
+            // are read through it (`values()`, `select()`), its id and label through the tokens.
+            ElementProperty::Vertex(_) | ElementProperty::Edge(_) => {
+                TraverserValue::Computed(value.to_logical(), None)
+            }
             // A map keeps its typed keys on the stream.
             ElementProperty::Map(map) => TraverserValue::Object(
                 map.iter()
@@ -1343,13 +1380,15 @@ impl<S: GraphStorage> From<ElementProperty> for TraverserValue<S> {
             ElementProperty::Array(array) => {
                 TraverserValue::Array(array.into_iter().map(|r| r.into()).collect())
             }
-            ElementProperty::Object(obj)
-            | ElementProperty::Vertex(obj)
-            | ElementProperty::Edge(obj) => TraverserValue::Object(
+            ElementProperty::Object(obj) => TraverserValue::Object(
                 obj.into_iter()
                     .map(|(k, v)| (TraverserValue::from(k), TraverserValue::from(v)))
                     .collect(),
             ),
+            // A vertex or an edge value stays one value, see the `&ElementProperty` conversion.
+            element @ (ElementProperty::Vertex(_) | ElementProperty::Edge(_)) => {
+                TraverserValue::Computed(element.into_logical(), None)
+            }
             ElementProperty::Map(map) => TraverserValue::Object(
                 map.into_iter()
                     .map(|(k, v)| (TraverserValue::from(k), TraverserValue::from(v)))
@@ -1529,68 +1568,43 @@ impl<S: GraphStorage> TraverserValue<S> {
         storage: &S,
         node_index: &S::VertexId,
     ) -> TraverserResult<ElementProperty> {
-        let props = storage.vertex_properties(*node_index);
-        let props_len = props.map_or(0, |p| p.len());
-        let mut map = PropertyMap::with_capacity(props_len + 2);
-        if let Some(props) = props {
-            for (k, v) in props {
-                map.insert(k.clone(), v.to_logical());
-            }
-        }
-        if let Some(lbl) = storage.vertex_label(*node_index) {
-            map.insert(
-                CompactString::new("label"),
-                ElementProperty::String(CompactString::new(lbl)),
-            );
-        }
-        if !map.contains_key("id") {
-            let id = crate::graph::storage::stored_vertex_id(storage, *node_index)?.to_string();
-            map.insert(
-                CompactString::new("id"),
-                ElementProperty::String(CompactString::new(id)),
-            );
-        }
-        Ok(ElementProperty::Vertex(Box::new(map)))
+        let id = crate::graph::storage::stored_vertex_id(storage, *node_index)?;
+        let labels = crate::graph::storage::stored_vertex_labels(storage, *node_index)?.to_vec();
+        let properties = storage
+            .vertex_properties(*node_index)
+            .map(logical_element)
+            .unwrap_or_default();
+        Ok(ElementProperty::Vertex(Box::new(VertexValue::new(
+            id, labels, properties,
+        ))))
     }
 
     // Out of line: `into_node_property` recurses through nested values, so every arm that
     // does not recurse is kept out of its stack frame.
     #[inline(never)]
     fn materialize_edge(storage: &S, edge_index: &S::EdgeId) -> TraverserResult<ElementProperty> {
-        let props = storage.edge_properties(*edge_index);
-        let props_len = props.map_or(0, |p| p.len());
-        let mut map = PropertyMap::with_capacity(props_len + 4);
-        if let Some(props) = props {
-            for (k, v) in props {
-                map.insert(k.clone(), v.to_logical());
-            }
-        }
-        let edge_id = crate::graph::storage::stored_edge_id(storage, *edge_index)?.to_string();
-        map.insert(
-            CompactString::new("id"),
-            ElementProperty::String(CompactString::new(edge_id)),
-        );
-        if let Some((v_from, v_to)) = storage.edge_endpoints(*edge_index) {
-            let from_id = crate::graph::storage::stored_vertex_id(storage, v_from)?.to_string();
-            let to_id = crate::graph::storage::stored_vertex_id(storage, v_to)?.to_string();
-            map.insert(
-                CompactString::new("_from"),
-                ElementProperty::String(CompactString::new(from_id)),
-            );
-            map.insert(
-                CompactString::new("_to"),
-                ElementProperty::String(CompactString::new(to_id)),
-            );
-        }
-        if let Some(label) = storage.edge_label(*edge_index) {
-            map.insert(
-                CompactString::new("label"),
-                ElementProperty::String(CompactString::new(label)),
-            );
-        } else {
-            map.insert(CompactString::new("label"), ElementProperty::Null);
-        }
-        Ok(ElementProperty::Edge(Box::new(map)))
+        let id = crate::graph::storage::stored_edge_id(storage, *edge_index)?;
+        let label = storage.edge_label(*edge_index).map(CompactString::new);
+        let (out_vertex, in_vertex) = storage
+            .edge_endpoints(*edge_index)
+            .ok_or_else(|| Box::new(crate::error::GraphError::edge_removed().into()))?;
+        let endpoint = |vertex: S::VertexId| -> TraverserResult<VertexRef> {
+            Ok(VertexRef::new(
+                crate::graph::storage::stored_vertex_id(storage, vertex)?,
+                storage.vertex_label(vertex).map(CompactString::new),
+            ))
+        };
+        let properties = storage
+            .edge_properties(*edge_index)
+            .map(logical_element)
+            .unwrap_or_default();
+        Ok(ElementProperty::Edge(Box::new(EdgeValue::new(
+            id,
+            label,
+            endpoint(out_vertex)?,
+            endpoint(in_vertex)?,
+            properties,
+        ))))
     }
 
     // Out of line: `into_node_property` recurses through nested values, so every arm that
@@ -2045,10 +2059,13 @@ impl<S: GraphStorage> TraverserValue<S> {
         match traverser_value {
             TraverserValue::Computed(node_property, _) => Ok(match node_property {
                 ElementProperty::Object(obj) => obj.get(prop).map(ElementProperty::to_logical),
-                ElementProperty::Vertex(vertex) => {
-                    vertex.get(prop).map(ElementProperty::to_logical)
+                ElementProperty::Vertex(vertex) => vertex
+                    .properties()
+                    .get(prop)
+                    .map(ElementProperty::to_logical),
+                ElementProperty::Edge(edge) => {
+                    edge.properties().get(prop).map(ElementProperty::to_logical)
                 }
-                ElementProperty::Edge(edge) => edge.get(prop).map(ElementProperty::to_logical),
                 ElementProperty::Map(map) => map.get_str(prop).map(ElementProperty::to_logical),
                 ElementProperty::Null => None,
                 ElementProperty::String(_) | ElementProperty::Compressed(_) => None,
@@ -2073,11 +2090,12 @@ impl<S: GraphStorage> TraverserValue<S> {
                         ElementProperty::Object(obj) => {
                             obj.get(prop).map(ElementProperty::to_logical)
                         }
-                        ElementProperty::Vertex(vertex) => {
-                            vertex.get(prop).map(ElementProperty::to_logical)
-                        }
+                        ElementProperty::Vertex(vertex) => vertex
+                            .properties()
+                            .get(prop)
+                            .map(ElementProperty::to_logical),
                         ElementProperty::Edge(edge) => {
-                            edge.get(prop).map(ElementProperty::to_logical)
+                            edge.properties().get(prop).map(ElementProperty::to_logical)
                         }
                         ElementProperty::Map(map) => {
                             map.get_str(prop).map(ElementProperty::to_logical)
@@ -2115,11 +2133,12 @@ impl<S: GraphStorage> TraverserValue<S> {
                         ElementProperty::Object(obj) => {
                             obj.get(prop).map(ElementProperty::to_logical)
                         }
-                        ElementProperty::Vertex(vertex) => {
-                            vertex.get(prop).map(ElementProperty::to_logical)
-                        }
+                        ElementProperty::Vertex(vertex) => vertex
+                            .properties()
+                            .get(prop)
+                            .map(ElementProperty::to_logical),
                         ElementProperty::Edge(edge) => {
-                            edge.get(prop).map(ElementProperty::to_logical)
+                            edge.properties().get(prop).map(ElementProperty::to_logical)
                         }
                         ElementProperty::Map(map) => {
                             map.get_str(prop).map(ElementProperty::to_logical)
@@ -2426,15 +2445,15 @@ impl From<ElementProperty> for ArgStrings {
         match value {
             ElementProperty::String(value) => ArgStrings::String(value.into_string()),
             ElementProperty::Compressed(text) => ArgStrings::String(text.text().into_string()),
-            ElementProperty::Object(obj)
-            | ElementProperty::Vertex(obj)
-            | ElementProperty::Edge(obj) => {
+            ElementProperty::Object(obj) => {
                 let id = obj.get("id");
                 match id {
                     Some(ElementProperty::String(value)) => ArgStrings::String(value.to_string()),
                     _ => ArgStrings::List(Vec::new()),
                 }
             }
+            ElementProperty::Vertex(vertex) => ArgStrings::String(vertex.id().to_string()),
+            ElementProperty::Edge(edge) => ArgStrings::String(edge.id().to_string()),
             ElementProperty::Null | ElementProperty::Map(_) => ArgStrings::List(Vec::new()),
             ElementProperty::Array(array) => ArgStrings::List(array.iter().map(arg_text).collect()),
             ElementProperty::Number(n) => ArgStrings::String(n.n.to_string()),
@@ -2451,15 +2470,15 @@ impl From<&ElementProperty> for ArgStrings {
         match value {
             ElementProperty::String(value) => ArgStrings::String(value.to_string()),
             ElementProperty::Compressed(text) => ArgStrings::String(text.text().into_string()),
-            ElementProperty::Object(obj)
-            | ElementProperty::Vertex(obj)
-            | ElementProperty::Edge(obj) => {
+            ElementProperty::Object(obj) => {
                 let id = obj.get("id");
                 match id {
                     Some(ElementProperty::String(value)) => ArgStrings::String(value.to_string()),
                     _ => ArgStrings::List(Vec::new()),
                 }
             }
+            ElementProperty::Vertex(vertex) => ArgStrings::String(vertex.id().to_string()),
+            ElementProperty::Edge(edge) => ArgStrings::String(edge.id().to_string()),
             ElementProperty::Null | ElementProperty::Map(_) => ArgStrings::List(Vec::new()),
             ElementProperty::Array(array) => ArgStrings::List(array.iter().map(arg_text).collect()),
             ElementProperty::Number(n) => ArgStrings::String(n.n.to_string()),
@@ -2594,11 +2613,18 @@ mod tests {
 
     #[test]
     fn vertex_and_edge_element_properties_convert_to_traverser_object() {
-        let vertex = ElementProperty::Vertex(Box::new(sample_object()));
+        let vertex =
+            ElementProperty::Vertex(Box::new(VertexValue::new("1", Vec::new(), sample_object())));
         let tv: TraverserValue<TraversalGraph> = vertex.into();
         assert!(matches!(tv, TraverserValue::Object(_)));
 
-        let edge = ElementProperty::Edge(Box::new(sample_object()));
+        let edge = ElementProperty::Edge(Box::new(EdgeValue::new(
+            "0",
+            None,
+            VertexRef::new("1", None),
+            VertexRef::new("2", None),
+            sample_object(),
+        )));
         let tv: TraverserValue<TraversalGraph> = edge.into();
         assert!(matches!(tv, TraverserValue::Object(_)));
     }
@@ -2610,7 +2636,11 @@ mod tests {
             ElementProperty::Number(Number::from_i64(42)),
             ElementProperty::Null,
             ElementProperty::Object(Box::new(sample_object())),
-            ElementProperty::Vertex(Box::new(sample_object())),
+            ElementProperty::Vertex(Box::new(VertexValue::new(
+                "v1",
+                vec!["person".into()],
+                sample_object(),
+            ))),
         ])
         .into();
         let ArgStrings::List(items) = list else {
@@ -2621,7 +2651,10 @@ mod tests {
         assert_eq!(items[2], "null");
         let json = r#"{"name":"alice","tags":["x","y"],"nested":{"k":1}}"#;
         assert_eq!(items[3], json);
-        assert_eq!(items[4], json);
+        assert_eq!(
+            items[4],
+            format!(r#"{{"id":"v1","label":"person","properties":{json}}}"#)
+        );
     }
 
     #[test]
@@ -2876,7 +2909,7 @@ mod tests {
     /// before an edge.
     #[test]
     fn compare_element_property_orders_elements_by_id_and_vertices_before_edges() {
-        fn element(entries: &[(&str, &str)]) -> Box<PropertyMap> {
+        fn element(entries: &[(&str, &str)]) -> PropertyMap {
             let mut element = PropertyMap::default();
             for (key, value) in entries {
                 element.insert(
@@ -2884,11 +2917,23 @@ mod tests {
                     ElementProperty::String(CompactString::new(value)),
                 );
             }
-            Box::new(element)
+            element
         }
-        // `_to` would order 11 before 10; the id decides.
-        let edge_10 = ElementProperty::Edge(element(&[("_from", "4"), ("_to", "5"), ("id", "10")]));
-        let edge_11 = ElementProperty::Edge(element(&[("_from", "4"), ("_to", "3"), ("id", "11")]));
+        fn edge(id: &str, out_v: &str, in_v: &str) -> ElementProperty {
+            ElementProperty::Edge(Box::new(EdgeValue::new(
+                id,
+                Some("knows".into()),
+                VertexRef::new(out_v, None),
+                VertexRef::new(in_v, None),
+                PropertyMap::default(),
+            )))
+        }
+        fn vertex(id: &str, entries: &[(&str, &str)]) -> ElementProperty {
+            ElementProperty::Vertex(Box::new(VertexValue::new(id, Vec::new(), element(entries))))
+        }
+        // The in-vertex would order 11 before 10; the id decides.
+        let edge_10 = edge("10", "4", "5");
+        let edge_11 = edge("11", "4", "3");
         assert_eq!(compare_element_property(&edge_10, &edge_11), Ordering::Less);
         assert_eq!(
             compare_element_property(&edge_11, &edge_10),
@@ -2899,7 +2944,7 @@ mod tests {
             Ordering::Equal
         );
 
-        let vertex_9 = ElementProperty::Vertex(element(&[("id", "9"), ("name", "z")]));
+        let vertex_9 = vertex("9", &[("name", "z")]);
         assert_eq!(
             compare_element_property(&vertex_9, &edge_10),
             Ordering::Less
@@ -2909,9 +2954,12 @@ mod tests {
             Ordering::Greater
         );
 
-        // A missing id falls back to the structural comparison.
-        let no_id_a = ElementProperty::Vertex(element(&[("name", "a")]));
-        let no_id_b = ElementProperty::Vertex(element(&[("name", "b")]));
-        assert_eq!(compare_element_property(&no_id_a, &no_id_b), Ordering::Less);
+        // Equal ids fall back to the structural comparison of the properties.
+        let same_id_a = vertex("1", &[("name", "a")]);
+        let same_id_b = vertex("1", &[("name", "b")]);
+        assert_eq!(
+            compare_element_property(&same_id_a, &same_id_b),
+            Ordering::Less
+        );
     }
 }

@@ -574,8 +574,8 @@ mod tests {
             .unwrap();
         match result {
             ElementProperty::Edge(edge) => {
-                assert_eq!(edge.get("id"), Some(&ElementProperty::String("1".into())));
-                assert_eq!(edge.get("label"), Some(&ElementProperty::Null));
+                assert_eq!(edge.id(), "1");
+                assert_eq!(edge.label(), None);
             }
             _ => panic!(),
         }
@@ -606,11 +606,8 @@ mod tests {
             .unwrap();
         match result {
             ElementProperty::Edge(edge) => {
-                assert_eq!(edge.get("id"), Some(&ElementProperty::String("1".into())));
-                assert_eq!(
-                    edge.get("label"),
-                    Some(&ElementProperty::String("new label".into()))
-                );
+                assert_eq!(edge.id(), "1");
+                assert_eq!(edge.label(), Some("new label"));
             }
             _ => panic!(),
         }
@@ -641,13 +638,10 @@ mod tests {
             .unwrap();
         match result {
             ElementProperty::Edge(edge) => {
-                assert_eq!(edge.get("id"), Some(&ElementProperty::String("1".into())));
-                assert_eq!(edge.get("label"), Some(&ElementProperty::Null));
-                assert_eq!(
-                    edge.get("_from"),
-                    Some(&ElementProperty::String("1".into()))
-                );
-                assert_eq!(edge.get("_to"), Some(&ElementProperty::String("2".into())));
+                assert_eq!(edge.id(), "1");
+                assert_eq!(edge.label(), None);
+                assert_eq!(edge.out_v().id(), "1");
+                assert_eq!(edge.in_v().id(), "2");
             }
             t => panic!("PANIC: {:?}", t),
         }
@@ -678,16 +672,10 @@ mod tests {
             .unwrap();
         match result {
             ElementProperty::Edge(edge) => {
-                assert_eq!(edge.get("id"), Some(&ElementProperty::String("1".into())));
-                assert_eq!(
-                    edge.get("label"),
-                    Some(&ElementProperty::String("new label".into()))
-                );
-                assert_eq!(
-                    edge.get("_from"),
-                    Some(&ElementProperty::String("2".into()))
-                );
-                assert_eq!(edge.get("_to"), Some(&ElementProperty::String("1".into())));
+                assert_eq!(edge.id(), "1");
+                assert_eq!(edge.label(), Some("new label"));
+                assert_eq!(edge.out_v().id(), "2");
+                assert_eq!(edge.in_v().id(), "1");
             }
             _ => panic!(),
         }

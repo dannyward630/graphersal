@@ -1226,16 +1226,11 @@ fn execution_outcome(mut exec: ScriptExecution, render: &RenderOptions) -> Outco
             execution_json("[]", &error.to_string(), "null")
         }
     };
-    // The results read back from the execution's own JSON keep the engine's key order (script
-    // maps are sorted by key); a `uuid` reads back as its canonical string, as JSON shows it.
-    #[derive(Deserialize)]
-    struct Results {
-        results: Vec<ElementProperty>,
-    }
+    // The execution's own result values keep the engine's key order (script maps are sorted by
+    // key) and their kind: a vertex or an edge stays one, so the table shows its id and label
+    // apart from its properties and the result graph finds it.
     let results: Vec<ElementProperty> = if ok {
-        serde_json::from_str::<Results>(&execution)
-            .map(|r| r.results)
-            .unwrap_or_default()
+        exec.result_values().unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -1638,7 +1633,8 @@ mod tests {
     #[test]
     fn element_keys_keep_the_engine_order() {
         let text = modern().execute("g.v(1)", &RunOptions::default());
-        let results = text.find(r#""results":[{"name":"marko","age":29"#);
+        let results = text
+            .find(r#""results":[{"id":"1","label":"person","properties":{"name":"marko","age":29"#);
         assert!(results.is_some(), "{text}");
         assert!(
             text.contains(r#""columns":["id","label","name","age"]"#),

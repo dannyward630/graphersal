@@ -1413,3 +1413,67 @@ mod saved_queries {
         assert_eq!(count(&graph), 6);
     }
 }
+
+/// Denies reading vertices, allows everything else.
+struct NoVertexReads;
+
+impl Authorizer for NoVertexReads {
+    fn authorize(&self, request: &AccessRequest<'_>) -> Result<(), Denied> {
+        if request
+            .to_owned_request()
+            .to_string()
+            .starts_with("Read Data(vertex")
+        {
+            return Err(Denied::new("vertices are hidden"));
+        }
+        Ok(())
+    }
+}
+
+/// `inject(v)` of a vertex or an edge value emits the stored element of its id, so it reads
+/// graph data and asks Read Data like `V()`/`E()` (issue #2): an edge's endpoint cannot be used
+/// to read a vertex the policy hides. Plain values ask nothing, as before.
+#[test]
+fn injecting_an_element_value_asks_read_data() {
+    let graph = modern();
+    let mut scope = script::graph_scope(graph.clone());
+    let v = script::engine()
+        .eval_with_scope::<Dynamic>(&mut scope, r#"g.V("1").next()"#)
+        .unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let authorizer: Arc<dyn Authorizer> = recorder.clone();
+    let mut scope = script::graph_scope_with_options(graph.clone(), &[], authorizer.clone());
+    scope.push("v", v);
+    let names = script::engine_with_limits(&ScriptLimits::default(), authorizer)
+        .eval_with_scope::<Dynamic>(&mut scope, r#"g.inject(v).values("name").toList()"#)
+        .unwrap();
+    assert_eq!(names.into_array().unwrap().len(), 1);
+    assert!(
+        recorder
+            .seen()
+            .iter()
+            .any(|seen| seen.starts_with("Read Data(vertex")),
+        "{:?}",
+        recorder.seen()
+    );
+
+    // The edge may be read, its endpoint vertex may not.
+    assert_denied(
+        run(
+            &graph,
+            r#"let e = g.E("0").next(); g.inject(e.out_v).values("name").toList()"#,
+            NoVertexReads,
+        ),
+        "inject",
+        "Read Data(vertex",
+    );
+    assert_denied(
+        run(&graph, r#"let v = g.V("1").next(); v.id"#, NoVertexReads),
+        "v",
+        "Read Data(vertex",
+    );
+    // A plain value asks nothing.
+    let recorder = Arc::new(Recorder::default());
+    let _ = run(&graph, "g.inject(1, \"a\").toList()", recorder.clone()).unwrap();
+    assert!(recorder.seen().is_empty(), "{:?}", recorder.seen());
+}

@@ -10,7 +10,8 @@ and embedded into the Python process: no server, no JVM.
 
 You write Gremlin as script text (the same DSL as the playground and the command line tool) and
 run it against a `Graph`; results come back as native Python values
-(`list`/`dict`/`int`/`float`/`str`/`bool`/`None`/`uuid.UUID`). Graph files are GraphSON 3.0 (the
+(`list`/`dict`/`int`/`float`/`str`/`bool`/`None`/`uuid.UUID`, and `graphersal.Vertex` /
+`graphersal.Edge` for vertices and edges). Graph files are GraphSON 3.0 (the
 primary exchange format for Gremlin users) and GraphML; graphs can also be kept on disk with
 durable commits (the Store).
 
@@ -260,6 +261,14 @@ names = graph.query('g.V().hasLabel("person").values("name").to_list()')
 people = graph.query('g.V().hasLabel("person").elementMap().to_list()')
 # [{'id': '1', 'label': 'person', 'name': 'marko', 'age': 29}, ...]
 
+# A vertex or an edge comes back as a Vertex / Edge object, like gremlin-python's: its own id
+# and label, and its properties apart (a property named "label" is v["label"], never v.label).
+marko = graph.query('g.V("1").next()')
+# v[1]; marko.id == '1', marko.label == 'person', marko["name"] == 'marko',
+# marko.properties == {'name': 'marko', 'age': 29}
+knows = graph.query('g.E("0").next()')
+# e[0][1-knows->2]; knows.out_v == marko, knows.in_v.id == '2', knows["weight"] == 0.5
+
 # next() returns a single value (or None if the traversal yields nothing).
 count = graph.query('g.V().hasLabel("person").count().next()')
 # 4
@@ -273,7 +282,8 @@ who_marko_knows = graph.query(
 
 ## Parameterized queries
 
-Pass a `params` dict of `int`, `float`, `str`, `bool`, `None` or `uuid.UUID` values. Each one is
+Pass a `params` dict of `int`, `float`, `str`, `bool`, `None` or `uuid.UUID` values, or a
+`Vertex`/`Edge` a query returned (it stands for its element: `g.V(v)`, `inject(v)`). Each one is
 bound as both a script variable of the same name and an entry of the `params` map, so user input
 never needs to be spliced into the script string:
 

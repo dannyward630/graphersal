@@ -1709,9 +1709,33 @@ fn write_typed(value: &ElementProperty, out: &mut String) -> Result<(), Physical
             }
             out.push_str("]}");
         }
-        ElementProperty::Object(map)
-        | ElementProperty::Vertex(map)
-        | ElementProperty::Edge(map) => {
+        // A vertex or an edge value (a query result, never a stored property) is written as
+        // TinkerPop's reference element: id and label (and an edge's endpoints), no properties.
+        ElementProperty::Vertex(vertex) => {
+            out.push_str("{\"@type\":\"g:Vertex\",\"@value\":{\"id\":");
+            write_json_string(vertex.id(), out)?;
+            out.push_str(",\"label\":");
+            write_json_string(vertex.label().unwrap_or(""), out)?;
+            out.push_str("}}");
+        }
+        ElementProperty::Edge(edge) => {
+            out.push_str("{\"@type\":\"g:Edge\",\"@value\":{\"id\":");
+            write_json_string(edge.id(), out)?;
+            for (key, text) in [
+                ("label", edge.label().unwrap_or("")),
+                ("inVLabel", edge.in_v().label().unwrap_or("")),
+                ("outVLabel", edge.out_v().label().unwrap_or("")),
+                ("inV", edge.in_v().id()),
+                ("outV", edge.out_v().id()),
+            ] {
+                out.push_str(",\"");
+                out.push_str(key);
+                out.push_str("\":");
+                write_json_string(text, out)?;
+            }
+            out.push_str("}}");
+        }
+        ElementProperty::Object(map) => {
             out.push_str("{\"@type\":\"g:Map\",\"@value\":[");
             for (i, (key, item)) in map.iter().enumerate() {
                 if i > 0 {

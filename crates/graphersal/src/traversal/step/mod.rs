@@ -410,8 +410,18 @@ impl<'g, S: GraphStorage + 'g> GraphStep<'g, S> {
                 visit(read(vertex))
             }
             GraphStep::SideEffect("subgraph", _) => visit(read(vertex)),
+            // `inject(v)` of a vertex or edge value reaches the stored element of its id.
+            GraphStep::Append(_, step) => {
+                let (vertices, edges) = step.reads_elements();
+                if vertices {
+                    visit(read(vertex))?;
+                }
+                if edges {
+                    visit(read(edge))?;
+                }
+                Ok(())
+            }
             GraphStep::Init(_, _)
-            | GraphStep::Append(_, _)
             | GraphStep::Map(_, _)
             | GraphStep::FlatMap(_, _)
             | GraphStep::Barrier(_, _)
@@ -998,6 +1008,13 @@ pub(crate) trait GraphStepAppend<'g, S: GraphStorage + 'g>:
     fn process(&self, context: &mut TraverserContext<'_, S>) -> TraverserResult<Vec<Traverser<S>>>;
     fn get_name(&self) -> String {
         self.to_string()
+    }
+    /// Which stored elements this step reaches by id (`(vertices, edges)`): `inject(v)` of a
+    /// vertex or edge value emits the stored element of its id, so it reads graph data like
+    /// `V()`/`E()` and asks the same Read request. Steps that emit only plain values keep the
+    /// default.
+    fn reads_elements(&self) -> (bool, bool) {
+        (false, false)
     }
     /// The child traversals of this step in their canonical order; see
     /// [`GraphStep::child_traversals_mut`]. Steps without children keep the default.

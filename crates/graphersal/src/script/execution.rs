@@ -214,6 +214,13 @@ impl ScriptExecution {
         Ok(ElementProperty::Object(Box::new(map)))
     }
 
+    /// The results as values, in order: a vertex or an edge stays a
+    /// [`ElementProperty::Vertex`]/[`ElementProperty::Edge`], a graph value becomes its listing
+    /// (`{vertices, edges}`). For a host that renders them itself (the playground session).
+    pub fn result_values(&self) -> crate::error::TraverserResult<Vec<ElementProperty>> {
+        list_items_property(&self.items)
+    }
+
     /// `to_map()`: the execution as a script map.
     pub fn to_map(&mut self) -> Dynamic {
         let mut map = rhai::Map::new();

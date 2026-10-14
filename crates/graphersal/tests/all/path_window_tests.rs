@@ -85,8 +85,8 @@ fn cyclic_path_from_to_scenario_is_empty() {
 #[test]
 fn cyclic_path_by_age_scenario() {
     let got = both(
-        r#"g.v("1").both().both().cyclic_path().by("age").to_list()"#,
-        r#"g.V("1").both().both().cyclicPath().by("age").toList()"#,
+        r#"g.v("1").both().both().cyclic_path().by("age").values("name").to_list()"#,
+        r#"g.V("1").both().both().cyclicPath().by("age").values("name").toList()"#,
     );
     // [marko, vadas, marko] -> [29, 27, 29] and [marko, josh, marko] -> [29, 32, 29] are cyclic;
     // every path through a software vertex has no age and is dropped.

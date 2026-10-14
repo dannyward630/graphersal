@@ -92,8 +92,7 @@ Steps that work on the map keep the tokens apart from the names: `unfold()`, `co
 
 ## Vertices and edges returned as values
 
-A vertex or an edge returned by a terminal (`to_list()`, `next()`) is written as one map of its
-id, label and properties today. That map still mixes the two kinds: for a vertex a property named
-`id` replaces the id, while the label stays the element's; for an edge the id and the label stay
-the element's. Read `id()`, `label()` or `element_map()` when the difference matters. Vertex and
-edge objects that keep id, label and properties apart are planned.
+A vertex or an edge returned by a terminal (`to_list()`, `next()`) keeps its id and label apart
+from its properties too: `v.label` is the label, `v["label"]` the property, and a table shows a
+same-named property in a column `label (property)`. See
+[Vertices and Edges as Values](vertex_and_edge_values.md).

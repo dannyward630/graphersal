@@ -19,7 +19,7 @@ use graphersal::storage::CompactString;
 use graphersal::{
     ElementProperty,
     error::GraphError,
-    prelude::{JsonPath, Number, PropertyMap},
+    prelude::{JsonPath, Number, PropertyMap, VertexValue},
 };
 use graphersal::{
     catalog::{Definition, DefinitionKind, QueryDefinition, QueryParam},
@@ -1156,20 +1156,24 @@ pub fn jpath_removals_shift_and_ignore_missing<S: GraphStorage>(storage: &mut S)
 /// A vertex or an edge can never be stored as a property value, at any depth, by `add_vertex`,
 /// `add_edge`, `set_*_property` and the path writes (`InvalidPropertyValue`), and nothing is stored.
 pub fn graph_elements_are_rejected_as_property_values<S: GraphStorage>(storage: &mut S) {
-    let element = || Box::new(props(&[("id", "x".into())]));
+    let vertex_value = || {
+        ElementProperty::Vertex(Box::new(VertexValue::new(
+            "x",
+            Vec::new(),
+            PropertyMap::default(),
+        )))
+    };
+    let edge_value = || ElementProperty::Edge(Box::default());
     let bad_values = [
-        ("direct vertex", ElementProperty::Vertex(element())),
-        ("direct edge", ElementProperty::Edge(element())),
+        ("direct vertex", vertex_value()),
+        ("direct edge", edge_value()),
         (
             "vertex in array",
-            ElementProperty::Array(vec![1.into(), ElementProperty::Vertex(element())]),
+            ElementProperty::Array(vec![1.into(), vertex_value()]),
         ),
         (
             "edge in object",
-            ElementProperty::Object(Box::new(props(&[(
-                "deep",
-                ElementProperty::Edge(element()),
-            )]))),
+            ElementProperty::Object(Box::new(props(&[("deep", edge_value())]))),
         ),
     ];
     let v = vertex(storage, None, &[], PropertyMap::default());

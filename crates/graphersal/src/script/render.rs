@@ -175,8 +175,9 @@ pub fn try_render_value(
 }
 
 /// Renders a script value the way Rhai's `Debug` does, except that a `Uuid` shows its canonical
-/// string, a `JsonPath` its canonical text (`$.a.b`) and a DSL token its literal (`Scope.local`,
-/// `P.gt(1)`, `__.out()`) at any nesting level.
+/// string, a `JsonPath` its canonical text (`$.a.b`), a vertex or an edge `v[1]` /
+/// `e[0][1-knows->2]` and a DSL token its literal (`Scope.local`, `P.gt(1)`, `__.out()`) at any
+/// nesting level.
 ///
 /// Rhai's own `Debug` knows nothing about registered custom types and prints only the Rust type
 /// name for them, so a list of UUIDs would render as type names.
@@ -290,6 +291,17 @@ fn debug_at_depth(
     }
     if let Some(map) = value.read_lock::<ScriptMap>() {
         return script_map_text(&map, limit);
+    }
+    // A vertex or an edge value prints as TinkerPop's console prints it: `v[1]`,
+    // `e[0][1-knows->2]`.
+    if let Some(vertex) = value.read_lock::<ScriptVertex>() {
+        return vertex_text(&vertex.0);
+    }
+    if let Some(edge) = value.read_lock::<ScriptEdge>() {
+        return edge_text(&edge.0);
+    }
+    if let Some(vertex) = value.read_lock::<ScriptVertexRef>() {
+        return format!("v[{}]", vertex.0.id());
     }
     if let Some(token) = token_literal(value) {
         return crate::traversal::spelling::respell(&token, spelling).into_owned();

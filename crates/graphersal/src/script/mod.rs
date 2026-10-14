@@ -94,10 +94,10 @@ use step::*;
 use tokens::*;
 pub use tokens::{
     ArgBy, ArgP, Pick, ScriptBarrier, ScriptBy, ScriptCardinality, ScriptCastPolicy, ScriptColumn,
-    ScriptDirection, ScriptGType, ScriptMap, ScriptMerge, ScriptOperator, ScriptOrder, ScriptP,
-    ScriptPick, ScriptPop, ScriptProfileType, ScriptSchemaMode, ScriptScope, ScriptSet,
-    ScriptSetTokens, ScriptT, ScriptTextP, ScriptUuid, ScriptUuidTokens, ScriptV,
-    ScriptWithOptions,
+    ScriptDirection, ScriptEdge, ScriptGType, ScriptMap, ScriptMerge, ScriptOperator, ScriptOrder,
+    ScriptP, ScriptPick, ScriptPop, ScriptProfileType, ScriptSchemaMode, ScriptScope, ScriptSet,
+    ScriptSetTokens, ScriptT, ScriptTextP, ScriptUuid, ScriptUuidTokens, ScriptV, ScriptVertex,
+    ScriptVertexRef, ScriptWithOptions,
 };
 
 use crate::graph::schema::{GraphSchema, SchemaMode, VisualizeFormat};
