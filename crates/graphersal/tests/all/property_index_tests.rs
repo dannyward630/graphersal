@@ -440,11 +440,7 @@ fn every_mutation_kind_and_its_rollback_keep_the_index_exact() {
     let whole: JsonPath = "title".parse().unwrap();
     both_ways!(
         graph,
-        graph.set_vertex_property(
-            v,
-            "title".into(),
-            ElementProperty::Object(Box::new(PropertyMap::default()))
-        )
+        graph.set_vertex_property(v, "title".into(), ElementProperty::Object(Box::default()))
     )
     .unwrap();
     both_ways!(
