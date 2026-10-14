@@ -250,6 +250,10 @@ const CATEGORIES: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "Property indexes",
+        &["create_index", "drop_index", "indexes"],
+    ),
+    (
         "Compressed properties",
         &[
             "define_compression",

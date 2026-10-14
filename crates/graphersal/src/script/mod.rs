@@ -24,6 +24,7 @@
 //   access a call runs under, the compiled-body cache, argument binding.
 // - `compression.rs`: compression rules (`define_compression`, `compressions`,
 //   `drop_compression`, `recompress`).
+// - `property_index.rs`: property indexes (`create_index`, `indexes`, `drop_index`).
 // - `dynamic.rs`: `Dynamic` conversions and the shared argument diagnostics.
 // - `render.rs`: `render_value`/`try_render_value`/`debug_value`, display limits, `RenderedText`.
 // - `execution.rs`, `limits.rs`: `ScriptExecution`/metrics, `ScriptLimits`.
@@ -57,6 +58,7 @@ mod fake;
 mod limits;
 mod mutating;
 pub(crate) mod plan;
+mod property_index;
 mod register;
 mod render;
 mod saved_query;

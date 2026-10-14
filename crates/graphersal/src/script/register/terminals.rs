@@ -187,7 +187,18 @@ pub(super) fn register(registry: &mut Registry) {
             &["drop_compression", "dropCompression"],
             ScriptGraphTraversalSource::drop_compression,
         )
-        .register_fn("recompress", ScriptGraphTraversalSource::recompress);
+        .register_fn("recompress", ScriptGraphTraversalSource::recompress)
+        // Property indexes (`script/property_index.rs`): plain calls on the source, not steps.
+        // `indexes` is one word, so one spelling serves both conventions.
+        .register_fn_as(
+            &["create_index", "createIndex"],
+            ScriptGraphTraversalSource::create_index,
+        )
+        .register_fn("indexes", ScriptGraphTraversalSource::indexes)
+        .register_fn_as(
+            &["drop_index", "dropIndex"],
+            ScriptGraphTraversalSource::drop_index,
+        );
 
     #[cfg(feature = "io")]
     registry

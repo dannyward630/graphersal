@@ -261,6 +261,9 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
     "traversal" "count":
         "Counts the traversers (bulk included); with Scope.local counts the elements of each incoming collection.",
         "g.v().has_label(\"person\").count().next()" => "4";
+    "traversal" "create_index":
+        "Declares a property index #{label, key, element, name}: a v() or e() with that label and a has() on that key then reads the index instead of every element of the label (see the book page Property Indexes).",
+        "{ g.create_index(#{label: \"person\", key: \"age\"}); g.v().has_label(\"person\").has(\"age\", P.gt(30)).values(\"name\").to_list() }" => "[\"josh\", \"peter\"]";
     "traversal" "cyclic_path":
         "Keeps only traversers whose path visits some element twice.",
         "g.v(1).out().in().cyclic_path().count().next()" => "3";
@@ -297,6 +300,9 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
     "traversal" "drop_compression":
         "Removes a compression rule and decompresses its values; false when there is none.",
         "{ g.define_compression(#{name: \"bio\", label: \"person\", path: \"bio\"}); g.drop_compression(\"bio\") }" => "true";
+    "traversal" "drop_index":
+        "Drops a property index; false when there is none.",
+        "{ g.create_index(#{label: \"person\", key: \"age\"}); g.drop_index(\"person_age\") }" => "true";
     "traversal" "drop_label":
         "Removes a label from the label set of each incoming vertex and passes it on; the last one leaves it unlabeled (Graphersal extension).",
         "g.v(1).drop_label(\"person\").labels().next()" => "[]";
@@ -411,6 +417,9 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
     "traversal" "index":
         "Pairs every element of the incoming list with its position ([value, index]).",
         "g.inject([\"a\", \"b\"]).index().next()" => "[[\"a\", 0], [\"b\", 1]]";
+    "traversal" "indexes":
+        "Lists the property indexes as maps: name, element, label, key, served and the current entries, distinct_values and bytes.",
+        "{ g.create_index(#{label: \"person\", key: \"age\"}); g.indexes().map(|i| i.entries) }" => "[4]";
     "traversal" "infer_schema":
         "Infers a schema map from the data: on g from the whole graph, after steps from the elements the traversal yields.",
         "g.infer_schema()[\"vertices\"].keys()" => "[\"person\", \"software\"]";
@@ -473,7 +482,7 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "g.v().values(\"age\").median().next()" => "30.5";
     "traversal" "memory_usage":
         "Returns the graph's own memory footprint in bytes (structure, indexes, properties).",
-        "g.memory_usage().keys()" => "[\"compressed_plain_bytes\", \"compressed_stored_bytes\", \"compressed_values\", \"compression_dictionary_bytes\", \"index_bytes\", \"property_bytes\", \"structure_bytes\", \"total_bytes\", \"total_mb\"]";
+        "g.memory_usage().keys()" => "[\"compressed_plain_bytes\", \"compressed_stored_bytes\", \"compressed_values\", \"compression_dictionary_bytes\", \"index_bytes\", \"property_bytes\", \"property_index_bytes\", \"structure_bytes\", \"total_bytes\", \"total_mb\"]";
     "traversal" "merge":
         "Merges the given list (union without duplicates) or map (keys of the argument win) into the incoming one.",
         "g.inject([1, 2]).merge([2, 3]).next()" => "[1, 2, 3]";
