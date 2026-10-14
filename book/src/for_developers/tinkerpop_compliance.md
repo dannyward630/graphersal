@@ -40,13 +40,13 @@ Scope of this run:
 <!-- tinkerpop:begin headline -->
 | | Scenarios | Share |
 |---|---:|---:|
-| **Passed** | **1600** / 1675 | **95.5 %** |
+| **Passed** | **1631** / 1675 | **97.4 %** |
 | Skipped | 5 / 1675 | 0.3 % |
-| Unsupported (not implemented) | 70 / 1675 | 4.2 % |
+| Unsupported (not implemented) | 39 / 1675 | 2.3 % |
 | **Wrong behaviour of supported steps** | **0** / 1675 | **0.0 %** |
-| Passed of executed (non-skipped) | 1600 / 1670 | 95.8 % |
+| Passed of executed (non-skipped) | 1631 / 1670 | 97.7 % |
 
-Unsupported = translate 50, missing 20. Wrong behaviour = runtime 0, wrong_result 0, wrong_error 0, timeout 0, panic 0.
+Unsupported = translate 32, missing 7. Wrong behaviour = runtime 0, wrong_result 0, wrong_error 0, timeout 0, panic 0.
 <!-- tinkerpop:end headline -->
 
 Every remaining non-pass is a missing step, overload or token, or a literal type the translator cannot
@@ -57,17 +57,17 @@ express (see [Classes](#classes)); the scenarios that ran but differed on purpos
 | Category | Pass % | Passed | Total | Skipped | Unsupported | Wrong |
 |---|---:|---:|---:|---:|---:|---:|
 | `branch` | 100.0 % | 142 | 142 | · | · | · |
-| `data` | 78.3 % | 65 | 83 | · | 18 | · |
-| `filter` | 98.3 % | 356 | 362 | · | 6 | · |
+| `data` | 88.0 % | 73 | 83 | · | 10 | · |
+| `filter` | 98.9 % | 358 | 362 | · | 4 | · |
 | `integrated` | 100.0 % | 4 | 4 | · | · | · |
-| `map` | 94.4 % | 738 | 782 | 3 | 41 | · |
+| `map` | 97.1 % | 759 | 782 | 3 | 20 | · |
 | `semantics` | 97.2 % | 103 | 106 | · | 3 | · |
 | `sideEffect` | 98.0 % | 192 | 196 | 2 | 2 | · |
-| **all** | **95.5 %** | **1600** | **1675** | 5 | 70 | · |
+| **all** | **97.4 %** | **1631** | **1675** | 5 | 39 | · |
 <!-- tinkerpop:end categories -->
 
 <!-- tinkerpop:begin inventory -->
-`API inventory (TinkerPop 3.8.2): 22 of 151 methods, 6 of 21 token classes, 39 of 127 members of registered token classes not registered`
+`API inventory (TinkerPop 3.8.2): 19 of 151 methods, 5 of 21 token classes, 37 of 131 members of registered token classes not registered`
 <!-- tinkerpop:end inventory -->
 
 The largest remaining blockers are the date/time steps and literals (`asDate`, `datetime`, planned for

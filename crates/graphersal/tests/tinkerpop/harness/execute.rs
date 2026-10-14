@@ -780,6 +780,26 @@ fn unknown_property_name(message: &str) -> Option<String> {
     }
 }
 
+/// The date or time a script value holds (one script type per temporal type).
+fn temporal_of(value: &Dynamic) -> Option<graphersal::temporal::Temporal> {
+    use graphersal::temporal::{Date, DateTime, Duration, LocalDateTime, Temporal, Time};
+    if let Some(v) = value.read_lock::<DateTime>() {
+        return Some(Temporal::DateTime(*v));
+    }
+    if let Some(v) = value.read_lock::<Date>() {
+        return Some(Temporal::Date(*v));
+    }
+    if let Some(v) = value.read_lock::<LocalDateTime>() {
+        return Some(Temporal::LocalDateTime(*v));
+    }
+    if let Some(v) = value.read_lock::<Time>() {
+        return Some(Temporal::Time(*v));
+    }
+    value
+        .read_lock::<Duration>()
+        .map(|v| Temporal::Duration(*v))
+}
+
 /// Local equivalent of the engine's private `dynamic_to_element_property` (`script/dynamic.rs`).
 fn dynamic_to_element_property(value: Dynamic) -> ElementProperty {
     if value.is_string() {
@@ -809,6 +829,8 @@ fn dynamic_to_element_property(value: Dynamic) -> ElementProperty {
         ElementProperty::Null
     } else if let Some(uuid) = value.read_lock::<ScriptUuid>() {
         ElementProperty::Uuid(uuid.as_u128())
+    } else if let Some(temporal) = temporal_of(&value) {
+        ElementProperty::Temporal(temporal)
     } else if let Some(map) = value.read_lock::<ScriptMap>() {
         ElementProperty::from_entries(
             map.as_value_map()
@@ -993,7 +1015,11 @@ fn bind(
             Ok(v) if v.is_finite() => Ok(Dynamic::from_float(v)),
             _ => unsupported("bigdecimal"),
         },
-        Expected::DateTime(_) => unsupported("datetime"),
+        Expected::DateTime(text) => eval_helper(
+            engine,
+            graph,
+            &format!("datetime({})", rhai_str(text.trim())),
+        ),
         Expected::VertexId(name) | Expected::VertexSid(name) => {
             vertex_id(engine, graph, name).map(Dynamic::from)
         }

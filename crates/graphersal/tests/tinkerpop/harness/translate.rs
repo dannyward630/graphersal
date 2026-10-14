@@ -49,7 +49,8 @@
 //!   `Unsupported("map literal with non-string key")`. `{..}` is a set literal →
 //!   `Unsupported("unsupported literal type: set")`.
 //! - **Other literals.** `null` → `()`. `NaN`/`Infinity` stay identifiers (bound as scope
-//!   constants by the executor). `datetime(..)`/`DateTime(..)` → unsupported (`datetime`).
+//!   constants by the executor). `datetime(..)`/`DateTime(..)` stay as they are (the DSL's
+//!   datetime constructors, also inside a child traversal: never prefixed with `__.`).
 //!   `UUID("..")` → `UUID.fromString("..")`; a bare `UUID()` (random UUID) is left as is and fails
 //!   in the engine.
 //! - **Strategies.** `new` is dropped; named arguments become one map argument:
@@ -730,7 +731,9 @@ impl Translator<'_> {
                 return Ok(i);
             }
             "datetime" | "DateTime" if paren.is_some() => {
-                return Err("unsupported literal type: datetime".to_string());
+                // The DSL's datetime constructors (`datetime("..")`, `DateTime("..")`), not steps.
+                out.push_str(name);
+                return Ok(i);
             }
             "UUID" => {
                 if let Some(open) = paren
@@ -1300,12 +1303,16 @@ mod tests {
             "g.inject((), NaN, -Infinity)"
         );
         assert_eq!(
-            unsupported(r#"g.inject(datetime("2023-08-08T00:00:00Z"))"#),
-            "unsupported literal type: datetime"
+            ok(r#"g.inject(datetime("2023-08-08T00:00:00Z"))"#),
+            r#"g.inject(datetime("2023-08-08T00:00:00Z"))"#
         );
         assert_eq!(
-            unsupported("g.inject(DateTime('2023-08-08T00:00:00Z'))"),
-            "unsupported literal type: datetime"
+            ok("g.inject(DateTime('2023-08-08T00:00:00Z'))"),
+            r#"g.inject(DateTime("2023-08-08T00:00:00Z"))"#
+        );
+        assert_eq!(
+            ok("g.V().where(__.is(P.gt(datetime('2020-01-01T00:00:00Z')))).dateAdd(hour, 2)"),
+            r#"g.V().where(__.is(P.gt(datetime("2020-01-01T00:00:00Z")))).dateAdd(DT.hour, 2)"#
         );
         assert_eq!(
             ok(r#"g.inject(UUID("f47af10b-58cc-4372-a567-0f02b2f3d479"))"#),
@@ -1501,10 +1508,6 @@ mod tests {
         }
 
         let unsupported_cases: &[(&str, &str)] = &[
-            (
-                "g.inject(datetime('2023-08-02T00:00:00Z'), DateTime('2023-08-02T00:00:00Z'))",
-                "unsupported literal type: datetime",
-            ),
             (
                 r#"g.withStrategies(ReservedKeysVerificationStrategy(throwException: true, keys: {"age"})).addV("person")"#,
                 "unsupported literal type: set",

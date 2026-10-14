@@ -3,38 +3,6 @@
 #   TINKERPOP_UPDATE_BASELINE=1 cargo test --package graphersal --features script,io,display,serde --test tinkerpop_features
 # Review diffs like code. Removing an entry means "this scenario passes now".
 
-["data/DateTime.feature::g_V_valuesXdatetimeX_isXtypeOfXGType_DATETIMEXX"]
-class = "translate"
-reason = "initializer: unsupported literal type: datetime"
-
-["data/DateTime.feature::g_V_valuesXdatetimeX_isXtypeOfXGType_DATETIMEXX_chooseXisXeqXdatetimeX2023_08_08XXXX_constantXmatchX_constantXnoMatchXX"]
-class = "translate"
-reason = "unsupported literal type: datetime"
-
-["data/DateTime.feature::g_V_valuesXdatetimeX_isXtypeOfXGType_DATETIMEXX_dateDiffXdatetimeX2023_08_10XX"]
-class = "translate"
-reason = "unsupported literal type: datetime"
-
-["data/DateTime.feature::g_V_valuesXdatetimeX_isXtypeOfXGType_DATETIMEXX_localXaggregateXaX_capXaX"]
-class = "translate"
-reason = "initializer: unsupported literal type: datetime"
-
-["data/DateTime.feature::g_V_valuesXdatetimeX_isXtypeOfXGType_DATETIMEXX_project_byXidentityX_byXdateAddXDT_dayX1XX"]
-class = "translate"
-reason = "initializer: unsupported literal type: datetime"
-
-["data/DateTime.feature::g_V_valuesXdatetimeX_isXtypeOfXGType_DATETIMEXX_whereXisXgtXdatetimeX2020_01_01XXXX"]
-class = "translate"
-reason = "unsupported literal type: datetime"
-
-["data/DateTime.feature::g_injectXdatetimeX_isXtypeOfXGType_DATETIMEXX_aggregateXaX_capXaX"]
-class = "translate"
-reason = "unsupported literal type: datetime"
-
-["data/DateTime.feature::g_injectXdatetimeX_isXtypeOfXGType_DATETIMEXX_groupCount"]
-class = "translate"
-reason = "unsupported literal type: datetime"
-
 ["data/Set.feature::g_V_hasXset_typeOfXGType_SETXX_valuesXnameX"]
 class = "translate"
 reason = "initializer: unsupported literal type: set"
@@ -75,14 +43,6 @@ reason = "initializer: unsupported literal type: set"
 class = "translate"
 reason = "unsupported literal type: set"
 
-["filter/TypeOf.feature::g_V_valuesXageX_isXtypeOfXGType_DATETIMEXX"]
-class = "missing"
-reason = "GTypeTokens.DATETIME"
-
-["filter/TypeOf.feature::g_V_valuesXageX_isXtypeOfXGType_DURATIONXX"]
-class = "missing"
-reason = "GTypeTokens.DURATION"
-
 ["filter/TypeOfGraph.feature::g_V_out_tree_isXtypeOfXGType_TREEXX_count"]
 class = "missing"
 reason = "GTypeTokens.TREE"
@@ -98,46 +58,6 @@ reason = "GTypeTokens.VPROPERTY"
 ["filter/TypeOfGraph.feature::g_V_whereXtree_isXtypeOfXGType_TREEXXX_values_name"]
 class = "missing"
 reason = "GTypeTokens.TREE"
-
-["map/AsDate.feature::g_V_valuesXbirthdayX_asDate_asNumber_asDate"]
-class = "missing"
-reason = "asDate"
-
-["map/AsDate.feature::g_injectX1694017707000X_asDate"]
-class = "missing"
-reason = "asDate"
-
-["map/AsDate.feature::g_injectX1694017708000LX_asDate"]
-class = "missing"
-reason = "asDate"
-
-["map/AsDate.feature::g_injectX1694017709000dX_asDate"]
-class = "missing"
-reason = "asDate"
-
-["map/AsDate.feature::g_injectX1_2X_asDate"]
-class = "missing"
-reason = "asDate"
-
-["map/AsDate.feature::g_injectXinvalidstrX_asDate"]
-class = "missing"
-reason = "asDate"
-
-["map/AsDate.feature::g_injectXnullX_asDate"]
-class = "missing"
-reason = "asDate"
-
-["map/AsDate.feature::g_injectXstrX_asDate"]
-class = "missing"
-reason = "asDate"
-
-["map/AsDate.feature::g_injectXstr_offsetX_asDate"]
-class = "missing"
-reason = "asDate"
-
-["map/AsNumber.feature::g_V_valuesXbirthdayX_asNumber_asDate_asNumber"]
-class = "missing"
-reason = "asDate"
 
 ["map/Call.feature::g_V_callXdcX"]
 class = "translate"
@@ -219,50 +139,6 @@ reason = "step name is a Rhai built-in function: call"
 class = "translate"
 reason = "step name is a Rhai built-in function: call"
 
-["map/DateAdd.feature::g_injectXdatetimeXstrXX_dateAddXDT_hour_2X"]
-class = "translate"
-reason = "unsupported literal type: datetime"
-
-["map/DateAdd.feature::g_injectXdatetimeXstrXX_dateAddXday_11X"]
-class = "translate"
-reason = "unsupported literal type: datetime"
-
-["map/DateAdd.feature::g_injectXdatetimeXstrXX_dateAddXhour_1X"]
-class = "translate"
-reason = "unsupported literal type: datetime"
-
-["map/DateAdd.feature::g_injectXdatetimeXstrXX_dateAddXhour_2X"]
-class = "translate"
-reason = "unsupported literal type: datetime"
-
-["map/DateAdd.feature::g_injectXdatetimeXstrXX_dateAddXminute_10X"]
-class = "translate"
-reason = "unsupported literal type: datetime"
-
-["map/DateAdd.feature::g_injectXdatetimeXstrXX_dateAddXsecond_20X"]
-class = "translate"
-reason = "unsupported literal type: datetime"
-
-["map/DateDiff.feature::g_V_hasXname_aliceX_valuesXbirthdayX_asDate_dateDiffXconstantXnullXX"]
-class = "missing"
-reason = "asDate"
-
-["map/DateDiff.feature::g_V_valuesXbirthdayX_asDate_dateDiffXdatetimeX19700101T0000ZXX"]
-class = "translate"
-reason = "unsupported literal type: datetime"
-
-["map/DateDiff.feature::g_injectXdatetimeXstr1XX_dateDiffXconstantXdatetimeXstr2XXX"]
-class = "translate"
-reason = "unsupported literal type: datetime"
-
-["map/DateDiff.feature::g_injectXdatetimeXstr1XX_dateDiffXdatetimeXstr2XX"]
-class = "translate"
-reason = "unsupported literal type: datetime"
-
-["map/DateDiff.feature::g_injectXdatetimeXstr1XX_dateDiffXinjectXdatetimeXstr2XXX"]
-class = "translate"
-reason = "unsupported literal type: datetime"
-
 ["map/Properties.feature::g_V_hasXageX_properties_hasXid_nameIdAsStringX_value"]
 class = "skipped"
 reason = "unsupported test (upstream)"
@@ -281,11 +157,11 @@ reason = "vp[marko-name->..]: no vertex-property values in Graphersal (propertie
 
 ["semantics/Orderability.feature::g_inject_order"]
 class = "translate"
-reason = "unsupported literal type: datetime"
+reason = "unsupported literal type: set"
 
 ["semantics/Orderability.feature::g_inject_order_byXdescX"]
 class = "translate"
-reason = "unsupported literal type: datetime"
+reason = "unsupported literal type: set"
 
 ["sideEffect/Group.feature::g_V_group_byXbothE_countX_byXgroup_byXlabelXX"]
 class = "skipped"
