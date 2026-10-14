@@ -5,8 +5,8 @@
 //! value decoder reads GraphSON 3.0 typed values, GraphSON 3.0 `types=false`, GraphSON 2.0 and
 //! untyped GraphSON 1.0. The import never guesses: a value whose type Graphersal cannot hold is
 //! skipped with an entry in the returned [`ImportReport`], never converted to a string or a
-//! number. Dates (`g:Date`, `gx:OffsetDateTime`, ...) are skipped too, so a later date type stays
-//! an additive change.
+//! number. The `java.time` types map to the temporal types (`gx:OffsetDateTime` -> `datetime`,
+//! ...); the date types Graphersal cannot hold (`gx:Year`, `gx:MonthDay`, ...) are skipped.
 //!
 //! **Export** writes the line form with GraphSON 3.0 typed values, which TinkerGraph's
 //! `g.io(file).read()` loads: both `inE` and `outE` on every vertex, unique vertex-property ids,
@@ -23,7 +23,10 @@
 //! | `g:List`, `g:Set`, plain array | `array` | `g:List` |
 //! | `g:Map` with string keys, plain object | `object` | `g:Map` |
 //! | `gx:Char` | `string` | string |
-//! | dates and times, other types | skipped, reported | - |
+//! | `g:Date`, `g:Timestamp` (epoch ms), `gx:Instant`, `gx:OffsetDateTime`, `gx:ZonedDateTime` (zone id dropped, reported) | `datetime` | `gx:OffsetDateTime` |
+//! | `gx:LocalDate`, `gx:LocalDateTime`, `gx:LocalTime` | `date`, `localdatetime`, `time` | the same tags |
+//! | `gx:Duration` (a day = 24 h), `gx:Period` | `duration` | `gx:Duration` (time part only), `gx:Period` (months and days only), else `graphersal:Interval` |
+//! | `gx:Year`, `gx:YearMonth`, `gx:MonthDay`, `gx:OffsetTime`, `gx:ZoneOffset`, other types | skipped, reported | - |
 //!
 //! Structure: element ids become strings (`g:Int32 1` -> `"1"`), a label `"A::B"` becomes the
 //! label set `[A, B]`, a vertex property with several entries becomes one array, meta-properties
@@ -35,8 +38,10 @@
 //! `for_developers/tinkerpop_deviations.md`): ids are strings (TinkerGraph then answers
 //! `g.V("1")`), multi-/meta-properties are folded into arrays and `_meta`, a label set is one
 //! `"A::B"` label for TinkerGraph, unlabeled elements get the default labels `vertex`/`edge`,
-//! dates and unsupported types are skipped, an edge to a missing vertex and a duplicate vertex id
-//! are skipped instead of failing, vertex-property ids are not kept.
+//! unsupported types (and the date types without a twin) are skipped, a zone id and digits below
+//! a microsecond are dropped, a duration with both months/days and a time part is exported as
+//! `graphersal:Interval` (no `java.time` type holds it), an edge to a missing vertex and a
+//! duplicate vertex id are skipped instead of failing, vertex-property ids are not kept.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -54,6 +59,7 @@ use crate::value::depth::{DEFAULT_MAX_VALUE_DEPTH, property_exceeds_depth};
 use crate::value::physical::{
     PhysicalError, PhysicalValue, read_json, write_float, write_json, write_json_string,
 };
+use crate::value::temporal::{DateTime, Duration, Temporal, TemporalKind, tags};
 use crate::value::uuid::{format_canonical, parse_canonical};
 use crate::value::{ElementProperty, N, Number, PropertyMap};
 
@@ -82,21 +88,12 @@ const MAX_SAMPLES: usize = 5;
 /// logical levels, each typed container costs two JSON levels, plus the line's own structure.
 const MAX_JSON_DEPTH: usize = DEFAULT_MAX_VALUE_DEPTH * 2 + 8;
 
-/// Local names (after the `g:`/`gx:` prefix) of the date and time types: always skipped.
-const DATE_TIME_TYPES: [&str; 17] = [
-    "Date",
-    "Timestamp",
+/// Local names (after the `g:`/`gx:` prefix) of the date and time types Graphersal cannot hold:
+/// always skipped (the others are read by [`decode_temporal`]).
+const SKIPPED_DATE_TIME_TYPES: [&str; 7] = [
     "Calendar",
     "TimeZone",
-    "Instant",
-    "LocalDate",
-    "LocalDateTime",
-    "LocalTime",
-    "OffsetDateTime",
     "OffsetTime",
-    "ZonedDateTime",
-    "Duration",
-    "Period",
     "Year",
     "YearMonth",
     "MonthDay",
@@ -112,8 +109,9 @@ const DATE_TIME_TYPES: [&str; 17] = [
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ImportNoteKind {
-    /// A date or time value (`g:Date`, `g:Timestamp`, `gx:OffsetDateTime`, ...). Skipped until
-    /// Graphersal has a date type, never converted to a string or a number.
+    /// A date or time value of a type Graphersal cannot hold (`gx:Year`, `gx:YearMonth`,
+    /// `gx:MonthDay`, `gx:OffsetTime`, `gx:ZoneOffset`, ...), never converted to a string or a
+    /// number.
     SkippedDateTime {
         /// The value's `@type`.
         type_tag: String,
@@ -156,6 +154,18 @@ pub enum ImportNoteKind {
         /// The key.
         key: String,
     },
+    /// A `gx:ZonedDateTime` imported as a `datetime` with its offset at that time: the zone id
+    /// (`Europe/Paris`) is not kept (a value never stores a zone).
+    ZoneDropped {
+        /// The value's `@type`.
+        type_tag: String,
+    },
+    /// A date or time value with digits below a microsecond (Java writes nanoseconds): cut to
+    /// microseconds, Graphersal's resolution.
+    SubMicrosecondsCut {
+        /// The value's `@type`.
+        type_tag: String,
+    },
 }
 
 impl ImportNoteKind {
@@ -175,7 +185,9 @@ impl ImportNoteKind {
             | ImportNoteKind::LabelSplit
             | ImportNoteKind::VertexWithoutId
             | ImportNoteKind::EdgeCopiesDisagree
-            | ImportNoteKind::IgnoredKey { .. } => false,
+            | ImportNoteKind::IgnoredKey { .. }
+            | ImportNoteKind::ZoneDropped { .. }
+            | ImportNoteKind::SubMicrosecondsCut { .. } => false,
         }
     }
 }
@@ -184,7 +196,10 @@ impl fmt::Display for ImportNoteKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ImportNoteKind::SkippedDateTime { type_tag } => {
-                write!(f, "skipped date/time values ({type_tag}, no date type yet)")
+                write!(
+                    f,
+                    "skipped date/time values ({type_tag}, a type Graphersal cannot hold)"
+                )
             }
             ImportNoteKind::SkippedUnsupportedType { type_tag } => {
                 write!(f, "skipped values of the unsupported type {type_tag}")
@@ -219,6 +234,14 @@ impl fmt::Display for ImportNoteKind {
                 f.write_str("edges whose inE copy disagrees with the outE copy (outE kept)")
             }
             ImportNoteKind::IgnoredKey { key } => write!(f, "ignored the unknown key '{key}'"),
+            ImportNoteKind::ZoneDropped { type_tag } => write!(
+                f,
+                "{type_tag} values imported as datetime with their offset (the zone id is not kept)"
+            ),
+            ImportNoteKind::SubMicrosecondsCut { type_tag } => write!(
+                f,
+                "{type_tag} values cut to microseconds (digits below a microsecond dropped)"
+            ),
         }
     }
 }
@@ -373,20 +396,23 @@ fn local_name(tag: &str) -> &str {
 }
 
 /// Decodes one GraphSON value (typed or plain) into a storable logical value.
-fn decode_value(value: PhysicalValue<'static>) -> Result<ElementProperty, ValueSkip> {
+fn decode_value(
+    value: PhysicalValue<'static>,
+    notes: &mut Vec<ImportNoteKind>,
+) -> Result<ElementProperty, ValueSkip> {
     match value {
         PhysicalValue::Null => Ok(ElementProperty::Null),
         PhysicalValue::Bool(b) => Ok(ElementProperty::Boolean(b)),
         PhysicalValue::Int(i) => Ok(ElementProperty::Number(Number::from_i64(i))),
         PhysicalValue::Float(f) => Ok(ElementProperty::Number(Number::from_f64(f))),
         PhysicalValue::String(s) => Ok(ElementProperty::String(CompactString::from(s))),
-        PhysicalValue::Array(items) => decode_list(items),
+        PhysicalValue::Array(items) => decode_list(items, notes),
         PhysicalValue::Object(fields) => match split_typed(fields)? {
-            Ok((tag, payload)) => decode_typed(&tag, payload),
+            Ok((tag, payload)) => decode_typed(&tag, payload, notes),
             Err(fields) => {
                 let mut map = PropertyMap::with_capacity(fields.len());
                 for (key, field) in fields {
-                    map.insert(CompactString::from(key), decode_value(field)?);
+                    map.insert(CompactString::from(key), decode_value(field, notes)?);
                 }
                 Ok(ElementProperty::Object(Box::new(map)))
             }
@@ -394,24 +420,34 @@ fn decode_value(value: PhysicalValue<'static>) -> Result<ElementProperty, ValueS
     }
 }
 
-fn decode_list(items: Vec<PhysicalValue<'static>>) -> Result<ElementProperty, ValueSkip> {
+fn decode_list(
+    items: Vec<PhysicalValue<'static>>,
+    notes: &mut Vec<ImportNoteKind>,
+) -> Result<ElementProperty, ValueSkip> {
     let mut out = Vec::with_capacity(items.len());
     for item in items {
-        out.push(decode_value(item)?);
+        out.push(decode_value(item, notes)?);
     }
     Ok(ElementProperty::Array(out))
 }
 
-fn decode_typed(tag: &str, payload: PhysicalValue<'static>) -> Result<ElementProperty, ValueSkip> {
+fn decode_typed(
+    tag: &str,
+    payload: PhysicalValue<'static>,
+    notes: &mut Vec<ImportNoteKind>,
+) -> Result<ElementProperty, ValueSkip> {
     let core = tag.starts_with("g:") || tag.starts_with("gx:");
     let name = local_name(tag);
-    if core && DATE_TIME_TYPES.contains(&name) {
+    if core && SKIPPED_DATE_TIME_TYPES.contains(&name) {
         return Err(ValueSkip {
             kind: ImportNoteKind::SkippedDateTime {
                 type_tag: tag.to_string(),
             },
             reason: None,
         });
+    }
+    if core && let Some(decoded) = decode_temporal(tag, name, &payload, notes) {
+        return decoded.map(ElementProperty::Temporal);
     }
     let unsupported = || ValueSkip {
         kind: ImportNoteKind::SkippedUnsupportedType {
@@ -454,7 +490,7 @@ fn decode_typed(tag: &str, payload: PhysicalValue<'static>) -> Result<ElementPro
             Ok(ElementProperty::String(CompactString::from(text)))
         }
         ("Char", _) => Err(ValueSkip::malformed("gx:Char needs a string payload")),
-        ("List" | "Set", PhysicalValue::Array(items)) => decode_list(items),
+        ("List" | "Set", PhysicalValue::Array(items)) => decode_list(items, notes),
         ("List" | "Set", _) => Err(ValueSkip::malformed("g:List/g:Set need an array payload")),
         ("Map", PhysicalValue::Array(flat)) => {
             if flat.len() % 2 != 0 {
@@ -463,10 +499,10 @@ fn decode_typed(tag: &str, payload: PhysicalValue<'static>) -> Result<ElementPro
             let mut map = PropertyMap::with_capacity(flat.len() / 2);
             let mut items = flat.into_iter();
             while let (Some(key), Some(value)) = (items.next(), items.next()) {
-                let ElementProperty::String(key) = decode_value(key)? else {
+                let ElementProperty::String(key) = decode_value(key, notes)? else {
                     return Err(ValueSkip::malformed("a g:Map key must be a string"));
                 };
-                map.insert(key, decode_value(value)?);
+                map.insert(key, decode_value(value, notes)?);
             }
             Ok(ElementProperty::Object(Box::new(map)))
         }
@@ -475,9 +511,133 @@ fn decode_typed(tag: &str, payload: PhysicalValue<'static>) -> Result<ElementPro
     }
 }
 
+/// Decodes a `java.time` value (the `g:`/`gx:` date and time types of GraphSON) into a temporal
+/// value; `None` when `name` is not one of them.
+///
+/// - `g:Date`, `g:Timestamp`: epoch milliseconds -> `datetime` in UTC;
+/// - `gx:Instant`, `gx:OffsetDateTime` (also `g:DateTime`) -> `datetime` with its offset;
+///   `gx:ZonedDateTime` -> `datetime` with the offset it states, the zone id is dropped
+///   ([`ImportNoteKind::ZoneDropped`]);
+/// - `gx:LocalDate`, `gx:LocalDateTime`, `gx:LocalTime` -> `date`, `localdatetime`, `time`;
+/// - `gx:Duration` (a fixed length; a day is 24 hours) and `gx:Period` (years, months, days) ->
+///   `duration`.
+///
+/// Digits below a microsecond are cut ([`ImportNoteKind::SubMicrosecondsCut`]); a value outside
+/// the supported range or text that is not of the type is a malformed value.
+fn decode_temporal(
+    tag: &str,
+    name: &str,
+    payload: &PhysicalValue<'_>,
+    notes: &mut Vec<ImportNoteKind>,
+) -> Option<Result<Temporal, ValueSkip>> {
+    const NOT_OF_TYPE: &str =
+        "the text is not a value of the date/time type, or lies outside the years -9999 to 9999";
+    let kind = match name {
+        "Date" | "Timestamp" => {
+            return Some(match payload {
+                PhysicalValue::Int(millis) => DateTime::from_epoch_millis(*millis)
+                    .map(Temporal::DateTime)
+                    .map_err(|_| {
+                        ValueSkip::malformed("the date lies outside the years -9999 to 9999")
+                    }),
+                _ => Err(ValueSkip::malformed(
+                    "g:Date and g:Timestamp need the epoch milliseconds",
+                )),
+            });
+        }
+        "Instant" | "OffsetDateTime" | "ZonedDateTime" | "DateTime" => TemporalKind::DateTime,
+        "LocalDate" => TemporalKind::Date,
+        "LocalDateTime" => TemporalKind::LocalDateTime,
+        "LocalTime" => TemporalKind::Time,
+        "Duration" | "Period" => TemporalKind::Duration,
+        _ => return None,
+    };
+    let PhysicalValue::String(text) = payload else {
+        return Some(Err(ValueSkip::malformed(
+            "a date or time type needs its text",
+        )));
+    };
+    let text = text.as_ref();
+    let (text, zone) = match (name, text.split_once('[')) {
+        ("ZonedDateTime", Some((local, _))) if has_offset(local) => (local, true),
+        _ => (text, false),
+    };
+    let Ok(value) = Temporal::parse_as(kind, text) else {
+        return Some(Err(ValueSkip::malformed(NOT_OF_TYPE)));
+    };
+    let value = match (name, value) {
+        ("Duration", Temporal::Duration(duration)) => {
+            if duration.months() != 0 {
+                return Some(Err(ValueSkip::malformed(
+                    "a gx:Duration has no years or months (that is a gx:Period)",
+                )));
+            }
+            match (duration.days() as i64)
+                .checked_mul(86_400_000_000)
+                .and_then(|micros| micros.checked_add(duration.micros()))
+            {
+                Some(micros) => Temporal::Duration(Duration::from_micros(micros)),
+                None => return Some(Err(ValueSkip::malformed(NOT_OF_TYPE))),
+            }
+        }
+        ("Period", Temporal::Duration(duration)) if duration.micros() != 0 => {
+            return Some(Err(ValueSkip::malformed(
+                "a gx:Period has no time part (that is a gx:Duration)",
+            )));
+        }
+        (_, value) => value,
+    };
+    if zone {
+        notes.push(ImportNoteKind::ZoneDropped {
+            type_tag: tag.to_string(),
+        });
+    }
+    if cuts_below_micros(text) {
+        notes.push(ImportNoteKind::SubMicrosecondsCut {
+            type_tag: tag.to_string(),
+        });
+    }
+    Some(Ok(value))
+}
+
+/// Whether a date-time text ends in a UTC offset (`Z`, `+02:00`, `-05:00`).
+fn has_offset(text: &str) -> bool {
+    match text.split_once(['T', 't']) {
+        Some((_, time)) => time.ends_with(['Z', 'z']) || time.contains(['+', '-']),
+        None => false,
+    }
+}
+
+/// Whether a text has a fraction of a second with a non-zero digit below a microsecond.
+fn cuts_below_micros(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        if matches!(bytes[at], b'.' | b',') {
+            let digits = bytes[at + 1..]
+                .iter()
+                .take_while(|b| b.is_ascii_digit())
+                .count();
+            if bytes[at + 1..at + 1 + digits]
+                .iter()
+                .skip(6)
+                .any(|&b| b != b'0')
+            {
+                return true;
+            }
+            at += digits;
+        }
+        at += 1;
+    }
+    false
+}
+
 /// Decodes a property value and checks its depth.
-fn decode_property(value: PhysicalValue<'static>) -> Result<ElementProperty, ValueSkip> {
-    let decoded = decode_value(value)?;
+fn decode_property(
+    value: PhysicalValue<'static>,
+    notes: &mut Vec<ImportNoteKind>,
+) -> Result<ElementProperty, ValueSkip> {
+    let decoded = decode_value(value, notes)?;
     if property_exceeds_depth(&decoded, DEFAULT_MAX_VALUE_DEPTH) {
         return Err(ValueSkip::malformed("the value is nested too deeply"));
     }
@@ -1162,7 +1322,8 @@ impl<S: GraphStorage> Importer<'_, S> {
             });
             return None;
         };
-        let value = match decode_property(value) {
+        let mut notes = Vec::new();
+        let value = match decode_property(value, &mut notes) {
             Ok(value) => value,
             Err(skip) => {
                 self.skip_value(skip, || {
@@ -1171,22 +1332,42 @@ impl<S: GraphStorage> Importer<'_, S> {
                 return None;
             }
         };
+        self.converted(&mut notes, || {
+            format!("{at}: vertex \"{vertex}\", property \"{key}\"")
+        });
         let mut meta = PropertyMap::default();
         if let Some(PhysicalValue::Object(meta_fields)) = meta_raw {
             for (meta_key, meta_value) in meta_fields {
-                match decode_property(meta_value) {
+                match decode_property(meta_value, &mut notes) {
                     Ok(decoded) => {
+                        self.converted(&mut notes, || {
+                            format!(
+                                "{at}: vertex \"{vertex}\", meta-property \"{meta_key}\" of \
+                                 \"{key}\""
+                            )
+                        });
                         meta.insert(CompactString::from(meta_key), decoded);
                     }
-                    Err(skip) => self.skip_value(skip, || {
-                        format!(
-                            "{at}: vertex \"{vertex}\", meta-property \"{meta_key}\" of \"{key}\""
-                        )
-                    }),
+                    Err(skip) => {
+                        notes.clear();
+                        self.skip_value(skip, || {
+                            format!(
+                                "{at}: vertex \"{vertex}\", meta-property \"{meta_key}\" of \
+                                 \"{key}\""
+                            )
+                        })
+                    }
                 }
             }
         }
         Some(Entry { value, meta })
+    }
+
+    /// Records the conversion notes of a decoded value (`ZoneDropped`, ...) at `sample`.
+    fn converted(&mut self, notes: &mut Vec<ImportNoteKind>, sample: impl Fn() -> String) {
+        for kind in notes.drain(..) {
+            self.report.note(kind, &sample);
+        }
     }
 
     fn skip_value(&mut self, skip: ValueSkip, sample: impl FnOnce() -> String) {
@@ -1252,12 +1433,18 @@ impl<S: GraphStorage> Importer<'_, S> {
                 };
                 let mut properties = PropertyMap::default();
                 if let Some(PhysicalValue::Object(prop_fields)) = props {
+                    let mut notes = Vec::new();
                     for (key, value) in prop_fields {
-                        match decode_property(value) {
+                        match decode_property(value, &mut notes) {
                             Ok(decoded) => {
+                                let shown = id.clone().unwrap_or_default();
+                                self.converted(&mut notes, || {
+                                    format!("{at}: edge \"{shown}\", property \"{key}\"")
+                                });
                                 properties.insert(CompactString::from(key), decoded);
                             }
                             Err(skip) => {
+                                notes.clear();
                                 let shown = id.clone().unwrap_or_default();
                                 self.skip_value(skip, || {
                                     format!("{at}: edge \"{shown}\", property \"{key}\"")
@@ -1699,10 +1886,12 @@ fn write_typed(value: &ElementProperty, out: &mut String) -> Result<(), Physical
             write_json_string(&format_canonical(*u), out)?;
             out.push('}');
         }
-        // A2: the `gx:OffsetDateTime`, `gx:LocalDate`, ... tags. Until then a clean error, never
-        // an untyped string a reader would take for a string.
+        // `gx:OffsetDateTime`, `gx:LocalDate`, ... with the canonical text, which `java.time`
+        // parses (`temporal::tags`).
         ElementProperty::Temporal(value) => {
-            return Err(PhysicalError::Unsupported(value.kind().name()));
+            write!(out, "{{\"@type\":\"{}\",\"@value\":", tags::tag_of(value))?;
+            write_json_string(&value.to_string(), out)?;
+            out.push('}');
         }
         ElementProperty::Array(items) => {
             out.push_str("{\"@type\":\"g:List\",\"@value\":[");
