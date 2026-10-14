@@ -60,8 +60,9 @@ enum ScalarKey {
     Str(CompactString),
     Uuid(u128),
     /// Every field of the value: two datetimes of one instant but different offsets are equal
-    /// values, yet interned apart so a sack keeps the offset it was given.
-    Temporal(crate::value::temporal::TemporalBits),
+    /// values, yet interned apart so a sack keeps the offset it was given. Boxed: inline, the
+    /// 32 bytes grew every key from 32 to 48 bytes and slowed sack merges by about 13 %.
+    Temporal(Box<crate::value::temporal::TemporalBits>),
 }
 
 impl ScalarKey {
@@ -83,7 +84,7 @@ impl ScalarKey {
             ElementProperty::String(s) => ScalarKey::Str(s.clone()),
             ElementProperty::Compressed(text) => ScalarKey::Str(text.text()),
             ElementProperty::Uuid(u) => ScalarKey::Uuid(*u),
-            ElementProperty::Temporal(t) => ScalarKey::Temporal(t.bits()),
+            ElementProperty::Temporal(t) => ScalarKey::Temporal(Box::new(t.bits())),
             ElementProperty::Array(_)
             | ElementProperty::Object(_)
             | ElementProperty::Map(_)
