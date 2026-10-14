@@ -3,163 +3,163 @@
 
 See also [Predicates: Comparison and Resolution](../../users_guide/predicates.md).
 
-**`P.between`**: Predicate: at least the first and less than the second value.
+**`P.between`**: At least the first and less than the second value.
 
 ```rhai,graph=modern
 g.v().values("age").is(P.between(27, 30)).to_list()   // [29, 27]
 ```
 
-**`P.containing`**: Text predicate: the string contains the given text.
+**`P.containing`**: The string contains the given text.
 
 ```rhai,graph=modern
 g.v().values("name").is(TextP.containing("ar")).to_list()   // ["marko"]
 ```
 
-**`P.ending_with` · `P.endingWith`**: Text predicate: the string ends with the given text.
+**`P.ending_with` · `P.endingWith`**: The string ends with the given text.
 
 ```rhai,graph=modern
 g.v().values("name").is(TextP.ending_with("o")).to_list()   // ["marko"]
 ```
 
-**`P.eq`**: Predicate: equal to the value.
+**`P.eq`**: Equal to the value.
 
 ```rhai,graph=modern
 g.v().has("age", P.eq(29)).values("name").to_list()   // ["marko"]
 ```
 
-**`P.gt`**: Predicate: greater than the value.
+**`P.gt`**: Greater than the value.
 
 ```rhai,graph=modern
 g.v().values("age").is(P.gt(30)).to_list()   // [32, 35]
 ```
 
-**`P.gte`**: Predicate: greater than or equal to the value.
+**`P.gte`**: Greater than or equal to the value.
 
 ```rhai,graph=modern
 g.v().values("age").is(P.gte(32)).to_list()   // [32, 35]
 ```
 
-**`P.inside`**: Predicate: strictly between the two values (both excluded).
+**`P.inside`**: Strictly between the two values (both excluded).
 
 ```rhai,graph=modern
 g.v().values("age").is(P.inside(27, 32)).to_list()   // [29]
 ```
 
-**`P.lt`**: Predicate: less than the value.
+**`P.lt`**: Less than the value.
 
 ```rhai,graph=modern
 g.v().values("age").is(P.lt(29)).to_list()   // [27]
 ```
 
-**`P.lte`**: Predicate: less than or equal to the value.
+**`P.lte`**: Less than or equal to the value.
 
 ```rhai,graph=modern
 g.v().values("age").is(P.lte(29)).to_list()   // [29, 27]
 ```
 
-**`P.neq`**: Predicate: not equal to the value.
+**`P.neq`**: Not equal to the value.
 
 ```rhai,graph=modern
 g.v().values("age").is(P.neq(29)).to_list()   // [27, 32, 35]
 ```
 
-**`P.not`**: Predicate: the complement of the given predicate (see the book page Predicates for the deviation from TinkerPop).
+**`P.not`**: The complement of the given predicate (see the book page Predicates for the deviation from TinkerPop).
 
 ```rhai,graph=modern
 g.v().values("age").is(P.not(P.gt(30))).to_list()   // [29, 27]
 ```
 
-**`P.not_containing` · `P.notContaining`**: Text predicate: the string does not contain the given text.
+**`P.not_containing` · `P.notContaining`**: The string does not contain the given text.
 
 ```rhai,graph=modern
 g.v().values("name").is(TextP.not_containing("o")).to_list()   // ["vadas", "ripple", "peter"]
 ```
 
-**`P.not_ending_with` · `P.notEndingWith`**: Text predicate: the string does not end with the given text.
+**`P.not_ending_with` · `P.notEndingWith`**: The string does not end with the given text.
 
 ```rhai,graph=modern
 g.v().values("name").is(TextP.not_ending_with("s")).to_list()   // ["marko", "lop", "josh", "ripple", "peter"]
 ```
 
-**`P.not_starting_with` · `P.notStartingWith`**: Text predicate: the string does not start with the given text.
+**`P.not_starting_with` · `P.notStartingWith`**: The string does not start with the given text.
 
 ```rhai,graph=modern
 g.v().values("name").is(TextP.not_starting_with("r")).to_list()   // ["marko", "vadas", "lop", "josh", "peter"]
 ```
 
-**`P.outside`**: Predicate: below the first or above the second value.
+**`P.outside`**: Below the first or above the second value.
 
 ```rhai,graph=modern
 g.v().values("age").is(P.outside(27, 32)).to_list()   // [35]
 ```
 
-**`P.starting_with` · `P.startingWith`**: Text predicate: the string starts with the given text.
+**`P.starting_with` · `P.startingWith`**: The string starts with the given text.
 
 ```rhai,graph=modern
 g.v().values("name").is(TextP.starting_with("m")).to_list()   // ["marko"]
 ```
 
-**`P.typeOf`**: Predicate: the value is of the given GType or type name (String, Integer, Double, UUID, ...).
+**`P.typeOf`**: The value is of the given GType or type name (String, Integer, Double, UUID, ...).
 
 ```rhai,graph=modern
 g.v().has("age", P.typeOf(GType.LONG)).count().next()   // 4
 ```
 
-**`P.within` · `P.WithIn`**: Predicate: equal to one of the values (given as arguments or one list).
+**`P.within` · `P.WithIn`**: Equal to one of the values (given as arguments or one list).
 
 ```rhai,graph=modern
 g.v().values("age").is(P.within(27, 35)).to_list()   // [27, 35]
 ```
 
-**`P.without` · `P.WithOut`**: Predicate: equal to none of the values (given as arguments or one list).
+**`P.without` · `P.WithOut`**: Equal to none of the values (given as arguments or one list).
 
 ```rhai,graph=modern
 g.v().values("age").is(P.without(27, 35)).to_list()   // [29, 32]
 ```
 
-**`TextP.containing`**: Text predicate: the string contains the given text.
+**`TextP.containing`**: The string contains the given text.
 
 ```rhai,graph=modern
 g.v().values("name").is(TextP.containing("ar")).to_list()   // ["marko"]
 ```
 
-**`TextP.ending_with` · `TextP.endingWith`**: Text predicate: the string ends with the given text.
+**`TextP.ending_with` · `TextP.endingWith`**: The string ends with the given text.
 
 ```rhai,graph=modern
 g.v().values("name").is(TextP.ending_with("o")).to_list()   // ["marko"]
 ```
 
-**`TextP.not_containing` · `TextP.notContaining`**: Text predicate: the string does not contain the given text.
+**`TextP.not_containing` · `TextP.notContaining`**: The string does not contain the given text.
 
 ```rhai,graph=modern
 g.v().values("name").is(TextP.not_containing("o")).to_list()   // ["vadas", "ripple", "peter"]
 ```
 
-**`TextP.not_ending_with` · `TextP.notEndingWith`**: Text predicate: the string does not end with the given text.
+**`TextP.not_ending_with` · `TextP.notEndingWith`**: The string does not end with the given text.
 
 ```rhai,graph=modern
 g.v().values("name").is(TextP.not_ending_with("s")).to_list()   // ["marko", "lop", "josh", "ripple", "peter"]
 ```
 
-**`TextP.not_regex` · `TextP.notRegex`**: Text predicate: the string does not match the regular expression.
+**`TextP.not_regex` · `TextP.notRegex`**: The string does not match the regular expression.
 
 ```rhai,graph=modern
 g.v().values("name").is(TextP.not_regex("^[mjp]")).to_list()   // ["vadas", "lop", "ripple"]
 ```
 
-**`TextP.not_starting_with` · `TextP.notStartingWith`**: Text predicate: the string does not start with the given text.
+**`TextP.not_starting_with` · `TextP.notStartingWith`**: The string does not start with the given text.
 
 ```rhai,graph=modern
 g.v().values("name").is(TextP.not_starting_with("r")).to_list()   // ["marko", "vadas", "lop", "josh", "peter"]
 ```
 
-**`TextP.regex`**: Text predicate: the string matches the regular expression (Rust regex dialect, see the book page Predicates).
+**`TextP.regex`**: The string matches the regular expression (Rust regex dialect, see the book page Predicates).
 
 ```rhai,graph=modern
 g.v().values("name").is(TextP.regex("^[mj]")).to_list()   // ["marko", "josh"]
 ```
 
-**`TextP.starting_with` · `TextP.startingWith`**: Text predicate: the string starts with the given text.
+**`TextP.starting_with` · `TextP.startingWith`**: The string starts with the given text.
 
 ```rhai,graph=modern
 g.v().values("name").is(TextP.starting_with("m")).to_list()   // ["marko"]

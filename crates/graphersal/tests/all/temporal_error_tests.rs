@@ -212,3 +212,16 @@ fn diagnostics_name_temporal_types_by_their_value_type_names() {
     assert!(text.contains("duration"), "{text}");
     assert!(!text.contains("graphersal::"), "{text}");
 }
+
+#[test]
+fn a_saved_query_date_argument_without_an_offset_names_the_constructor() {
+    let text = script_failure(
+        r#"g.define_query(#{name: "after", params: #{t: #{schema: #{type: "string", format: "date-time"}}}, body: "fn after(t) { g.inject(t) }"});
+           g.query("after", #{t: "2023-08-02T09:30"}).to_list()"#,
+    );
+    assert!(text.contains("UTC offset or time zone"), "{text}");
+    assert!(
+        text.contains(r#"datetime("2024-05-01T09:30:00+02:00")"#),
+        "{text}"
+    );
+}

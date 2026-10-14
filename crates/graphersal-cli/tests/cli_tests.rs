@@ -168,6 +168,41 @@ fn uuid_literal_round_trips_as_a_native_uuid() {
     assert_eq!(res.stdout.trim(), "550e8400-e29b-41d4-a716-446655440000");
 }
 
+/// Dates print as their canonical ISO 8601 text in tables and JSON, and as their DSL literal
+/// where a script value is shown.
+#[test]
+fn dates_print_as_their_canonical_text_and_values_as_literals() {
+    let query = r#"g.v(1).property("born", date("1990-05-01")).property("took", duration("P1M")).value_map("born", "took")"#;
+    let table = run(&["-e", query], "");
+    assert_eq!(table.code, 0, "stderr: {}", table.stderr);
+    assert!(
+        table.stdout.contains("│ [1990-05-01] │ [P1M] │"),
+        "{}",
+        table.stdout
+    );
+    let json = run(&["--format", "json", "-e", query], "");
+    assert_eq!(json.code, 0, "stderr: {}", json.stderr);
+    assert!(json.stdout.contains(r#""1990-05-01""#), "{}", json.stdout);
+    let markdown = run(&["--format", "markdown", "-e", query], "");
+    assert!(
+        markdown.stdout.contains("| [1990-05-01] | [P1M] |"),
+        "{}",
+        markdown.stdout
+    );
+    let value = run(
+        &[
+            "-e",
+            r#"[datetime("2023-08-02T09:30+02:00"), time("09:30")]"#,
+        ],
+        "",
+    );
+    assert_eq!(value.code, 0, "stderr: {}", value.stderr);
+    assert_eq!(
+        value.stdout.trim(),
+        "datetime(\"2023-08-02T09:30:00+02:00\")\ntime(\"09:30:00\")"
+    );
+}
+
 #[test]
 fn failing_query_reports_diagnostic_on_stderr() {
     let res = run(&["-e", "g.v().values(\"name\").sum().next()"], "");

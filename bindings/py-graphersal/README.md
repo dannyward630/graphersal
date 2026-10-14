@@ -10,8 +10,8 @@ and embedded into the Python process: no server, no JVM.
 
 You write Gremlin as script text (the same DSL as the playground and the command line tool) and
 run it against a `Graph`; results come back as native Python values
-(`list`/`dict`/`int`/`float`/`str`/`bool`/`None`/`uuid.UUID`, and `graphersal.Vertex` /
-`graphersal.Edge` for vertices and edges). Graph files are GraphSON 3.0 (the
+(`list`/`dict`/`int`/`float`/`str`/`bool`/`None`/`uuid.UUID`, the `datetime` types for dates
+and times, and `graphersal.Vertex` / `graphersal.Edge` for vertices and edges). Graph files are GraphSON 3.0 (the
 primary exchange format for Gremlin users) and GraphML; graphs can also be kept on disk with
 durable commits (the Store).
 
@@ -89,9 +89,9 @@ graph = graphersal.Graph.from_graphson("path/to/graph.json")
 graph.export_graphson("path/to/out.json")   # TinkerGraph loads it with g.io(path).read()
 ```
 
-GraphSON values carry their types (`uuid`, lists and maps come back as such). Data Graphersal
-cannot hold yet (dates such as `g:Date`, other unsupported types) is skipped, never converted,
-and named in one `UserWarning`. Multi-valued properties become lists, meta-properties go into the
+GraphSON values carry their types (`uuid`, dates and times, lists and maps come back as such).
+Data Graphersal cannot hold (types without a Graphersal twin) is skipped, never converted, and
+named in one `UserWarning`. Multi-valued properties become lists, meta-properties go into the
 `_meta` property; see the book's GraphSON page for every mapping.
 
 GraphML:
@@ -168,8 +168,9 @@ with graphersal.Store.create("data") as store:            # or Store.open("data"
 A schema is a `dict` (or JSON text) in the library's schema format: an envelope with `mode`
 (`"none"`, `"open"`, `"closed"`), `vertices`, `edges` and a free `meta`, around standard JSON
 Schema 2020-12 label schemas, so a Pydantic `Model.model_json_schema()` can be used as a label's
-schema (drop `date-time` formats and `dict[str, T]` fields first: no date or map type before
-0.2.0). The full reference is the book page "Schemas".
+schema (drop `dict[str, T]` fields first: there is no map-of-T type; the `date-time`, `date`,
+`time` and `duration` formats are supported, and a stored `date-time` needs a UTC offset). The
+full reference is the book page "Schemas".
 
 ```python
 graph = graphersal.Graph.tinkerpop_modern()
@@ -282,8 +283,8 @@ who_marko_knows = graph.query(
 
 ## Parameterized queries
 
-Pass a `params` dict of `int`, `float`, `str`, `bool`, `None` or `uuid.UUID` values, or a
-`Vertex`/`Edge` a query returned (it stands for its element: `g.V(v)`, `inject(v)`). Each one is
+Pass a `params` dict of `int`, `float`, `str`, `bool`, `None`, `uuid.UUID` or date and time
+values (see [Dates and times](#dates-and-times)), or a `Vertex`/`Edge` a query returned (it stands for its element: `g.V(v)`, `inject(v)`). Each one is
 bound as both a script variable of the same name and an entry of the `params` map, so user input
 never needs to be spliced into the script string:
 
@@ -302,6 +303,57 @@ names = graph.query(
 `list`/`dict` values in `params` are not supported and raise `GraphersalError`, as does an `int`
 outside the int64 range (it is never widened to a float). A key that is not a `str` raises
 `TypeError`.
+
+## Dates and times
+
+The engine's five date and time types (book part "Dates and Times") convert both ways, to the
+microsecond, which is the resolution of both sides:
+
+| Graphersal | Python |
+|---|---|
+| `datetime` (an instant with its UTC offset) | aware `datetime.datetime`, `tzinfo=datetime.timezone(timedelta(seconds=offset))` |
+| `localdatetime` (a wall-clock time) | naive `datetime.datetime` |
+| `date` | `datetime.date` |
+| `time` (a time of day) | naive `datetime.time` |
+| `duration` without months | `datetime.timedelta` |
+| `duration` with months (`P1M`) | `graphersal.Interval` |
+
+```python
+import datetime as dt
+import graphersal
+
+graph = graphersal.Graph()
+graph.execute(
+    'g.add_v("event").property("at", at).property("took", took).iterate()',
+    params={
+        "at": dt.datetime(2023, 8, 2, 9, 30, tzinfo=dt.timezone(dt.timedelta(hours=2))),
+        "took": dt.timedelta(minutes=90),
+    },
+)
+graph.query('g.V().values("at").next()')
+# datetime.datetime(2023, 8, 2, 9, 30, tzinfo=datetime.timezone(datetime.timedelta(seconds=7200)))
+graph.query('g.V().values("at").date_add(DT.month, 1).as_string().next()')
+# '2023-09-02T09:30:00+02:00'
+graph.query('duration("P1Y2M")')
+# Interval('P1Y2M')
+```
+
+- An aware `datetime` with any `tzinfo` (`datetime.timezone`, `zoneinfo.ZoneInfo`) is stored with
+  the UTC offset it has at that instant; the zone name is not kept (it comes back as a
+  `datetime.timezone`). An offset with a fraction of a second is refused.
+- An aware `datetime.time` (with `tzinfo`) is refused: a time of day without a date has no instant.
+  Pass a naive time or an aware `datetime`.
+- A `timedelta` becomes a duration of whole days and the rest, both with the sign of the whole:
+  `timedelta(hours=-1)` is `-PT1H` (Python itself writes it as `days=-1, seconds=82800`); a
+  duration comes back as the equal `timedelta`.
+- `graphersal.Interval(months, days=0, micros=0)` or `graphersal.Interval("P1Y2M3DT4H")` holds a
+  duration with months (a month has no fixed length, so `timedelta` cannot). It is immutable,
+  equal when all three fields are equal (`P1M` is not `P30D`, as in the engine), and has
+  `months`, `days`, `micros` and `to_iso()`.
+- Python's `datetime` holds the years 1 to 9999; a Graphersal date before year 1 raises
+  `GraphersalError` when it is returned (read it as text with `as_string()`).
+- Saved queries (`call_query`) take the same values; they travel as their ISO 8601 text, and the
+  parameter's schema (`#{type: "string", format: "date-time"}`, ...) reads them back.
 
 ## Error handling
 
@@ -525,6 +577,7 @@ write lock for the whole script.
   as data through `dry_run`.
 - Positional parameters (`$1`, `$2`, ...).
 - `list`/`dict` values in `params`.
+- Time zone names on values: a `datetime` keeps its UTC offset, not its `ZoneInfo`.
 - Graph file formats other than GraphSON and GraphML (and Graphersal's own snapshots).
 
 ## Building from source

@@ -14,7 +14,7 @@ branch(arg1: any)
 ## Example
 
 ```rhai,graph=modern
-g.v().has_label("person").branch(__.values("age")).option(29, __.values("name")).option(Pick.none, __.constant("other")).to_list()   // ["marko", "other", "other", "other"]
+g.v(1, 2).branch(__.values("age")).option(29, __.values("name")).option(Pick.none, __.constant("other")).to_list()   // ["marko", "other"]
 ```
 
 ## See also

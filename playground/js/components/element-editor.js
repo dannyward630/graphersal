@@ -33,7 +33,7 @@ import {
   nodeFromJsonText, defaultType, schemaFields, childSchema, schemaHint, schemaDescription, enumOptions,
   sameScalar, setScalar, compressionPaths, compressedAt, formFromElement, newRow, diffForm, engineErrors,
   formAsNode, applyObjectToForm, summary, emptyNode, typesOf, formForNew, splitHeadErrors, nodeWithValue,
-  rowChanged,
+  rowChanged, TEXT_TYPES, placeholderOf,
 } from '../element-editor.js';
 import { labelOptions, labelProblem, noEdgeLabelText } from '../graph/edit-mode.js';
 
@@ -106,7 +106,7 @@ export const ValueEditor = {
     return {
       TYPES, raw, rawText, rawError, multiline, rule, options, textarea, wantsLong, of, pathName, error, isContainer, typeTitle,
       openRaw, applyRaw, changeType, pickOption, selectedOption, addChild, onEntryKey, summary, childSchema,
-      schemaHint, schemaDescription,
+      schemaHint, schemaDescription, placeholderOf,
     };
   },
   // One line: type | value | actions; what does not fit a line (a multi-line text, raw JSON, the
@@ -132,7 +132,7 @@ export const ValueEditor = {
         <input v-else class="ve-input" type="text" v-model="node.text" :disabled="disabled" :aria-label="'Value' + of">
       </template>
       <input v-else-if="!isContainer" class="ve-input mono" :class="{ invalid: error }" type="text" v-model="node.text" :disabled="disabled"
-             :placeholder="node.type === 'uuid' ? '550e8400-e29b-41d4-a716-446655440000' : node.type === 'int64' ? '42' : '1.5'" :aria-label="'Value' + of">
+             :placeholder="placeholderOf(node.type)" :aria-label="'Value' + of">
       <a v-else href="#" class="ve-toggle" @click.prevent="node.expanded = !node.expanded" :aria-expanded="String(node.expanded)"
          :title="node.expanded ? 'Collapse' : 'Expand'">{{ node.expanded ? '▾' : '▸' }} {{ summary(node) }}</a>
       <span v-if="rule && node.type === 'string'" class="badge" :title="'Covered by the compression rule ' + rule">compressed</span>
@@ -426,7 +426,7 @@ export const ElementEditor = {
       const f = d.fields && key ? d.fields.fields.get(key.trim()) : null;
       if (f) d.newType = defaultType(f.schema);
     });
-    const newIsText = computed(() => ['string', 'int64', 'float64', 'uuid'].includes(d.newType));
+    const newIsText = computed(() => TEXT_TYPES.includes(d.newType));
     function addProperty() {
       if (!d.form || readOnly.value) return;
       const key = d.newKey.trim();
@@ -492,7 +492,7 @@ export const ElementEditor = {
       options, labelError, noLabels, optionNote, headBlocked,
       dlg, d, title, readOnly, diff, liveRows, unsetDeclared, keySuggestions, canSave, blocked, save, close,
       errorsOf, hintOf, fieldOf, rowSchema, setDeclared, addProperty, removeRow, onRowKey, openRaw, applyRaw, modeNote,
-      TYPES, newIsText, changed: (row) => rowChanged(row, diff.value),
+      TYPES, newIsText, placeholderOf, changed: (row) => rowChanged(row, diff.value),
     };
   },
   template: `
@@ -550,7 +550,7 @@ export const ElementEditor = {
           <div class="ve-raw-actions">
             <button type="button" class="btn small primary" @click="applyRaw">Apply JSON</button>
             <button type="button" class="btn small" @click="d.raw = false">Back to the form</button>
-            <span class="faint">Numbers without a fraction are int64, others float64; the types of the values you keep stay as they were (a uuid stays a uuid).</span>
+            <span class="faint">Numbers without a fraction are int64, others float64; the types of the values you keep stay as they were (a uuid or a date stays one).</span>
           </div>
           <div v-if="d.rawError" class="ve-error" role="alert">{{ d.rawError }}</div>
         </div>
@@ -591,7 +591,7 @@ export const ElementEditor = {
               </select>
               <div class="ve-value">
                 <input v-if="newIsText" type="text" class="ve-input" :class="{ mono: d.newType !== 'string' }" v-model="d.newText" :disabled="!!readOnly"
-                       :placeholder="d.newType === 'string' ? 'value' : d.newType === 'uuid' ? '550e8400-…' : d.newType === 'int64' ? '42' : '1.5'"
+                       :placeholder="placeholderOf(d.newType)"
                        aria-label="Value of the new property" @keydown.enter.prevent="addProperty">
                 <label v-else-if="d.newType === 'boolean'" class="ve-bool"><input type="checkbox" v-model="d.newBool" :disabled="!!readOnly" aria-label="Value of the new property"
                        @keydown.enter.prevent="addProperty"> {{ d.newBool ? 'true' : 'false' }}</label>

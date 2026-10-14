@@ -3,7 +3,7 @@
 
 `where_t` · category: [Filters](../../traversal/step_reference.md#filters)
 
-Graphersal form of where(traversal): keeps the traverser when the child traversal yields a result.
+Graphersal form of where(traversal).
 
 ## Forms
 

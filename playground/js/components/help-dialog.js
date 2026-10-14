@@ -98,9 +98,9 @@ export const HelpDialog = {
       start page (the graph file and the optional schema file): the schema is set first and the data imported
       against it (a violation fails the load and nothing changes). A graph file loaded without a schema file
       gets no schema: the previous graph's schema is never kept. <b>Load schema</b> applies a schema to the
-      current graph. GraphSON keeps every value type (uuid, array, object); GraphML gets them back from the
-      schema. A GraphSON import skips what the
-      engine cannot hold yet (dates, for example) and says so in a notice. <b>Save as snapshot</b> (start
+      current graph. GraphSON keeps every value type (uuid, dates and times, array, object); GraphML gets them back from
+      the schema. A GraphSON import skips what the
+      engine cannot hold (a type without a Graphersal twin) and says so in a notice. <b>Save as snapshot</b> (start
       page) downloads one packed snapshot (<code>.gsnap</code>, Graphersal's own binary format): lossless,
       with the schema, loaded back with <b>Load from file</b> in one step.</p>
 

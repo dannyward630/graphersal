@@ -2,6 +2,7 @@
 traversal engine). Shipped in the wheel by maturin together with a `py.typed` marker.
 """
 
+import datetime
 import os
 import uuid
 from typing import Any, Literal, Mapping, Optional, Union
@@ -13,14 +14,56 @@ __all__ = [
     "Store",
     "Vertex",
     "Edge",
+    "Interval",
     "GraphersalError",
     "PermissionDeniedError",
     "CommitRejectedError",
     "ReturnedClosureError",
 ]
 
-#: A value a script parameter may take (a ``Vertex``/``Edge`` by its id and label).
-_ParamValue = Union[int, float, str, bool, None, uuid.UUID, "Vertex", "Edge"]
+#: A value a script parameter may take (a ``Vertex``/``Edge`` by its id and label). The date and
+#: time values map to the engine's ``datetime`` (an aware ``datetime.datetime``),
+#: ``localdatetime`` (a naive one), ``date``, ``time`` (a naive ``datetime.time``) and
+#: ``duration`` (a ``timedelta`` or an ``Interval``).
+_ParamValue = Union[
+    int,
+    float,
+    str,
+    bool,
+    None,
+    uuid.UUID,
+    datetime.datetime,
+    datetime.date,
+    datetime.time,
+    datetime.timedelta,
+    "Interval",
+    "Vertex",
+    "Edge",
+]
+
+class Interval:
+    """A ``duration`` with months (PostgreSQL ``interval``), which ``datetime.timedelta`` cannot
+    hold because a month has no fixed length. A query returns a duration without months as a
+    ``timedelta`` and one with months as an ``Interval``; both are accepted as parameters.
+    Immutable; equal when all three fields are equal (``Interval("P1M") != Interval(0, 30)``, as
+    in the engine). ``repr`` is ``Interval('P1Y2M')``, ``str`` the ISO 8601 text."""
+
+    def __init__(self, months: Union[int, str], days: int = 0, micros: int = 0) -> None:
+        """``Interval(months, days=0, micros=0)`` (int32 months and days, int64 microseconds) or
+        ``Interval("P1Y2M3DT4H")`` from ISO 8601 text."""
+    @property
+    def months(self) -> int:
+        """The months (a year is 12)."""
+    @property
+    def days(self) -> int:
+        """The days (a day is not always 24 hours in a time zone)."""
+    @property
+    def micros(self) -> int:
+        """The time part in microseconds."""
+    def to_iso(self) -> str:
+        """The ISO 8601 text (``P1Y2M3DT4H``), the engine's canonical form."""
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
 
 class Vertex:
     """A vertex a query returned (detached: id, labels and a snapshot of its properties), like

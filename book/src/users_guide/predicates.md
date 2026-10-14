@@ -160,7 +160,7 @@ g.V().values("age").is(P.typeOf("Byte"))                      // script error: u
 | `String` | `GType.STRING` |
 | `Integer`, `Long` | `GType.LONG` (every integer is an `int64`) |
 | `Double`, `Float` | `GType.DOUBLE` (every float is a `float64`) |
-| `OffsetDateTime` | `GType.DATETIME` (TinkerPop's date type) |
+| `OffsetDateTime` | `GType.DATETIME` (TinkerPop's date type; see [Dates and Times](../dates/index.md)) |
 | `Duration` | `GType.DURATION` |
 | `LocalDate`, `LocalDateTime`, `LocalTime` | `GType.DATE`, `GType.LOCALDATETIME`, `GType.TIME` (Graphersal's other date and time types, by their `java.time` names) |
 | `Boolean`, `UUID`, `Number`, `List`, `Map`, `Vertex`, `Edge`, `Path`, `Graph` | the token of the same name |

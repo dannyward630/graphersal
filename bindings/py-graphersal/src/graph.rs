@@ -1027,13 +1027,21 @@ impl Graph {
     ) -> PyResult<Py<PyAny>> {
         let bound = PyDict::new(py);
         bound.set_item("query_name", name)?;
-        // A uuid.UUID argument travels as its text; the parameter's schema turns it back.
+        // A uuid.UUID or a date argument travels as its text (a date as its canonical ISO
+        // 8601 text); the parameter's schema turns it back.
         let args = match params {
             Some(args) => {
+                let texts = PyDict::new(py);
+                for (key, value) in args.iter() {
+                    match crate::temporal::python_temporal_text(&value) {
+                        Some(text) => texts.set_item(key, text)?,
+                        None => texts.set_item(key, value)?,
+                    }
+                }
                 let dumps = py.import("json")?.getattr("dumps")?;
                 let kwargs = PyDict::new(py);
                 kwargs.set_item("default", py.import("builtins")?.getattr("str")?)?;
-                dumps.call((args,), Some(&kwargs))?.extract::<String>()?
+                dumps.call((texts,), Some(&kwargs))?.extract::<String>()?
             }
             None => "{}".to_string(),
         };

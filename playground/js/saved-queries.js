@@ -16,11 +16,30 @@
 // never needs a second edit. A stored source this model cannot split (comments before `fn`, an
 // unusual layout) is edited as the whole function text (`raw`).
 
+/**
+ * The string `format`s the editor offers as types of their own: a uuid and the date and time
+ * types (book "Dates and Times"); an argument is written as its text, the format reads it back.
+ */
+export const FORMAT_OF = Object.freeze({
+  uuid: 'uuid', datetime: 'date-time', localdatetime: 'local-date-time', date: 'date', time: 'time', duration: 'duration',
+});
+const TYPE_OF_FORMAT = Object.fromEntries(Object.entries(FORMAT_OF).map(([t, f]) => [f, t]));
+/** The parameter types written as text: plain strings and the formats. */
+const TEXT_PARAM_TYPES = ['string', ...Object.keys(FORMAT_OF)];
+
 /** The parameter types the editor offers; 'custom' is a schema edited as JSON. */
-export const PARAM_TYPES = ['string', 'integer', 'number', 'boolean', 'uuid', 'array', 'object', 'custom'];
+export const PARAM_TYPES = ['string', 'integer', 'number', 'boolean', ...Object.keys(FORMAT_OF), 'array', 'object', 'custom'];
 
 /** Item types of an 'array' parameter. */
-export const ITEM_TYPES = ['string', 'integer', 'number', 'boolean', 'uuid'];
+export const ITEM_TYPES = ['string', 'integer', 'number', 'boolean', ...Object.keys(FORMAT_OF)];
+
+/** An example value of a format type (a field's placeholder), '' for the others. */
+export function formatExample(type) {
+  return {
+    uuid: '01234567-89ab-cdef-0123-456789abcdef', datetime: '2023-08-02T09:30:00+02:00',
+    localdatetime: '2023-08-02T09:30:00', date: '2023-08-02', time: '09:30:00', duration: 'P1DT2H',
+  }[type] || '';
+}
 
 /** Schema keywords the editor's fields cover (anything else makes a parameter 'custom'). */
 const FIELD_KEYWORDS = new Set([
@@ -103,7 +122,7 @@ export function newParam(name = '') {
 function simpleType(schema) {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return null;
   if (Object.keys(schema).some((k) => !FIELD_KEYWORDS.has(k))) return null;
-  if (schema.type === 'string' && schema.format === 'uuid') return 'uuid';
+  if (schema.type === 'string' && TYPE_OF_FORMAT[schema.format]) return TYPE_OF_FORMAT[schema.format];
   if (schema.format !== undefined) return null;
   if (['string', 'integer', 'number', 'boolean', 'object'].includes(schema.type)) {
     return schema.items === undefined ? schema.type : null;
@@ -122,7 +141,7 @@ function simpleType(schema) {
 function defaultTextOf(type, entry) {
   if (!('default' in entry)) return '';
   const value = entry.default;
-  if (['string', 'uuid'].includes(type) && typeof value === 'string') return value;
+  if (TEXT_PARAM_TYPES.includes(type) && typeof value === 'string') return value;
   if (['integer', 'number', 'boolean'].includes(type)) return String(value);
   return JSON.stringify(value);
 }
@@ -190,6 +209,13 @@ export function parseDefault(type, text) {
       return { value: t };
     case 'uuid':
       return UUID_RE.test(t.trim()) ? { value: t.trim() } : { error: `default is not a UUID: ${t}` };
+    case 'datetime':
+    case 'localdatetime':
+    case 'date':
+    case 'time':
+    case 'duration':
+      // The text; the engine reads it as the format when the query is stored.
+      return { value: t.trim() };
     case 'integer':
       return /^[-+]?\d+$/.test(t.trim()) ? { value: Number(t.trim()) } : { error: `default is not an integer: ${t}` };
     case 'number': {
@@ -224,9 +250,10 @@ export function paramDeclaration(param) {
     }
     if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return { error: 'schema is a JSON object' };
   } else {
-    schema = param.type === 'uuid' ? { type: 'string', format: 'uuid' } : { type: param.type };
+    schema = FORMAT_OF[param.type] ? { type: 'string', format: FORMAT_OF[param.type] } : { type: param.type };
     if (param.type === 'array') {
-      schema.items = param.itemsType === 'uuid' ? { type: 'string', format: 'uuid' } : { type: param.itemsType || 'string' };
+      const it = param.itemsType || 'string';
+      schema.items = FORMAT_OF[it] ? { type: 'string', format: FORMAT_OF[it] } : { type: it };
     }
     const numeric = param.type === 'integer' || param.type === 'number';
     const keys = numeric ? ['minimum', 'maximum'] : param.type === 'string' ? ['minLength', 'maxLength'] : [];
@@ -337,7 +364,8 @@ function baseType(schema) {
 /**
  * The fields of the run form, one per parameter: `{name, kind, required, hint, schema, min,
  * max, options, itemsKind, defaultValue, hasDefault}`. `kind`: 'select' (enum), 'integer',
- * 'number', 'checkbox' (boolean), 'uuid', 'list' (array of simple items, one per line),
+ * 'number', 'checkbox' (boolean), 'uuid', a date and time type ('datetime', 'localdatetime',
+ * 'date', 'time', 'duration': its ISO 8601 text), 'list' (array of simple items, one per line),
  * 'json' (objects and anything else), 'text' (string).
  */
 export function formFields(entry) {
@@ -347,14 +375,14 @@ export function formFields(entry) {
     let kind = 'json';
     let itemsKind = null;
     if (Array.isArray(schema.enum)) kind = 'select';
-    else if (type === 'string' && schema.format === 'uuid') kind = 'uuid';
+    else if (type === 'string' && TYPE_OF_FORMAT[schema.format]) kind = TYPE_OF_FORMAT[schema.format];
     else if (type === 'string') kind = 'text';
     else if (type === 'integer' || type === 'number') kind = type;
     else if (type === 'boolean') kind = 'checkbox';
     else if (type === 'array' && schema.items) {
       const it = baseType(schema.items);
-      itemsKind = it === 'string' && schema.items.format === 'uuid' ? 'uuid' : it;
-      kind = ['string', 'integer', 'number', 'boolean', 'uuid'].includes(itemsKind) ? 'list' : 'json';
+      itemsKind = it === 'string' && TYPE_OF_FORMAT[schema.items.format] ? TYPE_OF_FORMAT[schema.items.format] : it;
+      kind = ITEM_TYPES.includes(itemsKind) ? 'list' : 'json';
     }
     return {
       name: p.name,
@@ -382,6 +410,11 @@ function fieldText(field, value) {
       return value === true;
     case 'text':
     case 'uuid':
+    case 'datetime':
+    case 'localdatetime':
+    case 'date':
+    case 'time':
+    case 'duration':
       return typeof value === 'string' ? value : JSON.stringify(value);
     case 'integer':
     case 'number':

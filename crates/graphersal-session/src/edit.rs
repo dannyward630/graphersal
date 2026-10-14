@@ -171,12 +171,14 @@ pub fn value_from_typed(typed: &Value) -> Result<ElementProperty, String> {
                 "time" => TemporalKind::Time,
                 _ => TemporalKind::Duration,
             };
-            Temporal::parse_as(kind, text)
+            // As a stored value: a datetime needs its offset or zone (no guessed instant).
+            Temporal::parse_strict(kind, text)
                 .map(ElementProperty::Temporal)
                 .map_err(|err| err.to_string())
         }
         other => Err(format!(
-            "unknown type \"{other}\": null, boolean, int64, float64, string, uuid, array or object"
+            "unknown type \"{other}\": null, boolean, int64, float64, string, uuid, datetime, \
+             localdatetime, date, time, duration, array or object"
         )),
     }
 }
@@ -565,6 +567,53 @@ mod tests {
         assert!(value_from_typed(&json!({"type": "int64", "value": "4.2"})).is_err());
         assert!(value_from_typed(&json!({"type": "uuid", "value": "X"})).is_err());
         assert!(value_from_typed(&json!({"type": "date", "value": "x"})).is_err());
+    }
+
+    #[test]
+    fn date_and_time_values_are_typed_by_their_kind() {
+        let typed = json!({"type": "object", "value": [
+            ["at", {"type": "datetime", "value": "2023-08-02T09:30:00+02:00"}],
+            ["local", {"type": "localdatetime", "value": "2023-08-02T09:30:00"}],
+            ["on", {"type": "date", "value": "2024-02-29"}],
+            ["t", {"type": "time", "value": "09:30:00.250"}],
+            ["took", {"type": "duration", "value": "P1M2DT3H"}],
+        ]});
+        let value = value_from_typed(&typed).expect("valid");
+        assert_eq!(typed_value(&value), typed);
+        // A stored datetime needs its offset or zone: the instant is never guessed.
+        let err = value_from_typed(&json!({"type": "datetime", "value": "2023-08-02T09:30"}))
+            .unwrap_err();
+        assert!(err.contains("2023-08-02T09:30"), "{err}");
+        let zoned = value_from_typed(
+            &json!({"type": "datetime", "value": "2023-08-02T09:30[Europe/Berlin]"}),
+        )
+        .unwrap();
+        assert_eq!(
+            typed_value(&zoned),
+            json!({"type": "datetime", "value": "2023-08-02T09:30:00+02:00"})
+        );
+        assert!(value_from_typed(&json!({"type": "duration", "value": 5})).is_err());
+        let unknown = value_from_typed(&json!({"type": "instant", "value": "x"})).unwrap_err();
+        assert!(unknown.contains("datetime"), "{unknown}");
+    }
+
+    #[test]
+    fn a_date_property_is_written_and_shown_typed() {
+        let mut s = modern();
+        let answer = s.update_element(&json!({
+            "kind": "vertex", "id": "1",
+            "set": [["born", {"type": "date", "value": "1990-05-01"}]],
+        }));
+        assert_eq!(answer["ok"], true, "{answer}");
+        let born = prop(&answer["element"], "born").unwrap().clone();
+        assert_eq!(born, json!({"type": "date", "value": "1990-05-01"}));
+        let refused = s.update_element(&json!({
+            "kind": "vertex", "id": "1",
+            "set": [["at", {"type": "datetime", "value": "2023-08-02"}]],
+            "validateOnly": true,
+        }));
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert_eq!(refused["errors"][0]["field"], "at", "{refused}");
     }
 
     #[test]

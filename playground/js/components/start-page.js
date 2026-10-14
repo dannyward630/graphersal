@@ -254,7 +254,7 @@ export const StartPage = {
                         title="Load without a schema">Remove</button>
               </span>
               <span class="hint">Optional. Set on the new graph before the data is imported: it is enforced (open/closed
-              violations fail the load, nothing changes) and GraphML's typed values (uuid, array, object) come back.
+              violations fail the load, nothing changes) and GraphML's typed values (uuid, dates and times, array, object) come back.
               Without it the graph has no schema (the previous graph's schema is not kept).</span>
             </div>
             <div v-if="pick.error" class="error-view error-box" role="alert">

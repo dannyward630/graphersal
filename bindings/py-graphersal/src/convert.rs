@@ -5,6 +5,7 @@ use graphersal::prelude::{CompactString, ElementProperty, Number};
 use graphersal::profile::TraversalMetrics;
 use graphersal::script::rhai::Dynamic;
 use graphersal::script::{ScriptEdge, ScriptExecution, ScriptUuid, ScriptVertex, metrics_to_map};
+use graphersal::temporal::{Date, DateTime, Duration, LocalDateTime, Temporal, Time};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyInt, PyList};
@@ -14,7 +15,8 @@ use std::collections::HashMap;
 ///
 /// Every `Dynamic` a terminal (`to_list()`/`next()`) can produce funnels through
 /// `element_property_to_dynamic` in `graphersal::script`, whose output is exactly the set of
-/// variants matched below (unit, bool, int, float, string, array, map, `ScriptUuid`, and a vertex
+/// variants matched below (unit, bool, int, float, string, array, map, `ScriptUuid`, the five
+/// date and time types (see `temporal.rs`), and a vertex
 /// or an edge, which become a `Vertex` / `Edge`; projections are plain maps). A variant this
 /// matcher does not recognize raises `GraphersalError` naming it, rather than falling back to
 /// `Debug` formatting (CLAUDE.md rule 14).
@@ -68,6 +70,9 @@ pub(crate) fn dynamic_to_pyobject(py: Python<'_>, value: Dynamic) -> PyResult<Py
         let mut execution = value.cast::<ScriptExecution>();
         return dynamic_to_pyobject(py, execution.to_map());
     }
+    if let Some(temporal) = script_temporal(&value) {
+        return crate::temporal::temporal_to_pyobject(py, temporal);
+    }
     if value.is::<ScriptUuid>() {
         let uuid = value.cast::<ScriptUuid>();
         let uuid = uuid::Uuid::from_u128(uuid.as_u128());
@@ -113,6 +118,7 @@ fn property_to_pyobject(py: Python<'_>, value: &ElementProperty) -> PyResult<Py<
             .into_pyobject(py)?
             .into_any()
             .unbind(),
+        ElementProperty::Temporal(value) => crate::temporal::temporal_to_pyobject(py, value)?,
         ElementProperty::Array(items) => {
             let items = items
                 .iter()
@@ -171,6 +177,25 @@ pub(crate) fn change_set_to_pyobject(
     Ok(loads.call1((text,))?.unbind())
 }
 
+/// The date or time value a script value holds (one Rhai type per temporal type).
+fn script_temporal(value: &Dynamic) -> Option<Temporal> {
+    if let Some(v) = value.read_lock::<DateTime>() {
+        return Some(Temporal::DateTime(*v));
+    }
+    if let Some(v) = value.read_lock::<Date>() {
+        return Some(Temporal::Date(*v));
+    }
+    if let Some(v) = value.read_lock::<LocalDateTime>() {
+        return Some(Temporal::LocalDateTime(*v));
+    }
+    if let Some(v) = value.read_lock::<Time>() {
+        return Some(Temporal::Time(*v));
+    }
+    value
+        .read_lock::<Duration>()
+        .map(|v| Temporal::Duration(*v))
+}
+
 fn type_name_error(value: &Dynamic) -> PyErr {
     crate::error::GraphersalError::new_err(format!(
         "unsupported script result value of type '{}': py-graphersal's Dynamic -> Python matcher does not recognize it",
@@ -180,7 +205,8 @@ fn type_name_error(value: &Dynamic) -> PyErr {
 
 /// Converts the `params` keyword argument into named `ElementProperty` bindings.
 ///
-/// Only scalars (`int`, `float`, `str`, `bool`, `None`, `uuid.UUID`) and a `Vertex` / `Edge` (by its
+/// Only scalars (`int`, `float`, `str`, `bool`, `None`, `uuid.UUID`, the `datetime` values and
+/// `Interval`, see `temporal.rs`) and a `Vertex` / `Edge` (by its
 /// id and label) are accepted; a
 /// `list`/`dict` value raises `GraphersalError` naming the offending key, per the design spec.
 pub(crate) fn python_params_to_element_properties(
@@ -225,11 +251,14 @@ fn python_value_to_element_property(value: &Bound<'_, PyAny>) -> Result<ElementP
     if let Ok(u) = value.extract::<uuid::Uuid>() {
         return Ok(ElementProperty::Uuid(u.as_u128()));
     }
+    if let Some(temporal) = crate::temporal::python_to_temporal(value)? {
+        return Ok(ElementProperty::Temporal(temporal));
+    }
     if let Some(element) = crate::element::python_element_to_property(value) {
         return Ok(element);
     }
     Err(format!(
-        "unsupported parameter type '{}'; only int, float, str, bool, None, uuid.UUID, Vertex and Edge are accepted",
+        "unsupported parameter type '{}'; only int, float, str, bool, None, uuid.UUID, datetime.datetime, datetime.date, datetime.time, datetime.timedelta, graphersal.Interval, Vertex and Edge are accepted",
         value
             .get_type()
             .name()

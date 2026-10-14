@@ -126,7 +126,7 @@ The browser playground's Save menu downloads these two files (Data as GraphML, S
 file" dialog takes both: the schema file is set on the new graph before the GraphML file is imported.
 
 The other value types are written as their own text: dates and times as their canonical text
-(restored like a `uuid`, from a declared format), `true`/`false`, integers as `long` keys
+(restored like a `uuid`, from a declared format; see [Dates and Times](../dates/storage.md#graphml)), `true`/`false`, integers as `long` keys
 (GraphML's `int` is 32-bit), floats as `double` keys, and arrays and objects as JSON text under a
 `string` key. A property whose type differs between labels is written under a `string` key, so an
 integer there comes back as the string of its digits. A property the target's schema declares

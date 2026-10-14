@@ -3,7 +3,7 @@
 
 `has_value_any` · category: [Filters](../../traversal/step_reference.md#filters)
 
-Graphersal alias of has_value(v1, v2, ...): keeps properties whose value is any of the given values.
+Graphersal alias of has_value(v1, v2, ...).
 
 ## Forms
 

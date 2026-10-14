@@ -2830,12 +2830,13 @@ impl DiagnosticError for ScriptError {
             ScriptError::InvalidQueryArgument {
                 query, parameter, ..
             } => Some(format!(
-                "An argument is a data value (a string, a number, a boolean, a UUID, a list or a \
-                 map, never a traversal or a closure) that satisfies its parameter's schema; types \
-                 are exact (only an int64 is accepted where a float64 is declared). \
+                "An argument is a data value (a string, a number, a boolean, a UUID, a date or \
+                 time, a list or a map, never a traversal or a closure) that satisfies its \
+                 parameter's schema; types are exact (the only conversions: an int64 where a float64 \
+                 is declared, the text of a declared format such as a date-time). \
                  g.get_query(\"{query}\")[\"params\"] shows the schema of '{parameter}'; convert \
-                 the value before the call, for example with parse_int(\"5\") or \
-                 UUID.from_string(\"..\")."
+                 the value before the call, for example with parse_int(\"5\"), \
+                 UUID.from_string(\"..\") or datetime(\"2024-05-01T09:30:00+02:00\")."
             )),
             ScriptError::InvalidQueryBody { query, .. } => Some(format!(
                 "The body of a saved query is the text of ONE Rhai function named like the query \
