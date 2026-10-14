@@ -878,6 +878,26 @@ mod tests {
     }
 
     #[test]
+    fn a_catalog_file_round_trips_property_indexes() {
+        let mut s = modern();
+        let r = run(&mut s, "g.create_index(#{label: \"person\", key: \"age\"})");
+        assert_eq!(r["changes"]["definitions"], true, "{r}");
+        let file = s.save_catalog_text();
+        assert!(file.contains("\"kind\":\"property_index\""), "{file}");
+
+        let mut other = modern();
+        let loaded = other.load_catalog(&file, true).unwrap();
+        assert_eq!(loaded["loaded"], 1);
+        assert_eq!(other.save_catalog_text(), file);
+        // The loaded definition is served: the profile shows the index.
+        let r = run(
+            &mut other,
+            "g.v().has_label(\"person\").has(\"age\", P.gt(30)).profile().to_string()",
+        );
+        assert!(r.to_string().contains("[index: vertex person.age]"), "{r}");
+    }
+
+    #[test]
     fn folders_match_by_segment() {
         assert!(in_folder(Some("reports/sales"), "reports"));
         assert!(in_folder(Some("reports"), "reports"));

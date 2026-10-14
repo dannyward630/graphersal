@@ -111,6 +111,7 @@ mod property_cardinality_tests;
 mod property_element_by_token_tests;
 mod property_element_label_tests;
 mod property_handle_tests;
+mod property_index_tests;
 mod random_seed_tests;
 mod reducer_operator_tests;
 mod reducer_widening_tests;
