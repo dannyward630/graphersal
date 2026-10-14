@@ -277,9 +277,10 @@ mod request_mapping {
         );
     }
 
-    /// No live element handle survives a run: `next()` returns the vertex materialized (a map)
-    /// and `inject()` takes values, so `g.inject(v)` injects that copy. Reading the copy reads no
-    /// graph data and asks nothing, also under `deny_all()`.
+    /// No live element handle survives a run: `next()` returns a detached copy of the vertex (a
+    /// `Vertex` value). Reading the copy reads no graph data and asks nothing, also under
+    /// `deny_all()`; passing it back (`g.inject(v)`) is covered by
+    /// `injecting_an_element_value_asks_read_data`.
     #[test]
     fn a_held_element_is_a_materialized_copy_and_reading_it_asks_nothing() {
         let graph = modern();
@@ -287,15 +288,15 @@ mod request_mapping {
         let v = script::engine()
             .eval_with_scope::<Dynamic>(&mut scope, r#"g.V("1").next()"#)
             .unwrap();
-        assert!(v.is_map(), "{v:?}");
+        assert!(v.is::<script::ScriptVertex>(), "{v:?}");
         let recorder = Arc::new(Recorder::default());
         let authorizer: Arc<dyn Authorizer> = recorder.clone();
         let mut scope = script::graph_scope_with_options(graph.clone(), &[], authorizer.clone());
         scope.push("v", v.clone());
         let n = script::engine_with_limits(&ScriptLimits::default(), authorizer)
-            .eval_with_scope::<Dynamic>(&mut scope, "g.inject(v).unfold().count().next()")
+            .eval_with_scope::<Dynamic>(&mut scope, "v.properties.len()")
             .unwrap();
-        assert_eq!(n.as_int().unwrap(), 4);
+        assert_eq!(n.as_int().unwrap(), 2);
         assert!(recorder.seen().is_empty(), "{:?}", recorder.seen());
 
         let denied: Arc<dyn Authorizer> = Arc::new(AccessPolicy::deny_all());

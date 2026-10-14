@@ -2612,11 +2612,14 @@ mod tests {
     }
 
     #[test]
-    fn vertex_and_edge_element_properties_convert_to_traverser_object() {
+    fn vertex_and_edge_element_properties_stay_element_values_on_the_stream() {
         let vertex =
             ElementProperty::Vertex(Box::new(VertexValue::new("1", Vec::new(), sample_object())));
         let tv: TraverserValue<TraversalGraph> = vertex.into();
-        assert!(matches!(tv, TraverserValue::Object(_)));
+        assert!(matches!(
+            tv,
+            TraverserValue::Computed(ElementProperty::Vertex(_), _)
+        ));
 
         let edge = ElementProperty::Edge(Box::new(EdgeValue::new(
             "0",
@@ -2626,7 +2629,10 @@ mod tests {
             sample_object(),
         )));
         let tv: TraverserValue<TraversalGraph> = edge.into();
-        assert!(matches!(tv, TraverserValue::Object(_)));
+        assert!(matches!(
+            tv,
+            TraverserValue::Computed(ElementProperty::Edge(_), _)
+        ));
     }
 
     #[test]
