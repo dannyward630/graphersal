@@ -4,15 +4,19 @@ Every file of the format starts with a magic and a version. There are two axes (
 single-file container has its own container version):
 
 - the **store format version**, in the store's `GRAPH` file: this release writes and reads
-  **version 2** (`graphersal::persist::STORE_FORMAT_VERSION`); `graphersal store info` prints it
-  (`backend  directory (format version 2)`, `format  version 2`);
+  **version 3** (`graphersal::persist::STORE_FORMAT_VERSION`); `graphersal store info` prints it
+  (`backend  directory (format version 3)`, `format  version 3`);
 - the **file format version** of snapshot manifests and segments, WAL segments and packed
-  snapshots (`.gsnap`): **version 1** (`graphersal::persist::FORMAT_VERSION`).
+  snapshots (`.gsnap`): this release writes **version 2** (`graphersal::persist::FORMAT_VERSION`)
+  and reads versions 1 and 2.
 
 | Version | What changed |
 |---|---|
 | store 1 | the first store format |
-| store 2 | the store identity `store_id` in `GRAPH` (offset 100), which incremental backups check |
+| store 2 (0.1.0) | the store identity `store_id` in `GRAPH` (offset 100), which incremental backups check |
+| store 3 (0.2.0) | the same `GRAPH` layout; marks a store whose files are of file format version 2, so that 0.1.x refuses it as newer instead of taking its files for damage |
+| file 1 (0.1.x) | the first file format |
+| file 2 (0.2.0) | the value tags of the date and time types (`date`, `localdatetime`, `datetime`, `time`, `duration`); a version 1 file is read as it is |
 
 | The store or file is | Then |
 |---|---|
@@ -23,8 +27,10 @@ single-file container has its own container version):
 **Migration.** A store of an older store format is moved through a packed snapshot: the build
 that wrote it exports the current state (`graphersal --graph old_store/ -e
 'g.export_snapshot("graph.gsnap")'`), and this build creates a new store from the file
-(`graphersal store create new_store/ --from graph.gsnap`). The file format did not change, so the
-packed snapshot of the older build loads as it is. The new store carries the graph, its schema
+(`graphersal store create new_store/ --from graph.gsnap`). This build reads the file format of
+every older build, so the packed snapshot of the older build loads as it is (the other way round
+does not work: a `.gsnap` written by 0.2.0 has file format version 2, which 0.1.x refuses). The
+new store carries the graph, its schema
 and its catalog; marks, the attic and backups of the old store are not carried. The full recipe:
 [Command Cheat Sheet](../users_guide/command_cheat_sheet.md#migrate-a-store-from-an-older-format).
 

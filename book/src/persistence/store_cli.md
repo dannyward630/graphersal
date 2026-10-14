@@ -127,7 +127,7 @@ fixed at creation (never changed):
   created       2026-10-08T07:05:08Z
   chunk size    1048576 bytes
   on damage     maintenance (damage found while open makes the store read-only)
-  backend       directory (format version 2)
+  backend       directory (format version 3)
 ```
 
 Also printed when they apply: `parent` and `branched at` (a fork, a rolled-back store), `backup

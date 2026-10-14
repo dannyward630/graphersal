@@ -498,7 +498,7 @@ fn read_head<R: Read>(source: &mut CrcReader<R>) -> Result<(Manifest, u32), Pers
         ));
     }
     let version = u32::from_le_bytes(source.fixed::<4>("header")?);
-    if version != FORMAT_VERSION {
+    if !super::codec::readable_version(version) {
         return Err(PersistError::UnsupportedVersion {
             location: PACKED.into(),
             found: version,
@@ -555,7 +555,7 @@ impl<R: Read> PackedReader<R> {
             ));
         }
         let version = u32::from_le_bytes(source.fixed::<4>("header")?);
-        if version != FORMAT_VERSION {
+        if !super::codec::readable_version(version) {
             return Err(PersistError::UnsupportedVersion {
                 location: PACKED.into(),
                 found: version,
@@ -928,7 +928,7 @@ fn frame_segment_stream(
     }
     let mut header = super::codec::Reader::new(&buf[8..60]);
     let version = header.u32()?;
-    if version != FORMAT_VERSION {
+    if !super::codec::readable_version(version) {
         return Err(DecodeError::new(8, format!("segment format version {version}")).into());
     }
     let found_kind = header.u8()?;
@@ -994,6 +994,7 @@ fn frame_segment_stream(
             count: u32::from_le_bytes([head[9], head[10], head[11], head[12]]),
             crc: chunk_crc,
             stored: &buf,
+            version,
         };
         on_chunk(row, &chunk).map_err(StreamFault::Handler)?;
     }
@@ -1315,16 +1316,18 @@ pub(crate) fn restore_definitions<S: PersistentStorage + ?Sized>(
     max_depth: usize,
 ) -> Result<(), PersistError> {
     for record in &manifest.definitions {
-        let definition = record.decode(max_depth).map_err(|err| {
-            PersistError::corrupt(
-                "manifest",
-                FIXED_BYTES as u64,
-                format!(
-                    "definition '{}' of kind {}: {} (payload byte {})",
-                    record.name, record.kind, err.reason, err.offset
-                ),
-            )
-        })?;
+        let definition = record
+            .decode_in(max_depth, manifest.fixed.version.0)
+            .map_err(|err| {
+                PersistError::corrupt(
+                    "manifest",
+                    FIXED_BYTES as u64,
+                    format!(
+                        "definition '{}' of kind {}: {} (payload byte {})",
+                        record.name, record.kind, err.reason, err.offset
+                    ),
+                )
+            })?;
         graph.load_definition(definition)?;
     }
     Ok(())

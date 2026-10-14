@@ -314,6 +314,8 @@ pub(crate) struct RawChunk<'a> {
     pub(crate) count: u32,
     pub(crate) crc: u32,
     pub(crate) stored: &'a [u8],
+    /// The file format version of the segment (its header's): the value tags it may hold.
+    pub(crate) version: u32,
 }
 
 /// The checked framing of a segment: its chunks in order.
@@ -322,6 +324,28 @@ pub(crate) struct SegmentFrame<'a> {
     pub(crate) chunks: Vec<RawChunk<'a>>,
     /// The footer's first id per chunk.
     pub(crate) footer_ids: Vec<&'a str>,
+}
+
+/// The file format version stated by a segment's header bytes (at least its first 64), for a
+/// chunk read through the manifest's chunk index without framing the whole segment (a merge
+/// checkpoint, a damage scan): the header's version when its checksum holds and this build
+/// reads it, else the current one (the chunk's own checksum was checked against the index).
+pub(crate) fn header_version(head: &[u8]) -> u32 {
+    match head.get(..SEGMENT_HEADER_BYTES) {
+        Some(head)
+            if head[..8] == SEGMENT_MAGIC[..]
+                && crc(&head[..60])
+                    == u32::from_le_bytes([head[60], head[61], head[62], head[63]]) =>
+        {
+            let version = u32::from_le_bytes([head[8], head[9], head[10], head[11]]);
+            if codec::readable_version(version) {
+                version
+            } else {
+                FORMAT_VERSION
+            }
+        }
+        _ => FORMAT_VERSION,
+    }
 }
 
 /// Checks a segment's header, chunk framing and checksums and its footer; decodes nothing.
@@ -342,7 +366,7 @@ pub(crate) fn frame_segment(
         return Err(DecodeError::new(60, "segment header checksum mismatch"));
     }
     let version = header.u32()?;
-    if version != FORMAT_VERSION {
+    if !codec::readable_version(version) {
         return Err(DecodeError::new(
             8,
             format!("segment format version {version}"),
@@ -397,6 +421,7 @@ pub(crate) fn frame_segment(
             count,
             crc: chunk_crc,
             stored,
+            version,
         });
     }
     if !body.is_empty() {
@@ -474,7 +499,7 @@ pub(crate) fn decode_vertex_chunk(
 ) -> DecodeResult<Vec<VertexRecord>> {
     let (payload, table, position) = open_chunk(chunk).map_err(|e| in_chunk(chunk, e))?;
     let keys = TableKeys(&table);
-    let mut reader = Reader::new(&payload[position..]);
+    let mut reader = Reader::new(&payload[position..]).with_version(chunk.version);
     let count = chunk.count as usize;
     let mut out = Vec::with_capacity(count.min(reader.remaining()));
     let result: DecodeResult<()> = (|| {
@@ -513,7 +538,7 @@ pub(crate) fn decode_edge_chunk(
 ) -> DecodeResult<Vec<EdgeRecord>> {
     let (payload, table, position) = open_chunk(chunk).map_err(|e| in_chunk(chunk, e))?;
     let keys = TableKeys(&table);
-    let mut reader = Reader::new(&payload[position..]);
+    let mut reader = Reader::new(&payload[position..]).with_version(chunk.version);
     let count = chunk.count as usize;
     let mut out = Vec::with_capacity(count.min(reader.remaining()));
     let result: DecodeResult<()> = (|| {

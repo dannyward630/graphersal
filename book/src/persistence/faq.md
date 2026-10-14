@@ -37,7 +37,7 @@ snapshot is lossless.
 | `The backup stopped: the backup ... does not verify` / side `Backup` | the copy did not read back intact (the backup's disk) | check the backup's disk and back up again (into a new directory with `--full` when the old backup is damaged); the store is fine |
 | `The store ... is read-only: backup found damage on disk ... damage policy "maintenance"` / `DamageFound` | damage was found while the store is open, and its policy (fixed at creation) is `maintenance` | the data in memory is intact: back it up from memory, then repair the store; see [Damage found while the store is open](store_damage.md#damage-found-while-the-store-is-open) |
 | `--on-damage ... applies only to a store being created` | `--on-damage` for an existing store with another policy | the [damage policy](creation_parameters.md) never changes; drop the option |
-| `The store ... has the older format version N; this build reads and writes only version M` / `OlderFormat` | a store written by an older Graphersal (store format version 1: before the store id) | migrate it through a packed snapshot: [the recipe](../users_guide/command_cheat_sheet.md#migrate-a-store-from-an-older-format), also in the error's help |
+| `The store ... has the older format version N; this build reads and writes only version M` / `OlderFormat` | a store written by an older Graphersal (store format version 1: before the store id; version 2: Graphersal 0.1.x) | migrate it through a packed snapshot: [the recipe](../users_guide/command_cheat_sheet.md#migrate-a-store-from-an-older-format), also in the error's help |
 | `Unsupported format version N of the store ...` / `UnsupportedVersion` | a store written by a NEWER Graphersal | open it with that version; see [Format Versions](store_versions.md) |
 | `The snapshot needs about N bytes in memory, more than the memory limit` | a memory budget (`--memory-limit`, `ReadOptions::with_memory_limit`) smaller than the graph | raise the budget, or load on a bigger machine |
 
@@ -129,7 +129,7 @@ that). There is no disk: download a `.gsnap` to keep a state.
 treats records after the writer's durable end as possibly not final. In Rust,
 `store.changes_since(commit)` yields the `ChangeSet`s.
 
-**Is the format stable?** Store format version 2 (with file format version 1) is specified on the
+**Is the format stable?** Store format version 3 (with file format version 2) is specified on the
 [specification](format.md) page; a newer version is refused, never guessed at, and a store of an
 older version is refused with a migration recipe (a packed snapshot exported by the older build).
 Before Graphersal 0.1.0 the format may still change.

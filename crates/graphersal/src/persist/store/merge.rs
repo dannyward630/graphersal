@@ -53,8 +53,8 @@ use super::super::manifest::{
 };
 use super::super::recover::{Recovery, RecoveryTarget};
 use super::super::segment::{
-    CHUNK_HEADER_BYTES, EdgeRecord, KIND_EDGE, KIND_VERTEX, RawChunk, VertexRecord,
-    decode_edge_chunk, decode_vertex_chunk,
+    CHUNK_HEADER_BYTES, EdgeRecord, KIND_EDGE, KIND_VERTEX, RawChunk, SEGMENT_HEADER_BYTES,
+    VertexRecord, decode_edge_chunk, decode_vertex_chunk, header_version,
 };
 use super::super::snapshot::{
     ReadOptions, SnapshotInfo, WriteOptions, check_ids, read_segment_stream, restore_definitions,
@@ -573,7 +573,7 @@ fn note(touched: &mut Touched, mutation: &Mutation) {
 fn read_chunk(
     base: &Base,
     row: &ChunkRow,
-) -> Result<(Vec<u8>, [u8; CHUNK_HEADER_BYTES]), PersistError> {
+) -> Result<(Vec<u8>, [u8; CHUNK_HEADER_BYTES], u32), PersistError> {
     let (entry, path) = base.segment(row.segment as usize)?;
     let location = base.location(entry);
     let io = |err| PersistError::io("reading a snapshot segment", err);
@@ -607,11 +607,20 @@ fn read_chunk(
             "chunk checksum mismatch",
         ));
     }
-    Ok((stored, header))
+    let version = match path.read_range(0, SEGMENT_HEADER_BYTES) {
+        Ok(head) => header_version(&head),
+        Err(err) => return Err(io(err)),
+    };
+    Ok((stored, header, version))
 }
 
 /// A chunk read by [`read_chunk`] as the decoder takes it.
-fn raw_chunk<'a>(offset: u64, header: &[u8; CHUNK_HEADER_BYTES], stored: &'a [u8]) -> RawChunk<'a> {
+fn raw_chunk<'a>(
+    offset: u64,
+    header: &[u8; CHUNK_HEADER_BYTES],
+    stored: &'a [u8],
+    version: u32,
+) -> RawChunk<'a> {
     RawChunk {
         offset,
         uncompressed: u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize,
@@ -619,6 +628,7 @@ fn raw_chunk<'a>(offset: u64, header: &[u8; CHUNK_HEADER_BYTES], stored: &'a [u8
         count: u32::from_le_bytes([header[9], header[10], header[11], header[12]]),
         crc: u32::from_le_bytes([header[13], header[14], header[15], header[16]]),
         stored,
+        version,
     }
 }
 
@@ -663,8 +673,8 @@ fn context(base: &Base, touched: &Touched, depth: usize) -> Result<TraversalGrap
     vertices_wanted.extend(touched.endpoints.iter().cloned());
     for row in rows_holding(base, KIND_EDGE, &touched.edges) {
         let location = base.location(&base.manifest.segments[row.segment as usize]);
-        let (stored, header) = read_chunk(base, row)?;
-        let chunk = raw_chunk(row.chunk.offset, &header, &stored);
+        let (stored, header, version) = read_chunk(base, row)?;
+        let chunk = raw_chunk(row.chunk.offset, &header, &stored, version);
         let records = decode_edge_chunk(&chunk, depth).map_err(|err| err.at(&location, 0))?;
         check_ids(
             records.iter().map(|r| &r.id),
@@ -683,8 +693,8 @@ fn context(base: &Base, touched: &Touched, depth: usize) -> Result<TraversalGrap
     }
     for row in rows_holding(base, KIND_VERTEX, &vertices_wanted) {
         let location = base.location(&base.manifest.segments[row.segment as usize]);
-        let (stored, header) = read_chunk(base, row)?;
-        let chunk = raw_chunk(row.chunk.offset, &header, &stored);
+        let (stored, header, version) = read_chunk(base, row)?;
+        let chunk = raw_chunk(row.chunk.offset, &header, &stored, version);
         let records = decode_vertex_chunk(&chunk, depth).map_err(|err| err.at(&location, 0))?;
         check_ids(
             records.iter().map(|r| &r.id),

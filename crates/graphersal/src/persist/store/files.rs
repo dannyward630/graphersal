@@ -906,6 +906,9 @@ pub(crate) fn undo_new_dir(dir: &DirPath, existed: bool) {
 }
 
 /// The store format version this build writes and reads (format spec 5.1, 15): the version
-/// word of `GRAPH`. Version 2 added the store id (offset 100); a store of version 1 is refused
-/// with [`PersistError::OlderFormat`] (migrate it through a packed snapshot).
-pub(crate) const STORE_VERSION: u32 = 2;
+/// word of `GRAPH`. Version 2 added the store id (offset 100); version 3 (Graphersal 0.2.0)
+/// has the same `GRAPH` layout and marks a store whose snapshots and WAL are of file format
+/// version 2 (the temporal value tags), so that a build that reads only file format version 1
+/// refuses the store as newer instead of taking its files for damage. A store of version 1 or
+/// 2 is refused with [`PersistError::OlderFormat`] (migrate it through a packed snapshot).
+pub(crate) const STORE_VERSION: u32 = 3;

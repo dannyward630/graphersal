@@ -10,10 +10,35 @@
 use compact_str::CompactString;
 
 use crate::value::number::{N, Number};
+use crate::value::temporal::{Date, DateTime, Duration, LocalDateTime, Temporal, Time};
 use crate::value::{ElementProperty, PropertyMap};
 
-/// The format version every file of this build writes and reads.
-pub(crate) const FORMAT_VERSION: u32 = 1;
+/// The file format version every file of this build writes (format spec 15).
+pub(crate) const FORMAT_VERSION: u32 = 2;
+
+/// The oldest file format version this build reads: version 1 (Graphersal 0.1.x) differs from
+/// version 2 only by the temporal value tags it does not have (format spec 3, 15).
+pub(crate) const MIN_FORMAT_VERSION: u32 = 1;
+
+/// The first file format version with the temporal value tags (9 to 13).
+pub(crate) const TEMPORAL_FORMAT_VERSION: u32 = 2;
+
+/// Whether this build reads files of format `version` (1 and 2).
+#[inline]
+pub(crate) fn readable_version(version: u32) -> bool {
+    (MIN_FORMAT_VERSION..=FORMAT_VERSION).contains(&version)
+}
+
+/// The file format version a decoded file was written with; the current one by default (what
+/// this build writes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FileVersion(pub(crate) u32);
+
+impl Default for FileVersion {
+    fn default() -> Self {
+        FileVersion(FORMAT_VERSION)
+    }
+}
 
 /// The largest uncompressed chunk or record body this build writes or accepts (1 GiB): far
 /// above the 1 MiB chunk target, so only a single giant element comes near it.
@@ -159,6 +184,16 @@ pub(crate) mod tag {
     pub(crate) const UUID: u8 = 6;
     pub(crate) const ARRAY: u8 = 7;
     pub(crate) const OBJECT: u8 = 8;
+    /// `date`: `svar` days since 1970-01-01 (file format version 2).
+    pub(crate) const DATE: u8 = 9;
+    /// `localdatetime`: `svar` microseconds since 1970-01-01T00:00:00 (wall clock).
+    pub(crate) const LOCAL_DATE_TIME: u8 = 10;
+    /// `datetime`: `svar` microseconds since the epoch (UTC), `svar` offset seconds.
+    pub(crate) const DATE_TIME: u8 = 11;
+    /// `time`: `uvar` microseconds since midnight.
+    pub(crate) const TIME: u8 = 12;
+    /// `duration`: `svar` months, `svar` days, `svar` microseconds.
+    pub(crate) const DURATION: u8 = 13;
     /// "Absent" in the `before` of a journal SetProperty (never a value).
     pub(crate) const ABSENT: u8 = 255;
 }
@@ -230,14 +265,7 @@ fn put_value_at<K: KeyWriter>(
                 put_value_at(out, item, keys, depth + 1)?;
             }
         }
-        // A2: the temporal value tags (format spec 3, file format version 2). Until then a clean
-        // error (a journal vetoes the commit, a snapshot fails), never bytes a reader misreads.
-        ElementProperty::Temporal(value) => {
-            return Err(format!(
-                "a {} value cannot be written to the binary format yet",
-                value.kind()
-            ));
-        }
+        ElementProperty::Temporal(value) => put_temporal(out, value),
         ElementProperty::Vertex(_) => return Err("a vertex is not a storable value".into()),
         ElementProperty::Edge(_) => return Err("an edge is not a storable value".into()),
         ElementProperty::Map(_) => {
@@ -245,6 +273,36 @@ fn put_value_at<K: KeyWriter>(
         }
     }
     Ok(())
+}
+
+/// Writes a temporal value with its tag (format spec 3, file format version 2).
+fn put_temporal(out: &mut Vec<u8>, value: &Temporal) {
+    match *value {
+        Temporal::Date(date) => {
+            put_u8(out, tag::DATE);
+            put_svar(out, date.days_since_epoch() as i64);
+        }
+        Temporal::LocalDateTime(local) => {
+            put_u8(out, tag::LOCAL_DATE_TIME);
+            put_svar(out, local.micros());
+        }
+        Temporal::DateTime(value) => {
+            put_u8(out, tag::DATE_TIME);
+            put_svar(out, value.epoch_micros());
+            put_svar(out, value.offset_seconds() as i64);
+        }
+        Temporal::Time(time) => {
+            put_u8(out, tag::TIME);
+            // Within `0..86_400_000_000` by construction.
+            put_uvar(out, time.micros_of_day() as u64);
+        }
+        Temporal::Duration(duration) => {
+            put_u8(out, tag::DURATION);
+            put_svar(out, duration.months() as i64);
+            put_svar(out, duration.days() as i64);
+            put_svar(out, duration.micros());
+        }
+    }
 }
 
 /// Writes a property map: `uvar count | (key | value)*`, insertion order kept.
@@ -274,11 +332,30 @@ pub(crate) fn put_properties<K: KeyWriter>(
 pub(crate) struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,
+    /// The file format version of the bytes: a temporal value tag needs version 2 or later.
+    version: u32,
 }
 
 impl<'a> Reader<'a> {
+    /// A reader of bytes of the current file format version.
     pub(crate) fn new(buf: &'a [u8]) -> Self {
-        Self { buf, pos: 0 }
+        Self {
+            buf,
+            pos: 0,
+            version: FORMAT_VERSION,
+        }
+    }
+
+    /// The same reader for bytes of file format `version` (read from the file's header).
+    pub(crate) fn with_version(mut self, version: u32) -> Self {
+        self.version = version;
+        self
+    }
+
+    /// The file format version of the bytes.
+    #[inline]
+    pub(crate) fn version(&self) -> u32 {
+        self.version
     }
 
     /// The current offset within the section.
@@ -494,6 +571,9 @@ pub(crate) fn read_tagged_value<K: KeyReader>(
         }
         tag::STRING => ElementProperty::String(CompactString::from(reader.str()?)),
         tag::UUID => ElementProperty::Uuid(reader.u128_be()?),
+        tag::DATE | tag::LOCAL_DATE_TIME | tag::DATE_TIME | tag::TIME | tag::DURATION => {
+            ElementProperty::Temporal(read_temporal(reader, tag, start)?)
+        }
         tag::ARRAY => {
             if depth >= max_depth {
                 return Err(DecodeError::new(
@@ -534,6 +614,47 @@ pub(crate) fn read_tagged_value<K: KeyReader>(
                 start,
                 format!("unknown value tag {other}"),
             ));
+        }
+    })
+}
+
+/// Reads the payload of a temporal value tag; a value outside the supported range is invalid
+/// (damage), and so is the tag in a file of format version 1.
+fn read_temporal(reader: &mut Reader<'_>, tag: u8, start: u64) -> DecodeResult<Temporal> {
+    if reader.version < TEMPORAL_FORMAT_VERSION {
+        return Err(DecodeError::new(
+            start,
+            format!(
+                "value tag {tag} (a temporal value) in a file of format version {}",
+                reader.version
+            ),
+        ));
+    }
+    let invalid = |what: &str| DecodeError::new(start, format!("invalid {what} value"));
+    let int32 = |value: i64, what: &str| i32::try_from(value).map_err(|_| invalid(what));
+    Ok(match tag {
+        tag::DATE => {
+            let days = int32(reader.svar()?, "date")?;
+            Temporal::Date(Date::from_days_since_epoch(days).map_err(|_| invalid("date"))?)
+        }
+        tag::LOCAL_DATE_TIME => Temporal::LocalDateTime(
+            LocalDateTime::from_micros(reader.svar()?).map_err(|_| invalid("localdatetime"))?,
+        ),
+        tag::DATE_TIME => {
+            let micros = reader.svar()?;
+            let offset = int32(reader.svar()?, "datetime")?;
+            Temporal::DateTime(
+                DateTime::from_micros(micros, offset).map_err(|_| invalid("datetime"))?,
+            )
+        }
+        tag::TIME => {
+            let micros = i64::try_from(reader.uvar()?).map_err(|_| invalid("time"))?;
+            Temporal::Time(Time::from_micros_of_day(micros).map_err(|_| invalid("time"))?)
+        }
+        _ => {
+            let months = int32(reader.svar()?, "duration")?;
+            let days = int32(reader.svar()?, "duration")?;
+            Temporal::Duration(Duration::new(months, days, reader.svar()?))
         }
     })
 }

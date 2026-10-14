@@ -91,9 +91,10 @@ pub use store::{
 /// The file extension of packed snapshots written by the bindings (`graph.gsnap`).
 pub const SNAPSHOT_EXTENSION: &str = "gsnap";
 
-/// The version of the file formats this build writes and reads: packed snapshots, snapshot
-/// manifests and segments, WAL segments (format spec 15). A `.gsnap` of this version is readable
-/// by every build of the same file format version, also across store format versions.
+/// The version of the file formats this build writes: packed snapshots, snapshot manifests and
+/// segments, WAL segments (format spec 15). This build also reads version 1 (Graphersal 0.1.x),
+/// which differs only by the temporal value tags it does not have, so a `.gsnap` written by
+/// 0.1.x loads here; a file of this version is not readable by a build of version 1.
 pub const FORMAT_VERSION: u32 = codec::FORMAT_VERSION;
 
 /// The version of the Store format this build writes and reads: the version word of a store's

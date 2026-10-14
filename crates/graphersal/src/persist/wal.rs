@@ -56,6 +56,21 @@ impl WalHeader {
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> DecodeResult<Self> {
+        Self::decode_versioned(bytes).map(|(header, _)| header)
+    }
+
+    /// The file format version of a journal segment's bytes for reading its records: the
+    /// header's, or the current one when the header is damaged (salvage reads the records
+    /// without it).
+    pub(crate) fn records_version(segment: &[u8]) -> u32 {
+        segment
+            .get(..WAL_HEADER_BYTES)
+            .and_then(|head| Self::decode_versioned(head).ok())
+            .map_or(FORMAT_VERSION, |(_, version)| version)
+    }
+
+    /// The header and the file format version it states (1 or 2).
+    pub(crate) fn decode_versioned(bytes: &[u8]) -> DecodeResult<(Self, u32)> {
         if bytes.len() != WAL_HEADER_BYTES {
             return Err(DecodeError::new(0, "journal header truncated"));
         }
@@ -67,17 +82,18 @@ impl WalHeader {
         }
         let mut r = Reader::new(&bytes[8..60]);
         let version = r.u32()?;
-        if version != FORMAT_VERSION {
+        if !codec::readable_version(version) {
             return Err(DecodeError::new(
                 8,
                 format!("journal format version {version}"),
             ));
         }
-        Ok(WalHeader {
+        let header = WalHeader {
             graph_id: r.u128_be()?,
             first_commit_seq: r.u64()?,
             created_at: r.i64()?,
-        })
+        };
+        Ok((header, version))
     }
 }
 
@@ -400,7 +416,7 @@ fn read_definition_image(
                     "a definition image of another kind or name than its change",
                 ));
             }
-            let definition = record.decode(max_depth).map_err(|err| {
+            let definition = record.decode_in(max_depth, r.version()).map_err(|err| {
                 DecodeError::new(
                     record_at,
                     format!(
@@ -419,7 +435,17 @@ fn read_definition_image(
 }
 
 /// Decodes a commit payload into its [`ChangeSet`].
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn decode_commit(payload: &[u8], max_depth: usize) -> DecodeResult<ChangeSet> {
+    decode_commit_in(payload, max_depth, FORMAT_VERSION)
+}
+
+/// [`decode_commit`] of a record of a journal of file format `version` (its header's).
+pub(crate) fn decode_commit_in(
+    payload: &[u8],
+    max_depth: usize,
+    version: u32,
+) -> DecodeResult<ChangeSet> {
     let mut r = Reader::new(payload);
     let stamp = CommitStamp {
         commit_seq: r.u64()?,
@@ -441,11 +467,16 @@ pub(crate) fn decode_commit(payload: &[u8], max_depth: usize) -> DecodeResult<Ch
     let shift = |e: DecodeError| {
         DecodeError::new(body_at, format!("{} (body byte {})", e.reason, e.offset))
     };
-    decode_body(&body, stamp, max_depth).map_err(shift)
+    decode_body(&body, stamp, max_depth, version).map_err(shift)
 }
 
-fn decode_body(body: &[u8], stamp: CommitStamp, max_depth: usize) -> DecodeResult<ChangeSet> {
-    let mut r = Reader::new(body);
+fn decode_body(
+    body: &[u8],
+    stamp: CommitStamp,
+    max_depth: usize,
+    version: u32,
+) -> DecodeResult<ChangeSet> {
+    let mut r = Reader::new(body).with_version(version);
     let keys = InlineKeys;
     let mut metadata = CommitMetadata::new();
     if let Some(principal) = r.opt_str()? {
@@ -625,6 +656,8 @@ pub struct JournalReader<R: Read> {
     index: usize,
     max_depth: usize,
     torn: Option<TornTail>,
+    /// The file format version of the header (records are read with its value tags).
+    version: u32,
     done: bool,
 }
 
@@ -664,7 +697,8 @@ impl<R: Read> JournalReader<R> {
                 "journal header truncated",
             ));
         }
-        let header = WalHeader::decode(&head).map_err(|err| err.at(location, 0))?;
+        let (header, version) =
+            WalHeader::decode_versioned(&head).map_err(|err| err.at(location, 0))?;
         Ok(Self {
             source,
             header,
@@ -672,6 +706,7 @@ impl<R: Read> JournalReader<R> {
             index,
             max_depth,
             torn: None,
+            version,
             done: false,
         })
     }
@@ -793,7 +828,7 @@ impl<R: Read> JournalReader<R> {
         let payload_at = start + FRAME_BYTES as u64;
         let record = match header.record_type {
             RECORD_COMMIT => {
-                let changes = decode_commit(payload, self.max_depth)
+                let changes = decode_commit_in(payload, self.max_depth, self.version)
                     .map_err(|err| self.corrupt(payload_at + err.offset, err.reason))?;
                 if changes.commit_seq() != commit_seq {
                     return Err(self.corrupt(start, "frame and payload commit_seq differ"));

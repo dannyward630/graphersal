@@ -1,7 +1,7 @@
-# Storage Format Specification (store version 2, file version 1)
+# Storage Format Specification (store version 3, file version 2)
 
-This page is the normative specification of Graphersal's storage format, store format version 2
-with file format version 1 (15): the packed snapshot (`.gsnap`), the write-ahead log
+This page is the normative specification of Graphersal's storage format, store format version 3
+with file format version 2 (15): the packed snapshot (`.gsnap`), the write-ahead log
 (journal), the Store directory and its files, and the single-file container (`.gstore`). It is
 written so that a third party can read (and write) these files without Graphersal's code: a
 backup tool, a converter, a change-data-capture connector that tails the WAL.
@@ -110,11 +110,35 @@ One encoding is shared by segment chunks and WAL records. A value starts with a 
 | 6 | `uuid` | 16 bytes, big-endian |
 | 7 | array | `uvar n`, then `n` values |
 | 8 | object | `uvar n`, then `n` pairs of key and value; a key is a string-table reference (`uvar`) inside a segment chunk and an inline `string` inside a WAL record |
-| 9..254 | reserved | invalid in version 1 |
+| 9 | `date` | `svar days`: days since 1970-01-01 (file format version 2) |
+| 10 | `localdatetime` | `svar micros`: microseconds since 1970-01-01T00:00:00, wall clock, no zone (file format version 2) |
+| 11 | `datetime` | `svar micros` since 1970-01-01T00:00:00Z (the instant), then `svar offset`: the UTC offset in seconds (file format version 2) |
+| 12 | `time` | `uvar micros`: microseconds since midnight (file format version 2) |
+| 13 | `duration` | `svar months`, `svar days`, `svar micros`, each with its own sign (file format version 2) |
+| 14..254 | reserved | invalid in versions 1 and 2 |
 | 255 | absent | only where a field explicitly allows it (the *before* value of a SetProperty mutation, 9.3) |
 
 - The order of object entries (and of property maps, 7.3) is the insertion order and MUST be
   preserved. A repeated key in one object or property map is invalid.
+- **Temporal values** (tags 9 to 13) use the proleptic Gregorian calendar and a resolution of one
+  microsecond. Their ranges are normative; a value outside its range is invalid:
+
+  | Tag | Valid payload |
+  |---:|---|
+  | 9 | `days` within the years -9999 to 9999: -4371587 (`-9999-01-01`) to 2932896 (`9999-12-31`) |
+  | 10 | `micros` within the same days (`-9999-01-01T00:00:00` to `9999-12-31T23:59:59.999999`) |
+  | 11 | `offset` within ±64800 (±18:00); both the instant and the local time (`micros + offset * 10^6`) within the range of tag 10 |
+  | 12 | `micros` in `0..86400000000` |
+  | 13 | `months` and `days` within `i32`, `micros` within `i64` |
+
+  A `datetime` keeps the offset it was written with; equality and order of two `datetime`s use
+  the instant only (the offset is not compared). A `duration` is not normalized: `P1M`, `P30D`
+  and `PT720H` are three different values.
+- Tags 9 to 13 are **invalid in a file of format version 1** (15): a reader MUST report such a
+  value as damage, never decode it. A reader takes the version from the header of the file the
+  value is in: a segment chunk from its segment's header (7.1, also when the chunk is read
+  through the chunk index without framing the whole segment), a WAL record from its WAL
+  segment's header (9.1), a definition from the manifest (6.1) or WAL segment it is stored in.
 - Readers MUST bound the nesting depth of arrays and objects (the reference reader defaults to
   128 levels and is configurable); writers MUST NOT write more than 4096 levels.
 
@@ -193,7 +217,7 @@ A fixed part of 256 bytes, followed by the lineage chain:
 | Offset | Size | Field |
 |---:|---:|---|
 | 0 | 8 | magic `GRSLGRPH` |
-| 8 | 4 | store format version (`u32`, 2; see 15) |
+| 8 | 4 | store format version (`u32`, 3; see 15) |
 | 12 | 4 | state: 0 = closed cleanly, 1 = open (a writer has it, or it was not closed cleanly); other values are invalid |
 | 16 | 16 | `graph_id` of the current lineage |
 | 32 | 8 | created at (time) |
@@ -220,7 +244,7 @@ is invalid (the file is damaged).
 
 | Bit | Meaning |
 |---:|---|
-| 0 | reserved for parity data; MUST be 0 in store format version 2 |
+| 0 | reserved for parity data; MUST be 0 in store format versions 2 and 3 |
 | 1 | a WAL cut is recorded (offsets 52, 60; 12.2) |
 | 2 | the store is a backup (offsets 68, 76; 12.6) |
 | 3 | `wal_head` is recorded (offset 84; 9.8) |
@@ -738,7 +762,7 @@ anything else. An unknown `op` MUST fail the open. Every path in it follows 4.2.
 {"op": "<operation>", "files": ["<store-relative names>"], "started_at": <micros>, ...}
 ```
 
-Further parameters are string values. Operations of store format version 2:
+Further parameters are string values. Operations of store format version 3 (the same as version 2):
 
 | `op` | Parameters and steps |
 |---|---|
@@ -1071,7 +1095,7 @@ the source it continues and is refused: a full backup is needed.
   later snapshot covering it. A file the newest snapshot references is a twin in the directory
   (or holder) of an older snapshot; its damage is repaired from the previous snapshot like
   damage of the newest's own files.
-- Flag bit 0 of `GRAPH` is reserved for parity data (not in store format version 2).
+- Flag bit 0 of `GRAPH` is reserved for parity data (not in store format version 3).
 
 ### 13.2 The damage scan
 
@@ -1270,19 +1294,32 @@ many small appends).
 - Every file starts with a magic and a format version. There are three version axes: the
   **store format version** in `GRAPH` (offset 8, 5.1), the **file format version** in the
   manifests, segments, WAL segments and packed snapshots, and the single-file **container
-  version** (14.1). This specification is store format version 2, file format version 1 and
+  version** (14.1). This specification is store format version 3, file format version 2 and
   container version 1.
 - Version history of the store format: 1, the first version; 2 (Graphersal 0.1.0) added the
-  store identity `store_id` at `GRAPH` offset 100 (5.5), which version 1 left zero. The file
-  format and the container are still at version 1, so a packed snapshot written by a version 1
-  store is a valid packed snapshot of this version.
+  store identity `store_id` at `GRAPH` offset 100 (5.5), which version 1 left zero; 3
+  (Graphersal 0.2.0) has the layout of version 2 and marks a store written with file format
+  version 2. The bump exists for older readers: a reader of store format version 2 knows only
+  file format version 1 and would take the manifests and WAL segments of file format version 2
+  for damage (an unknown version word is damage there, 13), open the store in maintenance mode
+  and offer a repair that loses data; with version 3 in `GRAPH` it refuses the store as newer
+  before it reads any other file.
+- Version history of the file format: 1 (Graphersal 0.1.x); 2 (Graphersal 0.2.0) added the
+  temporal value tags 9 to 13 (3). Nothing else differs, so a reader of version 2 reads version
+  1 files as they are: a packed snapshot written by 0.1.x loads, and a store created from it
+  keeps its version 1 manifest and segment files byte for byte (8, 12.1). Every file carries its
+  own version: a snapshot of file format version 2 MAY reference (6.2) or a packed snapshot MAY
+  contain segment files of version 1, and a manifest of version 1 MAY be rewritten as version 2
+  (its content is valid in both). A file of version 2 is not readable by a reader of version 1.
+  The container is still at version 1.
 - A writer writes only the current version.
 - A file with a newer version than the reader knows MUST be refused (unsupported version),
-  never guessed at.
+  never guessed at. A reader of file format version 2 MUST accept versions 1 and 2 in every
+  file header (manifest 6.1, segment 7.1, packed snapshot 8, WAL segment 9.1).
 - A `GRAPH` of an OLDER store format version (its magic and fixed-part checksum valid, the
   version word below the current one) MUST be classified by its version word before any field
-  that version did not have is checked: it is neither damage (13) nor "not a store". Before
-  0.1.0 there is no upgrade path inside the store: every operation (open, read-only open,
+  that version did not have is checked: it is neither damage (13) nor "not a store". There is
+  no upgrade path inside the store: every operation (open, read-only open,
   info, verify, backup, restore, fork, repair, conversion) refuses it with "older format", and
   the migration is a packed snapshot exported by the build that wrote the store, from which this
   build creates a new store (only the graph state, schema and catalog move; marks, the attic and
@@ -1297,7 +1334,7 @@ many small appends).
 ## 16. Extensibility
 
 The format is meant to grow without migrations. These rules bind every reader and writer of
-store format version 2 and file format version 1:
+store format version 3 and file format version 2:
 
 1. **Length before payload, payload as a map.** Every definition carries its length before its
    payload (6.3), so a reader skips an unknown kind by its length; a payload is a property map,
@@ -1351,9 +1388,15 @@ store format version 2 and file format version 1:
 - A reader tailing a live WAL (CDC) reads only complete records with valid CRCs and treats an
   incomplete record at the end as "not yet written". Records before the writer's durable end are
   final; a record after it may still be cut off (9.7).
+- Read every file with the version in its own header (15): accept files of format versions 1
+  and 2 in one store or packed snapshot, reject a temporal value tag in a version 1 file, and
+  reject a temporal value outside its range (3) as damage.
 
 **Writers**
 
+- Write every new file with the current file format version (2) and `GRAPH` with store format
+  version 3; never append a record with a temporal value to a WAL segment of version 1 (start a
+  new segment), and never write a temporal value into a file of version 1.
 - Follow the write ordering of 9.9: a WAL never holds a commit that did not happen, and a caller
   never gets "ok" for a commit that is not durable under the configured durability.
 - Make files visible only when complete: a temporary name, sync, an atomic rename, a sync of the
