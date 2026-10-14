@@ -809,8 +809,13 @@ fn diff_counts_whole_units_toward_zero() {
     };
     assert_eq!(d("2023-03-31", "2023-01-31", DT::Month), 2);
     assert_eq!(d("2023-01-31", "2023-03-31", DT::Month), -2);
-    assert_eq!(d("2023-02-28", "2023-01-31", DT::Month), 1);
+    // java.time `ChronoUnit.MONTHS.between`: a month counts once the day of the month is
+    // reached, no end-of-month clamping (January 31 to February 28 is 0 months).
+    assert_eq!(d("2023-02-28", "2023-01-31", DT::Month), 0);
     assert_eq!(d("2023-02-27", "2023-01-31", DT::Month), 0);
+    assert_eq!(d("2023-03-31", "2023-02-28", DT::Month), 1);
+    assert_eq!(d("2024-02-29", "2024-01-31", DT::Month), 0);
+    assert_eq!(d("2023-01-31", "2023-02-28", DT::Month), 0);
     assert_eq!(d("2024-02-29", "2023-02-28", DT::Year), 1);
     assert_eq!(d("2024-02-27", "2023-02-28", DT::Year), 0);
     assert_eq!(d("2023-08-09", "2023-08-02", DT::Week), 1);
@@ -866,22 +871,24 @@ fn diff_counts_whole_units_toward_zero() {
 
 #[test]
 fn age_is_months_then_days_then_micros_with_one_sign() {
+    let ages = |a: &str, b: &str| {
+        age(Temporal::Date(date(a)), Temporal::Date(date(b)), None)
+            .unwrap()
+            .to_string()
+    };
+    // PostgreSQL's documented example: `age('2001-04-10', '1957-06-13')` is
+    // `43 years 9 mons 27 days`, and the reverse is its negation.
+    assert_eq!(ages("2001-04-10", "1957-06-13"), "P43Y9M27D");
+    assert_eq!(ages("1957-06-13", "2001-04-10"), "-P43Y9M27D");
+    // A negative day count borrows the length of the earlier value's month.
+    assert_eq!(ages("2023-02-28", "2023-01-31"), "P28D");
+    assert_eq!(ages("2023-01-31", "2023-02-28"), "-P28D");
+    assert_eq!(ages("2023-03-01", "2023-01-31"), "P1M1D");
+    assert_eq!(ages("2024-03-01", "2024-02-29"), "P1D");
     let a = Temporal::LocalDateTime(ldt("2024-03-15T10:00"));
     let b = Temporal::LocalDateTime(ldt("2023-01-20T12:00"));
-    assert_eq!(age(a, b, None).unwrap().to_string(), "P1Y1M23DT22H");
-    // Counted from the second operand: 2024-03-15T10:00 minus 13 months is 2023-02-15T10:00,
-    // 25 days and 22 hours after 2023-01-20T12:00.
+    assert_eq!(age(a, b, None).unwrap().to_string(), "P1Y1M25DT22H");
     assert_eq!(age(b, a, None).unwrap().to_string(), "-P1Y1M25DT22H");
-    assert_eq!(
-        age(
-            Temporal::Date(date("2023-02-28")),
-            Temporal::Date(date("2023-01-31")),
-            None
-        )
-        .unwrap()
-        .to_string(),
-        "P1M"
-    );
     assert_eq!(
         age(
             Temporal::Time(time("10:00")),
@@ -902,7 +909,7 @@ fn age_is_months_then_days_then_micros_with_one_sign() {
         ),
         Err(TemporalError::Unsupported { .. })
     ));
-    // The age added to the second operand gives the first one.
+    // One sign, a mirror for the swapped operands, and field ranges as PostgreSQL's.
     let mut rng = Rng(42);
     for _ in 0..2_000 {
         let a = ldt_at(rng.range(-3_000_000_000, 3_000_000_000));
@@ -917,8 +924,10 @@ fn age_is_months_then_days_then_micros_with_one_sign() {
             signs.iter().all(|s| *s >= 0) || signs.iter().all(|s| *s <= 0),
             "{a} - {b} = {span}"
         );
-        let back = add_duration(Temporal::LocalDateTime(b), span, None).unwrap();
-        assert_same(back, Temporal::LocalDateTime(a));
+        assert!(span.days().abs() < 31, "{a} - {b} = {span}");
+        assert!(span.micros().abs() < 86_400_000_000, "{a} - {b} = {span}");
+        let back = age(Temporal::LocalDateTime(b), Temporal::LocalDateTime(a), None).unwrap();
+        assert_eq!(back, span.checked_neg().unwrap(), "{a} - {b} = {span}");
     }
 }
 

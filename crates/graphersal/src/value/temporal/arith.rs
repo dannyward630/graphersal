@@ -307,18 +307,30 @@ fn days_between(from: LocalDateTime, to: LocalDateTime) -> i64 {
     days
 }
 
-/// Whole months from `from` to `to`, truncated toward zero: the month count of the dates, one
-/// less when adding it to `from` (clamped to the month end) passes `to`.
-fn months_between(from: LocalDateTime, to: LocalDateTime) -> TemporalResult<i64> {
-    let (fy, fm, _) = civil::civil_from_days(from.date().days);
-    let (ty, tm, _) = civil::civil_from_days(to.date().days);
+/// Whole months from `from` to `to`, truncated toward zero, as `java.time`
+/// `ChronoUnit.MONTHS.between` counts them: the month count of the dates, one less when the
+/// day of the month (and then the time of day) of `to` has not reached that of `from` (so
+/// January 31 to February 28 is 0 months, February 28 to March 31 is 1).
+fn months_between(from: LocalDateTime, to: LocalDateTime) -> i64 {
+    let from_day = from.date().days;
+    let mut end = to.date().days;
+    let (from_time, to_time) = (from.time().micros, to.time().micros);
+    // `LocalDateTime.until`: an end whose time is before the start's counts from the day before.
+    if end > from_day && to_time < from_time {
+        end -= 1;
+    } else if end < from_day && to_time > from_time {
+        end += 1;
+    }
+    let (fy, fm, fd) = civil::civil_from_days(from_day);
+    let (ty, tm, td) = civil::civil_from_days(end);
     let mut months = (ty as i64 * 12 + tm as i64) - (fy as i64 * 12 + fm as i64);
-    if months > 0 && local_add_months(from, months)? > to {
+    let days = td as i64 - fd as i64;
+    if months > 0 && days < 0 {
         months -= 1;
-    } else if months < 0 && local_add_months(from, months)? < to {
+    } else if months < 0 && days > 0 {
         months += 1;
     }
-    Ok(months)
+    months
 }
 
 /// The wall-clock views of two values of one type for a calendar difference: a `datetime`'s in
@@ -352,8 +364,8 @@ fn local_pair(
 
 /// `a - b` in whole units, truncated toward zero (PostgreSQL / `java.time` `ChronoUnit.between`):
 /// fixed units from the elapsed microseconds, days and weeks from the wall-clock dates and
-/// times, months and larger from whole months (a month counts once its day is reached, clamped
-/// to the month end).
+/// times, months and larger from whole months (a month counts once the day of the month and the
+/// time of day are reached: January 31 to February 28 is 0 months).
 pub(crate) fn diff(a: Temporal, b: Temporal, unit: DT, zone: Option<&Zone>) -> TemporalResult<i64> {
     let kind = same_kind(a, b, "the difference")?;
     let operation = format!("the difference in the unit {unit}");
@@ -382,14 +394,16 @@ pub(crate) fn diff(a: Temporal, b: Temporal, unit: DT, zone: Option<&Zone>) -> T
         return Ok(days_between(lb, la) / k);
     }
     match unit.calendar_months() {
-        Some(k) => Ok(months_between(lb, la)? / k),
+        Some(k) => Ok(months_between(lb, la) / k),
         None => Err(TemporalError::unsupported(operation, kind)),
     }
 }
 
-/// `a - b` as a duration of whole months, then whole days, then microseconds, every part with
-/// the same sign (PostgreSQL `age`), counted from `b`: adding the result to `b` gives `a`
-/// (so `age(b, a)` need not be the negation of `age(a, b)`: months have different lengths).
+/// `a - b` as PostgreSQL `age` computes it: a symbolic difference of the fields (years,
+/// months, days, time of day), every part with the same sign. The fields are subtracted, then a
+/// negative time borrows a day and a negative day count borrows the length of the EARLIER
+/// value's month, so `age('2001-04-10', '1957-06-13')` is `43 years 9 mons 27 days` and
+/// `age(b, a)` is always the negation of `age(a, b)`.
 pub(crate) fn age(a: Temporal, b: Temporal, zone: Option<&Zone>) -> TemporalResult<Duration> {
     let kind = same_kind(a, b, "the age")?;
     if let (Temporal::Time(a), Temporal::Time(b)) = (a, b) {
@@ -397,12 +411,34 @@ pub(crate) fn age(a: Temporal, b: Temporal, zone: Option<&Zone>) -> TemporalResu
         return Ok(Duration::from_micros(a.micros - b.micros));
     }
     let (la, lb) = local_pair(a, b, zone, "the age")?;
-    let months = months_between(lb, la)?;
-    let after_months = local_add_months(lb, months)?;
-    let days = days_between(after_months, la);
-    let after_days = local_add_days(after_months, days)?;
-    let micros = la.micros - after_days.micros;
-    Ok(Duration::new(to_i32(months)?, to_i32(days)?, micros))
+    let negative = la < lb;
+    // The earlier of the two, whose month lengths the borrowing uses.
+    let earlier = if negative { la } else { lb };
+    let (ya, ma, da) = civil::civil_from_days(la.date().days);
+    let (yb, mb, db) = civil::civil_from_days(lb.date().days);
+    let (ye, me, _) = civil::civil_from_days(earlier.date().days);
+    let sign = if negative { -1 } else { 1 };
+    let mut time = (la.time().micros - lb.time().micros) * sign;
+    let mut days = (da as i64 - db as i64) * sign;
+    let mut months = (ma as i64 - mb as i64) * sign;
+    let mut years = (ya as i64 - yb as i64) * sign;
+    if time < 0 {
+        time += MICROS_PER_DAY;
+        days -= 1;
+    }
+    while days < 0 {
+        days += civil::days_in_month(ye, me) as i64;
+        months -= 1;
+    }
+    while months < 0 {
+        months += 12;
+        years -= 1;
+    }
+    Ok(Duration::new(
+        to_i32((years * 12 + months) * sign)?,
+        to_i32(days * sign)?,
+        time * sign,
+    ))
 }
 
 /// The first year of the decade of `year`.
