@@ -98,7 +98,7 @@ pub(crate) struct TraversalOptimizer<'g, S: GraphStorage + 'g> {
     /// record a fired rule from inside that shared borrow.
     fired: RefCell<Vec<&'static str>>,
     /// The property indexes the storage serves (read once per run, see
-    /// [`Self::with_property_indexes`]); empty: no index is used.
+    /// [`Self::for_run`]); empty: no index is used.
     indexes: Vec<crate::graph::PropertyIndexInfo>,
     /// How deep the level being optimized is nested (0: the root traversal).
     depth: std::cell::Cell<u32>,
@@ -137,20 +137,14 @@ impl<'g, S: GraphStorage + 'g> TraversalOptimizer<'g, S> {
         self
     }
 
-    /// Gives the rules the property indexes the storage serves (`GraphStorage::property_indexes`).
-    pub fn with_property_indexes(mut self, indexes: Vec<crate::graph::PropertyIndexInfo>) -> Self {
-        self.indexes = indexes;
-        self
-    }
-
     /// Every rule this crate knows, in [`KNOWN_RULES`] order: its name, whether it is part of
     /// `default_pipeline()`'s on-by-default set, and a constructor for it. This is the registry
     /// D3 needs: `optimizer.enabled` names a rule that may not be in the on-by-default `Vec` at
     /// all, so resolving it to an actual rule instance needs a name -> constructor mapping that
     /// covers every known rule, not just the ones `default_pipeline()` builds today. A unit test
     /// in this module checks this list's names against [`KNOWN_RULES`], so the two can't drift.
-    pub(crate) fn registry() -> Vec<RegistryEntry<'g, S>> {
-        vec![
+    pub(crate) fn registry() -> [RegistryEntry<'g, S>; KNOWN_RULES.len()] {
+        [
             ("where_unnest", true, new_where_unnest::<'g, S>),
             ("add_property_fold", true, new_add_property_fold::<'g, S>),
             ("filter_reorder", true, new_filter_reorder::<'g, S>),
@@ -193,8 +187,32 @@ impl<'g, S: GraphStorage + 'g> TraversalOptimizer<'g, S> {
     /// against [`KNOWN_RULES`] and rejected a name present in both, so this only has to consult
     /// the sets, not re-check them.
     pub fn default_pipeline_with(options: &ExecutionOptions) -> Self {
+        Self::pipeline_with(options, true)
+    }
+
+    /// The pipeline of one run: [`Self::default_pipeline_with`] with the storage's property
+    /// `indexes`. Without any index the `property_index` rule is left out entirely (it could not
+    /// pick anything, and a source only carries an index access that rule set in this same run),
+    /// so a graph without indexes pays neither its construction nor its walk of the plan; it
+    /// never fires there, so `.profile()`'s list of applied rules is the same either way.
+    pub fn for_run(
+        options: &ExecutionOptions,
+        indexes: Vec<crate::graph::PropertyIndexInfo>,
+    ) -> Self {
+        let mut optimizer = Self::pipeline_with(options, !indexes.is_empty());
+        optimizer.indexes = indexes;
+        optimizer
+    }
+
+    /// The default-on rules honouring `options`; `property_index` only with `with_indexes`.
+    fn pipeline_with(options: &ExecutionOptions, with_indexes: bool) -> Self {
+        let registry = Self::registry();
         let mut optimizer = Self::new();
-        for (name, default_on, ctor) in Self::registry() {
+        optimizer.rules.reserve_exact(registry.len());
+        for (name, default_on, ctor) in registry {
+            if !with_indexes && name == "property_index" {
+                continue;
+            }
             let disabled = options.optimizer_disabled.contains(name);
             let enabled = options.optimizer_enabled.contains(name);
             if (default_on && !disabled) || (!default_on && enabled) {

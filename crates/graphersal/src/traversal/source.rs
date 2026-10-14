@@ -2261,12 +2261,13 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
         // folded and reordered, the query the user actually wrote is no longer recoverable.
         // `default_pipeline_with` consults this execution's `optimizer.disabled`/
         // `optimizer.enabled` options (D3 of the rule-visibility spec) when building the pipeline.
-        let optimizer = crate::traversal::optimizer::TraversalOptimizer::default_pipeline_with(
+        // With the property indexes the storage serves (none: one empty `Vec`, no allocation, and
+        // the `property_index` rule is left out of the pipeline).
+        let optimizer = crate::traversal::optimizer::TraversalOptimizer::for_run(
             &context.options,
+            context.storage.property_indexes(),
         )
-        .with_diagnostics(context.strategy.contains(TraversalStrategy::Diagnostics))
-        // The property indexes the storage serves (none: one empty `Vec`, no allocation).
-        .with_property_indexes(context.storage.property_indexes());
+        .with_diagnostics(context.strategy.contains(TraversalStrategy::Diagnostics));
         let level = optimizer.apply(steps);
         // Fired-rule names, top-level and nested (the same `&self` optimizes every nested level
         // via `step.optimize_nested`), for the profile's `optimizer_rules_applied`. Collected
