@@ -16,8 +16,8 @@
 //! - a load (`finish_load`) rebuilds every index after the elements and the catalog are in
 //!   place, so a read-only open, a backup open and a recovery are consistent with the data.
 //!
-//! Keys are the LOGICAL scalar values (`null`, booleans, numbers, strings, uuids; a compressed
-//! string by its text). Arrays and objects are not indexed: a condition on one is never served
+//! Keys are the LOGICAL scalar values (`null`, booleans, numbers, strings, uuids, dates and
+//! times; a compressed string by its text). Arrays and objects are not indexed: a condition on one is never served
 //! by an index. The index is ordered: an equality, `P.within` and the ranges `P.gt/gte/lt/lte/
 //! inside/between/outside` read a slice of it. A lookup returns a SUPERSET of the matching
 //! elements (numbers are ranged by their `float64` value, both `int64` and `float64` entries
@@ -34,7 +34,8 @@ use crate::graph::definition::{Definition, DefinitionBody, DefinitionFlags, Defi
 use crate::graph::schema::ElementKind;
 use crate::graph::{EdgeHandle, EdgeIndex, NodeIndex, TraversalGraph, VertexHandle};
 use crate::value::number::{N, canonicalize_f64};
-use crate::value::{ElementProperty, PropertyMap};
+use crate::value::temporal::Duration;
+use crate::value::{ElementProperty, PropertyMap, Temporal};
 
 /// The longest label of an index, in bytes.
 pub const MAX_INDEX_LABEL_BYTES: usize = 1024;
@@ -370,9 +371,12 @@ impl PropertyIndexInfo {
 /// The slice of a property index a lookup reads
 /// ([`GraphStorage::vertices_by_property_index`]): the values between `lower` and `upper`.
 ///
-/// The bounds are scalar values (`null`, boolean, number, string, uuid) of ONE kind; values of
-/// other kinds are never in the slice. Numbers compare by value across `int64` and `float64`,
-/// strings bytewise, booleans `false < true`, uuids by their 128-bit word, as the predicates do.
+/// The bounds are scalar values (`null`, boolean, number, string, uuid, or one temporal type:
+/// `date`, `localdatetime`, `datetime`, `time`, `duration`) of ONE kind; values of other kinds
+/// are never in the slice. Numbers compare by value across `int64` and `float64`, strings
+/// bytewise, booleans `false < true`, uuids by their 128-bit word, a `datetime` by its instant
+/// (the offset is not compared), a `duration` by its length then its fields, as the predicates
+/// do.
 /// A storage may return MORE elements than the slice holds (the caller re-checks every
 /// condition on each candidate), never fewer. An equality ([`Self::equal`]) is the slice
 /// `[v, v]`.
@@ -407,8 +411,16 @@ impl PropertyIndexRange {
 // ---------------------------------------------------------------------------------------------
 
 /// The ordered key of an index entry: a logical scalar. Kinds are ordered `null < boolean <
-/// number < string < uuid`; within a kind the order of the predicates (numbers by their
-/// canonical `float64` value first, then `int64` before `float64`, then the exact `int64`).
+/// number < string < uuid < date < localdatetime < datetime < time < duration`; within a kind
+/// the order of the predicates (numbers by their canonical `float64` value first, then `int64`
+/// before `float64`, then the exact `int64`; temporal values by `Temporal`'s own order).
+///
+/// Equal keys are exactly the values `has()` finds equal: each temporal type is its own kind
+/// (a `date` never equals a `datetime` or a number), a `datetime` key is its INSTANT
+/// (`12:00Z` and `14:00+02:00` are one key), and a `duration` key is the whole [`Duration`],
+/// whose equality is field by field (`P1M` is not `P30D`) and whose order is its length (a month
+/// as 30 days) with ties broken by the fields: an order consistent with that equality, so
+/// equality, `P.within` and ranges on durations are all exact slices.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum IndexKey {
     Null,
@@ -418,6 +430,16 @@ enum IndexKey {
     Str(CompactString),
     /// The uuid's 128-bit word as `(high, low)` (keeps the key 8-aligned).
     Uuid(u64, u64),
+    /// Days since 1970-01-01.
+    Date(i32),
+    /// Wall-clock microseconds since 1970-01-01T00:00:00.
+    LocalDateTime(i64),
+    /// The instant: microseconds since 1970-01-01T00:00:00Z (the offset is not part of the key).
+    DateTime(i64),
+    /// Microseconds after midnight.
+    Time(i64),
+    /// The duration itself (its `Ord` is the length, then the fields).
+    Duration(Duration),
 }
 
 /// The kinds of [`IndexKey`], in key order.
@@ -428,11 +450,16 @@ enum KeyKind {
     Number,
     Str,
     Uuid,
+    Date,
+    LocalDateTime,
+    DateTime,
+    Time,
+    Duration,
 }
 
 impl IndexKey {
     /// The key of a stored (or queried) value; `None` for a value that is not indexed (arrays,
-    /// objects, elements, maps, dates and times).
+    /// objects, elements, maps).
     fn of(value: &ElementProperty) -> Option<IndexKey> {
         match value {
             ElementProperty::Null => Some(IndexKey::Null),
@@ -444,9 +471,14 @@ impl IndexKey {
             ElementProperty::String(text) => Some(IndexKey::Str(text.clone())),
             ElementProperty::Compressed(text) => Some(IndexKey::Str(text.text())),
             ElementProperty::Uuid(bits) => Some(IndexKey::Uuid((*bits >> 64) as u64, *bits as u64)),
-            // Dates and times are not index keys yet: a condition on one is served by a scan.
-            ElementProperty::Temporal(_)
-            | ElementProperty::Object(_)
+            ElementProperty::Temporal(value) => Some(match *value {
+                Temporal::Date(date) => IndexKey::Date(date.days_since_epoch()),
+                Temporal::LocalDateTime(local) => IndexKey::LocalDateTime(local.micros()),
+                Temporal::DateTime(instant) => IndexKey::DateTime(instant.epoch_micros()),
+                Temporal::Time(time) => IndexKey::Time(time.micros_of_day()),
+                Temporal::Duration(duration) => IndexKey::Duration(duration),
+            }),
+            ElementProperty::Object(_)
             | ElementProperty::Array(_)
             | ElementProperty::Vertex(_)
             | ElementProperty::Edge(_)
@@ -461,6 +493,11 @@ impl IndexKey {
             IndexKey::Number(..) => KeyKind::Number,
             IndexKey::Str(_) => KeyKind::Str,
             IndexKey::Uuid(..) => KeyKind::Uuid,
+            IndexKey::Date(_) => KeyKind::Date,
+            IndexKey::LocalDateTime(_) => KeyKind::LocalDateTime,
+            IndexKey::DateTime(_) => KeyKind::DateTime,
+            IndexKey::Time(_) => KeyKind::Time,
+            IndexKey::Duration(_) => KeyKind::Duration,
         }
     }
 
@@ -473,7 +510,8 @@ impl IndexKey {
     }
 }
 
-/// Whether a value can be an index key (a scalar: `null`, boolean, number, string, uuid); a
+/// Whether a value can be an index key (a scalar: `null`, boolean, number, string, uuid, a date
+/// or time); a
 /// condition on any other value is never served by an index.
 pub(crate) fn is_indexable(value: &ElementProperty) -> bool {
     IndexKey::of(value).is_some()
@@ -487,6 +525,12 @@ fn kind_start(kind: KeyKind) -> (IndexKey, u64) {
         KeyKind::Number => IndexKey::Number(canonicalize_f64(f64::NEG_INFINITY), 0, i64::MIN),
         KeyKind::Str => IndexKey::Str(CompactString::default()),
         KeyKind::Uuid => IndexKey::Uuid(0, 0),
+        KeyKind::Date => IndexKey::Date(i32::MIN),
+        KeyKind::LocalDateTime => IndexKey::LocalDateTime(i64::MIN),
+        KeyKind::DateTime => IndexKey::DateTime(i64::MIN),
+        KeyKind::Time => IndexKey::Time(i64::MIN),
+        // Every part at its minimum is the shortest length and the smallest fields.
+        KeyKind::Duration => IndexKey::Duration(Duration::new(i32::MIN, i32::MIN, i64::MIN)),
     };
     (key, 0)
 }
@@ -498,7 +542,12 @@ fn kind_end(kind: KeyKind) -> Bound<(IndexKey, u64)> {
         KeyKind::Bool => Bound::Excluded(kind_start(KeyKind::Number)),
         KeyKind::Number => Bound::Excluded(kind_start(KeyKind::Str)),
         KeyKind::Str => Bound::Excluded(kind_start(KeyKind::Uuid)),
-        KeyKind::Uuid => Bound::Unbounded,
+        KeyKind::Uuid => Bound::Excluded(kind_start(KeyKind::Date)),
+        KeyKind::Date => Bound::Excluded(kind_start(KeyKind::LocalDateTime)),
+        KeyKind::LocalDateTime => Bound::Excluded(kind_start(KeyKind::DateTime)),
+        KeyKind::DateTime => Bound::Excluded(kind_start(KeyKind::Time)),
+        KeyKind::Time => Bound::Excluded(kind_start(KeyKind::Duration)),
+        KeyKind::Duration => Bound::Unbounded,
     }
 }
 
@@ -1039,6 +1088,44 @@ mod tests {
         assert!(IndexKey::of(&ElementProperty::Null).unwrap() < one);
         assert!(two < IndexKey::of(&ElementProperty::from("a")).unwrap());
         assert!(IndexKey::of(&ElementProperty::Array(vec![])).is_none());
+    }
+
+    #[test]
+    fn temporal_keys_are_one_kind_per_type_and_follow_has() {
+        let key = |text: &str, kind: crate::value::temporal::TemporalKind| {
+            IndexKey::of(&ElementProperty::Temporal(
+                Temporal::parse_as(kind, text).unwrap(),
+            ))
+            .unwrap()
+        };
+        use crate::value::temporal::TemporalKind as K;
+        let noon = key("2023-08-02T12:00:00Z", K::DateTime);
+        assert_eq!(noon, key("2023-08-02T14:00:00+02:00", K::DateTime));
+        assert_ne!(key("P1M", K::Duration), key("P30D", K::Duration));
+        assert!(key("PT720H", K::Duration) < key("P30D", K::Duration));
+        assert!(key("P30D", K::Duration) < key("P1M", K::Duration));
+        assert!(key("P1M", K::Duration) < key("P30DT1S", K::Duration));
+        // Kinds in order, each inside its own slice.
+        let kinds = [
+            key("9999-12-31", K::Date),
+            key("-9999-01-01T00:00:00", K::LocalDateTime),
+            noon,
+            key("00:00:00", K::Time),
+            key("P-100Y", K::Duration),
+        ];
+        assert!(IndexKey::Uuid(u64::MAX, u64::MAX) < kinds[0]);
+        for pair in kinds.windows(2) {
+            assert!(pair[0] < pair[1]);
+            assert_ne!(pair[0].kind(), pair[1].kind());
+        }
+        for key in &kinds {
+            let start = kind_start(key.kind());
+            assert!(start <= (key.clone(), 0));
+            match kind_end(key.kind()) {
+                Bound::Excluded(end) => assert!((key.clone(), u64::MAX) < end),
+                _ => assert_eq!(key.kind(), KeyKind::Duration),
+            }
+        }
     }
 
     #[test]

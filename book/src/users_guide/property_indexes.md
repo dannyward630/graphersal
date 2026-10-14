@@ -64,7 +64,6 @@ A `v()`/`e()` start step reads an index when
 | `has(key, P.outside(a, b))` | two ranges |
 | `P.neq`, `P.without`, text predicates, `P.typeOf`, `and`/`or`/`not` composites | not served (scan) |
 | a value that is a list or a map (`has("tags", ["a"])`) | not served (scan) |
-| a date or time value (`has("born", P.gt(date("1990-01-01")))`) | not served (scan); dates and times are not index keys yet |
 | `v().has("title", "CEO")` without a label, a jpath key | not served (scan) |
 
 With several served conditions the optimizer picks the **most selective** index from the index
@@ -76,7 +75,13 @@ matching elements (numbers are ranged by their value as `float64`, so `29` and `
 read), and the start step and the `has()` step still check every condition on each candidate. The
 comparison is exactly that of `has()`: `has("age", 29)` matches an `int64` 29 only,
 `has("age", P.eq(29.0))` and the ranges compare numbers across `int64` and `float64`, a string never
-equals a uuid, `null` equals only `null`. Only the **order** of the elements may differ (the index
+equals a uuid, `null` equals only `null`. Dates and times are index keys with the same rules
+([Comparing and Sorting](../dates/comparing.md)): each of `date`, `localdatetime`, `datetime`,
+`time` and `duration` is its own kind (a `date` never equals a `datetime` or a string, and a range
+reads only values of its bounds' type), a `datetime` is keyed by its instant (`12:00Z` and
+`14:00+02:00` are one key), and a `duration` is keyed by all its fields (`P1M` and `P30D` are two
+keys) and ranged by its length, a month as 30 days, ties broken by the fields: equality,
+`P.within` and every range on durations are served. Only the **order** of the elements may differ (the index
 reads them by value): use `order()` when the order matters.
 
 A `P.eq("a")` with a string inside a child traversal is not served: there a string first names a

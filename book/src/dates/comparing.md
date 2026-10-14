@@ -61,3 +61,18 @@ orderability places its date type there), in the order `date`, `localdatetime`, 
 ```rhai,graph=empty
 g.inject("x", 1, duration("P1D"), time("01:00"), datetime("2023-08-02T00:00Z"), date("2023-08-02")).order().to_list()
 ```
+
+## Property indexes
+
+A [property index](../users_guide/property_indexes.md) on a key holding dates and times serves
+`has()` with these same rules: an equality or `P.within` reads the values equal to the operand
+(a `datetime` by its instant, a `duration` field by field), a range (`P.gt`, `P.between`, ...)
+reads the values of the operand's type in that range. The results are always the same as without
+the index.
+
+```rhai,graph=modern,script
+g.create_index(#{label: "person", key: "joined"});
+g.v().has("name", "marko").property("joined", datetime("2023-08-02T12:00Z")).iterate();
+g.v().has_label("person").has("joined", datetime("2023-08-02T14:00+02:00")).count().next()   // 1
+```
+

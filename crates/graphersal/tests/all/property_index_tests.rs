@@ -1082,38 +1082,277 @@ mod stores {
     }
 }
 
-/// Dates and times are not index keys (integration of #3 and #4): an indexed key holding dates
-/// keeps the index exact, a condition on a date is served by a scan, and the results are the
-/// same with and without the index.
-#[test]
-fn date_values_are_not_index_keys_and_conditions_on_them_scan() {
-    let graph = Arc::new(GraphSource::tinkerpop_modern());
-    ok(&graph, r#"g.create_index(#{label: "person", key: "born"})"#);
-    ok(
-        &graph,
-        r#"g.v().has("name", "marko").property("born", date("1990-01-01")).iterate();
-           g.v().has("name", "josh").property("born", date("1985-06-30")).iterate();
-           g.v().has("name", "vadas").property("born", 1990).iterate()"#,
-    );
-    check(&graph);
-    for query in [
-        r#"v().has_label("person").has("born", P.gt(date("1988-01-01")))"#,
-        r#"v().has_label("person").has("born", date("1985-06-30"))"#,
-        r#"v().has_label("person").has("born", P.lt(datetime("2000-01-01T00:00Z")))"#,
-    ] {
-        assert!(!uses_index(&graph, query), "{query}");
-        let (with, without) = both(&graph, query);
-        assert_eq!(with, without, "{query}");
+// ---------------------------------------------------------------------------------------------
+// Dates and times as index keys
+// ---------------------------------------------------------------------------------------------
+
+mod temporal {
+    use super::*;
+    use graphersal::temporal::{Date, DateTime, Duration, LocalDateTime, Temporal, Time};
+
+    const DAY: i64 = 86_400_000_000;
+    const HOUR: i64 = 3_600_000_000;
+
+    /// The pool of temporal values: every kind, equal instants at different offsets, durations
+    /// of equal length with different fields (`P1M`/`P30D`/`PT720H`, `P1D`/`PT24H`, a zero
+    /// length written as `P-1M30D`).
+    fn pool() -> Vec<Temporal> {
+        let mut values = Vec::new();
+        for days in [-1, 0, 1, 19_570, 19_571] {
+            values.push(Date::from_days_since_epoch(days).unwrap().into());
+        }
+        for micros in [-DAY, 0, 1, 12 * HOUR, 19_570 * DAY + 12 * HOUR] {
+            values.push(LocalDateTime::from_micros(micros).unwrap().into());
+        }
+        for instant in [
+            0,
+            12 * HOUR,
+            19_570 * DAY + 12 * HOUR,
+            19_570 * DAY + 13 * HOUR,
+        ] {
+            for offset in [0, 7_200, -18_000, 19_800] {
+                values.push(DateTime::from_micros(instant, offset).unwrap().into());
+            }
+        }
+        for micros in [0, 1, 9 * HOUR, 12 * HOUR, 17 * HOUR] {
+            values.push(Time::from_micros_of_day(micros).unwrap().into());
+        }
+        for (months, days, micros) in [
+            (0, 0, 0),
+            (-1, 30, 0),
+            (1, 0, 0),
+            (0, 30, 0),
+            (0, 0, 30 * DAY),
+            (0, 1, 0),
+            (0, 0, DAY),
+            (0, 2, -DAY),
+            (1, -30, DAY),
+            (0, 0, -HOUR),
+            (2, 0, 1),
+        ] {
+            values.push(Duration::new(months, days, micros).into());
+        }
+        values
     }
-    let query = r#"v().has_label("person").has("born", 1990)"#;
-    assert!(uses_index(&graph, query));
-    let (with, without) = both(&graph, query);
-    assert_eq!(with, without);
-    assert_eq!(with.unwrap().len(), 1);
-    ok(
-        &graph,
-        r#"g.v().has("name", "marko").property("born", date("1991-01-01")).iterate();
-           g.v().has("name", "josh").drop().iterate()"#,
-    );
-    check(&graph);
+
+    /// The DSL literal of a temporal value.
+    fn literal(value: &Temporal) -> String {
+        let function = match value {
+            Temporal::Date(_) => "date",
+            Temporal::LocalDateTime(_) => "localdatetime",
+            Temporal::DateTime(_) => "datetime",
+            Temporal::Time(_) => "time",
+            Temporal::Duration(_) => "duration",
+            _ => unreachable!("a new temporal kind"),
+        };
+        format!("{function}(\"{value}\")")
+    }
+
+    /// Operands: every pooled value, values that are not stored, and non-temporal ones.
+    fn operands() -> Vec<String> {
+        let mut operands: Vec<String> = pool().iter().map(literal).collect();
+        operands.extend(
+            [
+                "date(\"2023-08-03\")",
+                "datetime(\"2023-08-02T12:30:00+05:30\")",
+                "datetime(\"1969-12-31T23:59:59Z\")",
+                "localdatetime(\"2023-08-02T00:00:00\")",
+                "time(\"10:00:00\")",
+                "duration(\"P15D\")",
+                "duration(\"PT719H\")",
+                "1",
+                "\"2023-08-02\"",
+                "()",
+            ]
+            .map(String::from),
+        );
+        operands
+    }
+
+    fn condition(rng: &mut Rng, operands: &[String], key: &str) -> String {
+        let a = rng.pick(operands).clone();
+        let b = rng.pick(operands).clone();
+        let c = rng.pick(operands).clone();
+        match rng.below(12) {
+            0 | 1 => format!("has(\"{key}\", {a})"),
+            2 => format!("has(\"{key}\", P.eq({a}))"),
+            3 => format!("has(\"{key}\", P.within({a}, {b}, {c}))"),
+            4 => format!("has(\"{key}\", P.gt({a}))"),
+            5 => format!("has(\"{key}\", P.gte({a}))"),
+            6 => format!("has(\"{key}\", P.lt({a}))"),
+            7 => format!("has(\"{key}\", P.lte({a}))"),
+            8 => format!("has(\"{key}\", P.between({a}, {b}))"),
+            9 => format!("has(\"{key}\", P.inside({a}, {b}))"),
+            10 => format!("has(\"{key}\", P.outside({a}, {b}))"),
+            _ => {
+                // A range within one kind: both bounds of the same temporal type.
+                let values = pool();
+                let x = *rng.pick(&values);
+                let same: Vec<Temporal> = values
+                    .into_iter()
+                    .filter(|v| v.kind() == x.kind())
+                    .collect();
+                let y = *rng.pick(&same);
+                format!(
+                    "has(\"{key}\", P.between({}, {}))",
+                    literal(&x),
+                    literal(&y)
+                )
+            }
+        }
+    }
+
+    /// Vertices labelled `a`/`b` (some both, some none) and edges `e1`/`e2`, with `k`/`w` from
+    /// the temporal pool (sometimes a number, a string or `null`, sometimes missing).
+    fn graph(rng: &mut Rng, vertices: usize) -> TraversalGraph {
+        let values: Vec<ElementProperty> = pool()
+            .into_iter()
+            .map(ElementProperty::Temporal)
+            .chain([1_i64.into(), "2023-08-02".into(), ElementProperty::Null])
+            .collect();
+        let mut graph = TraversalGraph::new();
+        let label_sets: [&[&str]; 4] = [&["a"], &["b"], &["a", "b"], &[]];
+        let mut handles = Vec::new();
+        for _ in 0..vertices {
+            let labels: Vec<CompactString> = rng
+                .pick(&label_sets)
+                .iter()
+                .map(|l| CompactString::from(*l))
+                .collect();
+            let mut props = PropertyMap::default();
+            if rng.below(8) != 0 {
+                props.insert("k", rng.pick(&values).clone());
+            }
+            handles.push(graph.add_vertex(None, labels, props).unwrap());
+        }
+        for _ in 0..vertices {
+            let from = *rng.pick(&handles);
+            let to = *rng.pick(&handles);
+            let mut props = PropertyMap::default();
+            props.insert("w", rng.pick(&values).clone());
+            let label = if rng.below(2) == 0 { "e1" } else { "e2" };
+            graph
+                .add_edge(None, Some(label.into()), from, to, props)
+                .unwrap();
+        }
+        graph
+    }
+
+    /// Random eq/within/range conditions on dates and times of every kind, with mixed offsets
+    /// and durations of equal length: the results with and without the index are the same,
+    /// and the index stays exact through writes of temporal values.
+    #[test]
+    fn random_temporal_queries_return_the_same_with_and_without_the_index() {
+        let operands = operands();
+        let values = pool();
+        for seed in [3_u64, 11, 29] {
+            let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+            let graph = Arc::new(Graph::new(graph(&mut rng, 150)));
+            declare_indexes(&graph);
+            check(&graph);
+            let mut served = 0;
+            for round in 0..300 {
+                let query = match rng.below(3) {
+                    0 => format!(
+                        "v().has_label(\"a\").{}",
+                        condition(&mut rng, &operands, "k")
+                    ),
+                    1 => format!(
+                        "v().has_label(\"a\", \"b\").{}",
+                        condition(&mut rng, &operands, "k")
+                    ),
+                    _ => format!(
+                        "e().has_label(\"e1\").{}",
+                        condition(&mut rng, &operands, "w")
+                    ),
+                };
+                let (with, without) = both(&graph, &query);
+                assert_eq!(with, without, "seed {seed}: {query}");
+                if uses_index(&graph, &query) {
+                    served += 1;
+                }
+                if round % 50 == 49 {
+                    let value = literal(rng.pick(&values));
+                    ok(
+                        &graph,
+                        &format!(
+                            "g.v().has_label(\"a\").limit(5).property(\"k\", {value}).iterate();
+                             g.e().has_label(\"e1\").limit(3).property(\"w\", {value}).iterate()"
+                        ),
+                    );
+                    check(&graph);
+                }
+            }
+            assert!(
+                served > 150,
+                "the index served only {served} of 300 queries"
+            );
+        }
+    }
+
+    /// The equality of `has()`: a `datetime` is its instant, a `duration` is all its fields, a
+    /// temporal type never equals another type or a string. Ranges stay within the operand's
+    /// type; durations are ranged by their length, ties broken by the fields.
+    #[test]
+    fn temporal_keys_follow_the_equality_and_order_of_has() {
+        let graph = Arc::new(GraphSource::tinkerpop_modern());
+        ok(&graph, r#"g.create_index(#{label: "person", key: "at"})"#);
+        ok(
+            &graph,
+            r#"g.v().has("name", "marko").property("at", datetime("2023-08-02T12:00:00Z")).iterate();
+               g.v().has("name", "vadas").property("at", datetime("2023-08-02T14:00:00+02:00")).iterate();
+               g.v().has("name", "josh").property("at", date("2023-08-02")).iterate();
+               g.v().has("name", "peter").property("at", localdatetime("2023-08-02T12:00:00")).iterate()"#,
+        );
+        check(&graph);
+        let count = |condition: &str| -> usize {
+            let query = format!("v().has_label(\"person\").{condition}");
+            assert!(uses_index(&graph, &query), "{query}");
+            let (with, without) = both(&graph, &query);
+            assert_eq!(with, without, "{query}");
+            with.unwrap().len()
+        };
+        assert_eq!(
+            count(r#"has("at", datetime("2023-08-02T17:30:00+05:30"))"#),
+            2
+        );
+        assert_eq!(
+            count(r#"has("at", P.gte(datetime("2023-08-02T12:00:00Z")))"#),
+            2
+        );
+        assert_eq!(
+            count(r#"has("at", P.lt(datetime("2023-08-02T12:00:00Z")))"#),
+            0
+        );
+        assert_eq!(count(r#"has("at", date("2023-08-02"))"#), 1);
+        assert_eq!(count(r#"has("at", P.gt(date("2000-01-01")))"#), 1);
+        assert_eq!(
+            count(r#"has("at", P.between(date("2000-01-01"), datetime("2030-01-01T00:00:00Z")))"#),
+            0
+        );
+        assert_eq!(count(r#"has("at", "2023-08-02")"#), 0);
+
+        ok(
+            &graph,
+            r#"g.v().has("name", "marko").property("at", duration("P1M")).iterate();
+               g.v().has("name", "vadas").property("at", duration("P30D")).iterate();
+               g.v().has("name", "josh").property("at", duration("PT720H")).iterate();
+               g.v().has("name", "peter").property("at", duration("P1D")).iterate()"#,
+        );
+        check(&graph);
+        assert_eq!(count(r#"has("at", duration("P1M"))"#), 1);
+        assert_eq!(
+            count(r#"has("at", P.within(duration("P30D"), duration("PT24H")))"#),
+            1
+        );
+        // PT720H < P30D < P1M (equal length, ordered by months, then days).
+        assert_eq!(count(r#"has("at", P.gt(duration("PT720H")))"#), 2);
+        assert_eq!(count(r#"has("at", P.lt(duration("P1M")))"#), 3);
+        assert_eq!(
+            count(r#"has("at", P.between(duration("P30D"), duration("P1M")))"#),
+            1
+        );
+        ok(&graph, r#"g.v().has("name", "josh").drop().iterate()"#);
+        check(&graph);
+    }
 }
