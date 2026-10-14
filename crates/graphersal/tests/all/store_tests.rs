@@ -943,7 +943,7 @@ fn an_older_or_newer_format_version_is_guarded() {
                 err,
                 PersistError::OlderFormat {
                     found: 1,
-                    supported: 2,
+                    supported: 3,
                     ..
                 }
             ),
@@ -955,10 +955,10 @@ fn an_older_or_newer_format_version_is_guarded() {
             "{help}"
         );
     }
-    rewrite(3);
+    rewrite(4);
     let err = Store::open(dir.path(), StoreOptions::new()).unwrap_err();
     assert!(
-        matches!(err, PersistError::UnsupportedVersion { found: 3, .. }),
+        matches!(err, PersistError::UnsupportedVersion { found: 4, .. }),
         "{err}"
     );
 }
