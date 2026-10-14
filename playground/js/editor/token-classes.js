@@ -11,7 +11,7 @@
 export const TOKEN_CLASSES = new Set([
   'g', '__', 'P', 'TextP', 'T', 'Order', 'Scope', 'Column', 'Pop', 'Cardinality', 'Direction',
   'ProfileType', 'GType', 'Operator', 'Barrier', 'Merge', 'Pick', 'By', 'V', 'UUID', 'CastPolicy',
-  'Set', 'GraphSource', 'SchemaMode', 'WithOptions',
+  'Set', 'GraphSource', 'SchemaMode', 'WithOptions', 'DT',
 ]);
 
 /**

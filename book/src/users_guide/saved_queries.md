@@ -101,11 +101,12 @@ A parameter is declared as `#{schema: <schema node>, default: <value>}`, or as a
   parameter without a default is required.
 
 Arguments are **named**: `g.query("x", #{limit: 5})`, or `g.query("x")` when every parameter has
-a default. An argument is a data value (a string, a number, a boolean, a UUID, a list, a map;
-never a traversal or a closure), bound to the function's parameter like a prepared-statement
-parameter, never spliced into text. It is checked against its schema before the body runs; the
-only conversion is the schema's write coercion (an `int64` where a `float64` is declared, a
-canonical UUID string where a `uuid` is declared). `()` is a value (null), not an omitted
+a default. An argument is a data value (a string, a number, a boolean, a UUID, a date or time, a
+list, a map; never a traversal or a closure), bound to the function's parameter like a
+prepared-statement parameter, never spliced into text. It is checked against its schema before
+the body runs; the only conversion is the schema's write coercion (an `int64` where a `float64` is
+declared, a canonical UUID string where a `uuid` is declared, the ISO 8601 text of a declared
+[date or time format](../dates/schema.md) such as `date-time`). `()` is a value (null), not an omitted
 argument.
 
 ```

@@ -26,6 +26,13 @@ function edit(flow, fn) {
 const CONSTRAINT_LABELS = {
   minimum: 'minimum', maximum: 'maximum', exclusiveMinimum: 'exclusive min', exclusiveMaximum: 'exclusive max',
   minLength: 'min length', maxLength: 'max length', pattern: 'pattern', minItems: 'min items', maxItems: 'max items',
+  formatMinimum: 'earliest', formatMaximum: 'latest', formatExclusiveMinimum: 'after', formatExclusiveMaximum: 'before',
+};
+/** Constraints written as text (a pattern, a date bound), not as a number. */
+const TEXT_KEYWORDS = new Set(['pattern', 'formatMinimum', 'formatMaximum', 'formatExclusiveMinimum', 'formatExclusiveMaximum']);
+/** An example bound of a date and time type (the field's placeholder). */
+const BOUND_EXAMPLE = {
+  datetime: '2000-01-01T00:00:00Z', localdatetime: '2000-01-01T00:00:00', date: '2000-01-01', time: '08:00:00', duration: 'PT1H',
 };
 const INTEGER_KEYWORDS = new Set(['minLength', 'maxLength', 'minItems', 'maxItems']);
 
@@ -58,7 +65,7 @@ export const SchemaNodeDetails = {
     function setConstraint(keyword, text) {
       let v;
       if (text === '') v = undefined;
-      else if (keyword === 'pattern') v = text;
+      else if (TEXT_KEYWORDS.has(keyword)) v = text.trim();
       else {
         v = Number(text);
         if (!Number.isFinite(v) || (INTEGER_KEYWORDS.has(keyword) && (!Number.isInteger(v) || v < 0))) {
@@ -94,7 +101,7 @@ export const SchemaNodeDetails = {
       return v === true ? 'true' : v === false ? 'false' : 'default';
     };
     return {
-      bad, node, d, value, CONSTRAINTS, CONSTRAINT_LABELS, jsonFieldText, additional,
+      bad, node, d, value, CONSTRAINTS, CONSTRAINT_LABELS, TEXT_KEYWORDS, BOUND_EXAMPLE, jsonFieldText, additional,
       setConstraint, setJson, setText, setDeprecated, setAdditional,
     };
   },
@@ -104,10 +111,11 @@ export const SchemaNodeDetails = {
       <legend>Constraints</legend>
       <label v-for="k in CONSTRAINTS[d().base]" :key="k">
         <span>{{ CONSTRAINT_LABELS[k] }}</span>
-        <input :type="k === 'pattern' ? 'text' : 'number'" :class="{ invalid: bad[k] }" :value="value()[k] ?? ''"
-               :placeholder="k === 'pattern' ? '^[A-Z].*$' : ''" @change="setConstraint(k, $event.target.value)">
+        <input :type="TEXT_KEYWORDS.has(k) ? 'text' : 'number'" :class="{ invalid: bad[k], mono: TEXT_KEYWORDS.has(k) && k !== 'pattern' }" :value="value()[k] ?? ''"
+               :placeholder="k === 'pattern' ? '^[A-Z].*$' : BOUND_EXAMPLE[d().base] || ''" @change="setConstraint(k, $event.target.value)">
       </label>
       <p v-if="d().base === 'string'" class="hint">A pattern is not anchored: write <code>^…$</code> to match the whole value.</p>
+      <p v-if="BOUND_EXAMPLE[d().base]" class="hint">Bounds are values of the type, written as their ISO 8601 text and compared as values (a datetime by its instant); the engine checks them when the schema is applied.</p>
     </fieldset>
     <fieldset>
       <legend>Values</legend>

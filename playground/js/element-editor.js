@@ -6,8 +6,9 @@
 //
 // Values come from and go to the engine in its TYPED form (crates/graphersal-session `edit.rs`):
 // `{type, value}` with `int64` as decimal text, `float64` a number or "NaN"/"Infinity"/
-// "-Infinity", `uuid` its canonical text, `array` a list of typed values, `object` a list of
-// `[key, typed]` pairs, `null` without a value. A type is never guessed from a string's content
+// "-Infinity", `uuid` its canonical text, the date and time types (`datetime`,
+// `localdatetime`, `date`, `time`, `duration`) their ISO 8601 text, `array` a list of typed
+// values, `object` a list of `[key, typed]` pairs, `null` without a value. A type is never guessed from a string's content
 // (CLAUDE.md rule 7): a string stays a string until the user picks another type.
 //
 // The engine is the authority on the schema: the dialog checks a draft with a dry run of the
@@ -15,8 +16,25 @@
 // checked here is only what the engine cannot be asked (a value that does not parse as its
 // type, an empty or repeated key, a required key left out).
 
+/** The date and time types (book "Dates and Times"), each written as its ISO 8601 text. */
+export const TEMPORAL_TYPES = Object.freeze(['datetime', 'localdatetime', 'date', 'time', 'duration']);
 /** The logical types of a value, in the order the type menus list them. */
-export const TYPES = Object.freeze(['string', 'int64', 'float64', 'boolean', 'uuid', 'array', 'object', 'null']);
+export const TYPES = Object.freeze(['string', 'int64', 'float64', 'boolean', 'uuid', ...TEMPORAL_TYPES, 'array', 'object', 'null']);
+/** The scalar types edited as one line of text. */
+export const TEXT_TYPES = Object.freeze(['string', 'int64', 'float64', 'uuid', ...TEMPORAL_TYPES]);
+/** The JSON Schema `format` of a string that declares a uuid or a date and time type. */
+export const FORMAT_TYPES = Object.freeze({
+  uuid: 'uuid', 'date-time': 'datetime', 'local-date-time': 'localdatetime', date: 'date', time: 'time', duration: 'duration',
+});
+
+/** An example value of a text type, for a field's placeholder. */
+export function placeholderOf(type) {
+  return {
+    string: 'value', int64: '42', float64: '1.5', uuid: '550e8400-e29b-41d4-a716-446655440000',
+    datetime: '2023-08-02T09:30:00+02:00', localdatetime: '2023-08-02T09:30:00', date: '2023-08-02',
+    time: '09:30:00', duration: 'P1DT2H',
+  }[type] ?? '';
+}
 /** Containers: edited as a tree (or as raw JSON). */
 export const CONTAINERS = Object.freeze(['array', 'object']);
 /** A string at least this long, or holding a line break, is edited in a textarea. */
@@ -25,6 +43,26 @@ export const LONG_TEXT = 80;
 export const MAX_DEPTH = 128;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// The shape of the ISO 8601 texts the engine reads (crates/graphersal value/temporal/parse.rs);
+// the engine checks the rest (calendar, ranges, zone names) in its dry run.
+const DATE_PART = '[+-]?\\d{4}-\\d{2}-\\d{2}';
+const TIME_PART = '\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d{1,9})?)?';
+const OFFSET_PART = '(?:[Zz]|[+-]\\d{2}(?::?\\d{2}(?::\\d{2})?)?)';
+const TEMPORAL_RE = {
+  date: new RegExp(`^${DATE_PART}$`),
+  time: new RegExp(`^${TIME_PART}$`),
+  localdatetime: new RegExp(`^${DATE_PART}(?:[Tt ]${TIME_PART})?$`),
+  // A stored date-time needs its offset or zone: without one the instant would be a guess.
+  datetime: new RegExp(`^${DATE_PART}(?:[Tt ]${TIME_PART})?(?:${OFFSET_PART}(?:\\[[^\\]]+\\])?|\\[[^\\]]+\\])$`),
+  duration: /^[+-]?[Pp](?=.)[-+0-9.,WwYyMmDdTtHhSs]*$/,
+};
+const TEMPORAL_HELP = {
+  date: 'a date is YYYY-MM-DD, e.g. 2023-08-02',
+  time: 'a time is HH:MM[:SS[.ffffff]], e.g. 09:30:00',
+  localdatetime: 'a localdatetime is YYYY-MM-DDTHH:MM[:SS[.ffffff]] without an offset, e.g. 2023-08-02T09:30:00',
+  datetime: 'a datetime needs its UTC offset or zone, e.g. 2023-08-02T09:30:00+02:00 or 2023-08-02T09:30[Europe/Berlin]',
+  duration: 'a duration is ISO 8601, e.g. P1Y2M3DT4H5M6S or PT90M',
+};
 const INT_RE = /^-?\d+$/;
 const I64_MIN = -(2n ** 63n);
 const I64_MAX = 2n ** 63n - 1n;
@@ -58,7 +96,7 @@ export function nodeFromTyped(typed) {
   const v = typed ? typed.value : null;
   if (type === 'boolean') node.bool = v === true;
   else if (type === 'float64') node.text = floatText(v);
-  else if (type === 'string' || type === 'int64' || type === 'uuid') node.text = v == null ? '' : String(v);
+  else if (type === 'string' || type === 'int64' || type === 'uuid' || TEMPORAL_TYPES.includes(type)) node.text = v == null ? '' : String(v);
   else if (type === 'array') node.items = (Array.isArray(v) ? v : []).map(nodeFromTyped);
   else if (type === 'object') {
     node.entries = (Array.isArray(v) ? v : []).map(([key, item]) => ({ id: newId(), key, node: nodeFromTyped(item) }));
@@ -83,6 +121,7 @@ export function scalarError(type, text) {
     return null;
   }
   if (type === 'uuid') return UUID_RE.test(t) ? null : 'a uuid is lowercase 8-4-4-4-12 hex digits, e.g. 550e8400-e29b-41d4-a716-446655440000';
+  if (TEMPORAL_TYPES.includes(type)) return TEMPORAL_RE[type].test(t) ? null : TEMPORAL_HELP[type];
   return null;
 }
 
@@ -97,7 +136,12 @@ export function typedFromNode(node, path = []) {
     case 'string': return { typed: { type: 'string', value: String(node.text ?? '') } };
     case 'int64':
     case 'float64':
-    case 'uuid': {
+    case 'uuid':
+    case 'datetime':
+    case 'localdatetime':
+    case 'date':
+    case 'time':
+    case 'duration': {
       const error = scalarError(node.type, node.text);
       if (error) return { error, path };
       const t = String(node.text).trim();
@@ -139,7 +183,7 @@ export function typedFromNode(node, path = []) {
  */
 export function setType(node, type) {
   if (!TYPES.includes(type) || node.type === type) return node;
-  const wasText = ['string', 'int64', 'float64', 'uuid'].includes(node.type);
+  const wasText = TEXT_TYPES.includes(node.type);
   if (!wasText) node.text = '';
   if (type !== 'array') node.items = [];
   if (type !== 'object') node.entries = [];
@@ -179,7 +223,7 @@ export function wantsTextarea(node, compressed = false) {
 
 // ------------------------------------------------------------------ raw JSON
 
-/** A node as JSON text (int64 exact, a float keeps its point, uuid as its string). */
+/** A node as JSON text (int64 exact, a float keeps its point, a uuid or a date as its string). */
 export function nodeToJson(node, indent = 2) {
   const out = [];
   const pad = (d) => (indent ? `\n${' '.repeat(indent * d)}` : '');
@@ -290,8 +334,8 @@ export function parseJson(text) {
 
 /**
  * A node from parsed JSON (`parseJson`). `hint` is the node that was at the same place before (a
- * raw edit of an existing value): its type is kept where the JSON value fits it (a uuid stays a
- * uuid, a float64 stays a float64 even when written `2`, NaN/Infinity written as strings stay
+ * raw edit of an existing value): its type is kept where the JSON value fits it (a uuid or a date
+ * stays one, a float64 stays a float64 even when written `2`, NaN/Infinity written as strings stay
  * float64). Otherwise a number is an int64 when written without a fraction or exponent, else a
  * float64; a string is a string.
  */
@@ -302,7 +346,8 @@ export function nodeFromJson(ast, hint = null) {
     case 'boolean': { const n = emptyNode('boolean'); n.bool = ast.value; return n; }
     case 'string': {
       const special = ['NaN', 'Infinity', '-Infinity'].includes(ast.value);
-      const n = emptyNode(h === 'uuid' || h === 'int64' || (h === 'float64' && special) ? h : 'string');
+      const keep = h === 'uuid' || h === 'int64' || TEMPORAL_TYPES.includes(h) || (h === 'float64' && special);
+      const n = emptyNode(keep ? h : 'string');
       n.text = ast.value;
       return n;
     }
@@ -355,7 +400,7 @@ export function typesOf(schema) {
     if (Array.isArray(schema.enum)) return [...new Set(schema.enum.map(typeOfLiteral))];
     return TYPES.slice();
   }
-  return raw.map((t) => (t === 'string' && schema.format === 'uuid' ? 'uuid' : SCHEMA_TYPES[t])).filter(Boolean);
+  return raw.map((t) => (t === 'string' && FORMAT_TYPES[schema.format] ? FORMAT_TYPES[schema.format] : SCHEMA_TYPES[t])).filter(Boolean);
 }
 
 function typeOfLiteral(v) {
@@ -431,6 +476,14 @@ export function schemaHint(schema) {
   }
   if (schema.minLength !== undefined || schema.maxLength !== undefined) parts.push(`length ${schema.minLength ?? 0} … ${schema.maxLength ?? '∞'}`);
   if (schema.minItems !== undefined || schema.maxItems !== undefined) parts.push(`${schema.minItems ?? 0} … ${schema.maxItems ?? '∞'} items`);
+  const flo = schema.formatMinimum ?? schema.formatExclusiveMinimum;
+  const fhi = schema.formatMaximum ?? schema.formatExclusiveMaximum;
+  if (flo !== undefined || fhi !== undefined) {
+    parts.push([
+      flo !== undefined ? `${schema.formatExclusiveMinimum !== undefined ? '>' : '≥'} ${flo}` : '',
+      fhi !== undefined ? `${schema.formatExclusiveMaximum !== undefined ? '<' : '≤'} ${fhi}` : '',
+    ].filter(Boolean).join(', '));
+  }
   if (schema.pattern) parts.push(`pattern ${schema.pattern}`);
   if (schema.const !== undefined) parts.push(`always ${JSON.stringify(schema.const)}`);
   if (schema.deprecated) parts.push('deprecated');
@@ -445,7 +498,8 @@ export function schemaDescription(schema) {
 
 /**
  * The options of an `enum` (or `const`) as `[{label, typed}]`, typed by the declared type (an
- * integer of a `number` field is a float64; a string of a uuid field a uuid); null without one.
+ * integer of a `number` field is a float64; a string of a uuid or date field a uuid or a date);
+ * null without one.
  */
 export function enumOptions(schema) {
   if (!schema) return null;
@@ -459,7 +513,10 @@ export function enumOptions(schema) {
     else if (typeof v === 'boolean') typed = { type: 'boolean', value: v };
     else if (typeof v === 'number') {
       typed = Number.isInteger(v) && ts.includes('int64') ? { type: 'int64', value: String(v) } : { type: 'float64', value: v };
-    } else if (typeof v === 'string') typed = { type: ts.includes('uuid') && !ts.includes('string') ? 'uuid' : 'string', value: v };
+    } else if (typeof v === 'string') {
+      const special = ts.find((t) => t === 'uuid' || TEMPORAL_TYPES.includes(t));
+      typed = { type: special && !ts.includes('string') ? special : 'string', value: v };
+    }
     else continue; // a container in an enum: edited as a value, not offered in the menu
     options.push({ label: v === null ? 'null' : typeof v === 'string' ? v : JSON.stringify(v), typed });
   }

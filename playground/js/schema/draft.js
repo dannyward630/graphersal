@@ -11,8 +11,25 @@
 // Paths are arrays of keys into the schema document, e.g.
 // ['vertices', 'person', 'schema', 'properties', 'address', 'properties', 'zip'].
 
+/** The date and time types (book "Dates and Times"): a string node with their `format`. */
+export const TEMPORAL_BASES = Object.freeze(['datetime', 'localdatetime', 'date', 'time', 'duration']);
+
 /** The base types of the type dropdown, in menu order. */
-export const BASE_TYPES = Object.freeze(['string', 'integer', 'number', 'boolean', 'uuid', 'array', 'object', 'null', 'any']);
+export const BASE_TYPES = Object.freeze(['string', 'integer', 'number', 'boolean', 'uuid', ...TEMPORAL_BASES, 'array', 'object', 'null', 'any']);
+
+/** The `format` of a base type written as `{"type": "string", "format": ..}`. */
+export const FORMAT_OF_BASE = Object.freeze({
+  uuid: 'uuid', datetime: 'date-time', localdatetime: 'local-date-time', date: 'date', time: 'time', duration: 'duration',
+});
+const BASE_OF_FORMAT = Object.freeze(Object.fromEntries(Object.entries(FORMAT_OF_BASE).map(([b, f]) => [f, b])));
+
+/** The base type of a `string` node: its format's type (`uuid`, `date`, ...) or `string`. */
+function stringBase(node) {
+  return (node && BASE_OF_FORMAT[node.format]) || 'string';
+}
+
+/** The bounds of a date and time type: compared as values of that type, written as its text. */
+const FORMAT_BOUNDS = ['formatMinimum', 'formatMaximum', 'formatExclusiveMinimum', 'formatExclusiveMaximum'];
 
 /** The schema modes. */
 export const MODES = Object.freeze(['none', 'open', 'closed']);
@@ -23,6 +40,7 @@ export const CONSTRAINTS = Object.freeze({
   number: ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum'],
   string: ['minLength', 'maxLength', 'pattern'],
   uuid: [],
+  ...Object.fromEntries(TEMPORAL_BASES.map((b) => [b, FORMAT_BOUNDS])),
   array: ['minItems', 'maxItems'],
   object: [],
   boolean: [],
@@ -43,9 +61,13 @@ const KIND_KEYWORDS = {
   minLength: 'string', maxLength: 'string', pattern: 'string', format: 'string',
   minItems: 'array', maxItems: 'array', items: 'array',
   properties: 'object', required: 'object', additionalProperties: 'object',
+  formatMinimum: 'temporal', formatMaximum: 'temporal', formatExclusiveMinimum: 'temporal', formatExclusiveMaximum: 'temporal',
 };
 
-const KIND_OF_BASE = { integer: 'numeric', number: 'numeric', string: 'string', uuid: 'string', array: 'array', object: 'object' };
+const KIND_OF_BASE = {
+  integer: 'numeric', number: 'numeric', string: 'string', uuid: 'string', array: 'array', object: 'object',
+  ...Object.fromEntries(TEMPORAL_BASES.map((b) => [b, 'temporal'])),
+};
 
 // ------------------------------------------------------------------ plain data helpers
 
@@ -167,7 +189,7 @@ export function describe(node) {
   if (kinds.length === 0) return { base: 'null', nullable: true, value: [] };
   if (kinds.length > 1) return { base: 'union', nullable, value: [] };
   let base = kinds[0];
-  if (base === 'string' && node.format === 'uuid') base = 'uuid';
+  if (base === 'string') base = stringBase(node);
   if (!BASE_TYPES.includes(base)) base = 'union';
   return { base, nullable, value: [] };
 }
@@ -198,7 +220,7 @@ function unionText(node) {
     return `anyOf<${node.anyOf.map((m) => (describe(m).base === 'null' ? 'null' : typeText(m, { collapsed: true }))).join(' | ')}>`;
   }
   const types = Array.isArray(node.type) ? node.type : [node.type];
-  return types.filter((t) => t !== 'null').map((t) => (t === 'string' && node.format === 'uuid' ? 'uuid' : t)).join(' | ');
+  return types.filter((t) => t !== 'null').map((t) => (t === 'string' ? stringBase(node) : t)).join(' | ');
 }
 
 /** A JSON value in a compact form for the constraint column. */
@@ -229,6 +251,11 @@ export function constraintSummary(node) {
   if (v.minLength !== undefined || v.maxLength !== undefined) out.push(`length ${range(v.minLength, v.maxLength)}`);
   if (v.pattern !== undefined) out.push(String(v.pattern));
   if (v.minItems !== undefined || v.maxItems !== undefined) out.push(`items ${range(v.minItems, v.maxItems)}`);
+  const flo = v.formatExclusiveMinimum !== undefined ? v.formatExclusiveMinimum : v.formatMinimum;
+  const fhi = v.formatExclusiveMaximum !== undefined ? v.formatExclusiveMaximum : v.formatMaximum;
+  if (flo !== undefined || fhi !== undefined) {
+    out.push(range(flo, fhi, v.formatExclusiveMinimum !== undefined, v.formatExclusiveMaximum !== undefined));
+  }
   if (Array.isArray(v.enum)) out.push(`one of ${v.enum.map((x) => short(x, 12)).join(', ')}`);
   if (v.const !== undefined) out.push(`= ${short(v.const)}`);
   return out;
@@ -278,12 +305,14 @@ export function setBaseType(doc, path, base) {
   }
   delete node.enum;
   delete node.const;
-  if (base !== 'uuid') delete node.format;
+  if (d.base !== base) for (const k of FORMAT_BOUNDS) delete node[k];
+  delete node.format;
   delete node.type;
   if (base === 'any') return;
-  const t = base === 'uuid' ? 'string' : base;
+  const format = FORMAT_OF_BASE[base];
+  const t = format ? 'string' : base;
   node.type = base === 'null' ? 'null' : nullable ? [t, 'null'] : t;
-  if (base === 'uuid') node.format = 'uuid';
+  if (format) node.format = format;
   if (base === 'array' && !isPlainObject(node.items)) node.items = { type: 'string' };
   if (base === 'object' && !isPlainObject(node.properties)) node.properties = {};
   reorderType(node);
@@ -518,7 +547,20 @@ export function violationQuery(group) {
 
 /** A placeholder value of a base type for a backfill script. */
 function placeholder(base) {
-  return { string: '', integer: 0, number: 0, boolean: false, array: [], object: {}, uuid: '00000000-0000-0000-0000-000000000000' }[base] ?? null;
+  return {
+    string: '', integer: 0, number: 0, boolean: false, array: [], object: {}, uuid: '00000000-0000-0000-0000-000000000000',
+    datetime: '1970-01-01T00:00:00Z', localdatetime: '1970-01-01T00:00:00', date: '1970-01-01', time: '00:00:00', duration: 'PT0S',
+  }[base] ?? null;
+}
+
+/**
+ * A backfill value as a Rhai literal: a date and time value through its constructor
+ * (`date("1970-01-01")`), since the draft that declares the key enforces nothing yet (mode
+ * `none` stores a string as a string).
+ */
+function fillLiteral(base, value) {
+  if (TEMPORAL_BASES.includes(base) && typeof value === 'string') return `${base}(${rhaiString(value)})`;
+  return rhaiLiteral(value);
 }
 
 /**
@@ -538,9 +580,10 @@ export function backfillScript(draft, groups) {
     const section = g.element === 'edge' ? 'edges' : 'vertices';
     const node = getAt(draft, [section, g.label, 'schema', 'properties', g.field]);
     const hasDefault = isPlainObject(node) && 'default' in node;
-    const value = hasDefault ? node.default : placeholder(describe(node).base);
+    const base = describe(node).base;
+    const value = hasDefault ? node.default : placeholder(base);
     const source = g.element === 'edge' ? 'g.E()' : 'g.V()';
-    fills.push(`${source}.hasLabel(${rhaiString(g.label)}).not(__.has(${rhaiString(g.field)})).property(${rhaiString(g.field)}, ${rhaiLiteral(value)}).toList();` +
+    fills.push(`${source}.hasLabel(${rhaiString(g.label)}).not(__.has(${rhaiString(g.field)})).property(${rhaiString(g.field)}, ${fillLiteral(base, value)}).toList();` +
       (hasDefault ? '  // the draft\'s default' : '  // placeholder: edit it'));
   }
   if (!fills.length) return null;
