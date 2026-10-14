@@ -41,8 +41,10 @@ are not implemented yet in [TinkerPop Compliance](../for_developers/tinkerpop_co
 
 - No map type (`additionalProperties` with a schema), no `oneOf`/`allOf`/`not`, no tuples, and no
   `format` other than `uuid` ([Schemas](schema_enforcement.md#what-is-an-error-and-why)).
-- `default` is an annotation only: it is never written or substituted
-  ([`default` is not applied](schema_enforcement.md#default-is-not-applied)).
+- `default`/`defaultFunction` fill only a label's top-level properties, only when an element is
+  created, and only in mode `open`/`closed`; `defaultFunction` knows `uuidv4`, `uuidv7`, `now`
+  and `today`; see
+  [Defaults on create](schema_enforcement.md#defaults-on-create).
 
 ## Security and serving
 

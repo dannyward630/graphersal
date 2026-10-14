@@ -43,7 +43,8 @@ pub(crate) type LabelRoot<'a> = (&'a str, &'a PropertySchema);
 /// nested write (`property(jpath(..), v)`) coerces the leaf at the node declared at that
 /// location.
 ///
-/// A schema's `default` is an annotation: it never fills an absent property.
+/// A schema's `default`/`defaultFunction` is filled in before this check, by the create paths
+/// only (`schema/defaults.rs`); the validator itself never fills an absent property.
 ///
 /// In [`SchemaMode::None`] nothing is coerced or validated.
 pub(crate) struct SchemaValidator;

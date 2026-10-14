@@ -96,9 +96,12 @@ A parameter is declared as `#{schema: <schema node>, default: <value>}`, or as a
 - The **schema** uses the node format of the [graph schema](schema_enforcement.md): `type`,
   `enum`, `minimum`, `maximum`, `pattern`, `minLength`, `items`, ..., and the annotations
   `title`, `description`, `examples`.
-- The **default** sits beside the schema, not inside it: a data schema's `default` is an
-  annotation only, while a parameter default IS substituted when the argument is left out. A
-  parameter without a default is required.
+- The **default** sits beside the schema, not inside it: a `default` keyword inside the
+  parameter's schema is an annotation (a data schema's `default` applies only when a vertex or
+  edge is created), while a parameter default IS substituted when the argument is left out. A
+  parameter without a default is required. A `defaultFunction` (`uuidv4`, `now`, ...) anywhere
+  in a parameter's schema is an error: it fills a property of a created element and means
+  nothing for an argument.
 
 Arguments are **named**: `g.query("x", #{limit: 5})`, or `g.query("x")` when every parameter has
 a default. An argument is a data value (a string, a number, a boolean, a UUID, a date or time, a

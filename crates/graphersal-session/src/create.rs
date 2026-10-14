@@ -23,7 +23,9 @@
 //!   for a dry run; `drawn`: what the drawing needs, `{kind, id, label, caption, source?,
 //!   target?}`, `caption` the vertex's `name` caption as the graph view has it) or `{ok: false,
 //!   errors: [{field, message, help?}]}` with `field` a property key, `label`, `id`, `from`/`to`
-//!   or `general`. Every property is tried, so all bad values are reported at once;
+//!   or `general`. Every property is tried, so all bad values are reported at once. The engine
+//!   creates it as a query does (`GraphStorage::create_vertex`/`create_edge`), so the schema's
+//!   `default`/`defaultFunction` fill the properties the form leaves out;
 //! - **delete** ([`Session::delete_element`]): `{kind, id, validateOnly?}`; the answer is `{ok:
 //!   true, deleted, edges}` (`edges`: the edges removed with a vertex; a dry run counts them and
 //!   deletes nothing, `deleted: false`) or `{ok: false, errors}`.
@@ -36,7 +38,8 @@ use std::collections::HashSet;
 
 use graphersal::prelude::*;
 use graphersal::prelude::{CompactString, PropertyMap};
-use graphersal::{schema::SchemaMode, storage::ElementKind};
+use graphersal::schema::SchemaMode;
+use graphersal::storage::{CreateContext, ElementKind};
 use serde_json::{Value, json};
 
 use crate::Session;
@@ -182,6 +185,8 @@ fn add<S: GraphStorage>(
     dry_run: bool,
 ) -> Result<String, Vec<FieldError>> {
     let mut errors: Vec<FieldError> = Vec::new();
+    // `defaultFunction` `now`/`today`: the start of the caller's unit, as for a query.
+    let create = CreateContext::for_storage(&*g);
     // At most one attempt per property, plus the last one.
     for _ in 0..=properties.len() {
         let attempt = match what {
@@ -191,7 +196,7 @@ fn add<S: GraphStorage>(
                     (None, true) => Some(dry_run_id(g, ElementKind::Vertex)),
                     (None, false) => None,
                 };
-                g.add_vertex(id, labels.clone(), properties.clone())
+                g.create_vertex(id, labels.clone(), properties.clone(), &create)
                     .map(|v| g.vertex_id(v).unwrap_or_default().to_string())
             }
             Create::Edge {
@@ -211,8 +216,15 @@ fn add<S: GraphStorage>(
                     (None, true) => Some(dry_run_id(g, ElementKind::Edge)),
                     (None, false) => None,
                 };
-                g.add_edge(id, Some(label.clone()), source, target, properties.clone())
-                    .map(|e| g.edge_id(e).unwrap_or_default().to_string())
+                g.create_edge(
+                    id,
+                    Some(label.clone()),
+                    source,
+                    target,
+                    properties.clone(),
+                    &create,
+                )
+                .map(|e| g.edge_id(e).unwrap_or_default().to_string())
             }
         };
         let err = match attempt {

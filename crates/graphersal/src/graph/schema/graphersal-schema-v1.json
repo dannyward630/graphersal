@@ -111,7 +111,8 @@
         "$comment": { "type": "string" },
         "examples": { "type": "array" },
         "deprecated": { "type": "boolean" },
-        "default": { "description": "An annotation only: never applied on write, never substituted on read." },
+        "default": { "description": "On a label's top-level property, in mode open or closed: stored when a vertex or edge is created without the property (null is never stored); never applied on read or to existing data. Elsewhere an annotation." },
+        "defaultFunction": { "enum": ["uuidv4", "uuidv7", "now", "today"], "description": "On a label's top-level property only: a value computed for every vertex or edge created without the property, in mode open or closed (now and today: the unit's start, one value per unit). Not together with default." },
         "$ref": { "$ref": "#/$defs/local_ref" }
       }
     }

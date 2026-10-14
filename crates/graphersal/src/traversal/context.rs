@@ -120,6 +120,10 @@ pub(crate) struct TraverserContext<'a, S: GraphStorage> {
     /// on the first draw: seeded from `random.seed` when the option is set, from the operating
     /// system's entropy otherwise. See [`Self::rng`].
     rng: Option<rand::rngs::StdRng>,
+    /// The time of `defaultFunction` `now`/`today` in this execution: pinned by
+    /// `GraphTraversalSource::with_now`, else taken on the first create
+    /// ([`Self::create_context`]).
+    pub(crate) create_context: Option<crate::graph::schema::defaults::CreateContext>,
 }
 
 /// The loop counter of one active `repeat()`.
@@ -199,6 +203,30 @@ impl<'a, S: GraphStorage> TraverserContext<'a, S> {
             bulk_one: false,
             auto_merge: false,
             rng: None,
+            create_context: None,
+        }
+    }
+
+    /// The [`CreateContext`](crate::graph::schema::defaults::CreateContext) of the elements this
+    /// execution creates: pinned, else the storage's unit start (or the system clock), taken
+    /// once, so every element of one execution gets the same time.
+    pub(crate) fn create_context(&mut self) -> crate::graph::schema::defaults::CreateContext {
+        let storage = &*self.storage;
+        *self.create_context.get_or_insert_with(|| {
+            crate::graph::schema::defaults::CreateContext::for_storage(storage)
+        })
+    }
+
+    /// The [`CreateContext`](crate::graph::schema::defaults::CreateContext) of a creating step:
+    /// the step's pinned time (`pinned`, the script DSL's evaluation `now()`), else
+    /// [`Self::create_context`].
+    pub(crate) fn create_context_or(
+        &mut self,
+        pinned: Option<crate::value::temporal::DateTime>,
+    ) -> crate::graph::schema::defaults::CreateContext {
+        match pinned {
+            Some(now) => crate::graph::schema::defaults::CreateContext::at(now),
+            None => self.create_context(),
         }
     }
 

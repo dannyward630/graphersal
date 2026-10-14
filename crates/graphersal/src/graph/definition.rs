@@ -1137,8 +1137,9 @@ fn folder_problem(folder: &str) -> Option<String> {
 /// One parameter of a saved query: its schema (the node format of the graph schema,
 /// [`PropertySchema`]) and an optional default.
 ///
-/// Unlike the annotation-only `default` keyword of a data schema, the default of a parameter
-/// IS substituted when a call omits the argument; a parameter without one is required. A
+/// The default sits beside the schema: a `default` keyword inside the parameter's schema is an
+/// annotation, while the parameter's own default IS substituted when a call omits the argument;
+/// a parameter without one is required. A
 /// default given as a value the schema coerces on write (a canonical uuid string for
 /// `format: "uuid"`, an `int64` for `number`) is stored coerced.
 #[derive(Debug, Clone, PartialEq)]
@@ -1251,8 +1252,16 @@ impl QueryParam {
         Ok(value)
     }
 
-    /// Checks the default (when there is one) against the schema.
+    /// Checks the schema (no `defaultFunction`: it fills a property of a created element and
+    /// has no meaning for an argument) and the default (when there is one) against it.
     fn validate(&self, query: &str, parameter: &str) -> Result<(), String> {
+        if let Some(at) = crate::graph::schema::defaults::default_function_in(&self.schema, "") {
+            return Err(format!(
+                "the schema has a defaultFunction at '{at}', which applies only to a label's \
+                 properties when an element is created; give the parameter a default beside its \
+                 schema instead ({{\"schema\": .., \"default\": ..}})"
+            ));
+        }
         let Some(default) = &self.default else {
             return Ok(());
         };

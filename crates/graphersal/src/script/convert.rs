@@ -355,7 +355,8 @@ impl ScriptGraphTraversalSource {
                 Step::AddV(labels) => match labels {
                     Some(labels) => graph.add_v(labels.clone()),
                     None => graph.add_v(None),
-                },
+                }
+                .stamp_create_time(self.now),
                 Step::Property(prop, val) => graph.property(prop.clone(), val.clone()),
                 Step::PropertyTraversal(prop, gts) => {
                     graph.property_by(prop.clone(), gts.ast_convert_to_anonymous())
@@ -367,7 +368,9 @@ impl ScriptGraphTraversalSource {
                     key.ast_convert_to_anonymous(),
                     val.ast_convert_to_anonymous(),
                 ),
-                Step::AddVTraversal(gts) => graph.add_v_by(gts.ast_convert_to_anonymous()),
+                Step::AddVTraversal(gts) => graph
+                    .add_v_by(gts.ast_convert_to_anonymous())
+                    .stamp_create_time(self.now),
                 Step::PropertyCardinality(cardinality, prop, val) => {
                     graph.property_with(*cardinality, prop.clone(), val.clone())
                 }
@@ -384,11 +387,15 @@ impl ScriptGraphTraversalSource {
                 // once, as `GraphTraversalSource::merge_v` decides.
                 Step::MergeV(arg) => {
                     let start = root && graph.is_empty();
-                    graph.merge_v_lowered(arg.lower(), start)
+                    graph
+                        .merge_v_lowered(arg.lower(), start)
+                        .stamp_create_time(self.now)
                 }
                 Step::MergeE(arg) => {
                     let start = root && graph.is_empty();
-                    graph.merge_e_lowered(arg.lower(), start)
+                    graph
+                        .merge_e_lowered(arg.lower(), start)
+                        .stamp_create_time(self.now)
                 }
                 Step::MergeOption(token, ScriptMergeArg::Entries(entries), cardinality) => {
                     graph.option_merge_entries(*token, entries.clone(), *cardinality)
@@ -410,8 +417,11 @@ impl ScriptGraphTraversalSource {
                 Step::AddE(label) => match label {
                     Some(label) => graph.add_e(label.clone()),
                     None => graph.add_e(None),
-                },
-                Step::AddETraversal(gts) => graph.add_e_by(gts.ast_convert_to_anonymous()),
+                }
+                .stamp_create_time(self.now),
+                Step::AddETraversal(gts) => graph
+                    .add_e_by(gts.ast_convert_to_anonymous())
+                    .stamp_create_time(self.now),
                 Step::FromTraversal(gts) => graph.from_by(gts.ast_convert_to_anonymous()),
                 Step::ToTraversal(gts) => graph.to_by(gts.ast_convert_to_anonymous()),
                 Step::Drop => graph.drop(),

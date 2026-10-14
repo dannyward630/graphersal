@@ -4,8 +4,8 @@ use std::borrow::Cow;
 
 use crate::error::{DiagnosticError, SchemaError};
 use crate::graph::schema::{
-    Annotations, Constraints, EdgeConnection, EdgeSchema, GraphSchema, JsonType, PropertySchema,
-    SCHEMA_FORMAT_URL, SchemaFormat, SchemaMode, SchemaPattern, VertexSchema,
+    Annotations, Constraints, DefaultFunction, EdgeConnection, EdgeSchema, GraphSchema, JsonType,
+    PropertySchema, SCHEMA_FORMAT_URL, SchemaFormat, SchemaMode, SchemaPattern, VertexSchema,
 };
 use crate::value::physical::{PhysicalValue, lift_untyped, lower, read_json, to_json_text};
 use crate::value::temporal::{Temporal, TemporalKind};
@@ -24,7 +24,7 @@ const NODE_KEYWORDS: &str = "type, format, items, properties, required, addition
      anyOf, enum, const, minimum, maximum, exclusiveMinimum, exclusiveMaximum, formatMinimum, \
      formatMaximum, formatExclusiveMinimum, formatExclusiveMaximum, minLength, \
      maxLength, pattern, minItems, maxItems, title, description, $comment, examples, \
-     deprecated, default, $ref (and $defs, $schema, $id at a label schema's root)";
+     deprecated, default, defaultFunction, $ref (and $defs, $schema, $id at a label schema's root)";
 
 /// The general advice appended to every schema format error.
 pub(crate) const FORMAT_HELP: &str = "The schema format is an envelope ($schema, meta, mode, \
@@ -168,6 +168,38 @@ fn boolean(value: &PhysicalValue<'_>, at: &Pointer, what: &str) -> Result<bool, 
             "",
         )),
     }
+}
+
+/// The value of `defaultFunction`: one of the closed set of functions.
+fn default_function(
+    value: &PhysicalValue<'_>,
+    at: &Pointer,
+) -> Result<DefaultFunction, SchemaError> {
+    let name = string(value, at, "defaultFunction")?;
+    if let Some(function) = DefaultFunction::from_name(name) {
+        return Ok(function);
+    }
+    Err(invalid(
+        at,
+        format!("unknown defaultFunction '{name}'"),
+        "The supported functions are uuidv4 (random) and uuidv7 (time-ordered) on a \
+         {\"type\": \"string\", \"format\": \"uuid\"} property, now (the unit's start) on a \
+         {\"type\": \"string\", \"format\": \"date-time\"} property and today (its UTC date) \
+         on a {\"type\": \"string\", \"format\": \"date\"} property.",
+    ))
+}
+
+/// A node has at most one of `default` and `defaultFunction`.
+fn check_one_default(annotations: &Annotations, at: &Pointer) -> Result<(), SchemaError> {
+    if annotations.default.is_some() && annotations.default_function.is_some() {
+        return Err(invalid(
+            at,
+            "default and defaultFunction on the same property",
+            "Keep one: default stores a fixed value, defaultFunction computes one for every \
+             created element.",
+        ));
+    }
+    Ok(())
 }
 
 /// A JSON value the schema keeps verbatim (`enum`, `const`, `default`, `examples`, `meta`).
@@ -554,7 +586,7 @@ fn rejected_keyword(key: &str) -> Option<&'static str> {
         }
         "readOnly" | "writeOnly" | "contentEncoding" | "contentMediaType" | "contentSchema" => {
             "this annotation is not supported; the accepted annotations are title, description, \
-             $comment, examples, deprecated and default"
+             $comment, examples, deprecated, default and defaultFunction"
         }
         "nullable" => {
             "nullable is not JSON Schema; allow null with \"type\": [\"string\", \"null\"] (and \
@@ -807,6 +839,9 @@ impl NodeParser<'_, '_> {
                 }
                 "deprecated" => annotations.deprecated = Some(boolean(field, &at, key)?),
                 "default" => annotations.default = Some(json_value(field)),
+                "defaultFunction" => {
+                    annotations.default_function = Some(default_function(field, &at)?)
+                }
                 "$defs" | "$schema" | "$id" if root => {
                     if key != "$defs" {
                         string(field, &at, key)?;
@@ -897,6 +932,7 @@ impl NodeParser<'_, '_> {
             };
             *slot = Some(bound);
         }
+        check_one_default(&annotations, at)?;
         node.constraints = (!constraints.is_empty()).then(|| Box::new(constraints));
         node.annotations = (!annotations.is_empty()).then(|| Box::new(annotations));
         Ok(node)
@@ -956,13 +992,20 @@ impl NodeParser<'_, '_> {
             }
             if !matches!(
                 key.as_ref(),
-                "title" | "description" | "$comment" | "examples" | "deprecated" | "default"
+                "title"
+                    | "description"
+                    | "$comment"
+                    | "examples"
+                    | "deprecated"
+                    | "default"
+                    | "defaultFunction"
             ) {
                 return Err(invalid(
                     &at.child(key.as_ref()),
                     format!("'{key}' next to $ref is not supported"),
                     "Only annotations (title, description, $comment, examples, deprecated, \
-                     default) may sit next to $ref; put other keywords into the definition.",
+                     default, defaultFunction) may sit next to $ref; put other keywords into \
+                     the definition.",
                 ));
             }
             siblings.push((key.clone(), field.clone()));
@@ -977,7 +1020,11 @@ impl NodeParser<'_, '_> {
                 annotations.comment = extra.comment.or(annotations.comment);
                 annotations.examples = extra.examples.or(annotations.examples);
                 annotations.deprecated = extra.deprecated.or(annotations.deprecated);
-                annotations.default = extra.default.or(annotations.default);
+                // A `default`/`defaultFunction` next to `$ref` replaces both of the definition's.
+                if extra.default.is_some() || extra.default_function.is_some() {
+                    annotations.default = extra.default;
+                    annotations.default_function = extra.default_function;
+                }
                 node.annotations = Some(Box::new(annotations));
             }
         }
@@ -1199,6 +1246,9 @@ impl PropertySchema {
         if let Some(a) = annotations {
             if let Some(default) = &a.default {
                 map.insert("default", default.clone());
+            }
+            if let Some(function) = a.default_function {
+                map.insert("defaultFunction", ElementProperty::from(function.as_str()));
             }
             if let Some(examples) = &a.examples {
                 map.insert("examples", ElementProperty::Array(examples.clone()));

@@ -109,7 +109,7 @@ export const HelpDialog = {
       types, required/nullable, constraints and annotations per property, labels and edge connections, the mode.
       <b>What changes</b> lists the changes, each backward compatible (it only adds or relaxes, so clients written against the old schema keep working) or not; <b>Check against data</b> lists the violations (click
       one to see the offending elements in a new tab), <b>Apply</b> stores the draft as one change and is blocked while
-      the data violates it. A schema <code>default</code> is information only: it is never applied.</p>
+      the data violates it. A schema <code>default</code> (or <code>defaultFunction</code>: <code>uuidv4</code>, <code>uuidv7</code>, <code>now</code>, <code>today</code>) of a top-level property is stored when a vertex or edge is created without it; existing data is never filled in.</p>
 
       <h3>If the playground freezes</h3>
       <p>Open <a href="reset/">reset/</a> (this address with <code>/reset</code> added): it clears the playground's

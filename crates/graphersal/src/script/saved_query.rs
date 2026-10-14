@@ -959,6 +959,7 @@ impl ScriptGraphTraversalSource {
             access: access.clone(),
             private: false,
             anonymous: false,
+            now: None,
         };
         let mut scope = eval::scope_with_access(g, access);
         // The body sees the caller's `now()` (one value per evaluation, `access.rs`).

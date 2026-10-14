@@ -34,6 +34,7 @@ impl ScriptGraphSource {
             access: Arc::default(),
             private: true,
             anonymous: false,
+            now: None,
         }
     }
 
@@ -50,6 +51,7 @@ impl ScriptGraphSource {
             access: Arc::default(),
             private: false,
             anonymous: false,
+            now: None,
         }
     }
 
@@ -62,6 +64,7 @@ impl ScriptGraphSource {
             access: Arc::default(),
             private: true,
             anonymous: false,
+            now: None,
         }
     }
 
@@ -75,6 +78,7 @@ impl ScriptGraphSource {
             access: Arc::default(),
             private: true,
             anonymous: false,
+            now: None,
         }
     }
 
@@ -188,6 +192,11 @@ pub struct ScriptGraphTraversalSource {
     /// query cannot be called on it (`__.query(..)` fails with a clear error instead of
     /// looking the query up in the scratch graph).
     pub(super) anonymous: bool,
+    /// The evaluation's `now()` when a creating step (`addV`, `addE`, `mergeV`, `mergeE`) was
+    /// added in a script: the time of `defaultFunction` `now`/`today` for the elements its
+    /// creating steps make, so it equals `now()` of the same evaluation (and a host's
+    /// `pin_now`). `None`: the execution's time (the unit's start).
+    pub(super) now: Option<crate::value::temporal::DateTime>,
 }
 
 impl fmt::Debug for ScriptGraphTraversalSource {
@@ -778,6 +787,12 @@ impl ScriptGraphTraversalSource {
                 rhai::Position::NONE,
             )))
         }
+    }
+
+    /// This source with the time of the evaluation `ctx` belongs to (see the `now` field).
+    pub(crate) fn stamped(mut self, ctx: &NativeCallContext) -> Self {
+        self.now = Some(access::now_of(ctx));
+        self
     }
 
     pub(super) fn add_step(&mut self, step: Step) -> Self {

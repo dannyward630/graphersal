@@ -3246,7 +3246,8 @@ impl DiagnosticError for SchemaError {
                      To make a key required that existing elements lack, backfill first, in one \
                      transaction: (in a closed schema, declare the key optional first with \
                      g.patch_schema(..)), write the values, then patch the key into \"required\". A schema \
-                     \"default\" is NOT applied to existing elements (it is an annotation only).",
+                     \"default\" fills only elements created after it is set, never existing ones (no \
+                     backfill).",
                 );
                 let unlabeled = report
                     .groups
@@ -3302,15 +3303,18 @@ impl DiagnosticError for SchemaError {
                     "Provide a value for the nested key '{property_name}' (e.g. \
                      property(jpath(\"{property_name}\"), value)) or remove it from \"required\" of its \
                      enclosing object in the schema; a required nested key cannot be removed with \
-                     remove_property(jpath(..)). A schema \"default\" is an annotation only: it does not \
-                     fill a missing key."
+                     remove_property(jpath(..)). A schema \"default\" below the top level is an \
+                     annotation: it does not fill a missing nested key (only a label's top-level \
+                     properties get their default when an element is created)."
                 ))
             }
             SchemaError::MissingRequiredProperty { property_name, .. } => {
                 Some(format!(
                     "Provide a value for '{property_name}' or remove it from the label's \"required\" in \
-                     the schema. A schema \"default\" is an annotation only: it is never filled in, so a \
-                     required property needs a value even when its schema has a default.\n\
+                     the schema, or give it a \"default\" (or \"defaultFunction\") in the schema: it is \
+                     stored when an element is created without the property (mode open or closed), \
+                     but never filled into existing elements, and never by an import or a property \
+                     removal.\n\
                      A required property must be supplied when the element is created: \
                      add_v(\"L\").property(\"{property_name}\", value) works because the optimizer rule \
                      add_property_fold folds the directly following constant property() steps into \

@@ -12,6 +12,9 @@ struct StepAddV {
     /// The properties the vertex is created with, folded in by the `add_property_fold` rule;
     /// empty when the rule did not fire. Built once per step, cloned per created vertex.
     properties: PropertyMap,
+    /// The time of `defaultFunction` `now`/`today` the script DSL pinned for this step (the
+    /// evaluation's `now()`); `None`: the execution's ([`TraverserContext::create_context`]).
+    create_time: Option<crate::value::temporal::DateTime>,
 }
 
 impl fmt::Display for StepAddV {
@@ -70,6 +73,7 @@ impl<'g, S: GraphStorage + 'g> GraphTraversalSource<'g, S> {
                 args,
                 id: None,
                 properties: PropertyMap::default(),
+                create_time: None,
             }),
         );
         self.push_step(step)
@@ -100,6 +104,7 @@ impl<'g, S: GraphStorage + 'g> AnonymousTraversal<'g, S> {
                 args,
                 id: None,
                 properties: PropertyMap::default(),
+                create_time: None,
             }),
         );
         self.push_step(step)
@@ -107,6 +112,10 @@ impl<'g, S: GraphStorage + 'g> AnonymousTraversal<'g, S> {
 }
 
 impl<'g, S: GraphStorage + 'g> GraphStepSideEffectMut<'g, S> for StepAddV {
+    fn set_create_time(&mut self, now: crate::value::temporal::DateTime) {
+        self.create_time = Some(now);
+    }
+
     fn static_labels(&self) -> Vec<&str> {
         self.args.iter().flatten().map(String::as_str).collect()
     }
@@ -124,10 +133,13 @@ impl<'g, S: GraphStorage + 'g> GraphStepSideEffectMut<'g, S> for StepAddV {
             .into_iter()
             .map(CompactString::from)
             .collect();
-        let node_index =
-            context
-                .storage
-                .add_vertex(self.id.clone(), labels, self.properties.clone())?;
+        let create = context.create_context_or(self.create_time);
+        let node_index = context.storage.create_vertex(
+            self.id.clone(),
+            labels,
+            self.properties.clone(),
+            &create,
+        )?;
         match source {
             // Derived from the incoming traverser (TinkerPop `split`): its path, bulk and sack.
             Some(source) => Ok(vec![source.split(TraverserValue::Vertex(node_index))]),
@@ -157,6 +169,9 @@ struct StepAddVBy<'g, S: GraphStorage + 'g> {
     id: Option<CompactString>,
     /// The properties folded in by the `add_property_fold` rule.
     properties: PropertyMap,
+    /// The time of `defaultFunction` `now`/`today` the script DSL pinned for this step (the
+    /// evaluation's `now()`); `None`: the execution's ([`TraverserContext::create_context`]).
+    create_time: Option<crate::value::temporal::DateTime>,
 }
 
 impl<'g, S: GraphStorage + 'g> Clone for StepAddVBy<'g, S> {
@@ -165,6 +180,7 @@ impl<'g, S: GraphStorage + 'g> Clone for StepAddVBy<'g, S> {
             label: self.label.clone(),
             id: self.id.clone(),
             properties: self.properties.clone(),
+            create_time: self.create_time,
         }
     }
 }
@@ -214,6 +230,7 @@ fn add_v_by_step<'g, S: GraphStorage + 'g>(label: AnonymousTraversal<'g, S>) -> 
             label,
             id: None,
             properties: PropertyMap::default(),
+            create_time: None,
         }),
     )
 }
@@ -258,6 +275,10 @@ impl<'g, S: GraphStorage + 'g> AnonymousTraversal<'g, S> {
 }
 
 impl<'g, S: GraphStorage + 'g> GraphStepSideEffectMut<'g, S> for StepAddVBy<'g, S> {
+    fn set_create_time(&mut self, now: crate::value::temporal::DateTime) {
+        self.create_time = Some(now);
+    }
+
     fn process(
         &self,
         context: &mut TraverserContext<'_, S>,
@@ -291,10 +312,13 @@ impl<'g, S: GraphStorage + 'g> GraphStepSideEffectMut<'g, S> for StepAddVBy<'g, 
                 )));
             }
         };
-        let node_index =
-            context
-                .storage
-                .add_vertex(self.id.clone(), vec![label], self.properties.clone())?;
+        let create = context.create_context_or(self.create_time);
+        let node_index = context.storage.create_vertex(
+            self.id.clone(),
+            vec![label],
+            self.properties.clone(),
+            &create,
+        )?;
         match source {
             // Derived from the incoming traverser: its path, bulk and sack.
             Some(source) => Ok(vec![source.split(TraverserValue::Vertex(node_index))]),

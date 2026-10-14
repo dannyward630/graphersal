@@ -8,6 +8,7 @@
 use indexmap::IndexMap;
 
 use crate::graph::schema::SchemaPattern;
+use crate::graph::schema::defaults::CreateContext;
 use crate::value::temporal::{Temporal, TemporalKind};
 use crate::value::{ElementProperty, Number};
 
@@ -238,19 +239,29 @@ impl Constraints {
     }
 }
 
-/// The annotation keywords of a node: stored, round-tripped, shown by the renderers, and
-/// **never** used for validation.
+/// The annotation keywords of a node, plus the two create-time keywords `default` and
+/// `defaultFunction`: stored, round-tripped, shown by the renderers, and **never** used for
+/// validation.
 ///
-/// # `default` is an annotation only
+/// # `default` and `defaultFunction`: applied when an element is created
 ///
-/// [`default`](Self::default) is information for clients and user interfaces (an editor may
-/// prefill a form with it). The engine never applies it: it is not written when an element is
-/// created without the property, not substituted when the property is read (`values()`,
-/// `valueMap()`, display and export show nothing for an absent property), and changing it
-/// changes no stored value. A required property without a value is still a violation, whatever
-/// its `default`. This is JSON Schema's own meaning of `default`; it also keeps a pasted
-/// Pydantic schema (which emits `default` on every optional field) from materialising values
-/// nobody wrote. Should create-time defaults ever be supported, they get a keyword of their own.
+/// [`default`](Self::default) has SQL `DEFAULT` semantics on a label's top-level properties:
+/// when a vertex or edge is *created* (`add_v`/`add_e`, `mergeV`/`mergeE` on create,
+/// [`GraphStorage::create_vertex`](crate::storage::GraphStorage::create_vertex)) in mode `open`
+/// or `closed` without a property whose schema declares a `default`, the default is stored
+/// before the element is coerced and validated (so it satisfies `required`). It is never
+/// substituted on read, never re-applied when the schema changes, and a new or changed default
+/// fills no existing element (no backfill). `default: null` is never stored (a pasted Pydantic
+/// schema writes it on every optional field); an explicitly written `null` stays `null`.
+/// Imports, change sets, replay and the plain
+/// [`GraphStorage::add_vertex`](crate::storage::GraphStorage::add_vertex) store exactly what
+/// they are given. A `default` below the top level (inside an object value) stays an annotation.
+///
+/// [`default_function`](Self::default_function) (`defaultFunction`) computes the value instead:
+/// a new one for every created element (`uuidv4`, `uuidv7`), or the unit's start time, one
+/// value for the whole unit (`now`, `today`; see [`DefaultFunction`]). A property has at most
+/// one of the two, and a top-level default must be valid for its property (both checked when
+/// the schema is set: `now` needs a property admitting a `date-time`, `today` a `date`).
 #[derive(Debug, Clone, PartialEq, Default)]
 #[non_exhaustive]
 pub struct Annotations {
@@ -264,8 +275,93 @@ pub struct Annotations {
     pub examples: Option<Vec<ElementProperty>>,
     /// `deprecated`.
     pub deprecated: Option<bool>,
-    /// `default`: an annotation only, never applied (see the type docs).
+    /// `default`: stored when an element is created without the property (see the type docs).
     pub default: Option<ElementProperty>,
+    /// `defaultFunction`: computes the value stored when an element is created without the
+    /// property (see the type docs).
+    pub default_function: Option<DefaultFunction>,
+}
+
+/// The `defaultFunction` keyword: a value computed for every element created without the
+/// property (see [`Annotations`]). The generated value is stored as a plain value (the change
+/// set and the journal record it), so replay is deterministic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DefaultFunction {
+    /// `uuidv4`: a random RFC 9562 version-4 UUID, new for every element.
+    Uuidv4,
+    /// `uuidv7`: a time-ordered RFC 9562 version-7 UUID (48 bits of Unix milliseconds, then
+    /// random bits; increasing within a process), new for every element.
+    Uuidv7,
+    /// `now`: the `datetime` of the unit's start ([`CreateContext::now`]), the same value for
+    /// every element created in one unit (PostgreSQL `now()`: the start of the transaction).
+    /// Valid only on a property admitting a `date-time`.
+    Now,
+    /// `today`: the UTC `date` of [`Self::Now`]'s time. Valid only on a property admitting a
+    /// `date`.
+    Today,
+}
+
+/// What a create stores for an absent property: [`PropertySchema::create_default`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum CreateDefault<'a> {
+    /// `default` (never `null`).
+    Value(&'a ElementProperty),
+    /// `defaultFunction`.
+    Function(DefaultFunction),
+}
+
+impl CreateDefault<'_> {
+    /// The value to store: the default, or a new value of the function at `context`'s time.
+    pub(crate) fn value(self, context: &CreateContext) -> ElementProperty {
+        match self {
+            CreateDefault::Value(value) => value.clone(),
+            CreateDefault::Function(function) => function.generate(context),
+        }
+    }
+}
+
+impl DefaultFunction {
+    /// The keyword value: `uuidv4`, `uuidv7`, `now`, `today`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DefaultFunction::Uuidv4 => "uuidv4",
+            DefaultFunction::Uuidv7 => "uuidv7",
+            DefaultFunction::Now => "now",
+            DefaultFunction::Today => "today",
+        }
+    }
+
+    /// Parses a keyword value (case-sensitive).
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "uuidv4" => Some(DefaultFunction::Uuidv4),
+            "uuidv7" => Some(DefaultFunction::Uuidv7),
+            "now" => Some(DefaultFunction::Now),
+            "today" => Some(DefaultFunction::Today),
+            _ => None,
+        }
+    }
+
+    /// A new value of this function; `now`/`today` take `context`'s time.
+    pub(crate) fn generate(self, context: &CreateContext) -> ElementProperty {
+        match self {
+            DefaultFunction::Uuidv4 => ElementProperty::Uuid(crate::value::uuid::new_v4()),
+            DefaultFunction::Uuidv7 => ElementProperty::Uuid(crate::value::uuid::new_v7()),
+            DefaultFunction::Now => ElementProperty::Temporal(Temporal::DateTime(context.now())),
+            DefaultFunction::Today => ElementProperty::Temporal(Temporal::Date(context.today())),
+        }
+    }
+
+    /// The temporal format a property must admit for this function (`now`: `date-time`,
+    /// `today`: `date`); `None` for the uuid functions.
+    pub(crate) fn temporal_format(self) -> Option<SchemaFormat> {
+        match self {
+            DefaultFunction::Uuidv4 | DefaultFunction::Uuidv7 => None,
+            DefaultFunction::Now => Some(SchemaFormat::DateTime),
+            DefaultFunction::Today => Some(SchemaFormat::Date),
+        }
+    }
 }
 
 impl Annotations {
@@ -316,7 +412,8 @@ pub struct PropertySchema {
     pub any_of: Option<Vec<PropertySchema>>,
     /// The assertion keywords besides `type`.
     pub constraints: Option<Box<Constraints>>,
-    /// The annotation keywords (`title`, `description`, `default`, ...).
+    /// The annotation keywords (`title`, `description`, ...) and the create-time keywords
+    /// `default`/`defaultFunction`.
     pub annotations: Option<Box<Annotations>>,
 }
 
@@ -500,6 +597,31 @@ impl PropertySchema {
     pub fn with_description(self, description: impl Into<String>) -> Self {
         let description = description.into();
         self.with_annotation(|a| a.description = Some(description))
+    }
+
+    /// Sets `default`: the value stored when an element is created without this (top-level)
+    /// property (see [`Annotations`]).
+    pub fn with_default(self, value: ElementProperty) -> Self {
+        self.with_annotation(|a| a.default = Some(value))
+    }
+
+    /// Sets `defaultFunction`: the value computed when an element is created without this
+    /// (top-level) property (see [`Annotations`]).
+    pub fn with_default_function(self, function: DefaultFunction) -> Self {
+        self.with_annotation(|a| a.default_function = Some(function))
+    }
+
+    /// The `default`/`defaultFunction` of this node: what a create stores when the property is
+    /// absent. `default: null` counts as none (never stored).
+    pub(crate) fn create_default(&self) -> Option<CreateDefault<'_>> {
+        let annotations = self.annotations.as_deref()?;
+        if let Some(function) = annotations.default_function {
+            return Some(CreateDefault::Function(function));
+        }
+        match &annotations.default {
+            None | Some(ElementProperty::Null) => None,
+            Some(value) => Some(CreateDefault::Value(value)),
+        }
     }
 
     /// Whether the node admits a `null` value by its type (`type` contains `null`, no `type`,

@@ -167,6 +167,7 @@ pub use crate::error::GraphError;
 #[cfg(feature = "persist")]
 pub use crate::graph::PersistentStorage;
 pub use crate::graph::compression::CompressionStats;
+pub use crate::graph::schema::defaults::CreateContext;
 pub use crate::graph::schema::{ElementKind, GraphSchema, PropertySchema, SchemaInferer};
 pub use crate::graph::write_checks::{
     check_label, check_properties, check_property_value, normalize_vertex_labels,

@@ -50,8 +50,8 @@ const jsonFieldText = (v) => (v === undefined ? '' : JSON.stringify(v));
 
 /**
  * The detail form of one property: its constraints (on the node that carries the type) and its
- * annotations (on the property node). `default` is shown as what it is: information for clients,
- * never applied.
+ * annotations (on the property node). `default` is what a create stores for an absent top-level
+ * property (engine-side; the form only edits the keyword).
  */
 export const SchemaNodeDetails = {
   props: { flow: { type: Object, required: true }, path: { type: Array, required: true } },
@@ -139,8 +139,8 @@ export const SchemaNodeDetails = {
       <label><span>default (JSON)</span>
         <input type="text" :class="{ invalid: bad.default }" :value="jsonFieldText(node().default)"
                @change="setJson('default', $event.target.value, false)"></label>
-      <p class="hint wide">Information for clients only: never applied on write or read, and changing it changes no data.
-        A required key with a default is still required. The backfill script uses it as the value to fill in.</p>
+      <p class="hint wide">On a top-level property in mode open or closed: stored when a vertex or edge is created without it
+        (also satisfies required). Never on read, never for existing data (the backfill script fills those); null is never stored.</p>
       <label><span>examples (JSON array)</span>
         <input type="text" :class="{ invalid: bad.examples }" :value="jsonFieldText(node().examples)"
                @change="setJson('examples', $event.target.value, false)"></label>

@@ -380,9 +380,9 @@ Everything is edited in place, and every edit changes a **draft**, never the sto
   applies, except `closed` with vertices or edges without a label: then nothing changes and the
   report is shown.
 
-`default` is shown as what it is: information for clients, never applied on write or read (see
-[`default` is not applied](schema_enforcement.md#default-is-not-applied)); the editor uses it only
-as the value its backfill script fills in.
+A property's `default` is stored when a vertex or edge is created without it (see
+[Defaults on create](schema_enforcement.md#defaults-on-create)), never filled into existing
+elements; the editor's backfill script uses it as the value it writes into those.
 
 With a draft, the toolbar offers the review and the apply:
 

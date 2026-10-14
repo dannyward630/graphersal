@@ -360,15 +360,45 @@ pub(super) fn register(registry: &mut Registry) {
         .register_fn("where", ScriptGraphTraversalSource::where_label_p)
         .register_fn("where_p", ScriptGraphTraversalSource::where_p)
         .register_fn("where_t", ScriptGraphTraversalSource::where_t)
-        .register_fn_as(&["addV", "add_v"], ScriptGraphTraversalSource::add_v_empty)
-        .register_fn_as(&["addV", "add_v"], ScriptGraphTraversalSource::add_v)
-        .register_fn_as(&["addV", "add_v"], ScriptGraphTraversalSource::add_v_labels)
+        // The creating steps carry the evaluation's `now()` (`defaultFunction` `now`/`today`).
         .register_fn_as(
             &["addV", "add_v"],
-            ScriptGraphTraversalSource::add_v_traversal,
+            |ctx: NativeCallContext, this: &mut ScriptGraphTraversalSource| {
+                this.add_v_empty().stamped(&ctx)
+            },
         )
-        .register_fn_as(&["addE", "add_e"], ScriptGraphTraversalSource::add_e_empty)
-        .register_fn_as(&["addE", "add_e"], ScriptGraphTraversalSource::add_e)
+        .register_fn_as(
+            &["addV", "add_v"],
+            |ctx: NativeCallContext, this: &mut ScriptGraphTraversalSource, label: String| {
+                this.add_v(label).stamped(&ctx)
+            },
+        )
+        .register_fn_as(
+            &["addV", "add_v"],
+            |ctx: NativeCallContext,
+             this: &mut ScriptGraphTraversalSource,
+             labels: Vec<Dynamic>| { this.add_v_labels(labels).stamped(&ctx) },
+        )
+        .register_fn_as(
+            &["addV", "add_v"],
+            |ctx: NativeCallContext,
+             this: &mut ScriptGraphTraversalSource,
+             label: ScriptGraphTraversalSource| {
+                this.add_v_traversal(label).stamped(&ctx)
+            },
+        )
+        .register_fn_as(
+            &["addE", "add_e"],
+            |ctx: NativeCallContext, this: &mut ScriptGraphTraversalSource| {
+                this.add_e_empty().stamped(&ctx)
+            },
+        )
+        .register_fn_as(
+            &["addE", "add_e"],
+            |ctx: NativeCallContext, this: &mut ScriptGraphTraversalSource, label: Dynamic| {
+                this.add_e(label).map(|source| source.stamped(&ctx))
+            },
+        )
         .register_fn_as(
             &["withSideEffect", "with_side_effect"],
             ScriptGraphTraversalSource::with_side_effect,
@@ -411,12 +441,16 @@ pub(super) fn register(registry: &mut Registry) {
         )
         .register_fn_as(
             &["mergeV", "merge_v"],
-            ScriptGraphTraversalSource::merge_v_empty,
+            |ctx: NativeCallContext, this: &mut ScriptGraphTraversalSource| {
+                this.merge_v_empty().stamped(&ctx)
+            },
         )
         .register_fn_as(&["mergeV", "merge_v"], ScriptGraphTraversalSource::merge_v)
         .register_fn_as(
             &["mergeE", "merge_e"],
-            ScriptGraphTraversalSource::merge_e_empty,
+            |ctx: NativeCallContext, this: &mut ScriptGraphTraversalSource| {
+                this.merge_e_empty().stamped(&ctx)
+            },
         )
         .register_fn_as(&["mergeE", "merge_e"], ScriptGraphTraversalSource::merge_e)
         // .register_fn("add_v_", ScriptGraphTraversalSource::add_v_)

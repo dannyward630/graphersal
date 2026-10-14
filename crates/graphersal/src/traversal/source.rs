@@ -701,7 +701,37 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
             profile_type: ProfileType::none(),
             sack: None,
             restrictions: None,
+            create_time: None,
         }
+    }
+
+    /// Pins the time `defaultFunction: "now"` stores (and `"today"` takes its UTC date from) for
+    /// every element this traversal creates. Without it the time is the start of the storage's
+    /// outermost open unit
+    /// ([`GraphStorage::unit_started_at`](crate::storage::GraphStorage::unit_started_at): with
+    /// the implicit unit of a traversal, its start), else the system clock. For deterministic
+    /// tests and for hosts that keep one clock (the script DSL pins the evaluation's `now()`,
+    /// which hosts pin with `script::pin_now`).
+    ///
+    /// ```
+    /// use graphersal::prelude::*;
+    /// use graphersal::temporal::DateTime;
+    /// let mut graph = TraversalGraph::new();
+    /// let schema = GraphSchema::from_json(
+    ///     r#"{"mode": "open", "vertices": {"event": {"schema": {"type": "object",
+    ///         "properties": {"at": {"type": "string", "format": "date-time",
+    ///                               "defaultFunction": "now"}}}}}}"#,
+    /// )
+    /// .unwrap();
+    /// graph.traversal_mut().set_schema(schema).unwrap();
+    /// let at: DateTime = "2026-10-15T12:00:00Z".parse().unwrap();
+    /// graph.traversal_mut().with_now(at).add_v("event").iterate().unwrap();
+    /// let stored = graph.traversal().v(None::<()>).values("at").next().unwrap();
+    /// assert_eq!(stored, Some(ElementProperty::Temporal(at.into())));
+    /// ```
+    pub fn with_now(mut self, now: crate::value::temporal::DateTime) -> Self {
+        self.create_time = Some(now);
+        self
     }
 
     /// Checks this traversal with `authorizer`: every execution first asks it for every
@@ -1023,6 +1053,12 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
     /// ([`SchemaError::ExistingDataViolatesSchema`](crate::error::SchemaError)). The empty
     /// schema ([`GraphSchema::is_empty`]) removes the schema.
     ///
+    /// Create-time defaults (`default`/`defaultFunction`, see
+    /// [`Annotations`](crate::schema::Annotations)) are checked first: each must give a valid
+    /// value of its top-level property, and `defaultFunction` sits only on a top-level property
+    /// ([`SchemaError::InvalidSchema`](crate::error::SchemaError) otherwise). They apply to
+    /// elements created from now on; existing elements are never filled in (no backfill).
+    ///
     /// Runs in the current unit (inside a transaction or a whole-script unit it is rolled back
     /// with it), or as a unit of its own: recorded as a
     /// [`Mutation::SetSchema`](crate::graph::Mutation::SetSchema), captured and seen by the
@@ -1055,6 +1091,7 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
     /// ```
     pub fn set_schema(&mut self, schema: GraphSchema) -> TraverserResult<()> {
         self.authorize_schema("set_schema", crate::graph::Action::Update)?;
+        crate::graph::schema::defaults::check_defaults(&schema)?;
         self.atomically(|this| {
             this.storage.set_schema(schema)?;
             Ok(())
@@ -1067,6 +1104,7 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
     pub fn patch_schema(&mut self, patch: &SchemaPatch) -> TraverserResult<GraphSchema> {
         self.authorize_schema("patch_schema", crate::graph::Action::Update)?;
         let schema = patch.apply(self.storage.get_schema().as_ref())?;
+        crate::graph::schema::defaults::check_defaults(&schema)?;
         let stored = schema.clone();
         self.atomically(|this| {
             this.storage.set_schema(stored)?;
@@ -1081,6 +1119,7 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
     /// Asks an attached authorizer for `Read` on the schema.
     pub fn validate_schema(&self, schema: &GraphSchema) -> TraverserResult<SchemaValidation> {
         self.authorize_schema("validate_schema", crate::graph::Action::Read)?;
+        crate::graph::schema::defaults::check_defaults(schema)?;
         Ok(self.validation(schema.clone()))
     }
 
@@ -1089,6 +1128,7 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
     pub fn validate_schema_patch(&self, patch: &SchemaPatch) -> TraverserResult<SchemaValidation> {
         self.authorize_schema("validate_schema_patch", crate::graph::Action::Read)?;
         let schema = patch.apply(self.storage.get_schema().as_ref())?;
+        crate::graph::schema::defaults::check_defaults(&schema)?;
         Ok(self.validation(schema))
     }
 
@@ -2017,6 +2057,9 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
                     options,
                 );
                 context.profile_type = this.profile_type;
+                context.create_context = this
+                    .create_time
+                    .map(crate::graph::schema::defaults::CreateContext::at);
                 let result = match &this.sack {
                     Some(spec) => context.sacks.intern(spec.initial.clone()).map(|sack| {
                         context.initial_sack = sack;

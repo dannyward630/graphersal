@@ -89,6 +89,9 @@ pub struct GraphTraversalSource<'g, S: GraphStorage + 'g> {
     /// performs before anything executes. `None` (the Rust API's default): everything allowed,
     /// unchecked.
     pub(crate) restrictions: Option<std::sync::Arc<permission_check::Restrictions>>,
+    /// Set by [`Self::with_now`] (and the script DSL's creating steps carry the evaluation's
+    /// `now()`): the time of `defaultFunction` `now`/`today`. `None`: the unit's start.
+    pub(crate) create_time: Option<crate::value::temporal::DateTime>,
 }
 
 /// Anonymous-traversal token (`__`): starts a child traversal inside a step argument (e.g.
@@ -156,6 +159,20 @@ impl<'g, S: GraphStorage + 'g> AnonymousTraversal<'g, S> {
 
     pub(crate) fn push_step(mut self, step: GraphStep<'g, S>) -> Self {
         push_step_into(&mut self.steps, step, "__");
+        self
+    }
+
+    /// Pins the time of `defaultFunction` `now`/`today` on the creating step just pushed
+    /// (`add_v`, `add_e`, `merge_v`, `merge_e`): the script DSL's evaluation `now()`. `None`
+    /// changes nothing.
+    #[cfg(feature = "script")]
+    pub(crate) fn stamp_create_time(
+        mut self,
+        now: Option<crate::value::temporal::DateTime>,
+    ) -> Self {
+        if let (Some(now), Some(GraphStep::SideEffectMut(_, step))) = (now, self.steps.last_mut()) {
+            step.set_create_time(now);
+        }
         self
     }
 
