@@ -289,6 +289,17 @@ pub(super) fn local_date_time(text: &str) -> TemporalResult<LocalDateTime> {
 }
 
 pub(super) fn date_time(text: &str) -> TemporalResult<DateTime> {
+    read_date_time(text, false)
+}
+
+/// A date-time that must carry its UTC offset or time zone: where stored data is read (a schema
+/// coercion, a typed `gx:OffsetDateTime`, a format bound), a text without one is an error, never
+/// read as UTC (rule 7: no guessing).
+pub(super) fn date_time_strict(text: &str) -> TemporalResult<DateTime> {
+    read_date_time(text, true)
+}
+
+fn read_date_time(text: &str, strict: bool) -> TemporalResult<DateTime> {
     let mut c = Cursor::new(text, "datetime");
     let local = read_local(&mut c)?;
     let offset = read_offset(&mut c)?;
@@ -297,6 +308,10 @@ pub(super) fn date_time(text: &str) -> TemporalResult<DateTime> {
     let local = LocalDateTime { micros: local };
     match (offset, zone) {
         (Some(offset), None) => DateTime::from_local(local, offset),
+        (None, None) if strict => c.fail(
+            "a date-time needs its UTC offset (Z, +02:00) or a time zone ([Europe/Berlin]); a \
+             text without one is not read as UTC",
+        ),
         (None, None) => DateTime::from_local(local, 0),
         (None, Some(name)) => Zone::parse(name)?.resolve(local),
         (Some(offset), Some(name)) => {

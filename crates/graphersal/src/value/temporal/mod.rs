@@ -572,6 +572,21 @@ impl Temporal {
             TemporalKind::Duration => Temporal::Duration(text.parse()?),
         })
     }
+
+    /// Like [`parse_as`](Self::parse_as), except that a `datetime` must carry its UTC offset or
+    /// time zone: `"2024-01-01T10:00"` is an error here, never read as UTC. This is the parser
+    /// for stored data (a schema coercion into `format: date-time`, a typed `gx:OffsetDateTime`,
+    /// a `formatMinimum` bound); only an explicit conversion (`asDate()`, the `datetime(..)`
+    /// constructor) keeps TinkerPop's lenient "no offset is UTC".
+    pub fn parse_strict(kind: TemporalKind, text: &str) -> TemporalResult<Temporal> {
+        match kind {
+            TemporalKind::DateTime => parse::date_time_strict(text).map(Temporal::DateTime),
+            TemporalKind::Date
+            | TemporalKind::LocalDateTime
+            | TemporalKind::Time
+            | TemporalKind::Duration => Temporal::parse_as(kind, text),
+        }
+    }
 }
 
 /// Orders by type first (date, local date-time, date-time, time, duration), then by value.

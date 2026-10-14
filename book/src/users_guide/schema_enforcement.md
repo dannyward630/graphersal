@@ -148,7 +148,11 @@ Diagnostics, `Display` and `GType` keep the engine's names (`int64`, `float64`, 
 **Dates and times.** In `open` and `closed` mode a property declared with a temporal format
 coerces a **string** on write: any text the type's parser accepts (ISO 8601 / RFC 3339; the
 canonical form and the usual variants such as `2024-05-01 09:30Z` or `09:30`) becomes the
-temporal value, and text it refuses is a coercion failure that names the expected form. This is
+temporal value, and text it refuses is a coercion failure that names the expected form. A
+`date-time` text must carry its UTC offset or a time zone (`2024-05-01T09:30:00Z`,
+`2024-05-01T09:30[Europe/Berlin]`): `2024-05-01T09:30` is refused, never read as UTC, and the same
+holds for a `formatMinimum`/`formatMaximum` bound and a typed `gx:OffsetDateTime` (only the
+explicit conversion step `as_date()` keeps TinkerPop's "no offset is UTC"). This is
 the explicit declaration at work, like the `uuid` coercion, never a guess from content: an
 undeclared date-like string stays a `string`. A stored string does not conform to a temporal
 format (reads never coerce), and one temporal type never conforms to another (a `date` is not a

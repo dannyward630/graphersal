@@ -83,7 +83,7 @@ pub(crate) fn read_tagged(tag: &str, text: &str) -> Option<TemporalResult<Tempor
         DURATION | PERIOD | INTERVAL => TemporalKind::Duration,
         _ => return None,
     };
-    let value = match Temporal::parse_as(kind, text) {
+    let value = match Temporal::parse_strict(kind, text) {
         Ok(value) => value,
         Err(err) => return Some(Err(err)),
     };

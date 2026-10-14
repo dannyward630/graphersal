@@ -579,7 +579,7 @@ fn decode_temporal(
         ("ZonedDateTime", Some((local, _))) if has_offset(local) => (local, true),
         _ => (text, false),
     };
-    let Ok(value) = Temporal::parse_as(kind, text) else {
+    let Ok(value) = Temporal::parse_strict(kind, text) else {
         return Some(Err(ValueSkip::malformed(NOT_OF_TYPE)));
     };
     let value = match (name, value) {

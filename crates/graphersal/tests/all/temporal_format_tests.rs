@@ -658,6 +658,8 @@ mod change_set_serde {
             r#"{"@type":"gx:LocalTime","@value":"10:00:00+02:00"}"#,
             r#"{"@type":"gx:LocalDateTime","@value":"2023-08-02T10:00:00Z"}"#,
             r#"{"@type":"gx:OffsetDateTime","@value":"10000-01-01T00:00:00Z"}"#,
+            // An offset date-time must carry its offset (never read as UTC).
+            r#"{"@type":"gx:OffsetDateTime","@value":"2023-08-02T12:00:00"}"#,
             // Parts that do not fit the duration tag.
             r#"{"@type":"gx:Duration","@value":"P1D"}"#,
             r#"{"@type":"gx:Period","@value":"PT1H"}"#,
@@ -821,6 +823,8 @@ mod graphson {
             r#"{"@type":"gx:LocalDate","@value":"2016-13-01"}"#,
             r#"{"@type":"gx:LocalDate","@value":20000}"#,
             r#"{"@type":"gx:OffsetDateTime","@value":"10000-01-01T00:00:00Z"}"#,
+            // An offset date-time without its offset is not read as UTC.
+            r#"{"@type":"gx:OffsetDateTime","@value":"2016-01-01T10:00"}"#,
             r#"{"@type":"g:Date","@value":9223372036854775807}"#,
             r#"{"@type":"gx:Duration","@value":"P1M"}"#,
             r#"{"@type":"gx:Period","@value":"PT1H"}"#,
@@ -1150,6 +1154,36 @@ mod schema {
         assert!(add(&graph, "at", 5i64.into()).is_err());
         assert!(add(&graph, "s", date("2024-01-01")).is_err());
         assert_eq!(graph.read().vertex_count(), 7);
+    }
+
+    #[test]
+    fn a_declared_date_time_needs_an_explicit_offset_or_zone() {
+        let graph = graph_with(
+            "open",
+            r#"{"at": {"type": "string", "format": "date-time"}}"#,
+        );
+        // An offset or a zone is explicit.
+        assert_eq!(
+            add(&graph, "at", "2024-01-01T10:00Z".into()).unwrap(),
+            "datetime(2024-01-01T10:00:00Z)"
+        );
+        assert_eq!(
+            add(&graph, "at", "2024-01-01T10:00[Europe/Berlin]".into()).unwrap(),
+            "datetime(2024-01-01T10:00:00+01:00)"
+        );
+        // Without either the text is not read as UTC (rule 7: no guessing).
+        for text in ["2024-01-01T10:00", "2024-01-01"] {
+            let err = add(&graph, "at", text.into()).unwrap_err();
+            assert!(err.to_string().contains("UTC offset"), "{text}: {err}");
+        }
+        // A format bound is read the same way.
+        let err = parse(
+            "open",
+            r#"{"at": {"type": "string", "format": "date-time", "formatMinimum": "2020-01-01T00:00"}}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("formatMinimum"), "{err}");
+        assert_eq!(graph.read().vertex_count(), 2);
     }
 
     #[test]

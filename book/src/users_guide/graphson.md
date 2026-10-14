@@ -59,7 +59,7 @@ if report.has_skips() {
 | `g:Map` with string keys, a plain object | `object` | `g:Map` |
 | `gx:Char` | `string` | a string |
 | `g:Date`, `g:Timestamp` (epoch milliseconds) | `datetime` in UTC | `gx:OffsetDateTime` |
-| `gx:Instant`, `gx:OffsetDateTime` | `datetime` with the offset of the text | `gx:OffsetDateTime` |
+| `gx:Instant`, `gx:OffsetDateTime` | `datetime` with the offset of the text (a text without an offset is malformed and skipped, never read as UTC) | `gx:OffsetDateTime` |
 | `gx:ZonedDateTime` (`2007-12-03T10:15:30+01:00[Europe/Paris]`) | `datetime` with the offset of the text; the zone id is dropped (reported) | `gx:OffsetDateTime` |
 | `gx:LocalDate`, `gx:LocalDateTime`, `gx:LocalTime` | `date`, `localdatetime`, `time` | the same tags |
 | `gx:Duration` (a fixed length; `P2DT3H` reads a day as 24 hours) | `duration` of microseconds | `gx:Duration` for a duration of microseconds only (`PT26H`) |

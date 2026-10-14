@@ -1,7 +1,7 @@
 //! Temporal values (`graphersal::temporal`) as property values through the Rust API: stored and
 //! read back, compared by `has()` (a datetime by its instant), ordered, deduplicated, grouped,
-//! type-checked with `P::type_of`, converted by casts, rendered, and refused cleanly by the
-//! formats that cannot hold them yet (binary snapshot, GraphSON, change-set serde: phase A2).
+//! type-checked with `P::type_of`, converted by casts, rendered, and carried by the binary
+//! snapshot and GraphSON (the formats themselves are covered by `temporal_format_tests`).
 
 use graphersal::prelude::*;
 use graphersal::schema::ValueType;
@@ -417,7 +417,6 @@ fn a_schema_inferred_from_temporal_data_still_admits_it() {
     lock.traversal_mut()
         .set_schema(inferred.with_mode(SchemaMode::Closed))
         .unwrap();
-    // A2: temporal formats; until then the position is unconstrained.
     lock.traversal_mut()
         .add_v("event")
         .property("name", "e")
@@ -435,21 +434,38 @@ fn a_schema_inferred_from_temporal_data_still_admits_it() {
 
 #[cfg(feature = "io")]
 #[test]
-fn graphson_export_refuses_a_temporal_value_cleanly() {
+fn graphson_export_writes_temporal_values_with_their_tags() {
     use graphersal::io::GraphExport;
     let graph = events();
     let mut out = Vec::new();
-    let err = graph.export_graphson_writer(&mut out).unwrap_err();
-    assert!(err.to_string().contains("cannot be written"), "{err}");
+    graph.export_graphson_writer(&mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains("gx:OffsetDateTime"), "{text}");
+    assert!(text.contains("2023-08-02T14:00:00+02:00"), "{text}");
+    assert!(text.contains("gx:LocalDate"), "{text}");
 }
 
 #[cfg(feature = "persist")]
 #[test]
-fn the_binary_format_refuses_a_temporal_value_cleanly() {
-    use graphersal::persist::{self, WriteOptions};
+fn the_binary_format_round_trips_temporal_values() {
+    use graphersal::persist::{self, ReadOptions, WriteOptions};
     let graph = events();
     let lock = graph.read();
     let mut bytes = Vec::new();
-    let err = persist::write_snapshot(&*lock, &mut bytes, &WriteOptions::new()).unwrap_err();
-    assert!(err.to_string().contains("binary format"), "{err}");
+    persist::write_snapshot(&*lock, &mut bytes, &WriteOptions::new()).unwrap();
+    let back = persist::read_snapshot(&bytes[..], &ReadOptions::new()).unwrap();
+    let values = |g: &TraversalGraph| -> Vec<String> {
+        g.traversal()
+            .v(None)
+            .order()
+            .by("name")
+            .values("at")
+            .to_list()
+            .unwrap()
+            .iter()
+            .map(text)
+            .collect()
+    };
+    assert_eq!(values(&back), values(&lock));
+    assert!(values(&back).contains(&"2023-08-02T14:00:00+02:00".to_string()));
 }

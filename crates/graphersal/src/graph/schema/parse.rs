@@ -877,7 +877,7 @@ impl NodeParser<'_, '_> {
                     ),
                 ));
             };
-            let bound = Temporal::parse_as(kind, &text).map_err(|err| {
+            let bound = Temporal::parse_strict(kind, &text).map_err(|err| {
                 invalid(
                     &bound_at,
                     format!("{keyword} is not a {kind}: {err}"),

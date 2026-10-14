@@ -41,7 +41,8 @@ pub(crate) const NOT_A_CANONICAL_UUID: &str = "not a canonical UUID (8-4-4-4-12 
 pub(crate) fn not_a_temporal(kind: TemporalKind) -> &'static str {
     match kind {
         TemporalKind::DateTime => {
-            "not a datetime (ISO 8601 / RFC 3339 such as 2024-05-01T09:30:00+02:00, years -9999 \
+            "not a datetime with its UTC offset or time zone (ISO 8601 / RFC 3339 such as \
+             2024-05-01T09:30:00+02:00; a text without an offset is not read as UTC; years -9999 \
              to 9999)"
         }
         TemporalKind::Date => "not a date (ISO 8601 such as 2024-05-01, years -9999 to 9999)",

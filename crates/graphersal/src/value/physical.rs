@@ -356,9 +356,8 @@ pub(crate) fn lift_temporal(
     kind: crate::value::temporal::TemporalKind,
 ) -> Result<ElementProperty, crate::value::temporal::TemporalError> {
     match value {
-        PhysicalValue::String(text) => {
-            crate::value::temporal::Temporal::parse_as(kind, text).map(ElementProperty::Temporal)
-        }
+        PhysicalValue::String(text) => crate::value::temporal::Temporal::parse_strict(kind, text)
+            .map(ElementProperty::Temporal),
         other => {
             let shown = match other {
                 PhysicalValue::Null => "null",
