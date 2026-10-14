@@ -543,7 +543,7 @@ mod binary {
                         "{err}"
                     );
                     let text = graphersal::error::format_diagnostic(&err);
-                    assert!(text.contains("export_snapshot"), "{text}");
+                    assert!(text.contains("graphersal store upgrade"), "{text}");
                 }
                 other => panic!("expected OlderFormat, got {other:?}"),
             }
