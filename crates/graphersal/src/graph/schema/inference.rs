@@ -10,17 +10,23 @@
 //!
 //! Inference reports the logical type of each stored value exactly: a string that looks like a
 //! UUID, a date or an IP address is `string`; a real `uuid` value is
-//! `{"type": "string", "format": "uuid"}`. No content-sniffing detector may ever be added here
+//! `{"type": "string", "format": "uuid"}`, a real `datetime` `{"type": "string", "format":
+//! "date-time"}` (and `date`, `local-date-time`, `time`, `duration` for the other temporal
+//! types; a position holding a string and a temporal value is an `anyOf`). No content-sniffing
+//! detector may ever be added here
 //! (CLAUDE.md rule 7). The inferred schema has mode `none` and no `additionalProperties`; set
 //! the mode when applying it (`GraphSchema::with_mode`, the DSL's
 //! `g.set_schema(g.infer_schema(), SchemaMode.closed)`): "freeze the structure you have".
+
+use std::collections::BTreeSet;
 
 use indexmap::IndexMap;
 
 use crate::graph::GraphStorage;
 use crate::graph::schema::{
-    EdgeConnection, EdgeSchema, GraphSchema, JsonType, PropertySchema, SchemaFormat, VertexSchema,
+    EdgeConnection, EdgeSchema, GraphSchema, JsonType, PropertySchema, VertexSchema,
 };
+use crate::value::temporal::TemporalKind;
 use crate::value::{ElementProperty, PropertyMap};
 
 /// What was observed at one position.
@@ -32,10 +38,8 @@ struct Observed {
     number: bool,
     string: bool,
     uuid: bool,
-    /// A temporal value was seen here. A2: the schema format gets `format: date-time`, ...;
-    /// until then such a position is left unconstrained (`{}`), so the inferred schema still
-    /// admits its data.
-    temporal: bool,
+    /// The temporal types seen here (`format: date-time`, ...), in their order.
+    temporal: BTreeSet<TemporalKind>,
     /// Arrays seen here: the observation of their items (`None` while every array was empty).
     array: Option<Option<Box<Observed>>>,
     /// Objects seen here.
@@ -92,7 +96,9 @@ impl Observed {
             // A compressed string is a string (D5).
             ElementProperty::String(_) | ElementProperty::Compressed(_) => self.string = true,
             ElementProperty::Uuid(_) => self.uuid = true,
-            ElementProperty::Temporal(_) => self.temporal = true,
+            ElementProperty::Temporal(value) => {
+                self.temporal.insert(value.kind());
+            }
             ElementProperty::Array(items) => {
                 let slot = self.array.get_or_insert(None);
                 for item in items {
@@ -131,6 +137,9 @@ impl Observed {
         if self.uuid {
             members.push(PropertySchema::uuid());
         }
+        for kind in &self.temporal {
+            members.push(PropertySchema::temporal(*kind));
+        }
         if let Some(items) = self.array {
             members.push(match items {
                 Some(items) => PropertySchema::array(items.into_schema()),
@@ -147,12 +156,9 @@ impl Observed {
     }
 
     fn into_schema(self) -> PropertySchema {
-        if self.temporal {
-            return PropertySchema::any();
-        }
-        // A `string` and a `uuid` at one position cannot share a `type` array (the format
-        // applies to every string): then each kind is an `anyOf` member.
-        let split = self.string && self.uuid;
+        // A `string`, a `uuid` and the temporal types at one position cannot share a `type`
+        // array (the format applies to every string): then each kind is an `anyOf` member.
+        let split = usize::from(self.string) + usize::from(self.uuid) + self.temporal.len() > 1;
         let members = self.members();
         if members.len() == 1 {
             return members.into_iter().next().unwrap_or_default();
@@ -169,8 +175,8 @@ impl Observed {
             if let Some(types) = &mut node.types {
                 types.extend(member.types.into_iter().flatten());
             }
-            if member.format == Some(SchemaFormat::Uuid) {
-                node.format = Some(SchemaFormat::Uuid);
+            if member.format.is_some() {
+                node.format = member.format;
             }
             if member.items.is_some() {
                 node.items = member.items;

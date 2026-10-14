@@ -8,6 +8,7 @@ use crate::graph::schema::{
     SCHEMA_FORMAT_URL, SchemaFormat, SchemaMode, SchemaPattern, VertexSchema,
 };
 use crate::value::physical::{PhysicalValue, lift_untyped, lower, read_json, to_json_text};
+use crate::value::temporal::{Temporal, TemporalKind};
 use crate::value::{ElementProperty, Number, PropertyMap};
 
 /// How deeply a schema document may nest (arrays and objects), and how deeply `$ref`s may
@@ -20,7 +21,8 @@ pub(crate) const MAX_SCHEMA_NODES: usize = 100_000;
 
 /// The keywords a property node accepts.
 const NODE_KEYWORDS: &str = "type, format, items, properties, required, additionalProperties, \
-     anyOf, enum, const, minimum, maximum, exclusiveMinimum, exclusiveMaximum, minLength, \
+     anyOf, enum, const, minimum, maximum, exclusiveMinimum, exclusiveMaximum, formatMinimum, \
+     formatMaximum, formatExclusiveMinimum, formatExclusiveMaximum, minLength, \
      maxLength, pattern, minItems, maxItems, title, description, $comment, examples, \
      deprecated, default, $ref (and $defs, $schema, $id at a label schema's root)";
 
@@ -618,6 +620,8 @@ impl NodeParser<'_, '_> {
         let mut annotations = Annotations::default();
         // Kind-specific keywords seen, to check them against `type` afterwards.
         let mut uses: Vec<(&str, JsonType)> = Vec::new();
+        // `formatMinimum`, ...: their text is read once the node's `format` is known.
+        let mut format_bounds: Vec<(&'static str, String)> = Vec::new();
         for (key, field) in fields {
             let at = at.child(key.as_ref());
             let key = key.as_ref();
@@ -625,20 +629,26 @@ impl NodeParser<'_, '_> {
                 "type" => node.types = Some(parse_types(field, &at)?),
                 "format" => {
                     let name = string(field, &at, "format")?;
-                    node.format = Some(match name {
-                        "uuid" => SchemaFormat::Uuid,
-                        other => {
-                            return Err(invalid(
-                                &at,
-                                format!("unsupported format '{other}'"),
-                                "Only \"format\": \"uuid\" is supported. Dates and times \
-                                 (date-time, date, time) come with the date type in 0.2.0: \
-                                 until then remove the format (the value is a plain string), \
-                                 so a later version cannot change what this schema accepts.",
-                            ));
-                        }
-                    });
+                    node.format = Some(SchemaFormat::from_name(name).ok_or_else(|| {
+                        invalid(
+                            &at,
+                            format!("unsupported format '{name}'"),
+                            "The supported formats are uuid, date-time (an instant with its \
+                             offset), date, local-date-time (a date and time without a zone), \
+                             time (a time of day without a zone) and duration. Remove any \
+                             other format (the value is a plain string), so a later version \
+                             cannot change what this schema accepts.",
+                        )
+                    })?);
                     uses.push(("format", JsonType::String));
+                }
+                "formatMinimum"
+                | "formatMaximum"
+                | "formatExclusiveMinimum"
+                | "formatExclusiveMaximum" => {
+                    let text = string(field, &at, key)?;
+                    format_bounds.push((key_static(key), text.to_string()));
+                    uses.push((key_static(key), JsonType::String));
                 }
                 "items" => {
                     if let PhysicalValue::Array(_) = field {
@@ -852,6 +862,41 @@ impl NodeParser<'_, '_> {
                 "Write {\"type\": \"string\", \"format\": \"uuid\"}.",
             ));
         }
+        for (keyword, text) in format_bounds {
+            let bound_at = at.child(keyword);
+            let Some(kind) = node.format.and_then(SchemaFormat::temporal_kind) else {
+                return Err(invalid(
+                    &bound_at,
+                    format!("{keyword} needs a date or time format on the same node"),
+                    format!(
+                        "{keyword} bounds a value of a temporal format: write {{\"type\": \
+                         \"string\", \"format\": \"date-time\", \"{keyword}\": \
+                         \"2020-01-01T00:00:00Z\"}} (or the format date, local-date-time, time \
+                         or duration with a value of that type). For numbers use minimum and \
+                         maximum."
+                    ),
+                ));
+            };
+            let bound = Temporal::parse_as(kind, &text).map_err(|err| {
+                invalid(
+                    &bound_at,
+                    format!("{keyword} is not a {kind}: {err}"),
+                    format!(
+                        "The bound is the text of a value of the node's format ({}), for \
+                         example \"{}\".",
+                        kind.name(),
+                        example_text(kind)
+                    ),
+                )
+            })?;
+            let slot = match keyword {
+                "formatMinimum" => &mut constraints.format_minimum,
+                "formatMaximum" => &mut constraints.format_maximum,
+                "formatExclusiveMinimum" => &mut constraints.format_exclusive_minimum,
+                _ => &mut constraints.format_exclusive_maximum,
+            };
+            *slot = Some(bound);
+        }
         node.constraints = (!constraints.is_empty()).then(|| Box::new(constraints));
         node.annotations = (!annotations.is_empty()).then(|| Box::new(annotations));
         Ok(node)
@@ -951,7 +996,22 @@ fn key_static(key: &str) -> &'static str {
         "maxLength" => "maxLength",
         "pattern" => "pattern",
         "minItems" => "minItems",
+        "formatMinimum" => "formatMinimum",
+        "formatMaximum" => "formatMaximum",
+        "formatExclusiveMinimum" => "formatExclusiveMinimum",
+        "formatExclusiveMaximum" => "formatExclusiveMaximum",
         _ => "maxItems",
+    }
+}
+
+/// A value of a temporal type as an example in a diagnostic.
+fn example_text(kind: TemporalKind) -> &'static str {
+    match kind {
+        TemporalKind::DateTime => "2024-05-01T09:30:00+02:00",
+        TemporalKind::Date => "2024-05-01",
+        TemporalKind::LocalDateTime => "2024-05-01T09:30:00",
+        TemporalKind::Time => "09:30:00",
+        TemporalKind::Duration => "P1DT2H",
     }
 }
 
@@ -977,13 +1037,26 @@ fn parse_types(value: &PhysicalValue<'_>, at: &Pointer) -> Result<Vec<JsonType>,
                 "int64" | "long" | "int" => "int64 is written \"integer\" in a schema.",
                 "float64" | "double" | "float" => "float64 is written \"number\" in a schema.",
                 "uuid" => "uuid is written {\"type\": \"string\", \"format\": \"uuid\"}.",
+                "datetime" | "date-time" | "timestamp" => {
+                    "datetime is written {\"type\": \"string\", \"format\": \"date-time\"}."
+                }
+                "date" => "date is written {\"type\": \"string\", \"format\": \"date\"}.",
+                "localdatetime" | "local-date-time" => {
+                    "localdatetime is written {\"type\": \"string\", \"format\": \
+                     \"local-date-time\"}."
+                }
+                "time" => "time is written {\"type\": \"string\", \"format\": \"time\"}.",
+                "duration" | "interval" => {
+                    "duration is written {\"type\": \"string\", \"format\": \"duration\"}."
+                }
                 "union" => {
                     "A union is written anyOf: [{..}, {..}] (or a type array for \
                             plain types: \"type\": [\"string\", \"null\"])."
                 }
                 _ => {
                     "The types are null, boolean, integer (int64), number (float64), string \
-                      (uuid with \"format\": \"uuid\"), array and object."
+                      (uuid, datetime, date, localdatetime, time and duration with a \"format\"), \
+                      array and object."
                 }
             };
             invalid(at, format!("unknown type '{name}'"), hint)
@@ -1065,6 +1138,17 @@ impl PropertySchema {
             for (key, bound) in numbers {
                 if let Some(bound) = bound {
                     map.insert(key, ElementProperty::Number(bound.clone()));
+                }
+            }
+            let temporals = [
+                ("formatMinimum", &c.format_minimum),
+                ("formatExclusiveMinimum", &c.format_exclusive_minimum),
+                ("formatMaximum", &c.format_maximum),
+                ("formatExclusiveMaximum", &c.format_exclusive_maximum),
+            ];
+            for (key, bound) in temporals {
+                if let Some(bound) = bound {
+                    map.insert(key, ElementProperty::from(bound.to_string().as_str()));
                 }
             }
             let counts = [("minLength", c.min_length), ("maxLength", c.max_length)];

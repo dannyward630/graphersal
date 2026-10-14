@@ -1,10 +1,14 @@
 //! Coercion on write: converts an incoming property value to the type a schema declares for it.
 //!
-//! Only two conversions exist, and both happen only because the schema *explicitly declares*
+//! Only three conversions exist, and all happen only because the schema *explicitly declares*
 //! the target type (this is not content sniffing, see CLAUDE.md rule 7):
 //!
 //! - a canonical UUID string becomes a [`ElementProperty::Uuid`] where the node is
 //!   `{"type": "string", "format": "uuid"}`;
+//! - a string the temporal type's parser accepts (ISO 8601 / RFC 3339 text, not only the
+//!   canonical form) becomes a [`ElementProperty::Temporal`] where the node is
+//!   `{"type": "string", "format": "date-time"}` (`date`, `local-date-time`, `time`,
+//!   `duration`); text the parser refuses is a coercion failure;
 //! - an `int64` becomes a `float64` where the node admits `number` but not `integer`, when it
 //!   is exactly representable.
 //!
@@ -12,7 +16,8 @@
 //! Reads never coerce. A schema's `default` is never applied here or anywhere else.
 
 use crate::graph::schema::nested::{NestedCtx, validate_nested};
-use crate::graph::schema::{JsonType, PropertySchema};
+use crate::graph::schema::{JsonType, PropertySchema, SchemaFormat};
+use crate::value::temporal::{Temporal, TemporalKind};
 use crate::value::uuid::parse_canonical;
 use crate::value::{ElementProperty, Number};
 
@@ -28,6 +33,22 @@ pub(crate) struct CoerceFailure {
 
 /// The reason reported for a string that is not a canonical UUID.
 pub(crate) const NOT_A_CANONICAL_UUID: &str = "not a canonical UUID (8-4-4-4-12 lowercase hex)";
+
+/// The reason reported for a string that is not a value of a declared temporal type.
+pub(crate) fn not_a_temporal(kind: TemporalKind) -> &'static str {
+    match kind {
+        TemporalKind::DateTime => {
+            "not a datetime (ISO 8601 / RFC 3339 such as 2024-05-01T09:30:00+02:00, years -9999 \
+             to 9999)"
+        }
+        TemporalKind::Date => "not a date (ISO 8601 such as 2024-05-01, years -9999 to 9999)",
+        TemporalKind::LocalDateTime => {
+            "not a localdatetime (ISO 8601 without an offset such as 2024-05-01T09:30:00)"
+        }
+        TemporalKind::Time => "not a time (ISO 8601 without an offset such as 09:30:00)",
+        TemporalKind::Duration => "not a duration (ISO 8601 such as P1Y2M3DT4H5M6S)",
+    }
+}
 
 /// The reason reported for an integer that has no exact `float64` counterpart.
 pub(crate) const INEXACT_FLOAT64: &str = "integer cannot be represented exactly as float64";
@@ -57,13 +78,26 @@ pub(crate) fn coerce_to_declared(
         return Ok(value);
     };
     match value {
-        ElementProperty::String(text) if node.is_uuid_string() => match parse_canonical(&text) {
-            Some(uuid) => Ok(ElementProperty::Uuid(uuid)),
-            None => Err(CoerceFailure {
-                reason: NOT_A_CANONICAL_UUID,
-                value: ElementProperty::String(text),
-            }),
-        },
+        ElementProperty::String(text) if node.string_format() == Some(SchemaFormat::Uuid) => {
+            match parse_canonical(&text) {
+                Some(uuid) => Ok(ElementProperty::Uuid(uuid)),
+                None => Err(CoerceFailure {
+                    reason: NOT_A_CANONICAL_UUID,
+                    value: ElementProperty::String(text),
+                }),
+            }
+        }
+        ElementProperty::String(text)
+            if let Some(kind) = node.string_format().and_then(SchemaFormat::temporal_kind) =>
+        {
+            match Temporal::parse_as(kind, &text) {
+                Ok(temporal) => Ok(ElementProperty::Temporal(temporal)),
+                Err(_) => Err(CoerceFailure {
+                    reason: not_a_temporal(kind),
+                    value: ElementProperty::String(text),
+                }),
+            }
+        }
         ElementProperty::Number(number)
             if types.contains(&JsonType::Number) && !types.contains(&JsonType::Integer) =>
         {

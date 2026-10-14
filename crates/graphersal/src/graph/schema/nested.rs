@@ -6,8 +6,10 @@
 //! - **`type`**: the value's kind must be listed. `integer` admits an `int64` only (a `float64`
 //!   `3.0` is not an integer), `number` a `float64` only (an `int64` is coerced on write, but a
 //!   stored `int64` does not conform), `string` a `string`, `string` + `format: "uuid"` a
-//!   `uuid` (a stored string does not conform; a canonical string is coerced on write). A node
-//!   without `type` admits every kind.
+//!   `uuid` (a stored string does not conform; a canonical string is coerced on write), and
+//!   `string` + `format: "date-time"` (`date`, `local-date-time`, `time`, `duration`) the
+//!   temporal type of the format (a string that the type's parser accepts is coerced on
+//!   write). A node without `type` admits every kind.
 //! - **`null`** is a value like any other: a key holding `null` conforms only when its node
 //!   admits `null` (`"type": ["string", "null"]`, an `anyOf` member, or no `type`).
 //! - **Objects**: every present key is checked against its declared schema; an undeclared key is
@@ -17,8 +19,9 @@
 //!   nothing about absence.
 //! - **Arrays**: every item is checked against `items`.
 //! - **Constraints** apply to the kind they belong to (`minimum` to numbers, `minLength` to
-//!   strings, ...); `enum`/`const` compare JSON values (`1` equals `1.0`, a `uuid` compares as
-//!   its canonical string).
+//!   strings, `formatMinimum` to the temporal values of the node's format, ...); `enum`/`const`
+//!   compare JSON values (`1` equals `1.0`, a `uuid` and a temporal value compare as their
+//!   canonical text).
 //! - **`anyOf`**: at least one member must accept the value. When none does, the errors of the
 //!   first member of the same container kind are reported (else a type mismatch against the
 //!   whole union). To find the declared node *at a path through `anyOf`* (leaf coercion), the
@@ -43,7 +46,7 @@ use std::sync::Arc;
 
 use crate::error::SchemaError;
 use crate::graph::schema::types::value_type_name;
-use crate::graph::schema::{Constraints, JsonType, PropertySchema};
+use crate::graph::schema::{Constraints, JsonType, PropertySchema, SchemaFormat};
 use crate::value::json_path::JsonPathSegment;
 use crate::value::physical::{PhysicalValue, lower};
 use crate::value::{ElementProperty, JsonPath, Number};
@@ -86,25 +89,29 @@ fn mismatch(
     }
 }
 
-/// The kind of a value, as `type` names it (`None` for a graph element).
-fn kind_of(value: &ElementProperty, format_uuid: bool) -> Option<JsonType> {
+/// The kind of a value, as `type` names it, given the `format` of the node's `string` (`None`
+/// for a graph element, and for a string-like value the format does not declare).
+fn kind_of(value: &ElementProperty, format: Option<SchemaFormat>) -> Option<JsonType> {
     Some(match value {
         ElementProperty::Null => JsonType::Null,
         ElementProperty::Boolean(_) => JsonType::Boolean,
         ElementProperty::Number(n) if n.is_i64() => JsonType::Integer,
         ElementProperty::Number(_) => JsonType::Number,
-        ElementProperty::String(_) | ElementProperty::Compressed(_) if !format_uuid => {
+        ElementProperty::String(_) | ElementProperty::Compressed(_) if format.is_none() => {
             JsonType::String
         }
-        ElementProperty::Uuid(_) if format_uuid => JsonType::String,
-        ElementProperty::String(_) | ElementProperty::Compressed(_) | ElementProperty::Uuid(_) => {
-            return None;
+        // `string` + `format: uuid` is a uuid, `string` + `format: date-time` a datetime, ...
+        ElementProperty::Uuid(_) | ElementProperty::Temporal(_)
+            if format.is_some_and(|format| format.admits(value)) =>
+        {
+            JsonType::String
         }
+        ElementProperty::String(_)
+        | ElementProperty::Compressed(_)
+        | ElementProperty::Uuid(_)
+        | ElementProperty::Temporal(_) => return None,
         ElementProperty::Array(_) => JsonType::Array,
         ElementProperty::Object(_) | ElementProperty::Map(_) => JsonType::Object,
-        // A2: the temporal formats (`date-time`, `date`, ...); until then no declared `type`
-        // admits a temporal value (an untyped node does).
-        ElementProperty::Temporal(_) => return None,
         ElementProperty::Vertex(_) | ElementProperty::Edge(_) => return None,
     })
 }
@@ -113,10 +120,9 @@ fn kind_of(value: &ElementProperty, format_uuid: bool) -> Option<JsonType> {
 pub(crate) fn admits_type(node: &PropertySchema, value: &ElementProperty) -> bool {
     match &node.types {
         None => !matches!(value, ElementProperty::Vertex(_) | ElementProperty::Edge(_)),
+        // `string` + `format` admits the format's logical type; without one, a plain string.
         Some(types) => {
-            let uuid_string = node.is_uuid_string();
-            // `string` + `format: uuid` admits a uuid; without the format, a plain string.
-            kind_of(value, uuid_string).is_some_and(|kind| types.contains(&kind))
+            kind_of(value, node.string_format()).is_some_and(|kind| types.contains(&kind))
         }
     }
 }
@@ -433,6 +439,43 @@ pub(crate) fn check_constraints(
                             number_text(n),
                         ));
                     }
+                }
+            }
+        }
+        ElementProperty::Temporal(temporal) => {
+            let bounds = [
+                (
+                    &constraints.format_minimum,
+                    ">=",
+                    [Ordering::Greater, Ordering::Equal],
+                ),
+                (
+                    &constraints.format_exclusive_minimum,
+                    ">",
+                    [Ordering::Greater, Ordering::Greater],
+                ),
+                (
+                    &constraints.format_maximum,
+                    "<=",
+                    [Ordering::Less, Ordering::Equal],
+                ),
+                (
+                    &constraints.format_exclusive_maximum,
+                    "<",
+                    [Ordering::Less, Ordering::Less],
+                ),
+            ];
+            for (bound, op, allowed) in bounds {
+                // A bound applies to a value of its own type (the node's `format`, checked when
+                // the schema is loaded): a `datetime` by its instant, a `duration` by its length.
+                if let Some(bound) = bound
+                    && bound.kind() == temporal.kind()
+                    && !allowed.contains(&temporal.cmp(bound))
+                {
+                    return Err(violation(
+                        format!("value {op} {bound}"),
+                        temporal.to_string(),
+                    ));
                 }
             }
         }

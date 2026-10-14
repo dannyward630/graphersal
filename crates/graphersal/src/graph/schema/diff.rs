@@ -2,6 +2,7 @@
 
 use crate::graph::schema::nested::{compare_numbers, json_equal, number_text};
 use crate::graph::schema::{ElementKind, GraphSchema, PropertySchema, SchemaMode};
+use crate::value::temporal::Temporal;
 use crate::value::{ElementProperty, Number, PropertyMap};
 use std::cmp::Ordering;
 
@@ -534,6 +535,54 @@ impl Differ {
                 name,
                 x.as_ref().map(number_text),
                 y.as_ref().map(number_text),
+                ok,
+            );
+        }
+        let temporal_bounds: [(&str, &Option<Temporal>, &Option<Temporal>, Ordering); 4] = [
+            (
+                "formatMinimum",
+                &a.format_minimum,
+                &b.format_minimum,
+                Ordering::Less,
+            ),
+            (
+                "formatExclusiveMinimum",
+                &a.format_exclusive_minimum,
+                &b.format_exclusive_minimum,
+                Ordering::Less,
+            ),
+            (
+                "formatMaximum",
+                &a.format_maximum,
+                &b.format_maximum,
+                Ordering::Greater,
+            ),
+            (
+                "formatExclusiveMaximum",
+                &a.format_exclusive_maximum,
+                &b.format_exclusive_maximum,
+                Ordering::Greater,
+            ),
+        ];
+        for (name, x, y, relaxed) in temporal_bounds {
+            if x == y {
+                continue;
+            }
+            // Relaxed: removed, or moved outward within the same type (a bound of another type
+            // comes with a format change, itself incompatible).
+            let ok = match (x, y) {
+                (_, None) => true,
+                (None, Some(_)) => false,
+                (Some(x), Some(y)) => {
+                    x.kind() == y.kind()
+                        && matches!(y.cmp(x), o if o == relaxed || o == Ordering::Equal)
+                }
+            };
+            self.bound_change(
+                path,
+                name,
+                x.as_ref().map(ToString::to_string),
+                y.as_ref().map(ToString::to_string),
                 ok,
             );
         }

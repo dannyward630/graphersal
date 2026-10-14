@@ -8,6 +8,7 @@
 use indexmap::IndexMap;
 
 use crate::graph::schema::SchemaPattern;
+use crate::value::temporal::{Temporal, TemporalKind};
 use crate::value::{ElementProperty, Number};
 
 /// A JSON Schema `type` name of the supported subset.
@@ -75,7 +76,7 @@ impl JsonType {
             JsonType::Integer => "int64",
             JsonType::Number => "float64",
             JsonType::String => match format {
-                Some(SchemaFormat::Uuid) => "uuid",
+                Some(format) => format.engine_name(),
                 None => "string",
             },
             JsonType::Array => "array",
@@ -84,21 +85,104 @@ impl JsonType {
     }
 }
 
-/// A `format` the engine understands. Only `uuid` exists in 0.1.0: every other `format` is an
-/// error when a schema is loaded (a later date type must not silently change what an existing
-/// schema accepts).
+/// A `format` the engine understands: each one turns `string` into a logical type. Every other
+/// `format` is an error when a schema is loaded (a later type must not silently change what an
+/// existing schema accepts).
+///
+/// JSON Schema's `format` is an annotation for other validators, and they ignore a format they
+/// do not know: `local-date-time` (no JSON Schema name exists) is safe in a schema shared with
+/// them. Note that JSON Schema's own `time` (RFC 3339 `full-time`) requires a UTC offset, while
+/// Graphersal's `time` is a local time of day without one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum SchemaFormat {
     /// `format: "uuid"`: a `string` that is a UUID, stored as the logical `uuid` type.
     Uuid,
+    /// `format: "date-time"`: an instant with its UTC offset, the logical `datetime` type.
+    DateTime,
+    /// `format: "date"`: a calendar day, the logical `date` type.
+    Date,
+    /// `format: "local-date-time"`: a wall-clock date and time without a zone, the logical
+    /// `localdatetime` type (a Graphersal name; JSON Schema has none).
+    LocalDateTime,
+    /// `format: "time"`: a time of day without a zone, the logical `time` type (JSON Schema's
+    /// `time` has an offset; this one has none).
+    Time,
+    /// `format: "duration"`: months, days and microseconds (ISO 8601 text), the logical
+    /// `duration` type.
+    Duration,
 }
 
 impl SchemaFormat {
-    /// The keyword value: `uuid`.
+    /// Every format, in the order the documentation lists them.
+    pub const ALL: [SchemaFormat; 6] = [
+        SchemaFormat::Uuid,
+        SchemaFormat::DateTime,
+        SchemaFormat::Date,
+        SchemaFormat::LocalDateTime,
+        SchemaFormat::Time,
+        SchemaFormat::Duration,
+    ];
+
+    /// The keyword value: `uuid`, `date-time`, `date`, `local-date-time`, `time`, `duration`.
     pub fn as_str(self) -> &'static str {
         match self {
             SchemaFormat::Uuid => "uuid",
+            SchemaFormat::DateTime => "date-time",
+            SchemaFormat::Date => "date",
+            SchemaFormat::LocalDateTime => "local-date-time",
+            SchemaFormat::Time => "time",
+            SchemaFormat::Duration => "duration",
+        }
+    }
+
+    /// Parses a keyword value (case-sensitive, no aliases).
+    pub fn from_name(name: &str) -> Option<Self> {
+        SchemaFormat::ALL
+            .into_iter()
+            .find(|format| format.as_str() == name)
+    }
+
+    /// The temporal type the format declares; `None` for `uuid`.
+    pub fn temporal_kind(self) -> Option<TemporalKind> {
+        match self {
+            SchemaFormat::Uuid => None,
+            SchemaFormat::DateTime => Some(TemporalKind::DateTime),
+            SchemaFormat::Date => Some(TemporalKind::Date),
+            SchemaFormat::LocalDateTime => Some(TemporalKind::LocalDateTime),
+            SchemaFormat::Time => Some(TemporalKind::Time),
+            SchemaFormat::Duration => Some(TemporalKind::Duration),
+        }
+    }
+
+    /// The format that declares a temporal type.
+    pub fn of_temporal(kind: TemporalKind) -> Self {
+        match kind {
+            TemporalKind::DateTime => SchemaFormat::DateTime,
+            TemporalKind::Date => SchemaFormat::Date,
+            TemporalKind::LocalDateTime => SchemaFormat::LocalDateTime,
+            TemporalKind::Time => SchemaFormat::Time,
+            TemporalKind::Duration => SchemaFormat::Duration,
+        }
+    }
+
+    /// The engine's name of the logical type (`uuid`, `datetime`, `localdatetime`, ...).
+    pub(crate) fn engine_name(self) -> &'static str {
+        match self.temporal_kind() {
+            Some(kind) => kind.name(),
+            None => "uuid",
+        }
+    }
+
+    /// Whether a value is of the logical type the format declares (a `uuid` for `uuid`, a
+    /// temporal value of the format's type).
+    pub(crate) fn admits(self, value: &ElementProperty) -> bool {
+        match (self, value) {
+            (SchemaFormat::Uuid, ElementProperty::Uuid(_)) => true,
+            (_, ElementProperty::Temporal(temporal)) => {
+                self.temporal_kind() == Some(temporal.kind())
+            }
+            _ => false,
         }
     }
 }
@@ -106,7 +190,9 @@ impl SchemaFormat {
 /// The assertion keywords of a node besides `type`: each one restricts the values of the kind
 /// it applies to and ignores the others (JSON Schema semantics): numbers for
 /// `minimum`/`maximum`/`exclusive*`, strings for `minLength`/`maxLength`/`pattern`, arrays for
-/// `minItems`/`maxItems`, every value for `enum`/`const`.
+/// `minItems`/`maxItems`, the temporal value of the node's `format` for `formatMinimum`/
+/// `formatMaximum`/`formatExclusive*` (the keywords of JSON Schema's format-comparison
+/// proposal, which ajv-formats implements), every value for `enum`/`const`.
 #[derive(Debug, Clone, PartialEq, Default)]
 #[non_exhaustive]
 pub struct Constraints {
@@ -134,6 +220,15 @@ pub struct Constraints {
     pub enum_values: Option<Vec<ElementProperty>>,
     /// `const`: the value must equal this one.
     pub const_value: Option<ElementProperty>,
+    /// `formatMinimum`: inclusive lower bound of a temporal value, of the type the node's
+    /// `format` declares (a `datetime` compares by its instant, a `duration` by its length).
+    pub format_minimum: Option<Temporal>,
+    /// `formatMaximum`: inclusive upper bound of a temporal value.
+    pub format_maximum: Option<Temporal>,
+    /// `formatExclusiveMinimum`: exclusive lower bound of a temporal value.
+    pub format_exclusive_minimum: Option<Temporal>,
+    /// `formatExclusiveMaximum`: exclusive upper bound of a temporal value.
+    pub format_exclusive_maximum: Option<Temporal>,
 }
 
 impl Constraints {
@@ -187,7 +282,9 @@ impl Annotations {
 ///
 /// - [`types`](Self::types) (`type`): the value's kind must be one of them; `None` (no `type`
 ///   keyword) admits every kind. `["integer", "null"]` is a nullable integer.
-/// - [`format`](Self::format): `uuid` turns `string` into the logical `uuid` type.
+/// - [`format`](Self::format): `uuid`, `date-time`, `date`, `local-date-time`, `time` and
+///   `duration` turn `string` into the logical `uuid`, `datetime`, `date`, `localdatetime`,
+///   `time` and `duration` types ([`SchemaFormat`]).
 /// - [`items`](Self::items): every item of an array value; `None` admits any items.
 /// - [`properties`](Self::properties), [`required`](Self::required),
 ///   [`additional_properties`](Self::additional_properties): the keys of an object value.
@@ -205,7 +302,7 @@ impl Annotations {
 pub struct PropertySchema {
     /// `type`: the admitted kinds; `None` admits every kind.
     pub types: Option<Vec<JsonType>>,
-    /// `format` (only `uuid`).
+    /// `format`: the logical type of a `string` node ([`SchemaFormat`]).
     pub format: Option<SchemaFormat>,
     /// `items`: the schema of every array item.
     pub items: Option<Box<PropertySchema>>,
@@ -276,6 +373,44 @@ impl PropertySchema {
             format: Some(SchemaFormat::Uuid),
             ..Self::of(JsonType::String)
         }
+    }
+
+    /// `{"type": "string", "format": <format>}`: the logical type the format declares.
+    pub fn with_string_format(format: SchemaFormat) -> Self {
+        Self {
+            format: Some(format),
+            ..Self::of(JsonType::String)
+        }
+    }
+
+    /// `{"type": "string", "format": "date-time"}`: a `datetime`.
+    pub fn datetime() -> Self {
+        Self::with_string_format(SchemaFormat::DateTime)
+    }
+
+    /// `{"type": "string", "format": "date"}`: a `date`.
+    pub fn date() -> Self {
+        Self::with_string_format(SchemaFormat::Date)
+    }
+
+    /// `{"type": "string", "format": "local-date-time"}`: a `localdatetime`.
+    pub fn local_datetime() -> Self {
+        Self::with_string_format(SchemaFormat::LocalDateTime)
+    }
+
+    /// `{"type": "string", "format": "time"}`: a `time` (a local time of day).
+    pub fn time() -> Self {
+        Self::with_string_format(SchemaFormat::Time)
+    }
+
+    /// `{"type": "string", "format": "duration"}`: a `duration`.
+    pub fn duration() -> Self {
+        Self::with_string_format(SchemaFormat::Duration)
+    }
+
+    /// The node of a temporal type (`{"type": "string", "format": ..}`).
+    pub fn temporal(kind: TemporalKind) -> Self {
+        Self::with_string_format(SchemaFormat::of_temporal(kind))
     }
 
     /// `{"type": "array", "items": <items>}`.
@@ -386,10 +521,10 @@ impl PropertySchema {
         by_type && by_any_of
     }
 
-    /// The kinds the node declares (`(kind, is_uuid)`, a `uuid` string apart from a plain
-    /// string), through `anyOf`; `None` when it declares no type restriction (no `type` and no
-    /// `anyOf`, or an `anyOf` member without one).
-    pub(crate) fn declared_kinds(&self) -> Option<Vec<(JsonType, bool)>> {
+    /// The kinds the node declares (`(kind, format)`: a `string` with its `format`, so a `uuid`
+    /// or a temporal type apart from a plain string), through `anyOf`; `None` when it declares
+    /// no type restriction (no `type` and no `anyOf`, or an `anyOf` member without one).
+    pub(crate) fn declared_kinds(&self) -> Option<Vec<(JsonType, Option<SchemaFormat>)>> {
         if let Some(types) = &self.types {
             return Some(
                 types
@@ -397,7 +532,11 @@ impl PropertySchema {
                     .map(|t| {
                         (
                             *t,
-                            *t == JsonType::String && self.format == Some(SchemaFormat::Uuid),
+                            if *t == JsonType::String {
+                                self.format
+                            } else {
+                                None
+                            },
                         )
                     })
                     .collect(),
@@ -429,13 +568,14 @@ impl PropertySchema {
         }
     }
 
-    /// Whether the node is `string` with `format: "uuid"` in its own `type` (the logical `uuid`).
-    pub(crate) fn is_uuid_string(&self) -> bool {
-        self.format == Some(SchemaFormat::Uuid)
-            && self
-                .types
+    /// The `format` of a node with `string` in its own `type`: the logical type its strings are
+    /// (`uuid`, `datetime`, ...); `None` for a plain string or no string at all.
+    pub(crate) fn string_format(&self) -> Option<SchemaFormat> {
+        self.format.filter(|_| {
+            self.types
                 .as_ref()
                 .is_some_and(|types| types.contains(&JsonType::String))
+        })
     }
 
     /// The node's type in the engine's canonical spelling, for diagnostics: `int64`,

@@ -10,7 +10,7 @@ use quick_xml::reader::Reader;
 use quick_xml::writer::Writer;
 
 use crate::error::{GraphError, IOError};
-use crate::graph::{GraphNodeType, GraphStorage, JsonType};
+use crate::graph::{GraphNodeType, GraphStorage, JsonType, SchemaFormat};
 use crate::traversal::memory_budget::UnitBudget;
 use crate::value::depth::DEFAULT_MAX_VALUE_DEPTH;
 use crate::value::physical::{
@@ -1098,15 +1098,15 @@ fn physical_text<'a>(
 }
 
 /// Whether a declared node admits an `array`/`object` (also through `anyOf`).
-fn contains_container(kinds: &[(JsonType, bool)]) -> bool {
+fn contains_container(kinds: &[(JsonType, Option<SchemaFormat>)]) -> bool {
     kinds
         .iter()
         .any(|(kind, _)| matches!(kind, JsonType::Array | JsonType::Object))
 }
 
 /// Whether a declared node admits a value that GraphML writes as plain text (a `string` or a
-/// `uuid`).
-fn admits_text(kinds: &[(JsonType, bool)]) -> bool {
+/// `uuid` or a temporal value).
+fn admits_text(kinds: &[(JsonType, Option<SchemaFormat>)]) -> bool {
     kinds.iter().any(|(kind, _)| *kind == JsonType::String)
 }
 

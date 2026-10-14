@@ -75,7 +75,7 @@
     "local_ref": { "type": "string", "pattern": "^#/\\$defs/" },
     "count": { "type": "integer", "minimum": 0 },
     "node": {
-      "description": "One property schema node. integer = int64, number = float64, string + format uuid = uuid.",
+      "description": "One property schema node. integer = int64, number = float64, string + format uuid = uuid, string + format date-time / date / local-date-time / time / duration = datetime / date / localdatetime / time / duration (time and local-date-time have no UTC offset). formatMinimum, formatMaximum, formatExclusiveMinimum and formatExclusiveMaximum (text of the format's type) need one of these temporal formats.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -85,7 +85,7 @@
             { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/type_name" } }
           ]
         },
-        "format": { "const": "uuid" },
+        "format": { "enum": ["uuid", "date-time", "date", "local-date-time", "time", "duration"] },
         "items": { "$ref": "#/$defs/node" },
         "properties": { "type": "object", "additionalProperties": { "$ref": "#/$defs/node" } },
         "required": { "$ref": "#/$defs/key_list" },
@@ -97,6 +97,10 @@
         "maximum": { "type": "number" },
         "exclusiveMinimum": { "type": "number" },
         "exclusiveMaximum": { "type": "number" },
+        "formatMinimum": { "type": "string" },
+        "formatMaximum": { "type": "string" },
+        "formatExclusiveMinimum": { "type": "string" },
+        "formatExclusiveMaximum": { "type": "string" },
         "minLength": { "$ref": "#/$defs/count" },
         "maxLength": { "$ref": "#/$defs/count" },
         "pattern": { "type": "string", "format": "regex" },

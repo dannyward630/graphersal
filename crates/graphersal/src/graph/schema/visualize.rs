@@ -95,6 +95,18 @@ pub(crate) fn constraint_text(node: &PropertySchema) -> String {
         if let Some(max) = &c.exclusive_maximum {
             parts.push(format!("< {}", number_text(max)));
         }
+        match (&c.format_minimum, &c.format_maximum) {
+            (Some(min), Some(max)) => parts.push(format!("{min}..{max}")),
+            (Some(min), None) => parts.push(format!(">= {min}")),
+            (None, Some(max)) => parts.push(format!("<= {max}")),
+            (None, None) => {}
+        }
+        if let Some(min) = &c.format_exclusive_minimum {
+            parts.push(format!("> {min}"));
+        }
+        if let Some(max) = &c.format_exclusive_maximum {
+            parts.push(format!("< {max}"));
+        }
         let range = |what: &str, min: Option<u64>, max: Option<u64>| match (min, max) {
             (Some(min), Some(max)) => Some(format!("{what} {min}..{max}")),
             (Some(min), None) => Some(format!("{what} >= {min}")),
