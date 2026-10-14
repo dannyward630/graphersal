@@ -29,6 +29,7 @@ bitmask-enum = { workspace = true }
 parking_lot = { workspace = true }
 tracing = { workspace = true }
 web-time = { workspace = true }
+jiff = { workspace = true }
 thiserror = { workspace = true }
 regex = { workspace = true }
 # LZ4 for compressed properties (`value/compressed.rs`): pure Rust, wasm32-safe, already the

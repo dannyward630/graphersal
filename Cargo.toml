@@ -55,6 +55,12 @@ tracing = "0.1"
 # `performance.now()` clock in the browser (already in the tree through rhai).
 web-time = "1"
 thiserror = "1.0"
+# IANA time zones of the temporal values (book "Dates and Times"): the zone rules and the bundled
+# tz database (`jiff-tzdb`, the same answer on every machine and in wasm32, updated with our
+# releases). Used internally only: calendar math, parsing and formatting are our own code and no
+# jiff type appears in the public API. No system database lookup (`tzdb-zoneinfo` off) and no
+# `js` feature: the clock is `web_time`.
+jiff = { version = "0.2.37", default-features = false, features = ["std", "tz-fat", "tzdb-bundle-always"] }
 # Schema `pattern` constraints are regular expressions (JSON Schema semantics). The de-facto
 # standard engine: linear-time matching (no catastrophic backtracking on untrusted schemas), no
 # unsafe FFI, builds for wasm32-unknown-unknown. A pattern is compiled once, when the schema
