@@ -73,7 +73,7 @@ fn field_of(err: &DefinitionError) -> FieldError {
             "min_bytes" => "minBytes".to_string(),
             _ => "general".to_string(),
         },
-        DefinitionError::Conflict { .. } => "path".to_string(),
+        DefinitionError::Conflict { .. } => error.field.clone(),
         _ => "general".to_string(),
     };
     error

@@ -91,6 +91,34 @@ impl PropertyIndexDefinition {
         &self.key
     }
 
+    /// The name an index gets when none is given (the DSL's `g.create_index` without `name`,
+    /// the playground's form): `<label>_<key>` (`<label>_<key>_edge` for an edge index), every
+    /// character that is not an ASCII letter, digit or `_` replaced by `_`, prefixed with
+    /// `index_` when it would not start with a letter.
+    ///
+    /// ```
+    /// use graphersal::catalog::PropertyIndexDefinition;
+    /// use graphersal::storage::ElementKind;
+    ///
+    /// let index = PropertyIndexDefinition::new(ElementKind::Edge, "knows", "weight");
+    /// assert_eq!(index.default_name(), "knows_weight_edge");
+    /// let index = PropertyIndexDefinition::new(ElementKind::Vertex, "2nd-tier", "e-mail");
+    /// assert_eq!(index.default_name(), "index_2nd_tier_e_mail");
+    /// ```
+    pub fn default_name(&self) -> String {
+        let mut name: String = format!("{}_{}", self.label, self.key)
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        if self.element == ElementKind::Edge {
+            name.push_str("_edge");
+        }
+        if !name.starts_with(|c: char| c.is_ascii_alphabetic()) {
+            name.insert_str(0, "index_");
+        }
+        name
+    }
+
     /// Payload keys this version does not know, kept and written back.
     pub fn extra(&self) -> &PropertyMap {
         &self.extra

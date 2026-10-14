@@ -203,7 +203,7 @@ pub fn statistics_view<S: GraphStorage>(g: &S) -> Value {
 
 /// `g.memory_usage()` as data: `{structure_bytes, index_bytes, property_bytes, total_bytes,
 /// total_mb, compressed_values, compressed_plain_bytes, compressed_stored_bytes,
-/// compression_dictionary_bytes}`, or `null`.
+/// compression_dictionary_bytes, property_index_bytes}`, or `null`.
 pub fn memory_usage<S: GraphStorage>(g: &S) -> Value {
     match g.memory_usage() {
         Some(stats) => json!({
@@ -216,6 +216,7 @@ pub fn memory_usage<S: GraphStorage>(g: &S) -> Value {
             "compressed_plain_bytes": stats.compressed_plain_bytes,
             "compressed_stored_bytes": stats.compressed_stored_bytes,
             "compression_dictionary_bytes": stats.compression_dictionary_bytes,
+            "property_index_bytes": stats.property_index_bytes,
         }),
         None => Value::Null,
     }

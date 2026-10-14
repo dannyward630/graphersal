@@ -1,7 +1,9 @@
-//! A test storage: [`Forwarding`] without compressed properties. Every method forwards to the
-//! wrapped [`Forwarding`] except `recompress` and `compression_stats`, which keep the trait
-//! defaults (`Unsupported`, `None`): the behaviour of a foreign storage that stores compression
-//! rules but never applies them.
+//! A test storage: [`Forwarding`] without compressed properties and without property indexes.
+//! Every method forwards to the wrapped [`Forwarding`] except `recompress` and
+//! `compression_stats`, which keep the trait defaults (`Unsupported`, `None`), and
+//! `property_indexes` and the index lookups, which keep theirs (none; the capability is off):
+//! the behaviour of a foreign storage that stores compression rules and index definitions but
+//! never applies them.
 
 use graphersal::ElementProperty;
 use graphersal::storage::{
@@ -227,7 +229,8 @@ impl GraphStorage for NoCompression {
         GraphStorage::mark(&mut self.0, name)
     }
     fn capabilities(&self) -> StorageCapabilities {
-        GraphStorage::capabilities(&self.0)
+        // No property indexes either: `property_indexes` and the lookups keep the defaults.
+        GraphStorage::capabilities(&self.0).with_property_indexes(false)
     }
     fn register_commit_hook(&mut self, hook: Box<dyn CommitHook>) -> Result<(), GraphError> {
         GraphStorage::register_commit_hook(&mut self.0, hook)

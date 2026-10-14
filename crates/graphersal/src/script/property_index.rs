@@ -10,23 +10,6 @@ use crate::graph::{AccessRequest, Action, ElementKind, PropertyIndexDefinition, 
 /// The keys `create_index` accepts.
 const KEYS: [&str; 4] = ["name", "element", "label", "key"];
 
-/// The name an index gets without a `name`: `<label>_<key>` (`<label>_<key>_edge` for an edge
-/// index), every character that is not an ASCII letter, digit or `_` replaced by `_`, prefixed
-/// with `index_` when it would not start with a letter.
-pub(crate) fn default_index_name(element: ElementKind, label: &str, key: &str) -> String {
-    let mut name: String = format!("{label}_{key}")
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    if element == ElementKind::Edge {
-        name.push_str("_edge");
-    }
-    if !name.starts_with(|c: char| c.is_ascii_alphabetic()) {
-        name.insert_str(0, "index_");
-    }
-    name
-}
-
 /// One index as a map: name, element, label, key, served and its current stats (entries,
 /// distinct_values, bytes; zero when the storage does not serve it).
 fn index_entry(
@@ -129,14 +112,12 @@ impl ScriptGraphTraversalSource {
                 ));
             }
         };
+        let index = PropertyIndexDefinition::new(element, label, key);
         let name = match optional_text(operation, "name", take("name"))? {
             Some(name) => name,
-            None => default_index_name(element, &label, &key),
+            None => index.default_name(),
         };
-        let definition = Definition::property_index(
-            name.as_str(),
-            PropertyIndexDefinition::new(element, label, key),
-        );
+        let definition = Definition::property_index(name.as_str(), index);
         definition
             .validate()
             .map_err(|err| graph_fail(crate::error::GraphError::from(err)))?;
