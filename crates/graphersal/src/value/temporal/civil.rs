@@ -186,9 +186,18 @@ mod tests {
     #[test]
     fn month_arithmetic_clamps() {
         let jan31 = days_from_civil(2024, 1, 31);
-        assert_eq!(civil_from_days(add_months(jan31, 1).unwrap()), (2024, 2, 29));
-        assert_eq!(civil_from_days(add_months(jan31, 13).unwrap()), (2025, 2, 28));
-        assert_eq!(civil_from_days(add_months(jan31, -2).unwrap()), (2023, 11, 30));
+        assert_eq!(
+            civil_from_days(add_months(jan31, 1).unwrap()),
+            (2024, 2, 29)
+        );
+        assert_eq!(
+            civil_from_days(add_months(jan31, 13).unwrap()),
+            (2025, 2, 28)
+        );
+        assert_eq!(
+            civil_from_days(add_months(jan31, -2).unwrap()),
+            (2023, 11, 30)
+        );
         assert_eq!(add_months(MAX_DAY, 1), None);
         assert_eq!(add_months(MIN_DAY, -1), None);
         assert_eq!(add_months(0, i64::MAX), None);

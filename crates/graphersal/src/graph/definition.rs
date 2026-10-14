@@ -1280,7 +1280,8 @@ fn storable(value: &ElementProperty) -> bool {
         | ElementProperty::Compressed(_)
         | ElementProperty::Number(_)
         | ElementProperty::Boolean(_)
-        | ElementProperty::Uuid(_) => true,
+        | ElementProperty::Uuid(_)
+        | ElementProperty::Temporal(_) => true,
     }
 }
 

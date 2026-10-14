@@ -296,6 +296,7 @@ pub(crate) fn cut_nested(prop: &ElementProperty, limit: &ItemLimit) -> ElementPr
         ElementProperty::Number(n) => ElementProperty::Number(n.clone()),
         ElementProperty::Boolean(b) => ElementProperty::Boolean(*b),
         ElementProperty::Uuid(u) => ElementProperty::Uuid(*u),
+        ElementProperty::Temporal(t) => ElementProperty::Temporal(*t),
         ElementProperty::Array(items) => {
             let keep = limit.keep(items.len());
             ElementProperty::Array(

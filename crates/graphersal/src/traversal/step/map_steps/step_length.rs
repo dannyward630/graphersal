@@ -51,6 +51,7 @@ fn string_length_of(value: &ElementProperty) -> TraverserResult<Option<usize>> {
         ElementProperty::Number(_) => Err(not_a_string("number")),
         ElementProperty::Boolean(_) => Err(not_a_string("boolean")),
         ElementProperty::Uuid(_) => Err(not_a_string("uuid")),
+        ElementProperty::Temporal(value) => Err(not_a_string(value.kind().name())),
     }
 }
 

@@ -13,6 +13,8 @@
 //!   accepted on input;
 //! - `float64`: a JSON number, or `"NaN"`, `"Infinity"`, `"-Infinity"`;
 //! - `uuid`: the canonical text (lowercase `8-4-4-4-12`);
+//! - `date`, `localdatetime`, `datetime`, `time`, `duration`: the canonical ISO 8601 text
+//!   (`2023-08-02T00:00:00Z`);
 //! - `array`: a list of typed values; `object`: a list of `[key, typed value]` pairs (the
 //!   engine's key order).
 //!
@@ -30,6 +32,7 @@
 use graphersal::prelude::*;
 use graphersal::prelude::{CompactString, Number, PropertyMap};
 use graphersal::storage::ElementKind;
+use graphersal::temporal::{Temporal, TemporalKind};
 use serde_json::{Map, Value, json};
 
 use crate::Session;
@@ -63,6 +66,7 @@ pub fn typed_value(value: &ElementProperty) -> Value {
             "type": "uuid",
             "value": serde_json::to_value(value.logical().as_ref()).unwrap_or(Value::Null),
         }),
+        ElementProperty::Temporal(t) => json!({"type": t.kind().name(), "value": t.to_string()}),
         ElementProperty::Array(items) => json!({
             "type": "array",
             "value": items.iter().map(typed_value).collect::<Vec<_>>(),
@@ -155,6 +159,21 @@ pub fn value_from_typed(typed: &Value) -> Result<ElementProperty, String> {
                 fields.insert(CompactString::from(key), value_from_typed(item)?);
             }
             Ok(ElementProperty::Object(Box::new(fields)))
+        }
+        kind @ ("date" | "localdatetime" | "datetime" | "time" | "duration") => {
+            let text = value
+                .as_str()
+                .ok_or_else(|| format!("a {kind} value must be text"))?;
+            let kind = match kind {
+                "date" => TemporalKind::Date,
+                "localdatetime" => TemporalKind::LocalDateTime,
+                "datetime" => TemporalKind::DateTime,
+                "time" => TemporalKind::Time,
+                _ => TemporalKind::Duration,
+            };
+            Temporal::parse_as(kind, text)
+                .map(ElementProperty::Temporal)
+                .map_err(|err| err.to_string())
         }
         other => Err(format!(
             "unknown type \"{other}\": null, boolean, int64, float64, string, uuid, array or object"

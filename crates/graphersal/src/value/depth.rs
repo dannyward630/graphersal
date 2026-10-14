@@ -73,7 +73,8 @@ pub(crate) fn property_exceeds_depth(value: &ElementProperty, max: usize) -> boo
             | ElementProperty::Compressed(_)
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
-            | ElementProperty::Uuid(_) => {}
+            | ElementProperty::Uuid(_)
+            | ElementProperty::Temporal(_) => {}
         }
     }
     false

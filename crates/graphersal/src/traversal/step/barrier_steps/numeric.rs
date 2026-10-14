@@ -320,7 +320,17 @@ impl Extremum {
 }
 
 /// The kinds `min()`/`max()` can compare, named in the error of an incomparable value.
-const COMPARABLE_KINDS: &[&str] = &["number", "string", "boolean", "uuid"];
+const COMPARABLE_KINDS: &[&str] = &[
+    "number",
+    "string",
+    "boolean",
+    "uuid",
+    "date",
+    "localdatetime",
+    "datetime",
+    "time",
+    "duration",
+];
 
 /// Accumulator of `min()` and `max()`: numbers (widening int/float) or, alternatively, strings,
 /// booleans or UUIDs of one kind. `null` is skipped. A value of another kind than the one held,
@@ -380,7 +390,8 @@ impl ExtremumAccumulator {
             ElementProperty::String(_)
             | ElementProperty::Compressed(_)
             | ElementProperty::Boolean(_)
-            | ElementProperty::Uuid(_) => {
+            | ElementProperty::Uuid(_)
+            | ElementProperty::Temporal(_) => {
                 match (&self.other, held_kind) {
                     (None, None) => self.other = Some(value.to_logical()),
                     (Some(held), _) if kind_name(held) == kind_name(value) => {
@@ -419,6 +430,7 @@ fn kind_name(value: &ElementProperty) -> &'static str {
         ElementProperty::String(_) | ElementProperty::Compressed(_) => "string",
         ElementProperty::Boolean(_) => "boolean",
         ElementProperty::Uuid(_) => "uuid",
+        ElementProperty::Temporal(value) => value.kind().name(),
         ElementProperty::Number(_) => "number",
         ElementProperty::Null
         | ElementProperty::Object(_)

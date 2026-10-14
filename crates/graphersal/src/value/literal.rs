@@ -155,6 +155,7 @@ fn write_literal(out: &mut String, value: &ElementProperty) {
                 rhai_string(&crate::value::uuid::format_canonical(*bits))
             );
         }
+        ElementProperty::Temporal(value) => out.push_str(&rhai_temporal(value)),
         ElementProperty::Array(items) => {
             out.push('[');
             for (i, item) in items.iter().take(MAX_LITERAL_ITEMS).enumerate() {
@@ -239,8 +240,20 @@ pub(crate) fn rhai_pvalue(value: &PValue) -> String {
             "UUID.from_string({})",
             rhai_string(&crate::value::uuid::format_canonical(*bits))
         ),
+        PValue::Temporal(value) => rhai_temporal(value),
         PValue::Null => "()".to_string(),
     }
+}
+
+/// The Rhai literal of a temporal value: its constructor and canonical text
+/// (`datetime("2023-08-02T00:00:00Z")`, `date("2023-08-02")`, `localdatetime(..)`, `time(..)`,
+/// `duration("P1D")`).
+pub(crate) fn rhai_temporal(value: &crate::value::temporal::Temporal) -> String {
+    format!(
+        "{}({})",
+        value.kind().name(),
+        rhai_string(&value.to_string())
+    )
 }
 
 /// The canonical DSL text of a token value: the Rhai literal that evaluates to it (`Scope.local`,

@@ -26,12 +26,15 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 
+// A3: the date steps (`dateAdd`, `dateDiff`, `dateTrunc`, `datePart`, `age`) call these.
+#[allow(dead_code)]
 pub(crate) mod arith;
 pub(crate) mod civil;
 mod format;
 mod parse;
 #[cfg(test)]
 mod tests;
+#[allow(dead_code)] // A3: zone arguments of the date steps.
 pub(crate) mod zone;
 
 use civil::{MICROS_PER_DAY, MICROS_PER_SECOND};
@@ -94,6 +97,7 @@ impl TemporalError {
         TemporalError::UnknownZone { name: quoted(name) }
     }
 
+    #[allow(dead_code)] // A3: the date steps.
     pub(crate) fn unsupported(operation: impl Into<String>, kind: TemporalKind) -> Self {
         TemporalError::Unsupported {
             operation: operation.into(),
@@ -350,7 +354,9 @@ impl DateTime {
     /// supported years.
     pub fn from_micros(micros: i64, offset_seconds: i32) -> TemporalResult<DateTime> {
         if offset_seconds.abs() > MAX_OFFSET_SECONDS {
-            return Err(TemporalError::out_of_range("the UTC offset (at most ±18:00)"));
+            return Err(TemporalError::out_of_range(
+                "the UTC offset (at most ±18:00)",
+            ));
         }
         let local = micros.checked_add(offset_seconds as i64 * MICROS_PER_SECOND);
         match local {
@@ -516,16 +522,32 @@ impl Ord for Duration {
         self.ordering_micros()
             .cmp(&other.ordering_micros())
             .then_with(|| {
-                (self.months, self.days, self.micros).cmp(&(
-                    other.months,
-                    other.days,
-                    other.micros,
-                ))
+                (self.months, self.days, self.micros).cmp(&(other.months, other.days, other.micros))
             })
     }
 }
 
+/// Every field of a temporal value, for a key that must tell apart equal values written
+/// differently (a `datetime`'s offset): the kind, then up to three integers.
+pub(crate) type TemporalBits = (TemporalKind, i64, i64, i64);
+
 impl Temporal {
+    /// Every field of the value (see [`TemporalBits`]).
+    pub(crate) fn bits(&self) -> TemporalBits {
+        match *self {
+            Temporal::Date(v) => (TemporalKind::Date, v.days as i64, 0, 0),
+            Temporal::LocalDateTime(v) => (TemporalKind::LocalDateTime, v.micros, 0, 0),
+            Temporal::DateTime(v) => (TemporalKind::DateTime, v.micros, v.offset_seconds as i64, 0),
+            Temporal::Time(v) => (TemporalKind::Time, v.micros, 0, 0),
+            Temporal::Duration(v) => (
+                TemporalKind::Duration,
+                v.months as i64,
+                v.days as i64,
+                v.micros,
+            ),
+        }
+    }
+
     /// The value's type.
     pub fn kind(&self) -> TemporalKind {
         match self {
@@ -596,11 +618,11 @@ text_traits!(
 impl fmt::Display for Temporal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Temporal::Date(v) => v.fmt(f),
-            Temporal::LocalDateTime(v) => v.fmt(f),
-            Temporal::DateTime(v) => v.fmt(f),
-            Temporal::Time(v) => v.fmt(f),
-            Temporal::Duration(v) => v.fmt(f),
+            Temporal::Date(v) => fmt::Display::fmt(v, f),
+            Temporal::LocalDateTime(v) => fmt::Display::fmt(v, f),
+            Temporal::DateTime(v) => fmt::Display::fmt(v, f),
+            Temporal::Time(v) => fmt::Display::fmt(v, f),
+            Temporal::Duration(v) => fmt::Display::fmt(v, f),
         }
     }
 }
@@ -608,7 +630,7 @@ impl fmt::Display for Temporal {
 impl fmt::Debug for Temporal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Temporal::Date(v) => v.fmt(f),
+            Temporal::Date(v) => fmt::Debug::fmt(v, f),
             Temporal::LocalDateTime(v) => fmt::Debug::fmt(v, f),
             Temporal::DateTime(v) => fmt::Debug::fmt(v, f),
             Temporal::Time(v) => fmt::Debug::fmt(v, f),

@@ -1699,6 +1699,11 @@ fn write_typed(value: &ElementProperty, out: &mut String) -> Result<(), Physical
             write_json_string(&format_canonical(*u), out)?;
             out.push('}');
         }
+        // A2: the `gx:OffsetDateTime`, `gx:LocalDate`, ... tags. Until then a clean error, never
+        // an untyped string a reader would take for a string.
+        ElementProperty::Temporal(value) => {
+            return Err(PhysicalError::Unsupported(value.kind().name()));
+        }
         ElementProperty::Array(items) => {
             out.push_str("{\"@type\":\"g:List\",\"@value\":[");
             for (i, item) in items.iter().enumerate() {

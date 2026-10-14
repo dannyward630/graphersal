@@ -59,6 +59,9 @@ enum ScalarKey {
     FloatBits(u64),
     Str(CompactString),
     Uuid(u128),
+    /// Every field of the value: two datetimes of one instant but different offsets are equal
+    /// values, yet interned apart so a sack keeps the offset it was given.
+    Temporal(crate::value::temporal::TemporalBits),
 }
 
 impl ScalarKey {
@@ -80,6 +83,7 @@ impl ScalarKey {
             ElementProperty::String(s) => ScalarKey::Str(s.clone()),
             ElementProperty::Compressed(text) => ScalarKey::Str(text.text()),
             ElementProperty::Uuid(u) => ScalarKey::Uuid(*u),
+            ElementProperty::Temporal(t) => ScalarKey::Temporal(t.bits()),
             ElementProperty::Array(_)
             | ElementProperty::Object(_)
             | ElementProperty::Map(_)

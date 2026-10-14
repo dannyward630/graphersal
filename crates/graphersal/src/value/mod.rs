@@ -21,6 +21,8 @@ pub mod compressed;
 pub(crate) mod depth;
 /// [`Direction`], the `Direction.OUT/IN/BOTH` edge-direction token.
 pub mod direction;
+/// [`DT`], the unit/part token of the date and time steps.
+pub mod dt;
 /// [`VertexValue`]/[`EdgeValue`], a vertex or an edge returned as a value.
 pub mod element_value;
 /// Glob pattern compiler and segment matcher for the `glob_path()` step.
@@ -57,6 +59,8 @@ pub(crate) mod scalar;
 pub mod scope;
 /// [`StreamMap`], the map a traversal produces (`group()`, `tree()`, ...).
 pub mod stream_map;
+/// [`Temporal`], the date and time values.
+pub mod temporal;
 pub(crate) mod uuid;
 /// [`ValueMap`], the map value whose keys are values.
 pub mod value_map;
@@ -70,6 +74,7 @@ pub use column::Column;
 pub use compact_str::CompactString;
 pub use compressed::CompressedText;
 pub use direction::Direction;
+pub use dt::DT;
 pub use element_value::{EdgeValue, VertexRef, VertexValue};
 pub use gtype::{GType, StreamKind};
 pub use json_path::{JsonPath, JsonPathSegment};
@@ -89,6 +94,7 @@ pub use record_key::RecordKey;
 pub(crate) use sack::{SackArena, SackRef, SackSpec};
 pub use scope::Scope;
 pub use stream_map::StreamMap;
+pub use temporal::Temporal;
 pub use value_map::ValueMap;
 pub use with_options::WithOptions;
 
@@ -112,6 +118,9 @@ pub enum ElementProperty {
     /// The 36-character canonical string exceeds `CompactString`'s 24-byte inline limit and would
     /// heap-allocate on every value; `u128` is zero-allocation and compares in one instruction.
     Uuid(u128),
+    /// A date, time, date-time or duration ([`Temporal`], book "Dates and Times"), stored inline
+    /// (plain integers, no allocation).
+    Temporal(Temporal),
     /// A nested property map.
     Object(Box<PropertyMap>),
     /// A list of values.
@@ -156,6 +165,7 @@ impl Clone for ElementProperty {
             ElementProperty::Number(number) => ElementProperty::Number(number.clone()),
             ElementProperty::Boolean(flag) => ElementProperty::Boolean(*flag),
             ElementProperty::Uuid(bits) => ElementProperty::Uuid(*bits),
+            ElementProperty::Temporal(value) => ElementProperty::Temporal(*value),
             ElementProperty::Object(map) => ElementProperty::Object(map.clone()),
             ElementProperty::Array(items) => ElementProperty::Array(items.clone()),
             ElementProperty::Vertex(map) => ElementProperty::Vertex(map.clone()),
@@ -187,6 +197,7 @@ impl PartialEq for ElementProperty {
             (E::Number(a), E::Number(b)) => a == b,
             (E::Boolean(a), E::Boolean(b)) => a == b,
             (E::Uuid(a), E::Uuid(b)) => a == b,
+            (E::Temporal(a), E::Temporal(b)) => a == b,
             (E::Object(a), E::Object(b)) => a == b,
             (E::Array(a), E::Array(b)) => a == b,
             (E::Vertex(a), E::Vertex(b)) => a == b,
@@ -198,6 +209,7 @@ impl PartialEq for ElementProperty {
                 | E::Number(_)
                 | E::Boolean(_)
                 | E::Uuid(_)
+                | E::Temporal(_)
                 | E::Object(_)
                 | E::Array(_)
                 | E::Vertex(_)
@@ -312,7 +324,8 @@ impl ElementProperty {
             | ElementProperty::String(_)
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
-            | ElementProperty::Uuid(_)) => plain,
+            | ElementProperty::Uuid(_)
+            | ElementProperty::Temporal(_)) => plain,
         }
     }
 
@@ -359,7 +372,8 @@ impl ElementProperty {
             | ElementProperty::String(_)
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
-            | ElementProperty::Uuid(_) => false,
+            | ElementProperty::Uuid(_)
+            | ElementProperty::Temporal(_) => false,
         }
     }
 
@@ -385,7 +399,8 @@ impl ElementProperty {
                 | ElementProperty::String(_)
                 | ElementProperty::Number(_)
                 | ElementProperty::Boolean(_)
-                | ElementProperty::Uuid(_) => {}
+                | ElementProperty::Uuid(_)
+                | ElementProperty::Temporal(_) => {}
             }
             match stack.pop() {
                 Some(next) => current = next,
@@ -439,7 +454,8 @@ impl ElementProperty {
             | ElementProperty::Compressed(_)
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
-            | ElementProperty::Uuid(_) => None,
+            | ElementProperty::Uuid(_)
+            | ElementProperty::Temporal(_) => None,
         }
     }
 
@@ -549,6 +565,14 @@ impl ElementProperty {
         }
     }
 
+    /// This value as a date or time value, or `None` if it isn't one.
+    pub fn as_temporal(&self) -> Option<Temporal> {
+        match self {
+            ElementProperty::Temporal(value) => Some(*value),
+            _ => None,
+        }
+    }
+
     /// This value as raw UUID bits, or `None` if it isn't a UUID.
     pub fn as_uuid(&self) -> Option<u128> {
         match self {
@@ -574,7 +598,8 @@ impl ElementProperty {
             ElementProperty::Null
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
-            | ElementProperty::Uuid(_) => 0,
+            | ElementProperty::Uuid(_)
+            | ElementProperty::Temporal(_) => 0,
             ElementProperty::String(value) => {
                 if value.is_heap_allocated() {
                     value.capacity() as u64
@@ -646,14 +671,18 @@ fn type_rank(value: &ElementProperty) -> u8 {
         ElementProperty::Null => 0,
         ElementProperty::Boolean(_) => 1,
         ElementProperty::Number(_) => 2,
+        // TinkerPop orderability: dates after numbers, before strings; the temporal kinds order
+        // among themselves by `Temporal`'s own `Ord` (date, localdatetime, datetime, time,
+        // duration).
+        ElementProperty::Temporal(_) => 3,
         // A compressed string is the string it holds.
-        ElementProperty::String(_) | ElementProperty::Compressed(_) => 3,
-        ElementProperty::Uuid(_) => 4,
-        ElementProperty::Array(_) => 5,
-        ElementProperty::Object(_) => 6,
-        ElementProperty::Map(_) => 7,
-        ElementProperty::Vertex(_) => 8,
-        ElementProperty::Edge(_) => 9,
+        ElementProperty::String(_) | ElementProperty::Compressed(_) => 4,
+        ElementProperty::Uuid(_) => 5,
+        ElementProperty::Array(_) => 6,
+        ElementProperty::Object(_) => 7,
+        ElementProperty::Map(_) => 8,
+        ElementProperty::Vertex(_) => 9,
+        ElementProperty::Edge(_) => 10,
     }
 }
 
@@ -740,6 +769,9 @@ pub(crate) fn compare_element_property(
         (ElementProperty::Compressed(_), b) if b.is_text() => compare_text(a, b),
         (a, ElementProperty::Compressed(_)) if a.is_text() => compare_text(a, b),
         (ElementProperty::Uuid(a), ElementProperty::Uuid(b)) => a.cmp(b),
+        // Different temporal kinds order by kind (date, localdatetime, datetime, time,
+        // duration), then by value; a datetime by its instant.
+        (ElementProperty::Temporal(a), ElementProperty::Temporal(b)) => a.cmp(b),
         (ElementProperty::Array(a), ElementProperty::Array(b)) => {
             let mut left = a.iter();
             let mut right = b.iter();
@@ -834,6 +866,7 @@ impl fmt::Debug for ElementProperty {
             ElementProperty::Number(value) => write!(f, "{}", value),
             ElementProperty::Boolean(value) => write!(f, "{}", value),
             ElementProperty::Uuid(value) => write!(f, "{}", uuid::format_canonical(*value)),
+            ElementProperty::Temporal(value) => write!(f, "{value}"),
             ElementProperty::Compressed(text) => write!(f, "{text:?}"),
         }
     }
@@ -965,6 +998,24 @@ impl From<bool> for ElementProperty {
     }
 }
 
+impl From<Temporal> for ElementProperty {
+    fn from(value: Temporal) -> Self {
+        ElementProperty::Temporal(value)
+    }
+}
+
+macro_rules! temporal_property {
+    ($($ty:ident),*) => {$(
+        impl From<temporal::$ty> for ElementProperty {
+            fn from(value: temporal::$ty) -> Self {
+                ElementProperty::Temporal(value.into())
+            }
+        }
+    )*};
+}
+
+temporal_property!(Date, Time, LocalDateTime, DateTime, Duration);
+
 /// A schema as a value: its canonical format ([`GraphSchema::to_value`]), the one data shape
 /// of a schema everywhere.
 impl From<&GraphSchema> for ElementProperty {
@@ -1021,6 +1072,11 @@ impl std::hash::Hash for ElementProperty {
             }
             ElementProperty::Map(val) => {
                 state.write_u8(9);
+                val.hash(state);
+            }
+            // `Temporal`'s own hash agrees with its equality (a datetime hashes its instant).
+            ElementProperty::Temporal(val) => {
+                state.write_u8(10);
                 val.hash(state);
             }
         }
@@ -1338,6 +1394,7 @@ impl<S: GraphStorage> From<&ElementProperty> for TraverserValue<S> {
             ElementProperty::Number(_) => TraverserValue::Computed(value.clone(), None),
             ElementProperty::Boolean(_) => TraverserValue::Computed(value.clone(), None),
             ElementProperty::Uuid(_) => TraverserValue::Computed(value.clone(), None),
+            ElementProperty::Temporal(_) => TraverserValue::Computed(value.clone(), None),
             // Boundary (D5): a stream value is always plain.
             ElementProperty::Compressed(text) => {
                 TraverserValue::Computed(ElementProperty::String(text.text()), None)
@@ -1372,7 +1429,8 @@ impl<S: GraphStorage> From<ElementProperty> for TraverserValue<S> {
             | ElementProperty::String(_)
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
-            | ElementProperty::Uuid(_) => TraverserValue::Computed(value, None),
+            | ElementProperty::Uuid(_)
+            | ElementProperty::Temporal(_) => TraverserValue::Computed(value, None),
             // Boundary (D5): a stream value is always plain.
             ElementProperty::Compressed(text) => {
                 TraverserValue::Computed(ElementProperty::String(text.text()), None)
@@ -1941,6 +1999,7 @@ impl<S: GraphStorage> TraverserValue<S> {
                 | ElementProperty::Number(_)
                 | ElementProperty::Boolean(_)
                 | ElementProperty::Uuid(_)
+                | ElementProperty::Temporal(_)
                 | ElementProperty::Vertex(_)
                 | ElementProperty::Edge(_)
                 | ElementProperty::Array(_) => None,
@@ -2072,7 +2131,7 @@ impl<S: GraphStorage> TraverserValue<S> {
                 ElementProperty::Array(_) => None,
                 ElementProperty::Number(_) => None,
                 ElementProperty::Boolean(_) => None,
-                ElementProperty::Uuid(_) => None,
+                ElementProperty::Uuid(_) | ElementProperty::Temporal(_) => None,
             }),
             // An `id()`/`label()`/`labels()` handle stands for a string or a list: no named
             // property.
@@ -2105,7 +2164,7 @@ impl<S: GraphStorage> TraverserValue<S> {
                         ElementProperty::Array(_) => None,
                         ElementProperty::Number(_) => None,
                         ElementProperty::Boolean(_) => None,
-                        ElementProperty::Uuid(_) => None,
+                        ElementProperty::Uuid(_) | ElementProperty::Temporal(_) => None,
                     }),
                     None => Ok(None),
                 }
@@ -2148,7 +2207,7 @@ impl<S: GraphStorage> TraverserValue<S> {
                         ElementProperty::Array(_) => None,
                         ElementProperty::Number(_) => None,
                         ElementProperty::Boolean(_) => None,
-                        ElementProperty::Uuid(_) => None,
+                        ElementProperty::Uuid(_) | ElementProperty::Temporal(_) => None,
                     }),
                     None => Ok(None),
                 }
@@ -2459,6 +2518,7 @@ impl From<ElementProperty> for ArgStrings {
             ElementProperty::Number(n) => ArgStrings::String(n.n.to_string()),
             ElementProperty::Boolean(b) => ArgStrings::String(b.to_string()),
             ElementProperty::Uuid(u) => ArgStrings::String(uuid::format_canonical(u).into_string()),
+            ElementProperty::Temporal(t) => ArgStrings::String(t.to_string()),
         }
     }
 }
@@ -2486,6 +2546,7 @@ impl From<&ElementProperty> for ArgStrings {
             ElementProperty::Uuid(u) => {
                 ArgStrings::String(uuid::format_canonical(*u).into_string())
             }
+            ElementProperty::Temporal(t) => ArgStrings::String(t.to_string()),
         }
     }
 }

@@ -102,6 +102,9 @@ fn kind_of(value: &ElementProperty, format_uuid: bool) -> Option<JsonType> {
         }
         ElementProperty::Array(_) => JsonType::Array,
         ElementProperty::Object(_) | ElementProperty::Map(_) => JsonType::Object,
+        // A2: the temporal formats (`date-time`, `date`, ...); until then no declared `type`
+        // admits a temporal value (an untyped node does).
+        ElementProperty::Temporal(_) => return None,
         ElementProperty::Vertex(_) | ElementProperty::Edge(_) => return None,
     })
 }

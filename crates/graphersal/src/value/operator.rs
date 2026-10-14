@@ -335,6 +335,7 @@ fn is_scalar(value: &ElementProperty) -> bool {
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
             | ElementProperty::Uuid(_)
+            | ElementProperty::Temporal(_)
     )
 }
 
@@ -363,6 +364,7 @@ pub(crate) fn describe(value: &ElementProperty) -> String {
         ElementProperty::Number(_) => "float64",
         ElementProperty::Boolean(_) => "boolean",
         ElementProperty::Uuid(_) => "uuid",
+        ElementProperty::Temporal(value) => value.kind().name(),
         ElementProperty::Object(_) | ElementProperty::Map(_) => "map",
         ElementProperty::Array(_) => "list",
         ElementProperty::Vertex(_) => "vertex",

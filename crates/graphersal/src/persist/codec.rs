@@ -230,6 +230,14 @@ fn put_value_at<K: KeyWriter>(
                 put_value_at(out, item, keys, depth + 1)?;
             }
         }
+        // A2: the temporal value tags (format spec 3, file format version 2). Until then a clean
+        // error (a journal vetoes the commit, a snapshot fails), never bytes a reader misreads.
+        ElementProperty::Temporal(value) => {
+            return Err(format!(
+                "a {} value cannot be written to the binary format yet",
+                value.kind()
+            ));
+        }
         ElementProperty::Vertex(_) => return Err("a vertex is not a storable value".into()),
         ElementProperty::Edge(_) => return Err("an edge is not a storable value".into()),
         ElementProperty::Map(_) => {

@@ -321,16 +321,19 @@ pub(super) fn duration(text: &str) -> TemporalResult<Duration> {
     if !(c.eat(b'P') || c.eat(b'p')) {
         return c.fail("expected 'P' (ISO 8601 duration such as P1DT2H)");
     }
-    let mut months: i64 = 0;
-    let mut days: i64 = 0;
-    let mut micros: i64 = 0;
+    // Wide accumulators: the parts are summed and the leading sign applied before the range
+    // check, so `-P178956970Y8M` (i32::MIN months) and `-PT2562047788H0M54.775808S` (i64::MIN
+    // microseconds) parse back.
+    let mut months: i128 = 0;
+    let mut days: i128 = 0;
+    let mut micros: i128 = 0;
     let mut any = false;
     let mut in_time = false;
     // The units in their required order; the index only grows.
     const DATE_UNITS: &[u8] = b"YMWD";
     const TIME_UNITS: &[u8] = b"HMS";
+    const LIMIT: i128 = 1 << 100;
     let mut next_unit = 0usize;
-    let overflow = |c: &Cursor| c.fail::<()>("the duration is too large");
     loop {
         if c.at_end() {
             break;
@@ -343,7 +346,7 @@ pub(super) fn duration(text: &str) -> TemporalResult<Duration> {
             }
             continue;
         }
-        let sign = if c.eat(b'-') {
+        let sign: i128 = if c.eat(b'-') {
             -1
         } else {
             c.eat(b'+');
@@ -365,42 +368,38 @@ pub(super) fn duration(text: &str) -> TemporalResult<Duration> {
         if fraction != 0 && unit != b'S' {
             return c.fail("only seconds may have a fraction");
         }
-        let n = number * sign;
-        let added = match (in_time, unit) {
-            (false, b'Y') => n.checked_mul(12).and_then(|v| months.checked_add(v)).map(|v| months = v),
-            (false, b'M') => months.checked_add(n).map(|v| months = v),
-            (false, b'W') => n.checked_mul(7).and_then(|v| days.checked_add(v)).map(|v| days = v),
-            (false, _) => days.checked_add(n).map(|v| days = v),
-            (true, b'H') => n
-                .checked_mul(3600 * MICROS_PER_SECOND)
-                .and_then(|v| micros.checked_add(v))
-                .map(|v| micros = v),
-            (true, b'M') => n
-                .checked_mul(60 * MICROS_PER_SECOND)
-                .and_then(|v| micros.checked_add(v))
-                .map(|v| micros = v),
-            (true, _) => n
-                .checked_mul(MICROS_PER_SECOND)
-                .and_then(|v| v.checked_add(fraction * sign))
-                .and_then(|v| micros.checked_add(v))
-                .map(|v| micros = v),
-        };
-        if added.is_none() {
-            overflow(&c)?;
+        // `number` is at most i64::MAX and at most seven parts are summed: no i128 overflow.
+        let n = number as i128 * sign;
+        let second = MICROS_PER_SECOND as i128;
+        match (in_time, unit) {
+            (false, b'Y') => months += n * 12,
+            (false, b'M') => months += n,
+            (false, b'W') => days += n * 7,
+            (false, _) => days += n,
+            (true, b'H') => micros += n * 3600 * second,
+            (true, b'M') => micros += n * 60 * second,
+            (true, _) => micros += n * second + fraction as i128 * sign,
+        }
+        if months.abs() > LIMIT || days.abs() > LIMIT || micros.abs() > LIMIT {
+            return c.fail("the duration is too large");
         }
         any = true;
     }
     if !any {
         return c.fail("a duration needs at least one part (PT0S for zero)");
     }
-    let (Ok(months), Ok(days)) = (i32::try_from(months), i32::try_from(days)) else {
-        return c.fail("the duration is too large");
-    };
-    let value = Duration::new(months, days, micros);
     if negative {
-        value.checked_neg()
-    } else {
-        Ok(value)
+        months = -months;
+        days = -days;
+        micros = -micros;
+    }
+    match (
+        i32::try_from(months),
+        i32::try_from(days),
+        i64::try_from(micros),
+    ) {
+        (Ok(months), Ok(days), Ok(micros)) => Ok(Duration::new(months, days, micros)),
+        _ => c.fail("the duration is too large"),
     }
 }
 

@@ -97,6 +97,9 @@ pub(crate) enum PhysicalError {
     IntegerOutOfRange(u64),
     /// Writing to the output sink failed.
     Write,
+    /// The format cannot hold a value of this type yet (the temporal types until phase A2).
+    #[cfg_attr(not(feature = "io"), allow(dead_code))] // Only GraphSON export refuses a type.
+    Unsupported(&'static str),
 }
 
 impl fmt::Display for PhysicalError {
@@ -112,6 +115,9 @@ impl fmt::Display for PhysicalError {
                 write!(f, "u64 ({value}) exceeding i64::MAX")
             }
             PhysicalError::Write => f.write_str("failed to write JSON output"),
+            PhysicalError::Unsupported(kind) => {
+                write!(f, "a {kind} value cannot be written in this format yet")
+            }
         }
     }
 }
@@ -150,8 +156,14 @@ pub(crate) fn encoding_of(ty: &ValueType) -> Option<Encoding> {
         ValueType::Boolean => Some(Encoding::Boolean),
         ValueType::Int64 => Some(Encoding::Int64),
         ValueType::Float64 => Some(Encoding::Float64),
-        // A UUID is carried as its canonical string.
-        ValueType::String | ValueType::Uuid => Some(Encoding::String),
+        // A UUID and a temporal value are carried as their canonical text.
+        ValueType::String
+        | ValueType::Uuid
+        | ValueType::Date
+        | ValueType::LocalDateTime
+        | ValueType::DateTime
+        | ValueType::Time
+        | ValueType::Duration => Some(Encoding::String),
         ValueType::Array(_) | ValueType::Object | ValueType::Union(_) => None,
     }
 }
@@ -175,6 +187,8 @@ pub(crate) fn lower(value: &ElementProperty) -> PhysicalValue<'_> {
         ElementProperty::Uuid(u) => {
             PhysicalValue::String(Cow::Owned(format_canonical(*u).into_string()))
         }
+        // The canonical ISO 8601 / RFC 3339 text; [`lift_temporal`] reads it back.
+        ElementProperty::Temporal(t) => PhysicalValue::String(Cow::Owned(t.to_string())),
         ElementProperty::Array(items) => PhysicalValue::Array(items.iter().map(lower).collect()),
         ElementProperty::Object(map) => lower_map(map),
         ElementProperty::Vertex(vertex) => lower_vertex(vertex),
@@ -337,6 +351,37 @@ pub(crate) fn lift_declared(
             declared: declared.non_null_type_name(),
             actual: value_type_name(&coerced),
         })
+    }
+}
+
+/// Lifts the physical form of a value declared as a temporal type: its text parsed as that type
+/// (the inverse of [`lower`] for a temporal value). Any other physical value, or text that is not
+/// a value of the type, is an error; nothing else is ever turned into a temporal value (rule 7).
+// A2: called by the schema-declared lift (`format: date-time`, ...), GraphML and GraphSON.
+#[allow(dead_code)]
+pub(crate) fn lift_temporal(
+    value: &PhysicalValue<'_>,
+    kind: crate::value::temporal::TemporalKind,
+) -> Result<ElementProperty, crate::value::temporal::TemporalError> {
+    match value {
+        PhysicalValue::String(text) => {
+            crate::value::temporal::Temporal::parse_as(kind, text).map(ElementProperty::Temporal)
+        }
+        other => {
+            let shown = match other {
+                PhysicalValue::Null => "null",
+                PhysicalValue::Bool(_) => "a boolean",
+                PhysicalValue::Int(_) | PhysicalValue::Float(_) => "a number",
+                PhysicalValue::Array(_) => "an array",
+                PhysicalValue::Object(_) => "an object",
+                PhysicalValue::String(_) => "a string",
+            };
+            Err(crate::value::temporal::TemporalError::parse(
+                shown,
+                kind.name(),
+                "expected its text",
+            ))
+        }
     }
 }
 
@@ -986,6 +1031,12 @@ mod serde_glue {
                     map.end()
                 }
                 ElementProperty::Object(fields) => TaggedEntries(fields).serialize(serializer),
+                // A2: the temporal tags (`gx:OffsetDateTime`, ...). Until then a clean error,
+                // never an untagged string a reader would take for a string.
+                ElementProperty::Temporal(value) => Err(ser::Error::custom(format!(
+                    "a {} value cannot be serialized in a change set yet",
+                    value.kind()
+                ))),
                 // Scalars are JSON-native. Vertices, edges and non-string-keyed maps are never
                 // property values; they keep the plain codec.
                 ElementProperty::Null

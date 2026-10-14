@@ -1,7 +1,8 @@
 //! The ordering of comparable scalars, shared by predicates (`P::compare`) and `min()`/`max()`.
 //!
 //! Numbers compare by value across `int64`/`float64` (`NaN` is incomparable), strings by
-//! `str::cmp`, booleans as `false < true`, UUIDs by their `u128` word. Nothing else is
+//! `str::cmp`, booleans as `false < true`, UUIDs by their `u128` word, temporal values of one
+//! type by their own order (a `datetime` by its instant). Nothing else is
 //! comparable here, and a string is never read as a number: values of different kinds are
 //! incomparable (`None`).
 
@@ -20,7 +21,8 @@ pub(crate) fn compare_numbers(a: &Number, b: &Number) -> Option<Ordering> {
     }
 }
 
-/// Orders two property values of the same comparable kind (number, string, boolean, uuid);
+/// Orders two property values of the same comparable kind (number, string, boolean, uuid, one
+/// temporal type);
 /// `None` for two different kinds, for `null`, and for containers and elements.
 pub(crate) fn compare_scalars(a: &ElementProperty, b: &ElementProperty) -> Option<Ordering> {
     match (a, b) {
@@ -34,6 +36,10 @@ pub(crate) fn compare_scalars(a: &ElementProperty, b: &ElementProperty) -> Optio
         }
         (ElementProperty::Boolean(a), ElementProperty::Boolean(b)) => Some(a.cmp(b)),
         (ElementProperty::Uuid(a), ElementProperty::Uuid(b)) => Some(a.cmp(b)),
+        // One temporal type with itself only; a `datetime` by its instant.
+        (ElementProperty::Temporal(a), ElementProperty::Temporal(b)) if a.kind() == b.kind() => {
+            Some(a.cmp(b))
+        }
         _ => None,
     }
 }

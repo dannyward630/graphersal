@@ -81,6 +81,18 @@ impl GType {
     pub const NULL: GType = GType::Value(ValueType::Null);
     /// `GType.UUID` — a UUID.
     pub const UUID: GType = GType::Value(ValueType::Uuid);
+    /// `GType.DATETIME` — an instant with its UTC offset (TinkerPop's date type).
+    pub const DATETIME: GType = GType::Value(ValueType::DateTime);
+    /// `GType.DURATION` — a length of time (TinkerPop `DURATION`; months, days and
+    /// microseconds here).
+    pub const DURATION: GType = GType::Value(ValueType::Duration);
+    /// `GType.DATE` — a calendar day (a Graphersal extension).
+    pub const DATE: GType = GType::Value(ValueType::Date);
+    /// `GType.LOCALDATETIME` — a wall-clock date and time without a zone (a Graphersal
+    /// extension).
+    pub const LOCALDATETIME: GType = GType::Value(ValueType::LocalDateTime);
+    /// `GType.TIME` — a time of day (a Graphersal extension).
+    pub const TIME: GType = GType::Value(ValueType::Time);
     /// `GType.NUMBER` — any numeric type.
     pub const NUMBER: GType = GType::Number;
     /// `GType.LIST` — any array.
@@ -107,6 +119,11 @@ impl GType {
             GType::Value(ValueType::Float64) => "DOUBLE",
             GType::Value(ValueType::String) => "STRING",
             GType::Value(ValueType::Uuid) => "UUID",
+            GType::Value(ValueType::DateTime) => "DATETIME",
+            GType::Value(ValueType::Duration) => "DURATION",
+            GType::Value(ValueType::Date) => "DATE",
+            GType::Value(ValueType::LocalDateTime) => "LOCALDATETIME",
+            GType::Value(ValueType::Time) => "TIME",
             GType::Value(ValueType::Array(_)) => "LIST",
             GType::Value(ValueType::Object) => "MAP",
             GType::Value(union @ ValueType::Union(_)) => return union.to_string(),

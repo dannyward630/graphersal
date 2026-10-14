@@ -32,6 +32,10 @@ struct Observed {
     number: bool,
     string: bool,
     uuid: bool,
+    /// A temporal value was seen here. A2: the schema format gets `format: date-time`, ...;
+    /// until then such a position is left unconstrained (`{}`), so the inferred schema still
+    /// admits its data.
+    temporal: bool,
     /// Arrays seen here: the observation of their items (`None` while every array was empty).
     array: Option<Option<Box<Observed>>>,
     /// Objects seen here.
@@ -88,6 +92,7 @@ impl Observed {
             // A compressed string is a string (D5).
             ElementProperty::String(_) | ElementProperty::Compressed(_) => self.string = true,
             ElementProperty::Uuid(_) => self.uuid = true,
+            ElementProperty::Temporal(_) => self.temporal = true,
             ElementProperty::Array(items) => {
                 let slot = self.array.get_or_insert(None);
                 for item in items {
@@ -142,6 +147,9 @@ impl Observed {
     }
 
     fn into_schema(self) -> PropertySchema {
+        if self.temporal {
+            return PropertySchema::any();
+        }
         // A `string` and a `uuid` at one position cannot share a `type` array (the format
         // applies to every string): then each kind is an `anyOf` member.
         let split = self.string && self.uuid;

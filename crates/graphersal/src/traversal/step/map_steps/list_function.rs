@@ -315,6 +315,7 @@ pub(crate) fn kind_of<S: GraphStorage>(
         | ElementProperty::Number(_)
         | ElementProperty::Boolean(_)
         | ElementProperty::Uuid(_)
+        | ElementProperty::Temporal(_)
         | ElementProperty::Vertex(_)
         | ElementProperty::Edge(_) => Kind::Other,
     };

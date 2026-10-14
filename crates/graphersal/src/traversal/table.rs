@@ -24,6 +24,7 @@ pub(crate) fn format_cell(prop: &ElementProperty, limit: &ItemLimit) -> String {
             }
         }
         ElementProperty::Uuid(u) => crate::value::uuid::format_canonical(*u).to_string(),
+        ElementProperty::Temporal(t) => t.to_string(),
         ElementProperty::Array(arr) => {
             let keep = limit.keep(arr.len());
             let mut items: Vec<String> = arr
