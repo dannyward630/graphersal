@@ -248,6 +248,8 @@ fn receiver_of(first_param_type: Option<&str>) -> &'static str {
         "ArgP" | "Predicate" => "Predicate",
         "ScriptUuid" | "Uuid" => "Uuid",
         "ScriptFake" | "Fake" => "Fake",
+        "DateTime" | "datetime" | "Date" | "date" | "LocalDateTime" | "localdatetime" | "Time"
+        | "time" | "Duration" | "duration" => "temporal",
         "BTreeMap" | "map" => "map",
         _ => "global",
     }

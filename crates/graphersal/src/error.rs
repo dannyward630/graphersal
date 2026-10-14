@@ -525,6 +525,52 @@ pub enum ValueError {
         /// The right operand, rendered with its type.
         right: String,
     },
+
+    /// A date step (`date_add`, `date_diff`, `date_trunc`, `at_zone`, ...) met a value it cannot
+    /// take: an incoming value or an argument that is not a date or time, or a child traversal
+    /// without a result.
+    #[error("The {step}() step takes {expected} as its {operand}, but got {actual}")]
+    #[non_exhaustive]
+    TemporalInput {
+        /// The step's name (`date_add`, `date_diff`, ...).
+        step: &'static str,
+        /// Which input failed: `incoming value`, `argument` or `traversal argument`.
+        operand: &'static str,
+        /// What the step needed there (`a date or time`, `a datetime`, ...).
+        expected: &'static str,
+        /// What it got: a type name with the value, `null`, or that the traversal yielded
+        /// nothing.
+        actual: String,
+    },
+
+    /// `as_date()` or `as_duration()` could not convert a value: text that is not a value of the
+    /// target type, a number that is not an integer of epoch milliseconds, `null`, a list, ...
+    /// The message starts like TinkerPop's (`Can't parse`).
+    #[error("Can't parse {value} as a {target}: {reason}")]
+    #[non_exhaustive]
+    TemporalParse {
+        /// The step's name (`as_date`, `as_duration`).
+        step: &'static str,
+        /// The target type (`datetime`, `date`, `duration`, ...).
+        target: &'static str,
+        /// The value, rendered with its type (`"abc" (string)`, `1.5 (float64)`, `null`).
+        value: String,
+        /// Why it does not convert.
+        reason: String,
+    },
+
+    /// A date operation failed: a result outside the years -9999 to 9999, an unknown time
+    /// zone, a unit or part the value's type does not have (hours of a `date`), or a temporal
+    /// text that does not parse (`datetime("..")`).
+    #[error("The {step}() step failed: {error}")]
+    #[non_exhaustive]
+    Temporal {
+        /// The step or function's name (`date_add`, `datetime`, ...).
+        step: &'static str,
+        /// What went wrong.
+        #[source]
+        error: crate::value::temporal::TemporalError,
+    },
 }
 
 /// Why an [`Operator`](crate::value::Operator) failed: the kind of a [`ValueError::OperatorFailed`].
@@ -695,6 +741,141 @@ fn local_element_help(step: &str, index: usize, actual: &str) -> String {
          or keep only the strings with \
          g.v().values(\"name\").fold().unfold().is(typeOf(GType.STRING)).fold().{snake}(Scope.local)."
     )
+}
+
+/// A runnable call of a date step for its `help()` texts.
+fn temporal_step_example(step: &str) -> &'static str {
+    match step {
+        "date_add" => "date_add(DT.day, 1)",
+        "date_diff" => "date_diff(datetime(\"2023-08-01T00:00:00Z\"))",
+        "age" => "age(datetime(\"2000-01-01T00:00:00Z\"))",
+        "date_trunc" => "date_trunc(DT.month)",
+        "date_part" => "date_part(DT.year)",
+        "at_zone" => "at_zone(\"Europe/Berlin\")",
+        "as_local" => "as_local()",
+        "as_duration" => "as_duration()",
+        _ => "date_add(DT.day, 1)",
+    }
+}
+
+/// The `help()` text of [`ValueError::TemporalInput`].
+fn temporal_input_help(step: &str, operand: &str, expected: &str, actual: &str) -> String {
+    let example = temporal_step_example(step);
+    if operand == "traversal argument" && actual.starts_with("no result") {
+        return format!(
+            "The traversal argument of {step}() runs on the incoming value and its first result \
+             is the operand, so it must yield a value, for example \
+             g.inject(datetime(\"2023-08-08T00:00:00Z\")).{step}(__.constant(datetime(\
+             \"2023-08-01T00:00:00Z\")))."
+        );
+    }
+    let types = "The date steps take date and time values (datetime, date, localdatetime, time; \
+                 date_add() and date_trunc() also a duration). Build one with \
+                 datetime(\"2023-08-02T00:00:00Z\"), date(\"2023-08-02\"), \
+                 localdatetime(\"2023-08-02T09:30:00\"), time(\"09:30:00\") or duration(\"P1D\")";
+    if actual.starts_with("string") {
+        return format!(
+            "{types}. A string is never read as a date by itself: convert it first with \
+             as_date() (ISO 8601 text), for example \
+             g.inject(\"2023-08-02T00:00:00Z\").as_date().{example}, or with \
+             as_date(GType.DATE) (and GType.LOCALDATETIME, GType.TIME) for the other types."
+        );
+    }
+    if actual.starts_with("int64") || actual.starts_with("float64") {
+        return format!(
+            "{types}. A number is not a date: as_date() reads an integer of milliseconds since \
+             1970-01-01T00:00:00Z, for example g.inject(1690934400000).as_date().{example}."
+        );
+    }
+    let specific = match step {
+        "at_zone" => {
+            " at_zone() places a datetime (the same instant) or a localdatetime (its wall clock) \
+             in a zone; convert a date first with as_date(GType.LOCALDATETIME)."
+        }
+        "as_local" => {
+            " as_local() reads the wall clock of a datetime (at its own offset, or in the zone \
+             given)."
+        }
+        "date_diff" | "age" => {
+            " Both operands must be of the same type; a null argument of date_diff() counts as \
+             the epoch."
+        }
+        _ => "",
+    };
+    format!(
+        "{types}, or convert a property with as_date(); keep only the values of one type with \
+         is(P.typeOf(GType.DATETIME)) before the step.{specific} The step needed {expected} here."
+    )
+}
+
+/// The `help()` text of [`ValueError::TemporalParse`].
+fn temporal_parse_help(step: &str, target: &str) -> String {
+    if step == "as_duration" {
+        return "as_duration() reads an ISO 8601 duration such as \"P1Y2M3DT4H5M6S\", \"P2W\" or \
+                \"PT1.5S\" (each part may have its own sign: \"P1M-2D\"); a duration passes \
+                unchanged. Build one directly with duration(\"P1D\")."
+            .to_string();
+    }
+    match target {
+        "datetime" => "as_date() reads ISO 8601 / RFC 3339 text (\"2023-08-02T00:00:00Z\", \
+                       \"2023-08-02T00:00:00-07:00\"; without an offset the text is UTC and a date \
+                       alone is midnight UTC) or an integer number of milliseconds since \
+                       1970-01-01T00:00:00Z, for example g.inject(1690934400000).as_date(); a \
+                       date or localdatetime becomes the datetime at UTC. A float, null, a list \
+                       or a map is not converted: as_number(GType.LONG) truncates a float first, \
+                       and is(P.typeOf(GType.STRING)) keeps only the strings."
+            .to_string(),
+        "date" => "as_date(GType.DATE) reads a date text such as \"2023-08-02\", or takes the \
+                   date of a datetime (at its own offset) or of a localdatetime."
+            .to_string(),
+        "localdatetime" => "as_date(GType.LOCALDATETIME) reads a text without an offset such as \
+                            \"2023-08-02T09:30:00\" (a date alone is midnight), or takes the wall \
+                            clock of a datetime (at its own offset) or a date at midnight."
+            .to_string(),
+        "time" => "as_date(GType.TIME) reads a time text such as \"09:30:00\", or takes the time \
+                   of day of a datetime (at its own offset) or of a localdatetime."
+            .to_string(),
+        _ => "as_date() converts to datetime, date, localdatetime and time (as_date(GType.DATE), \
+              ...); as_duration() reads durations."
+            .to_string(),
+    }
+}
+
+/// The `help()` text of [`ValueError::Temporal`].
+fn temporal_help(step: &str, error: &crate::value::temporal::TemporalError) -> String {
+    use crate::value::temporal::TemporalError;
+    match error {
+        TemporalError::OutOfRange { .. } => format!(
+            "Dates and times cover the years -9999 to 9999 with a resolution of one \
+             microsecond; {step}() left that range. Check the amount (date_add(DT.year, 10000) \
+             goes too far) or keep the extreme values out with a filter such as \
+             is(P.gt(datetime(\"1900-01-01T00:00:00Z\")))."
+        ),
+        TemporalError::UnknownZone { .. } => "A zone is an IANA name of the bundled time zone \
+                                              database (\"Europe/Berlin\", \
+                                              \"America/New_York\", \"UTC\"; the names are \
+                                              case-sensitive) or a fixed UTC offset (\"+02:00\", \
+                                              \"-07:00\", \"Z\"), for example \
+                                              at_zone(\"Europe/Berlin\")."
+            .to_string(),
+        TemporalError::Unsupported { .. } => "Each type has its own units: a date has no hours \
+                                              (convert it with as_date(GType.LOCALDATETIME) \
+                                              first), a time has no days or months, a duration \
+                                              has no weeks and no zone. DT.day_of_week, \
+                                              DT.iso_day_of_week, DT.day_of_year, DT.iso_year, \
+                                              DT.epoch and DT.offset are parts for date_part(), \
+                                              not units; a zone argument applies to a datetime \
+                                              only; both operands of date_diff() and age() must \
+                                              be of the same type."
+            .to_string(),
+        TemporalError::Parse { .. } => "Write the ISO 8601 text of the type: \
+                                        datetime(\"2023-08-02T00:00:00Z\") (an offset such as \
+                                        +02:00 or a zone such as [Europe/Berlin]), \
+                                        date(\"2023-08-02\"), \
+                                        localdatetime(\"2023-08-02T09:30:00\"), \
+                                        time(\"09:30:00\"), duration(\"P1DT2H\")."
+            .to_string(),
+    }
 }
 
 /// The `help()` text of [`ValueError::LabelStepElementKind`].
@@ -1367,6 +1548,16 @@ impl DiagnosticError for ValueError {
                 ..
             } => Some(string_function_help(step, operand, actual)),
             ValueError::OperatorFailed { operator, kind, .. } => Some(operator_help(operator, kind)),
+            ValueError::TemporalInput {
+                step,
+                operand,
+                expected,
+                actual,
+            } => Some(temporal_input_help(step, operand, expected, actual)),
+            ValueError::TemporalParse { step, target, .. } => {
+                Some(temporal_parse_help(step, target))
+            }
+            ValueError::Temporal { step, error } => Some(temporal_help(step, error)),
         }
     }
 

@@ -216,6 +216,42 @@ impl ScriptGraphTraversalSource {
                     graph.as_number_with(target.clone(), policy.clone())
                 }
                 Step::Cast(target, policy) => graph.cast_with(target.clone(), policy.clone()),
+                Step::AsDate(None) => graph.as_date(),
+                Step::AsDate(Some(target)) => graph.as_date_to(target.clone()),
+                Step::AsDuration => graph.as_duration(),
+                Step::DateAdd(unit, n, None) => graph.date_add(*unit, *n),
+                Step::DateAdd(unit, n, Some(zone)) => graph.date_add_in(*unit, *n, zone),
+                Step::DateAddDuration(duration, None) => graph.date_add_duration(*duration),
+                Step::DateAddDuration(duration, Some(zone)) => {
+                    graph.date_add_duration_in(*duration, zone)
+                }
+                Step::DateDiff(other, unit, zone) => match (other, unit) {
+                    (ScriptListArg::Value(value), None) => graph.date_diff(value.clone()),
+                    (ScriptListArg::Traversal(gts), None) => {
+                        graph.date_diff_traversal(gts.ast_convert_to_anonymous())
+                    }
+                    (ScriptListArg::Value(value), Some(unit)) => {
+                        graph.date_diff_in(value.clone(), *unit, zone.as_deref())
+                    }
+                    (ScriptListArg::Traversal(gts), Some(unit)) => graph.date_diff_traversal_in(
+                        gts.ast_convert_to_anonymous(),
+                        *unit,
+                        zone.as_deref(),
+                    ),
+                },
+                Step::Age(other, zone) => match other {
+                    ScriptListArg::Value(value) => graph.age(value.clone(), zone.as_deref()),
+                    ScriptListArg::Traversal(gts) => {
+                        graph.age_traversal(gts.ast_convert_to_anonymous(), zone.as_deref())
+                    }
+                },
+                Step::DateTrunc(unit, None) => graph.date_trunc(*unit),
+                Step::DateTrunc(unit, Some(zone)) => graph.date_trunc_in(*unit, zone),
+                Step::DatePart(part, None) => graph.date_part(*part),
+                Step::DatePart(part, Some(zone)) => graph.date_part_in(*part, zone),
+                Step::AtZone(zone) => graph.at_zone(zone),
+                Step::AsLocal(None) => graph.as_local(),
+                Step::AsLocal(Some(zone)) => graph.as_local_in(zone),
                 Step::Substring(a_from, a_to) => graph.substring(*a_from, *a_to),
                 Step::ToUpperScoped(scope) => graph.to_upper_scoped(*scope),
                 Step::ToLowerScoped(scope) => graph.to_lower_scoped(*scope),

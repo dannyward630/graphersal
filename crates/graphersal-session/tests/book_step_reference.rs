@@ -128,6 +128,20 @@ const CATEGORIES: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "Dates and times",
+        &[
+            "as_date",
+            "as_duration",
+            "date_add",
+            "date_diff",
+            "age",
+            "date_trunc",
+            "date_part",
+            "at_zone",
+            "as_local",
+        ],
+    ),
+    (
         "Lists and ordering",
         &[
             "fold",
@@ -286,6 +300,7 @@ const GROUPS: &[(&str, &str, &[&str])] = &[
             "CastPolicy",
             "UUID",
             "Uuid",
+            "temporal",
             "Set",
             "Map",
             "V",

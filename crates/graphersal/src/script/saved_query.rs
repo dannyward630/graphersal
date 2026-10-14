@@ -961,12 +961,15 @@ impl ScriptGraphTraversalSource {
             anonymous: false,
         };
         let mut scope = eval::scope_with_access(g, access);
+        // The body sees the caller's `now()` (one value per evaluation, `access.rs`).
+        let tag = access::nested_tag(ctx, access::ScriptAccess::of_context(ctx));
         let result = ctx
             .engine()
             .call_fn_with_options::<Dynamic>(
                 rhai::CallFnOptions::new()
                     .eval_ast(false)
-                    .rewind_scope(true),
+                    .rewind_scope(true)
+                    .with_tag(tag),
                 &mut scope,
                 &compiled.ast,
                 name,

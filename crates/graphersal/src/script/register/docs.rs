@@ -75,6 +75,8 @@ pub(crate) fn receiver_of(first_param: Option<&str>) -> &'static str {
         "ArgP" | "Predicate" => "Predicate",
         "ScriptUuid" | "Uuid" => "Uuid",
         "ScriptFake" | "Fake" => "Fake",
+        "DateTime" | "datetime" | "Date" | "date" | "LocalDateTime" | "localdatetime" | "Time"
+        | "time" | "Duration" | "duration" => "temporal",
         // `rhai::Map` is a `BTreeMap`; `map` is its display name.
         "BTreeMap" | "map" => "map",
         _ => "global",
@@ -111,6 +113,7 @@ fn lookup_order(receiver: &'static str) -> &'static [&'static str] {
         "Predicate" => &["Predicate"],
         "Uuid" => &["Uuid"],
         "Fake" => &["Fake"],
+        "temporal" => &["temporal"],
         "map" => &["map"],
         _ => &[],
     }
@@ -204,6 +207,33 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
     "traversal" "as_bool":
         "Converts the value to a boolean: true/false strings in any case, numbers (0 is false); anything else is an error unless a CastPolicy says otherwise.",
         "g.inject(\"true\", \"FALSE\", 0).as_bool().to_list()" => "[true, false, false]";
+    "traversal" "as_date":
+        "Text or epoch milliseconds to a datetime (TinkerPop asDate()), or to a GType.",
+        "g.inject(0).as_date().next().year" => "1970";
+    "traversal" "as_duration":
+        "Converts ISO 8601 text to a duration.",
+        "g.inject(\"P1D\").as_duration().next().days" => "1";
+    "traversal" "date_add":
+        "Adds n DT units or a duration, optionally in a zone (TinkerPop dateAdd()).",
+        "g.inject(date(\"2024-01-31\")).date_add(DT.month, 1).next().day" => "29";
+    "traversal" "date_diff":
+        "Difference in milliseconds (TinkerPop dateDiff()) or whole DT units.",
+        "g.inject(time(\"10:00\")).date_diff(time(\"09:00\"), DT.hour).next()" => "1";
+    "traversal" "age":
+        "The difference as a duration (PostgreSQL age).",
+        "g.inject(date(\"2001-04-10\")).age(date(\"1957-06-13\")).next().months" => "525";
+    "traversal" "date_trunc":
+        "Truncates to a DT unit (PostgreSQL date_trunc).",
+        "g.inject(date(\"2023-08-17\")).date_trunc(DT.month).next().day" => "1";
+    "traversal" "date_part":
+        "One field as a number (PostgreSQL extract).",
+        "g.inject(date(\"2023-08-17\")).date_part(DT.day_of_week).next()" => "4";
+    "traversal" "at_zone":
+        "Places a date-time in a time zone.",
+        "g.inject(localdatetime(\"2023-08-02T12:00\")).at_zone(\"+02:00\").next().offset" => "7200";
+    "traversal" "as_local":
+        "A datetime's wall clock.",
+        "g.inject(datetime(\"2023-08-02T12:00Z\")).as_local().next().hour" => "12";
     "traversal" "as_number":
         "Converts the value to a number, optionally of the given GType (GType.LONG truncates toward zero, see the book page Type Conversion and length()).",
         "g.inject(\"42\", 3.9).as_number(GType.LONG).to_list()" => "[42, 3]";
@@ -804,6 +834,27 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
     "global" "jpath":
         "Builds a JSONPath property key for nested values, usable wherever a property name is (see the book page Path keys (jpath)).",
         "g.inject(#{a: #{b: [5, 6]}}).values(jpath(\"a.b[1]\")).to_list()" => "[6]";
+    "global" "datetime":
+        "A datetime from ISO 8601 text.",
+        "datetime(\"2023-08-02T09:30Z\").hour" => "9";
+    "global" "date":
+        "A date from ISO 8601 text.",
+        "date(\"2024-02-29\").day" => "29";
+    "global" "localdatetime":
+        "A date and time without a zone.",
+        "localdatetime(\"2023-08-02T09:30\").hour" => "9";
+    "global" "time":
+        "A time of day.",
+        "time(\"09:30:15\").second" => "15";
+    "global" "duration":
+        "A duration (PostgreSQL interval).",
+        "duration(\"P1Y2M\").months" => "14";
+    "global" "now":
+        "Script start time, the same for every call (PostgreSQL now()).",
+        "now() == now()" => "true";
+    "global" "today":
+        "The date of now() in UTC.",
+        "type_of(today())" => "date";
     "global" "UUID":
         "Returns a new random UUID value.",
         "type_of(UUID())" => "Uuid";

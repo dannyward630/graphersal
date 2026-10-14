@@ -152,7 +152,6 @@ impl DT {
 
     /// The fixed length of a unit below a day, in microseconds; `None` for calendar units and
     /// parts.
-    #[allow(dead_code)] // A3: the date steps (through `temporal::arith`).
     pub(crate) fn fixed_micros(self) -> Option<i64> {
         match self {
             DT::Microsecond => Some(1),
@@ -178,7 +177,6 @@ impl DT {
     }
 
     /// The number of calendar days of a day unit (`day` 1, `week` 7); `None` otherwise.
-    #[allow(dead_code)] // A3: the date steps (through `temporal::arith`).
     pub(crate) fn calendar_days(self) -> Option<i64> {
         match self {
             DT::Day => Some(1),
@@ -204,7 +202,6 @@ impl DT {
     }
 
     /// The number of months of a month unit (`month` 1 .. `millennium` 12000); `None` otherwise.
-    #[allow(dead_code)] // A3: the date steps (through `temporal::arith`).
     pub(crate) fn calendar_months(self) -> Option<i64> {
         match self {
             DT::Month => Some(1),

@@ -276,6 +276,30 @@ pub(super) enum Step {
     AsBool(CastPolicy),
     AsNumber(Option<GType>, CastPolicy),
     Cast(GType, CastPolicy),
+    /// `as_date()` / `as_date(GType.X)`.
+    AsDate(Option<GType>),
+    /// `as_duration()`.
+    AsDuration,
+    /// `date_add(DT, n[, zone])`.
+    DateAdd(crate::value::dt::DT, i64, Option<CompactString>),
+    /// `date_add(duration[, zone])`.
+    DateAddDuration(crate::value::temporal::Duration, Option<CompactString>),
+    /// `date_diff(value | traversal[, DT[, zone]])`.
+    DateDiff(
+        ScriptListArg,
+        Option<crate::value::dt::DT>,
+        Option<CompactString>,
+    ),
+    /// `age(value | traversal[, zone])`.
+    Age(ScriptListArg, Option<CompactString>),
+    /// `date_trunc(DT[, zone])`.
+    DateTrunc(crate::value::dt::DT, Option<CompactString>),
+    /// `date_part(DT[, zone])`.
+    DatePart(crate::value::dt::DT, Option<CompactString>),
+    /// `at_zone(zone)`.
+    AtZone(CompactString),
+    /// `as_local([zone])`.
+    AsLocal(Option<CompactString>),
     As(Vec<CompactString>),
     From(Vec<CompactString>),
     To(Vec<CompactString>),

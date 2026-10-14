@@ -2,7 +2,9 @@ use super::eval::RESERVED_PARAM_NAMES;
 use super::*;
 
 /// Bare constants `graph_scope` pushes that a parameter may deliberately shadow.
-const SHADOWABLE_BARE_CONSTANTS: [&str; 4] = ["first", "last", "all", "mixed"];
+const SHADOWABLE_BARE_CONSTANTS: [&str; 8] = [
+    "first", "last", "all", "mixed", "second", "minute", "hour", "day",
+];
 
 #[test]
 fn reserved_param_names_match_graph_scope() {

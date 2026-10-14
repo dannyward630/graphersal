@@ -116,6 +116,12 @@ pub(super) fn scope_with_access<'a>(
     scope.push("last", Pop::Last);
     scope.push("all", Pop::All);
     scope.push("mixed", Pop::Mixed);
+    // `DT` and its bare units (`dateAdd(hour, 2)`), shadowable like `first`/`last`.
+    scope.push("DT", ScriptDT);
+    scope.push("second", crate::value::dt::DT::Second);
+    scope.push("minute", crate::value::dt::DT::Minute);
+    scope.push("hour", crate::value::dt::DT::Hour);
+    scope.push("day", crate::value::dt::DT::Day);
 
     scope
 }

@@ -52,7 +52,7 @@ const MAX_JSON_DEPTH: usize = 128;
 /// those bare constants. The unit test `reserved_param_names_match_graph_scope` (feature
 /// `script`) builds the scope and fails when the two drift. It lives here, not in `script/`,
 /// so a saved query's parameters are checked the same way without the `script` feature.
-pub(crate) const RESERVED_PARAM_NAMES: [&str; 28] = [
+pub(crate) const RESERVED_PARAM_NAMES: [&str; 29] = [
     "g",
     "__",
     "_g",
@@ -81,6 +81,7 @@ pub(crate) const RESERVED_PARAM_NAMES: [&str; 28] = [
     "CastPolicy",
     "ProfileType",
     "SchemaMode",
+    "DT",
 ];
 
 /// Rhai's keywords and reserved words (Rhai 1.x, `tokenizer.rs`): neither a function nor a

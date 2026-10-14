@@ -298,6 +298,12 @@ impl TokenLiteral for crate::value::Pop {
     }
 }
 
+impl TokenLiteral for crate::value::dt::DT {
+    fn token_literal(&self) -> String {
+        format!("DT.{}", self.name())
+    }
+}
+
 impl TokenLiteral for crate::value::Operator {
     fn token_literal(&self) -> String {
         format!("Operator.{}", self.name())

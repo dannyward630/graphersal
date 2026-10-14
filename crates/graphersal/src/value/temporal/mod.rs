@@ -26,8 +26,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 
-// A3: the date steps (`dateAdd`, `dateDiff`, `dateTrunc`, `datePart`, `age`) call these.
-#[allow(dead_code)]
+// The date steps (`date_add`, `date_diff`, `date_trunc`, `date_part`, `age`) call these.
 pub(crate) mod arith;
 pub(crate) mod civil;
 mod format;
@@ -37,7 +36,6 @@ mod parse;
 pub(crate) mod tags;
 #[cfg(test)]
 mod tests;
-#[allow(dead_code)] // A3: zone arguments of the date steps.
 pub(crate) mod zone;
 
 use civil::{MICROS_PER_DAY, MICROS_PER_SECOND};
@@ -100,7 +98,6 @@ impl TemporalError {
         TemporalError::UnknownZone { name: quoted(name) }
     }
 
-    #[allow(dead_code)] // A3: the date steps.
     pub(crate) fn unsupported(operation: impl Into<String>, kind: TemporalKind) -> Self {
         TemporalError::Unsupported {
             operation: operation.into(),
@@ -352,6 +349,13 @@ impl LocalDateTime {
 }
 
 impl DateTime {
+    /// 1970-01-01T00:00:00Z.
+    #[cfg_attr(not(feature = "script"), allow(dead_code))]
+    pub(crate) const EPOCH: DateTime = DateTime {
+        micros: 0,
+        offset_seconds: 0,
+    };
+
     /// The instant `micros` microseconds after 1970-01-01T00:00:00Z, written with the offset
     /// `offset_seconds` (within ±18 hours). Both the instant and its local time must lie in the
     /// supported years.

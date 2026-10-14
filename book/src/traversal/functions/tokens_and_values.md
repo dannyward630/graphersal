@@ -5,6 +5,24 @@
 
 **`containing`**: the same as `P.containing`, without the class name.
 
+**`date`**: A date from ISO 8601 text.
+
+```rhai,graph=modern
+date("2024-02-29").day   // 29
+```
+
+**`datetime` · `DateTime`**: A datetime from ISO 8601 text.
+
+```rhai,graph=modern
+datetime("2023-08-02T09:30Z").hour   // 9
+```
+
+**`duration`**: A duration (PostgreSQL interval).
+
+```rhai,graph=modern
+duration("P1Y2M").months   // 14
+```
+
 **`empty`**: Creates a new empty graph, private to the script, and returns its traversal source.
 
 ```rhai,graph=modern
@@ -45,6 +63,12 @@ GraphSource::file_tree().v().count().next()   // 37
 g.inject(#{a: #{b: [5, 6]}}).values(jpath("a.b[1]")).to_list()   // [6]
 ```
 
+**`localdatetime` · `localDateTime`**: A date and time without a zone.
+
+```rhai,graph=modern
+localdatetime("2023-08-02T09:30").hour   // 9
+```
+
 **`lt`**: the same as `P.lt`, without the class name.
 
 **`lte`**: the same as `P.lte`, without the class name.
@@ -61,16 +85,34 @@ g.inject(#{a: #{b: [5, 6]}}).values(jpath("a.b[1]")).to_list()   // [6]
 
 **`not_starting_with` · `notStartingWith`**: the same as `P.not_starting_with`, without the class name.
 
+**`now`**: Script start time, the same for every call (PostgreSQL now()).
+
+```rhai,graph=modern
+now() == now()   // true
+```
+
 **`outside`**: the same as `P.outside`, without the class name.
 
 **`regex`**: the same as `TextP.regex`, without the class name.
 
 **`starting_with` · `startingWith`**: the same as `P.starting_with`, without the class name.
 
+**`time`**: A time of day.
+
+```rhai,graph=modern
+time("09:30:15").second   // 15
+```
+
 **`tinkerpop_modern`**: Creates a private copy of TinkerPop's modern sample graph (6 vertices, 6 edges).
 
 ```rhai,graph=modern
 GraphSource::tinkerpop_modern().e().count().next()   // 6
+```
+
+**`today`**: The date of now() in UTC.
+
+```rhai,graph=modern
+type_of(today())   // date
 ```
 
 **`typeOf`**: the same as `P.typeOf`, without the class name.

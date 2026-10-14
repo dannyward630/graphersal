@@ -68,6 +68,7 @@ mod terminals;
 #[cfg(test)]
 mod tests;
 mod tokens;
+pub use access::pin_now;
 pub use dynamic::script_value_to_property;
 use dynamic::*;
 pub use engine::{engine, engine_with_limits, engine_with_options, registered_step_names};
@@ -94,10 +95,10 @@ use step::*;
 use tokens::*;
 pub use tokens::{
     ArgBy, ArgP, Pick, ScriptBarrier, ScriptBy, ScriptCardinality, ScriptCastPolicy, ScriptColumn,
-    ScriptDirection, ScriptEdge, ScriptGType, ScriptMap, ScriptMerge, ScriptOperator, ScriptOrder,
-    ScriptP, ScriptPick, ScriptPop, ScriptProfileType, ScriptSchemaMode, ScriptScope, ScriptSet,
-    ScriptSetTokens, ScriptT, ScriptTextP, ScriptUuid, ScriptUuidTokens, ScriptV, ScriptVertex,
-    ScriptVertexRef, ScriptWithOptions,
+    ScriptDT, ScriptDirection, ScriptEdge, ScriptGType, ScriptMap, ScriptMerge, ScriptOperator,
+    ScriptOrder, ScriptP, ScriptPick, ScriptPop, ScriptProfileType, ScriptSchemaMode, ScriptScope,
+    ScriptSet, ScriptSetTokens, ScriptT, ScriptTextP, ScriptUuid, ScriptUuidTokens, ScriptV,
+    ScriptVertex, ScriptVertexRef, ScriptWithOptions,
 };
 
 use crate::graph::schema::{GraphSchema, SchemaMode, VisualizeFormat};

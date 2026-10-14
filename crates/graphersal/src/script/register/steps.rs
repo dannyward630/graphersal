@@ -268,6 +268,71 @@ pub(super) fn register(registry: &mut Registry) {
             ScriptGraphTraversalSource::as_number_with,
         )
         .register_fn("cast", ScriptGraphTraversalSource::cast)
+        // The date steps (book part "Dates and Times").
+        .register_fn_as(&["as_date", "asDate"], ScriptGraphTraversalSource::as_date)
+        .register_fn_as(
+            &["as_date", "asDate"],
+            ScriptGraphTraversalSource::as_date_t,
+        )
+        .register_fn_as(
+            &["as_duration", "asDuration"],
+            ScriptGraphTraversalSource::as_duration,
+        )
+        .register_fn_as(
+            &["date_add", "dateAdd"],
+            ScriptGraphTraversalSource::date_add,
+        )
+        .register_fn_as(
+            &["date_add", "dateAdd"],
+            ScriptGraphTraversalSource::date_add_in,
+        )
+        .register_fn_as(
+            &["date_add", "dateAdd"],
+            ScriptGraphTraversalSource::date_add_duration,
+        )
+        .register_fn_as(
+            &["date_add", "dateAdd"],
+            ScriptGraphTraversalSource::date_add_duration_in,
+        )
+        .register_fn_as(
+            &["date_diff", "dateDiff"],
+            ScriptGraphTraversalSource::date_diff,
+        )
+        .register_fn_as(
+            &["date_diff", "dateDiff"],
+            ScriptGraphTraversalSource::date_diff_unit,
+        )
+        .register_fn_as(
+            &["date_diff", "dateDiff"],
+            ScriptGraphTraversalSource::date_diff_unit_in,
+        )
+        .register_fn("age", ScriptGraphTraversalSource::age)
+        .register_fn("age", ScriptGraphTraversalSource::age_in)
+        .register_fn_as(
+            &["date_trunc", "dateTrunc"],
+            ScriptGraphTraversalSource::date_trunc,
+        )
+        .register_fn_as(
+            &["date_trunc", "dateTrunc"],
+            ScriptGraphTraversalSource::date_trunc_in,
+        )
+        .register_fn_as(
+            &["date_part", "datePart"],
+            ScriptGraphTraversalSource::date_part,
+        )
+        .register_fn_as(
+            &["date_part", "datePart"],
+            ScriptGraphTraversalSource::date_part_in,
+        )
+        .register_fn_as(&["at_zone", "atZone"], ScriptGraphTraversalSource::at_zone)
+        .register_fn_as(
+            &["as_local", "asLocal"],
+            ScriptGraphTraversalSource::as_local,
+        )
+        .register_fn_as(
+            &["as_local", "asLocal"],
+            ScriptGraphTraversalSource::as_local_in,
+        )
         .register_fn("cast", ScriptGraphTraversalSource::cast_with)
         .register_fn("substring", ScriptGraphTraversalSource::substring)
         .register_fn("substring", ScriptGraphTraversalSource::substring_from)

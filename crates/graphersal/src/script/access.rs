@@ -105,9 +105,107 @@ pub(crate) fn value_depth_of(context: &NativeCallContext) -> usize {
 
 /// The engine tag value carrying a session's access (`Engine::set_default_tag`): read by the
 /// functions that create a traversal source without one (`GraphSource::empty()`,
-/// `GraphSource::file(path)`, `schema.toGraph()`, ...). A script cannot read or change the tag.
+/// `GraphSource::file(path)`, `schema.toGraph()`, ...), and the clock of `now()`
+/// ([`ScriptClock`]). A script cannot read or change the tag.
 #[derive(Clone)]
-pub(crate) struct EngineAccess(pub(crate) Arc<ScriptAccess>);
+pub(crate) struct EngineAccess(pub(crate) Arc<ScriptAccess>, pub(crate) ScriptClock);
+
+/// Where `now()` reads the time: the system clock, or a time the host pinned
+/// ([`crate::script::pin_now`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ClockSource {
+    /// The system clock (UTC, through `web_time`).
+    System,
+    /// A fixed time, for deterministic hosts and tests.
+    Pinned(crate::value::temporal::DateTime),
+}
+
+impl ClockSource {
+    /// The current time of this source, in UTC (a pinned time keeps its offset).
+    fn read(self) -> crate::value::temporal::DateTime {
+        match self {
+            ClockSource::Pinned(now) => now,
+            ClockSource::System => {
+                // A system clock outside the years -9999 to 9999 reads as the epoch.
+                crate::value::temporal::DateTime::from_micros(crate::graph::undo::now_micros(), 0)
+                    .unwrap_or(crate::value::temporal::DateTime::EPOCH)
+            }
+        }
+    }
+}
+
+/// The time `now()` returns in one script evaluation: read from its [`ClockSource`] when the
+/// evaluation starts. Rhai clones the engine's default tag into the state of every evaluation
+/// (`eval*`, `run*`, `call_fn*`), and this `Clone` reads the clock, so every `now()` of one
+/// evaluation returns the same value, its start time (PostgreSQL `now()`: the start of the
+/// transaction), and the next evaluation a new one. A saved query's body runs with the caller's
+/// time (`saved_query.rs` pins it).
+#[derive(Debug)]
+pub(crate) struct ScriptClock {
+    pub(crate) source: ClockSource,
+    pub(crate) now: crate::value::temporal::DateTime,
+}
+
+impl ScriptClock {
+    /// A clock of `source`, read now.
+    pub(crate) fn new(source: ClockSource) -> Self {
+        ScriptClock {
+            source,
+            now: source.read(),
+        }
+    }
+
+    /// A clock that keeps this one's time (the caller's `now()` for a saved query's body).
+    pub(crate) fn same_time(&self) -> Self {
+        ScriptClock::new(ClockSource::Pinned(self.now))
+    }
+}
+
+impl Clone for ScriptClock {
+    /// Reads the clock again: see the type's documentation.
+    fn clone(&self) -> Self {
+        ScriptClock::new(self.source)
+    }
+}
+
+/// The time `now()` returns in the evaluation of `context` (the system clock when the engine
+/// carries no access).
+pub(crate) fn now_of(context: &NativeCallContext) -> crate::value::temporal::DateTime {
+    context
+        .tag()
+        .and_then(|tag| tag.read_lock::<EngineAccess>().map(|access| access.1.now))
+        .unwrap_or_else(|| ClockSource::System.read())
+}
+
+/// The engine tag for a saved query's body called from `context`: the caller's access as
+/// given, the caller's `now()`.
+pub(crate) fn nested_tag(context: &NativeCallContext, access: Arc<ScriptAccess>) -> EngineAccess {
+    let clock = context
+        .tag()
+        .and_then(|tag| tag.read_lock::<EngineAccess>().map(|a| a.1.same_time()))
+        .unwrap_or_else(|| ScriptClock::new(ClockSource::System));
+    EngineAccess(access, clock)
+}
+
+/// Pins (or, with `None`, unpins) the clock of `now()` and `today()` on an engine built by
+/// [`engine_with_options`](crate::script::engine_with_options) and its siblings: every
+/// evaluation then returns `now` (the host's deterministic tests, a replay). Without a pin
+/// `now()` is the system time at the start of each evaluation.
+pub fn pin_now(engine: &mut Engine, now: Option<crate::value::temporal::DateTime>) {
+    let source = match now {
+        Some(now) => ClockSource::Pinned(now),
+        None => ClockSource::System,
+    };
+    let access = engine
+        .default_tag()
+        .read_lock::<EngineAccess>()
+        .map(|access| access.0.clone())
+        .unwrap_or_default();
+    engine.set_default_tag(Dynamic::from(EngineAccess(
+        access,
+        ScriptClock::new(source),
+    )));
+}
 
 /// Installs `authorizer` on `engine`: the tag for the source constructors (also carrying the
 /// host's preset `options` for the sources they create and the value-depth limit
@@ -121,7 +219,10 @@ pub(crate) fn install(
 ) {
     let mut access = ScriptAccess::new(authorizer.clone(), options);
     access.max_value_depth = max_value_depth;
-    engine.set_default_tag(Dynamic::from(EngineAccess(Arc::new(access))));
+    engine.set_default_tag(Dynamic::from(EngineAccess(
+        Arc::new(access),
+        ScriptClock::new(ClockSource::System),
+    )));
     engine.set_module_resolver(FileImports { authorizer });
 }
 

@@ -142,8 +142,25 @@ impl GType {
     /// registered-type cache, whose entries are the Java simple class names), in the order a
     /// diagnostic lists them.
     pub const TYPE_NAMES: &'static [&'static str] = &[
-        "String", "Integer", "Long", "Double", "Float", "Boolean", "UUID", "Number", "List", "Map",
-        "Vertex", "Edge", "Path", "Graph",
+        "String",
+        "Integer",
+        "Long",
+        "Double",
+        "Float",
+        "Boolean",
+        "UUID",
+        "OffsetDateTime",
+        "Duration",
+        "LocalDate",
+        "LocalDateTime",
+        "LocalTime",
+        "Number",
+        "List",
+        "Map",
+        "Vertex",
+        "Edge",
+        "Path",
+        "Graph",
     ];
 
     /// The token a TinkerPop type name stands for in `P.typeOf(name)`: `"String"` is
@@ -158,6 +175,11 @@ impl GType {
             "Double" | "Float" => GType::DOUBLE,
             "Boolean" => GType::BOOLEAN,
             "UUID" => GType::UUID,
+            "OffsetDateTime" => GType::DATETIME,
+            "Duration" => GType::DURATION,
+            "LocalDate" => GType::DATE,
+            "LocalDateTime" => GType::LOCALDATETIME,
+            "LocalTime" => GType::TIME,
             "Number" => GType::NUMBER,
             "List" => GType::LIST,
             "Map" => GType::MAP,

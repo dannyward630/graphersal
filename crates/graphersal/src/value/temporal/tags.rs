@@ -58,6 +58,7 @@ pub(crate) fn tag_of(value: &Temporal) -> &'static str {
 }
 
 /// Whether `tag` is one of the tags above.
+#[cfg_attr(not(feature = "serde"), allow(dead_code))]
 pub(crate) fn is_tag(tag: &str) -> bool {
     [
         OFFSET_DATE_TIME,
