@@ -1252,8 +1252,16 @@ impl QueryParam {
         Ok(value)
     }
 
-    /// Checks the default (when there is one) against the schema.
+    /// Checks the schema (no `defaultFunction`: it fills a property of a created element and
+    /// has no meaning for an argument) and the default (when there is one) against it.
     fn validate(&self, query: &str, parameter: &str) -> Result<(), String> {
+        if let Some(at) = crate::graph::schema::defaults::default_function_in(&self.schema, "") {
+            return Err(format!(
+                "the schema has a defaultFunction at '{at}', which applies only to a label's \
+                 properties when an element is created; give the parameter a default beside its \
+                 schema instead ({{\"schema\": .., \"default\": ..}})"
+            ));
+        }
         let Some(default) = &self.default else {
             return Ok(());
         };
