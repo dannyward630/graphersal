@@ -22,6 +22,7 @@ mod graph;
 mod policy;
 mod script_thread;
 mod store;
+mod temporal;
 
 use pyo3::prelude::*;
 
@@ -32,6 +33,7 @@ pub use error::{
 pub use graph::{DryRunResult, Graph};
 pub use policy::AccessPolicy;
 pub use store::Store;
+pub use temporal::Interval;
 
 /// Python bindings of the Graphersal in-memory graph traversal engine: run Gremlin scripts against
 /// a `Graph` and get native Python values back. See `Graph`, `AccessPolicy` and `GraphersalError`.
@@ -43,6 +45,7 @@ fn graphersal(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Store>()?;
     m.add_class::<Vertex>()?;
     m.add_class::<Edge>()?;
+    m.add_class::<Interval>()?;
     let error_type = py.get_type::<GraphersalError>();
     // A class-level default so every `GraphersalError` has `.help` even when raised through a
     // path that never calls `error::new_graphersal_error` (e.g. the `Dynamic` conversion
