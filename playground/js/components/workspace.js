@@ -6,7 +6,7 @@
 // sizes are saved in localStorage (best effort).
 
 import { reactive, ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
-import { state, reveal, cycleTheme, saveGraph, saveSchema, saveToSource, isServerMode, backToLiveGraph, runStoreTask, toast, refreshSavedQueries, refreshCompressions, registerShareDialog, openShareDialog } from '../store.js';
+import { state, reveal, cycleTheme, saveGraph, saveSchema, saveToSource, isServerMode, backToLiveGraph, runStoreTask, toast, refreshSavedQueries, refreshCompressions, refreshIndexes, registerShareDialog, openShareDialog } from '../store.js';
 import { viewBanner, backupBanner } from '../store-model.js';
 import { mcpBadgeTitle } from '../change-feed.js';
 import { navigate } from '../router.js';
@@ -228,10 +228,11 @@ export const Workspace = {
 
     watch(() => [JSON.stringify(layout.visible), JSON.stringify(layout.collapsed), maximized.value], scheduleRebuild);
     // The catalog follows the graph: a load, a run that changed it (a define_query or
-    // define_compression in a script too), a change made elsewhere (change feed), a store swap.
+    // define_compression or create_index in a script too), a change made elsewhere (change feed), a store swap.
     watch(() => state.graphVersion, () => {
       refreshSavedQueries();
       refreshCompressions();
+      refreshIndexes();
     }, { immediate: true });
     watch(() => state.focusPanel, (req) => {
       if (!req) return;

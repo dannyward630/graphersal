@@ -51,6 +51,7 @@ export function catalogCountsText(byKind, total) {
   const names = {
     query: ['saved query', 'saved queries'],
     compression: ['compression rule', 'compression rules'],
+    property_index: ['property index', 'property indexes'],
   };
   const order = CATALOG_KINDS.map((k) => k.kind);
   const rank = (kind) => (order.includes(kind) ? order.indexOf(kind) : order.length);
