@@ -165,7 +165,8 @@ they do not know, so a schema with `local-date-time` stays usable with them.
 |---|---|
 | Structure | `type`, `format` (`uuid`, `date-time`, `date`, `local-date-time`, `time`, `duration`), `items`, `properties`, `required`, `additionalProperties` (`true`/`false`), `anyOf` |
 | Constraints | `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` (numbers), `formatMinimum`, `formatMaximum`, `formatExclusiveMinimum`, `formatExclusiveMaximum` (dates and times), `minLength`, `maxLength`, `pattern` (strings), `minItems`, `maxItems` (arrays), `enum`, `const` (any value) |
-| Annotations (no effect on validation) | `title`, `description`, `$comment`, `examples`, `deprecated`, `default` |
+| Annotations (no effect on validation) | `title`, `description`, `$comment`, `examples`, `deprecated` |
+| Create-time defaults ([Defaults on create](#defaults-on-create)) | `default` (also an annotation below the top level), `defaultFunction` (`uuidv4`, `uuidv7`, `now`, `today`) |
 | References | `$ref: "#/$defs/Name"` with `$defs` at the label schema's root; inlined when the schema is loaded |
 
 A constraint applies to the values of its own kind and ignores the others (JSON Schema
@@ -191,8 +192,8 @@ A value is compared with its type's ordering: a `datetime` by its instant
 value.
 
 Local references are **inlined**: a loaded schema has no `$ref`/`$defs`, and a reference cycle is
-an error (recursive schemas are not supported). Only annotations may sit next to a `$ref`; they
-override the definition's.
+an error (recursive schemas are not supported). Only annotations, `default` and `defaultFunction`
+may sit next to a `$ref`; they override the definition's.
 
 ### What is an error, and why
 
@@ -213,24 +214,67 @@ override the definition's.
 Every error is `SchemaError::InvalidSchema { path, reason, hint }`, `path` a JSON Pointer into
 the input (`/vertices/person/schema/properties/age/minimum`), and its help names the fix.
 
-### `default` is not applied
+### Defaults on create
 
-`default` is an **annotation only**, and it stays one:
+`default` has SQL `DEFAULT` semantics: when a vertex or edge is **created** without a property
+whose schema declares a `default`, the default is **stored**, as if the query had written it.
 
-- it is **never applied on write**: an element created without the property does not get it;
-- it is **never substituted on read**: `values("age")`, `valueMap()`, the display and every export
-  show nothing for an absent property;
-- **changing a default changes no data** (the diff classifies it as a compatible annotation change);
-- a `required` property with a `default` is still required: the default does not fill it.
+```rhai,graph=empty,script
+g.set_schema(#{mode: "open", vertices: #{person: #{schema: #{type: "object", properties: #{
+    name: #{type: "string"},
+    active: #{type: "boolean", default: true},
+    uid: #{type: "string", format: "uuid", defaultFunction: "uuidv7"}}}}}});
+g.addV("person").property("name", "alice").iterate();
+g.V().valueMap("name", "active").toList()   // [#{"active": [true], "name": ["alice"]}]
+```
 
-Why, although it may look surprising: this is JSON Schema's own meaning of `default` ("may be used
-by a user interface", not by a validator); Pydantic writes `default` on every optional field
-(`"default": null`), so applying it would materialise values nobody asked for; and a default that
-re-valued data whenever the schema changes would be "magic" no one can audit. Clients and editors
-may use it (the playground's schema editor prefills a form with it). Should create-time defaults
-(SQL `DEFAULT` semantics: stored physically, only for new elements) ever be supported, they get a
-**separate keyword**, because giving `default` that meaning later would silently change existing
-schemas.
+- **Only on create**: `addV()`/`addE()` (also with their folded `property()` steps),
+  `mergeV()`/`mergeE()` when they create (never on a match), the playground's create dialog, and
+  `GraphStorage::create_vertex`/`create_edge` in Rust. The default is filled in **before** the
+  new element is coerced and validated, so a `required` property with a default is satisfied, and
+  a canonical string default of a `uuid` property is stored as a `uuid`.
+- **Only what is missing**: a value the create writes wins, also an explicit `null`
+  (`property("k", ())` stores `null`). A `property()` that is not folded into the creation (a
+  traversal value, say) overwrites the default afterwards.
+- **`default: null` is never stored.** Pydantic writes `"default": null` on every optional field;
+  storing it would fill the data with nulls nobody wrote. Write the `null` explicitly when you
+  want one.
+- **Never on read**: `values("k")`, `valueMap()`, the display and every export show what is
+  stored, nothing is substituted for an absent property.
+- **No backfill**: setting or changing a schema never fills existing elements, and a changed
+  default is never re-applied. To fill existing elements, use the
+  [backfill recipe](#making-a-key-required-backfill-first-in-one-transaction).
+- **Stored data is reproduced, not re-created**: GraphML/GraphSON imports, `apply_change_set`,
+  replay, recovery and snapshot loads store exactly what they carry, and the plain
+  `GraphStorage::add_vertex`/`add_edge` of the Rust API applies no default either.
+- **Modes `open` and `closed` only**: mode `none` stores the schema without enforcing anything,
+  and applies no default either.
+- **Top-level properties only**: a `default` inside an object value's schema (`address.city`)
+  stays an annotation; nothing fills in keys of a value the create supplies.
+- **Multi-label vertices**: the first label, in label order, that declares a key decides, as for
+  coercion: its default is stored, or nothing when that label declares the key without one.
+
+A default must be a valid value of its property (after the write coercion): `set_schema`,
+`patch_schema` and `validate_schema` reject `{"type": "integer", "default": "x"}` or a default
+below the property's `minimum` with an `InvalidSchema` error. Only the defaults that are applied
+are checked: a `default: null` and a nested `default` are not.
+
+**`defaultFunction`** computes the value instead, a new one for every created element (like
+PostgreSQL's `gen_random_uuid()`/`uuidv7()`):
+
+| `defaultFunction` | Value |
+|---|---|
+| `uuidv4` | a random version-4 UUID |
+| `uuidv7` | a time-ordered version-7 UUID (RFC 9562: 48 bits of Unix milliseconds, then random bits; increasing within a process) |
+
+Both produce a `uuid`, so the property is `{"type": "string", "format": "uuid"}`. A property has
+either `default` or `defaultFunction`, never both, and `defaultFunction` sits only on a label's
+top-level property. The generated value is stored as a plain value: the change set and the
+journal record it, so replay and recovery reproduce the same UUID. `now` and `today` (one value
+per unit) come with the date/time values; until then they are rejected.
+
+A change of a `default` or `defaultFunction` is listed by `diff_schema` as `default_changed`, and
+it is always backward compatible: it changes only what future creates store.
 
 ## Required and nullable
 
@@ -262,6 +306,7 @@ rejected before anything is written. Removing a required property is rejected in
 | Types, constraints, `required` of declared labels (any depth) | no | yes | yes |
 | Undeclared labels | allowed | allowed, unchecked | rejected (also unlabeled elements) |
 | Default `additionalProperties` of an object node | - | `true` | `false` |
+| [Defaults on create](#defaults-on-create) (`default`, `defaultFunction`) | no | yes | yes |
 | Edge topology (`connections`) | no | no | yes |
 
 `mode` governs undeclared labels and topology, and it is the **default `additionalProperties`** of
@@ -440,7 +485,8 @@ graph.transaction(|g| -> TraverserResult<()> {
 (`schema_api_tests::backfill_then_require_in_one_transaction` runs this recipe.)
 
 The same in a script run as one unit (`atomic=True` in Python, every playground run): patch to
-optional, backfill, patch to required. A schema `default` does not backfill anything.
+optional, backfill, patch to required. A schema `default` does not backfill anything: it is stored
+only for elements created after it is set ([Defaults on create](#defaults-on-create)).
 
 ## Changing a schema: patch and diff
 
@@ -464,7 +510,8 @@ in a `before_commit` hook.
 | Change | Compatible when |
 |---|---|
 | `mode` | it gets less strict (`closed` → `open` → `none`); `open` → `closed` is incompatible |
-| `meta`, annotations (`title`, `description`, `default`, ...) | always |
+| `meta`, annotations (`title`, `description`, ...) | always |
+| `default`, `defaultFunction` (added, changed, removed; kind `default_changed`) | always: it changes only what future creates store |
 | label added | the old mode was `closed` (no client could write it), or its schema requires no key and admits undeclared keys (an open graph) |
 | label removed | never |
 | connection added/removed | the label's connections still allow every old pair (an empty list allows all), or the new mode is not `closed` (topology binds only there) |
@@ -504,7 +551,7 @@ are not part of the format.
 
 | Format | Shows |
 |---|---|
-| `table`, `markdown` | one row per property path (`address.zip`, `roles[].name`), type, required, nullable, constraints (`0..150`, `length 1..80`, `pattern ^x$`), notes (description, `default` marked as annotation) |
+| `table`, `markdown` | one row per property path (`address.zip`, `roles[].name`), type, required, nullable, constraints (`0..150`, `length 1..80`, `pattern ^x$`), notes (description, `default`, marked `(annotation)` where it is not applied: `null` or below the top level, `defaultFunction`) |
 | `tree` | the labels and their properties as a tree |
 | `json` | the canonical format |
 | `jsonschema` | one standalone JSON Schema per label (`$defs`: `vertex:person`, `edge:knows`), the mode's default `additionalProperties` written out |
@@ -537,6 +584,10 @@ A Pydantic `time` field is a time of day: Graphersal's `time` has no offset, so 
 
 Tuples (`prefixItems`) and `Decimal` (`anyOf` with a string pattern for some versions) are not
 supported either. The top level of the model must be an object (`"type": "object"`).
+
+A field's non-null `default` (`active: bool = True`) becomes a [default on
+create](#defaults-on-create) in mode `open`/`closed`; the `"default": null` Pydantic writes on every
+optional field stores nothing.
 
 ## A failing query changes nothing
 

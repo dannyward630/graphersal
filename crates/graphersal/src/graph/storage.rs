@@ -554,6 +554,55 @@ pub trait GraphStorage: Send + Sync {
         properties: PropertyMap,
     ) -> Result<Self::EdgeId, GraphError>;
 
+    /// Creates a vertex the way a query does (`add_v`, `mergeV` on create): first adds the
+    /// stored schema's create-time defaults (`default`/`defaultFunction` of every top-level
+    /// property the labels declare and `properties` lacks, in mode `open` and `closed`; see
+    /// [`Annotations`](crate::graph::schema::Annotations)), then calls [`Self::add_vertex`],
+    /// which coerces and validates as always. [`Self::add_vertex`] itself stores exactly what
+    /// it is given: imports, change sets and replay use it, so they never apply defaults.
+    ///
+    /// The default implementation reads the schema through [`Self::get_schema`]; a storage
+    /// that can borrow its schema overrides it to save that copy.
+    fn create_vertex(
+        &mut self,
+        id: Option<CompactString>,
+        labels: Vec<CompactString>,
+        mut properties: PropertyMap,
+    ) -> Result<Self::VertexId, GraphError> {
+        if let Some(schema) = self.get_schema() {
+            // A repeated label changes nothing: the first label declaring a key decides.
+            crate::graph::schema::defaults::fill_defaults(
+                &schema,
+                GraphNodeType::Vertex,
+                &labels,
+                &mut properties,
+            );
+        }
+        self.add_vertex(id, labels, properties)
+    }
+
+    /// Creates an edge the way a query does (`add_e`, `mergeE` on create): the edge
+    /// counterpart of [`Self::create_vertex`] (the label's create-time defaults, then
+    /// [`Self::add_edge`]).
+    fn create_edge(
+        &mut self,
+        id: Option<CompactString>,
+        label: Option<CompactString>,
+        from: Self::VertexId,
+        to: Self::VertexId,
+        mut properties: PropertyMap,
+    ) -> Result<Self::EdgeId, GraphError> {
+        if let Some(schema) = self.get_schema() {
+            crate::graph::schema::defaults::fill_defaults(
+                &schema,
+                GraphNodeType::Edge,
+                label.as_slice(),
+                &mut properties,
+            );
+        }
+        self.add_edge(id, label, from, to, properties)
+    }
+
     /// Sets (inserts or overwrites) one property on a vertex.
     fn set_vertex_property(
         &mut self,
@@ -1239,6 +1288,39 @@ impl GraphStorage for TraversalGraph {
             }
             Ok(self.insert_vertex_raw(id, labels, properties))
         }
+    }
+
+    fn create_vertex(
+        &mut self,
+        id: Option<CompactString>,
+        labels: Vec<CompactString>,
+        mut properties: PropertyMap,
+    ) -> Result<VertexHandle, GraphError> {
+        // Borrows the schema instead of copying it (the trait default reads `get_schema`).
+        crate::graph::schema::defaults::fill_defaults(
+            &self.schema.read(),
+            GraphNodeType::Vertex,
+            &labels,
+            &mut properties,
+        );
+        GraphStorage::add_vertex(self, id, labels, properties)
+    }
+
+    fn create_edge(
+        &mut self,
+        id: Option<CompactString>,
+        label: Option<CompactString>,
+        from: VertexHandle,
+        to: VertexHandle,
+        mut properties: PropertyMap,
+    ) -> Result<EdgeHandle, GraphError> {
+        crate::graph::schema::defaults::fill_defaults(
+            &self.schema.read(),
+            GraphNodeType::Edge,
+            label.as_slice(),
+            &mut properties,
+        );
+        GraphStorage::add_edge(self, id, label, from, to, properties)
     }
 
     #[inline]
@@ -2447,6 +2529,28 @@ impl<G: GraphStorage> GraphStorage for Box<G> {
     }
 
     #[inline]
+    fn create_vertex(
+        &mut self,
+        id: Option<CompactString>,
+        labels: Vec<CompactString>,
+        properties: PropertyMap,
+    ) -> Result<Self::VertexId, GraphError> {
+        (**self).create_vertex(id, labels, properties)
+    }
+
+    #[inline]
+    fn create_edge(
+        &mut self,
+        id: Option<CompactString>,
+        label: Option<CompactString>,
+        from: Self::VertexId,
+        to: Self::VertexId,
+        properties: PropertyMap,
+    ) -> Result<Self::EdgeId, GraphError> {
+        (**self).create_edge(id, label, from, to, properties)
+    }
+
+    #[inline]
     fn add_vertex_label(
         &mut self,
         node: Self::VertexId,
@@ -2799,6 +2903,28 @@ impl<G: GraphStorage> GraphStorage for &mut G {
         properties: PropertyMap,
     ) -> Result<Self::VertexId, GraphError> {
         (**self).add_vertex(id, labels, properties)
+    }
+
+    #[inline]
+    fn create_vertex(
+        &mut self,
+        id: Option<CompactString>,
+        labels: Vec<CompactString>,
+        properties: PropertyMap,
+    ) -> Result<Self::VertexId, GraphError> {
+        (**self).create_vertex(id, labels, properties)
+    }
+
+    #[inline]
+    fn create_edge(
+        &mut self,
+        id: Option<CompactString>,
+        label: Option<CompactString>,
+        from: Self::VertexId,
+        to: Self::VertexId,
+        properties: PropertyMap,
+    ) -> Result<Self::EdgeId, GraphError> {
+        (**self).create_edge(id, label, from, to, properties)
     }
 
     #[inline]
@@ -3180,6 +3306,22 @@ impl GraphStorage for Arc<TraversalGraph> {
     }
 
     #[inline]
+    fn create_vertex(
+        &mut self,
+        id: Option<CompactString>,
+        labels: Vec<CompactString>,
+        properties: PropertyMap,
+    ) -> Result<VertexHandle, GraphError> {
+        if let Some(graph) = Arc::get_mut(self) {
+            GraphStorage::create_vertex(graph, id, labels, properties)
+        } else {
+            Err(GraphError::InvalidElementState {
+                reason: "Cannot mutate shared Arc<TraversalGraph>".to_string(),
+            })
+        }
+    }
+
+    #[inline]
     fn add_vertex_label(
         &mut self,
         node: VertexHandle,
@@ -3231,6 +3373,24 @@ impl GraphStorage for Arc<TraversalGraph> {
     ) -> Result<EdgeHandle, GraphError> {
         if let Some(graph) = Arc::get_mut(self) {
             GraphStorage::add_edge(graph, id, label, from, to, properties)
+        } else {
+            Err(GraphError::InvalidElementState {
+                reason: "Cannot mutate shared Arc<TraversalGraph>".to_string(),
+            })
+        }
+    }
+
+    #[inline]
+    fn create_edge(
+        &mut self,
+        id: Option<CompactString>,
+        label: Option<CompactString>,
+        from: VertexHandle,
+        to: VertexHandle,
+        properties: PropertyMap,
+    ) -> Result<EdgeHandle, GraphError> {
+        if let Some(graph) = Arc::get_mut(self) {
+            GraphStorage::create_edge(graph, id, label, from, to, properties)
         } else {
             Err(GraphError::InvalidElementState {
                 reason: "Cannot mutate shared Arc<TraversalGraph>".to_string(),

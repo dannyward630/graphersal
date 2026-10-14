@@ -23,7 +23,9 @@
 //!   for a dry run; `drawn`: what the drawing needs, `{kind, id, label, caption, source?,
 //!   target?}`, `caption` the vertex's `name` caption as the graph view has it) or `{ok: false,
 //!   errors: [{field, message, help?}]}` with `field` a property key, `label`, `id`, `from`/`to`
-//!   or `general`. Every property is tried, so all bad values are reported at once;
+//!   or `general`. Every property is tried, so all bad values are reported at once. The engine
+//!   creates it as a query does (`GraphStorage::create_vertex`/`create_edge`), so the schema's
+//!   `default`/`defaultFunction` fill the properties the form leaves out;
 //! - **delete** ([`Session::delete_element`]): `{kind, id, validateOnly?}`; the answer is `{ok:
 //!   true, deleted, edges}` (`edges`: the edges removed with a vertex; a dry run counts them and
 //!   deletes nothing, `deleted: false`) or `{ok: false, errors}`.
@@ -191,7 +193,7 @@ fn add<S: GraphStorage>(
                     (None, true) => Some(dry_run_id(g, ElementKind::Vertex)),
                     (None, false) => None,
                 };
-                g.add_vertex(id, labels.clone(), properties.clone())
+                g.create_vertex(id, labels.clone(), properties.clone())
                     .map(|v| g.vertex_id(v).unwrap_or_default().to_string())
             }
             Create::Edge {
@@ -211,7 +213,7 @@ fn add<S: GraphStorage>(
                     (None, true) => Some(dry_run_id(g, ElementKind::Edge)),
                     (None, false) => None,
                 };
-                g.add_edge(id, Some(label.clone()), source, target, properties.clone())
+                g.create_edge(id, Some(label.clone()), source, target, properties.clone())
                     .map(|e| g.edge_id(e).unwrap_or_default().to_string())
             }
         };

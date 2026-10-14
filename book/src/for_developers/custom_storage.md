@@ -34,7 +34,10 @@ a parameter means `Graph<TraversalGraph>`.
    that is correct for a simple, non-transactional storage. The trait's rustdoc ("A guide for
    storage implementers") is the reference: handles that never alias, the write checks and their
    public helpers, units of atomicity, capabilities, change capture, statistics, schema and the
-   catalog.
+   catalog. The schema's [defaults on create](../users_guide/schema_enforcement.md#defaults-on-create)
+   come for free: the queries create through the provided `create_vertex`/`create_edge`, which
+   fill them in from `get_schema()` and call your `add_vertex`/`add_edge` (override them only to
+   avoid that schema copy).
 2. **`Default`** (required by the DSL and the session). A whole script runs as one unit by moving
    the storage out of the shared lock while the write lock is held (`std::mem::take`), which
    leaves an empty instance behind. The session also builds every new graph (a sample, a file

@@ -634,7 +634,7 @@ pub(crate) fn create_edge<S: GraphStorage>(
         .iter()
         .map(|entry| (entry.key.clone(), entry.value.clone()))
         .collect();
-    Ok(storage.add_edge(map.id.clone(), map.label.clone(), out_v, in_v, properties)?)
+    Ok(storage.create_edge(map.id.clone(), map.label.clone(), out_v, in_v, properties)?)
 }
 
 /// Writes `entries` to an existing element (onMatch), each with its own cardinality or
@@ -664,7 +664,7 @@ pub(crate) fn create_vertex<S: GraphStorage>(
         .map(|entry| (entry.key.clone(), entry.value.clone()))
         .collect();
     let labels = map.label.iter().cloned().collect();
-    Ok(storage.add_vertex(map.id.clone(), labels, properties)?)
+    Ok(storage.create_vertex(map.id.clone(), labels, properties)?)
 }
 
 /// A merge argument or option as handed to the builder, before the step parses it for its

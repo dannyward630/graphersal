@@ -1137,8 +1137,9 @@ fn folder_problem(folder: &str) -> Option<String> {
 /// One parameter of a saved query: its schema (the node format of the graph schema,
 /// [`PropertySchema`]) and an optional default.
 ///
-/// Unlike the annotation-only `default` keyword of a data schema, the default of a parameter
-/// IS substituted when a call omits the argument; a parameter without one is required. A
+/// The default sits beside the schema: a `default` keyword inside the parameter's schema is an
+/// annotation, while the parameter's own default IS substituted when a call omits the argument;
+/// a parameter without one is required. A
 /// default given as a value the schema coerces on write (a canonical uuid string for
 /// `format: "uuid"`, an `int64` for `number`) is stored coerced.
 #[derive(Debug, Clone, PartialEq)]
