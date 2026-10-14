@@ -220,6 +220,66 @@ impl Store {
         Ok(dict.into_any().unbind())
     }
 
+    /// ``Store.upgrade(source, target=None, *, in_place=False, single_file=False)``: converts
+    /// a store (or backup, or ``.gstore`` file) written by an older Graphersal (0.1.x) to the
+    /// current format, without the older Graphersal. With ``target``: a new store there (a new
+    /// directory, or a single file: a ``.gstore`` path or ``single_file=True``); ``source`` is
+    /// not changed. With ``in_place=True``: ``source`` itself (back it up first). Everything
+    /// is carried (graph, schema, catalog, history, marks, attic, identity); the source is
+    /// verified first and a damaged one raises (``err.cause == "damaged_source"``: repair it
+    /// instead). Returns ``{"from_version", "to_version", "already_current", "in_place",
+    /// "backup", "files", "bytes"}``.
+    #[staticmethod]
+    #[pyo3(signature = (source, target=None, *, in_place=false, single_file=false))]
+    fn upgrade(
+        py: Python<'_>,
+        source: &str,
+        target: Option<&str>,
+        in_place: bool,
+        single_file: bool,
+    ) -> PyResult<Py<PyAny>> {
+        let source = source.to_string();
+        let target = match (target, in_place) {
+            (Some(target), false) => Some(target.to_string()),
+            (None, true) => None,
+            (Some(_), true) => {
+                return Err(PyValueError::new_err(
+                    "Store.upgrade takes a target OR in_place=True, not both",
+                ));
+            }
+            (None, false) => {
+                return Err(PyValueError::new_err(
+                    "Store.upgrade needs a target (a new store) or in_place=True",
+                ));
+            }
+        };
+        let report = py
+            .detach(move || match target {
+                Some(target) => {
+                    let to: Arc<dyn persist::StoreDir> = if single_file {
+                        Arc::new(persist::SingleFileDir::new(&target))
+                    } else {
+                        persist::store_dir_at(&target)
+                    };
+                    persist::Store::upgrade(source.as_str(), to)
+                }
+                None => persist::Store::upgrade_in_place(source.as_str()),
+            })
+            .map_err(|err| store_error(py, err))?;
+        let dict = PyDict::new(py);
+        dict.set_item("from_version", report.from_version)?;
+        dict.set_item("to_version", report.to_version)?;
+        dict.set_item("already_current", report.already_current)?;
+        dict.set_item("in_place", report.in_place)?;
+        match &report.backup {
+            Some(marker) => dict.set_item("backup", marker_dict(py, marker)?)?,
+            None => dict.set_item("backup", py.None())?,
+        }
+        dict.set_item("files", report.files_copied)?;
+        dict.set_item("bytes", report.bytes_copied)?;
+        Ok(dict.into_any().unbind())
+    }
+
     /// ``Store.open_backup(path)``: opens the BACKUP in ``path`` read-only (no lock, nothing
     /// written): listing, verify, fork and backups of it work; every write raises.
     #[staticmethod]

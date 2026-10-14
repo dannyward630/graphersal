@@ -166,8 +166,10 @@ pub enum PersistError {
     },
 
     /// The Store was written by an older store format version (its `GRAPH` file is valid but
-    /// of an older version): this build neither reads nor writes it. `help()` gives the
-    /// migration through a packed snapshot written by the Graphersal that made the store.
+    /// of an older version): this build does not open it as it is. `help()` names the
+    /// converter for a released version ([`Store::upgrade`](super::Store::upgrade), CLI
+    /// `graphersal store upgrade`, which needs no older Graphersal), and for a pre-release
+    /// version the migration through a packed snapshot written by the Graphersal that made it.
     #[error(
         "The store {path} has the older format version {found}; this build reads and writes \
          only version {supported}"
@@ -406,6 +408,13 @@ pub enum StoreFailure {
     /// ([`Store::stopped_reason`](super::Store::stopped_reason)): it writes nothing more until
     /// it is closed and opened again, which completes or undoes the change.
     Stopped,
+    /// A store to upgrade ([`Store::upgrade`](super::Store::upgrade)) already has the current
+    /// store format version: a copying upgrade has nothing to convert.
+    AlreadyCurrent,
+    /// A store to upgrade ([`Store::upgrade`](super::Store::upgrade),
+    /// [`Store::upgrade_in_place`](super::Store::upgrade_in_place)) does not verify: nothing
+    /// was written; repair it into a new current store instead.
+    DamagedSource,
 }
 
 impl StoreFailure {
@@ -433,6 +442,8 @@ impl StoreFailure {
             StoreFailure::MissingCapability => "missing_capability",
             StoreFailure::ReloadFailed => "reload_failed",
             StoreFailure::Stopped => "stopped",
+            StoreFailure::AlreadyCurrent => "already_current",
+            StoreFailure::DamagedSource => "damaged_source",
         }
     }
 
@@ -550,6 +561,20 @@ impl StoreFailure {
                  server): the open completes the change (or undoes it) and the store is \
                  writable again."
             }
+            StoreFailure::AlreadyCurrent => {
+                "The store already has the current format: open it as it is (Store::open; CLI: \
+                 graphersal --graph <dir>). For a copy of it use Store::convert (CLI: graphersal \
+                 store convert <dir> <new>) or a backup (graphersal store backup <dir> \
+                 <backup_dir>)."
+            }
+            StoreFailure::DamagedSource => {
+                "Nothing was written: the upgrade only converts an intact store (the message \
+                 lists the first problems the scrub found). Repair it instead: \
+                 Store::repair_dir (CLI: graphersal store repair <dir> --to <new_dir>) reads the \
+                 older store and writes a NEW store of the current format with what is intact (it reports what was \
+                 repaired, lost and diverged; the damaged store is never changed). Or restore a \
+                 backup and upgrade that (graphersal store upgrade <backup_dir> <new_dir>)."
+            }
         }
     }
 }
@@ -663,8 +688,25 @@ impl DiagnosticError for PersistError {
                  if it is one (Store::open; CLI: graphersal store info {path} shows what it \
                  holds, graphersal --graph {path} opens it)."
             ),
+            PersistError::OlderFormat { path, found, .. }
+                if *found >= super::store::OLDEST_UPGRADABLE_STORE_VERSION =>
+            {
+                format!(
+                    "Upgrade it with this build; no older Graphersal is needed. Into a new store \
+                     (the older one stays as it is): graphersal store upgrade {path} <new_dir> \
+                     (a <new_file>.gstore path for one file); or in place (back it up first: \
+                     afterwards the older Graphersal no longer opens it): graphersal store \
+                     upgrade {path} --in-place. In Rust Store::upgrade / Store::upgrade_in_place, \
+                     in Python graphersal.Store.upgrade. Everything is carried: the graph, schema \
+                     and catalog, the history, marks, attic entries and the store's identity; a \
+                     backup directory stays a backup. The store is verified first; a damaged one \
+                     is refused (graphersal store repair {path} --to <new_dir> writes a repaired \
+                     store of the current format)."
+                )
+            }
             PersistError::OlderFormat { path, .. } => format!(
-                "Migrate it through a packed snapshot. With the Graphersal that wrote the store \
+                "This is a pre-release store format the converter does not read. Migrate it \
+                 through a packed snapshot. With the Graphersal that wrote the store \
                  (the older binary; the store closed), export its current state: graphersal \
                  --graph {path} -e 'g.export_snapshot(\"graph.gsnap\")'. Then create a new store \
                  from it with this build: graphersal store create <new_dir> --from graph.gsnap \

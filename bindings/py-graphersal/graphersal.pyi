@@ -418,6 +418,20 @@ class Store:
     def convert(source: str, target: str, *, single_file: bool = False) -> dict[str, Any]:
         """Copies the closed store in ``source`` into ``target`` (a new directory, or a single
         file: a ``.gstore`` path or ``single_file=True``), verified: ``{"files", "bytes"}``."""
+    @staticmethod
+    def upgrade(
+        source: str,
+        target: str | None = None,
+        *,
+        in_place: bool = False,
+        single_file: bool = False,
+    ) -> dict[str, Any]:
+        """Converts a store (or backup, or ``.gstore`` file) written by an older Graphersal
+        (0.1.x) to the current format, without the older Graphersal: into a new store in
+        ``target`` (``source`` unchanged), or ``in_place=True``. Everything is carried; the
+        source is verified first (a damaged one raises with ``err.cause ==
+        "damaged_source"``). ``{"from_version", "to_version", "already_current", "in_place",
+        "backup", "files", "bytes"}``."""
     def prune(self, up_to: int) -> dict[str, Any]:
         """Removes snapshots and WAL only needed for targets before ``up_to`` (the last two
         snapshots stay): ``{"kept_from", "snapshots_removed", "segments_removed",

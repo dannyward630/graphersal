@@ -223,16 +223,30 @@ graphersal store compact-advice data/                # is compact worth it now? 
 graphersal store compact data/                       # prune to now; a single file gives its free space back
 graphersal store compact data/ --drop-marks          # ... also when marks become unreachable (refused without)
 graphersal store convert data/ data.gstore           # a closed store into one file (or back)
+graphersal store upgrade old/ new/                   # a store of Graphersal 0.1.x into the current format (or: old/ --in-place)
 graphersal store repair damaged/ --to repaired/      # a damaged store, repaired into a new directory
 graphersal store rollback --help                     # the usage of one command (or: store help rollback)
 ```
 
 ### Migrate a store from an older format
 
-A store written by an older Graphersal with an older store format version is refused with
-`The store ... has the older format version N` (nothing is changed). Move its current state
-through a packed snapshot: export it with the OLD binary (the store closed), create a new store
-from the file with the new one:
+A store written by an older Graphersal is refused with `The store ... has the older format
+version N` (nothing is changed); the error's help names the command. A store of a released
+version (2: Graphersal 0.1.x) is upgraded by THIS binary, no older one needed, with everything
+carried (graph, schema, catalog, history, marks, attic, identity):
+
+```bash
+cp -R old_store/ old_store.bak/                       # optional: keep the older store as it is
+graphersal store upgrade old_store/ new_store/       # into a new store (old_store/ unchanged), verified
+graphersal store upgrade old_store/ --in-place       # or the store itself
+graphersal store upgrade old_backup/ new_backup/     # a backup directory stays a backup
+graphersal store restore old_backup.zip new_store/   # a ZIP backup is upgraded as it is restored
+graphersal store repair damaged_old/ --to new_store/ # a DAMAGED older store: repaired into the current format
+```
+
+A store of store format version 1 (a pre-release, before the store id) moves through a packed
+snapshot instead: export it with the OLD binary (the store closed), create a new store from the
+file with the new one:
 
 ```bash
 old/graphersal --graph old_store/ -e 'g.export_snapshot("graph.gsnap")'   # the OLD binary: the current state
@@ -245,7 +259,7 @@ the same element ids and commit position, but it is a new store: the marks, the 
 history) and the backups of the old store are not carried. `old/graphersal store export
 old_store/ graph.gsnap` exports the latest stored SNAPSHOT only (run `old/graphersal store
 checkpoint old_store/` first to include the WAL). Keep the old store until the new one is
-verified and backed up.
+verified and backed up. A `.gsnap` written by 0.1.x loads in this build as it is.
 
 ## Python
 

@@ -275,3 +275,62 @@ fn every_cause_has_a_stable_name() {
     assert_eq!(StoreFailure::NameTaken.name(), "name_taken");
     assert_eq!(StoreFailure::BackupRunning.to_string(), "backup_running");
 }
+
+/// A store made older: `GRAPH` and its copy rewritten with store format version 2 (the
+/// version of Graphersal 0.1.0; its layout is the current one).
+#[cfg(not(target_arch = "wasm32"))]
+fn make_version_2(dir: &MemDir) {
+    for name in ["GRAPH", "GRAPH.copy"] {
+        let mut bytes = dir.file(name).unwrap();
+        bytes[8..12].copy_from_slice(&2u32.to_le_bytes());
+        let crc = crate::store_tests::crc32c(&bytes[..252]);
+        bytes[252..256].copy_from_slice(&crc.to_le_bytes());
+        dir.put_file(name, bytes);
+    }
+}
+
+#[test]
+fn a_copying_upgrade_of_a_current_store_is_refused() {
+    let dir = MemDir::new();
+    store_with_commits(&dir, 1).close().unwrap();
+    assert_cause(
+        Store::upgrade(&dir, MemDir::new()),
+        StoreFailure::AlreadyCurrent,
+        "graphersal store convert",
+    );
+    assert_eq!(StoreFailure::AlreadyCurrent.name(), "already_current");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_damaged_older_store_is_not_upgraded() {
+    let dir = MemDir::new();
+    let store = store_with_commits(&dir, 1);
+    let snapshot = store.checkpoint(None).unwrap();
+    store.close().unwrap();
+    let prefix = format!("snapshots/{:020}/", snapshot.commit_seq);
+    let name = dir
+        .file_names()
+        .into_iter()
+        .filter(|n| n.starts_with(&prefix) && !n.ends_with("/manifest"))
+        .max_by_key(|n| dir.file(n).map_or(0, |b| b.len()))
+        .expect("a segment of the newest snapshot");
+    let mut bytes = dir.file(&name).unwrap();
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 0x40;
+    dir.put_file(&name, bytes);
+    make_version_2(&dir);
+    let before = dir.file_names();
+    assert_cause(
+        Store::upgrade_in_place(&dir),
+        StoreFailure::DamagedSource,
+        "graphersal store repair",
+    );
+    assert_cause(
+        Store::upgrade(&dir, MemDir::new()),
+        StoreFailure::DamagedSource,
+        "graphersal store repair",
+    );
+    assert_eq!(dir.file_names(), before, "nothing was written");
+    assert_eq!(StoreFailure::DamagedSource.name(), "damaged_source");
+}

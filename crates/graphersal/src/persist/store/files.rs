@@ -16,7 +16,7 @@ use crate::value::{ElementProperty, PropertyMap};
 /// Magic of the `GRAPH` file.
 const GRAPH_MAGIC: &[u8; 8] = b"GRSLGRPH";
 /// Size of the fixed part of the `GRAPH` file.
-const GRAPH_FIXED_BYTES: usize = 256;
+pub(crate) const GRAPH_FIXED_BYTES: usize = 256;
 /// Size of one lineage entry.
 const LINEAGE_ENTRY_BYTES: usize = 32;
 
@@ -910,5 +910,7 @@ pub(crate) fn undo_new_dir(dir: &DirPath, existed: bool) {
 /// has the same `GRAPH` layout and marks a store whose snapshots and WAL are of file format
 /// version 2 (the temporal value tags), so that a build that reads only file format version 1
 /// refuses the store as newer instead of taking its files for damage. A store of version 1 or
-/// 2 is refused with [`PersistError::OlderFormat`] (migrate it through a packed snapshot).
+/// 2 is refused with [`PersistError::OlderFormat`]; version 2 is upgraded by the converter
+/// (`upgrade.rs`, format spec 15.1), version 1 (never released) migrates through a packed
+/// snapshot.
 pub(crate) const STORE_VERSION: u32 = 3;

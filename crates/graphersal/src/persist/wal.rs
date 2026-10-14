@@ -716,6 +716,11 @@ impl<R: Read> JournalReader<R> {
         self.header.graph_id
     }
 
+    /// The file format version of the journal's header (its records are read with it).
+    pub(crate) fn format_version(&self) -> u32 {
+        self.version
+    }
+
     /// The first commit sequence number the journal may contain.
     pub fn first_commit_seq(&self) -> u64 {
         self.header.first_commit_seq

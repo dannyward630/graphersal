@@ -286,8 +286,8 @@ NOT be replayed.
 identifies a lineage of its data. It is a creation parameter: a create writes a new random one
 (128 bits, like a lineage id), and every writer of `GRAPH` keeps it. A fork, an attic fork (12.5), a repair (13.4) and a conversion
 to another backend are new stores with a new `store_id` (their lineage chain still names the
-parent); an in-place rollback, an attic restore, a compaction and a restored backup (12.6, 12.8)
-keep it: a restore IS the store. Every backup (full, increment, ZIP, from memory) records its
+parent); an in-place rollback, an attic restore, a compaction, a restored backup (12.6, 12.8)
+and an upgrade (15.1) keep it: a restore IS the store, an upgrade is the same store in a new version. Every backup (full, increment, ZIP, from memory) records its
 source's `store_id`, and an increment requires it to be equal (12.7).
 
 ## 6. The snapshot manifest
@@ -1318,15 +1318,53 @@ many small appends).
   file header (manifest 6.1, segment 7.1, packed snapshot 8, WAL segment 9.1).
 - A `GRAPH` of an OLDER store format version (its magic and fixed-part checksum valid, the
   version word below the current one) MUST be classified by its version word before any field
-  that version did not have is checked: it is neither damage (13) nor "not a store". There is
-  no upgrade path inside the store: every operation (open, read-only open,
-  info, verify, backup, restore, fork, repair, conversion) refuses it with "older format", and
-  the migration is a packed snapshot exported by the build that wrote the store, from which this
+  that version did not have is checked: it is neither damage (13) nor "not a store". Every
+  operation refuses it with "older format" (open, read-only open, info, verify, backup, restore
+  of a backup directory, fork, conversion), except the upgrade (15.1), the repair (which reads a
+  store of a released older version as upgraded and writes the repaired store in the current
+  version) and the restore of a ZIP backup (which upgrades what it unpacks).
+- **Every release reads every released version.** A reader of store format version 3 MUST read
+  the files of store format version 2 (Graphersal 0.1.0) and of file format version 1, and a
+  later version MUST keep reading them; a store of a released older version is upgraded without
+  the build that wrote it (15.1). Store format version 1 was never released: a store of it is
+  migrated through a packed snapshot exported by the build that wrote it, from which the current
   build creates a new store (only the graph state, schema and catalog move; marks, the attic and
   backups do not).
 - New value tags, record types, mutation ops, `INTENT` operations and flag bits require a new
   version, except flag bits that a reader may ignore without misreading the store (a writer
   preserves unknown bits it read).
+
+### 15.1 Upgrading a store
+
+An upgrade converts a store of store format version 2 (a store, a backup directory, either
+backend) to version 3. Version 3 has the layout of version 2 and every file of version 2 is a
+valid file of version 3 (its own header names its file format version, 1, which a version 3
+reader reads), so an upgrade:
+
+1. Takes the writer lock of the store and refuses it while held (an older writer has it open).
+2. Verifies the store as version 3 would read it (12.6's checks: both `GRAPH` copies, every
+   snapshot, every WAL record and the segment set of 9.8, the attic) WITHOUT writing: the
+   `GRAPH` copies are read with the version word replaced by 3. Any problem refuses the upgrade
+   (repair it instead, 13).
+3. Rewrites `GRAPH.copy`, then `GRAPH` (each atomically, 5.3) with version 3 and every other field
+   unchanged (lineage, identity, flags, the backup marker, `wal_head`, `closed_at`, `wal_cut`).
+   No other file changes, so no `INTENT` is needed: after a crash between the two writes the
+   copies differ by the version word only and a version 3 reader uses the valid copy (5.3);
+   repeating the upgrade rewrites both. A version 2 reader refuses either state as newer.
+
+An upgrade into a NEW location copies every file of the store (as a conversion does: name by name, without the
+locks and temporary files) after step 2, writes a marker `upgrade-in-progress.tmp` into the
+target first, verifies the copy with its new `GRAPH` held in memory, then writes `GRAPH.copy`,
+`GRAPH` and removes the marker: until `GRAPH` is written the target is not a store, and a target
+holding the marker is an interrupted upgrade that the next upgrade into it clears. Unlike a
+conversion, the copy keeps the store id: it is the same store in the new version.
+
+After an upgrade the files of file format version 1 stay where they are: snapshots, WAL segments
+and the attic keep their bytes, so the history is exactly what was written. A writer MUST NOT
+append to a WAL segment of an older file format version: when the newest segment of the
+lineage is older, the next record goes into a new segment of the current version (9.8:
+`wal_head` names it); a segment of an older version that holds no record (it starts at the next
+commit) is replaced whole by one of the current version under the same name.
 - New definition kinds (6.3), new payload keys of a known kind, new segment kinds (7.5) and
   named extra files (8) do **not** change the version: the rules of 16 tell every reader how to
   treat what it does not know.
@@ -1359,9 +1397,10 @@ store format version 3 and file format version 2:
 6. **Two version axes.** The format version (the byte structure; with rules 1-5 it rarely
    moves) and content versions such as a saved query's `dialect`: a DSL evolves by compiling the
    stored text, never by re-encoding files.
-7. **Migration through a packed snapshot.** A store of an older store format version is refused
-   (15); the build that wrote it exports a packed snapshot (the file format moves far less often
-   than the store format), and the current build creates a new store from it.
+7. **Upgrades without the older build.** Every release reads every released store and file
+   format version (15), so a store of a released older version is upgraded by the current build
+   itself (15.1); a store format change keeps that possible. A packed snapshot of an older file
+   format version loads as it is.
 8. **Host kinds.** Definition kinds 128-255 (6.3) belong to hosts, the applications built on a
    library that implements this format; the format never assigns them, so a host entity never
    collides with a future library kind. To the library a host kind is an unknown kind: kept as
@@ -1395,8 +1434,8 @@ store format version 3 and file format version 2:
 **Writers**
 
 - Write every new file with the current file format version (2) and `GRAPH` with store format
-  version 3; never append a record with a temporal value to a WAL segment of version 1 (start a
-  new segment), and never write a temporal value into a file of version 1.
+  version 3; never append a record to a WAL segment of an older file format version (start a new
+  segment, 15.1), and never write a temporal value into a file of version 1.
 - Follow the write ordering of 9.9: a WAL never holds a commit that did not happen, and a caller
   never gets "ok" for a commit that is not durable under the configured durability.
 - Make files visible only when complete: a temporary name, sync, an atomic rename, a sync of the

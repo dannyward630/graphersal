@@ -37,7 +37,7 @@ snapshot is lossless.
 | `The backup stopped: the backup ... does not verify` / side `Backup` | the copy did not read back intact (the backup's disk) | check the backup's disk and back up again (into a new directory with `--full` when the old backup is damaged); the store is fine |
 | `The store ... is read-only: backup found damage on disk ... damage policy "maintenance"` / `DamageFound` | damage was found while the store is open, and its policy (fixed at creation) is `maintenance` | the data in memory is intact: back it up from memory, then repair the store; see [Damage found while the store is open](store_damage.md#damage-found-while-the-store-is-open) |
 | `--on-damage ... applies only to a store being created` | `--on-damage` for an existing store with another policy | the [damage policy](creation_parameters.md) never changes; drop the option |
-| `The store ... has the older format version N; this build reads and writes only version M` / `OlderFormat` | a store written by an older Graphersal (store format version 1: before the store id; version 2: Graphersal 0.1.x) | migrate it through a packed snapshot: [the recipe](../users_guide/command_cheat_sheet.md#migrate-a-store-from-an-older-format), also in the error's help |
+| `The store ... has the older format version N; this build reads and writes only version M` / `OlderFormat` | a store written by an older Graphersal (version 2: Graphersal 0.1.x; version 1: a pre-release before the store id) | version 2: upgrade it with this build, no older binary needed: `graphersal store upgrade <dir> <new_dir>` (or `--in-place`), see [Format Versions](store_versions.md#upgrading-a-store-of-an-older-version); version 1: migrate it through a packed snapshot, [the recipe](../users_guide/command_cheat_sheet.md#migrate-a-store-from-an-older-format). The error's help names the command |
 | `Unsupported format version N of the store ...` / `UnsupportedVersion` | a store written by a NEWER Graphersal | open it with that version; see [Format Versions](store_versions.md) |
 | `The snapshot needs about N bytes in memory, more than the memory limit` | a memory budget (`--memory-limit`, `ReadOptions::with_memory_limit`) smaller than the graph | raise the budget, or load on a bigger machine |
 
@@ -71,6 +71,8 @@ it with a `match`; `StoreFailure::name()` is the stable name, which the Python e
 | `MissingCapability` (`missing_capability`) | the graph's storage does not claim `atomic` and `change_capture`, so no journal can be attached (never for `TraversalGraph`) | keep the graph in a storage that claims both |
 | `ReloadFailed` (`reload_failed`) | the files of a rollback or attic restore changed, but loading the new state into the open graph failed: the graph in memory was emptied and the store stopped | close the store and open it again (restart the server): the open completes the change |
 | `Stopped` (`stopped`) | an earlier rollback or attic restore failed part-way, so the store writes nothing more (`Store::stopped_reason`) | close the store and open it again |
+| `AlreadyCurrent` (`already_current`) | `store upgrade <dir> <new>` of a store that already has the current format | open it as it is; for a copy use `store convert` or a backup |
+| `DamagedSource` (`damaged_source`) | the store to upgrade does not verify (the message lists the first problems); nothing was written | `graphersal store repair <dir> --to <new_dir>` reads the older store and writes a repaired one in the current format; or upgrade a backup instead |
 
 ## Questions
 
@@ -131,5 +133,6 @@ treats records after the writer's durable end as possibly not final. In Rust,
 
 **Is the format stable?** Store format version 3 (with file format version 2) is specified on the
 [specification](format.md) page; a newer version is refused, never guessed at, and a store of an
-older version is refused with a migration recipe (a packed snapshot exported by the older build).
+released older version is upgraded by `graphersal store upgrade` without the older build (every
+build keeps the readers of every released format; [Format Versions](store_versions.md)).
 Before Graphersal 0.1.0 the format may still change.

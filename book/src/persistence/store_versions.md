@@ -22,16 +22,69 @@ single-file container has its own container version):
 |---|---|
 | the current version | read and written as usual |
 | **newer** than this build | refused with `PersistError::UnsupportedVersion` ("written by a newer format version"): never guessed at. Use a newer Graphersal |
-| a store of an **older** store format version | refused with `PersistError::OlderFormat` by every operation (open, read-only open, `store info`, `verify`, backup, restore, fork, repair, convert); nothing is changed, never reported as damage |
+| a store of an **older** released store format version (2: Graphersal 0.1.x) | refused with `PersistError::OlderFormat` by every operation but the converter and `repair` (open, read-only open, `store info`, `verify`, backup, restoring a backup directory, fork, convert; a ZIP backup is upgraded as it is restored); nothing is changed, never reported as damage. Its help names the command that upgrades it |
+| a store of store format version 1 (never released) | refused with `PersistError::OlderFormat` everywhere; the migration is a packed snapshot exported by the build that wrote it (below) |
 
-**Migration.** A store of an older store format is moved through a packed snapshot: the build
-that wrote it exports the current state (`graphersal --graph old_store/ -e
-'g.export_snapshot("graph.gsnap")'`), and this build creates a new store from the file
-(`graphersal store create new_store/ --from graph.gsnap`). This build reads the file format of
-every older build, so the packed snapshot of the older build loads as it is (the other way round
-does not work: a `.gsnap` written by 0.2.0 has file format version 2, which 0.1.x refuses). The
-new store carries the graph, its schema
-and its catalog; marks, the attic and backups of the old store are not carried. The full recipe:
+## Upgrading a store of an older version
+
+**Every build reads every released format.** A release keeps the readers of every store and
+file format version released before it (from 0.1.0 on), and the converter that upgrades such a
+store needs no older Graphersal: `graphersal store upgrade` reads the older store with this
+build. The golden fixtures written by the released 0.1.0 binary
+(`crates/graphersal/tests/data/v0.1.0/`: a store with history, marks, an attic entry, schema and catalog; a single-file store;
+a backup directory; a ZIP backup) are upgraded by every test run.
+
+```bash
+graphersal store upgrade old_store/ new_store/      # into a NEW store; old_store/ is not changed
+graphersal store upgrade old.gstore new.gstore      # the same for a single-file store (any backend: new.gstore, a directory, --single-file)
+graphersal store upgrade old_store/ --in-place      # the store itself (back it up first)
+graphersal store upgrade old_backup/ new_backup/    # a backup directory: it stays a backup
+graphersal store restore old_backup.zip new_store/  # a ZIP backup is upgraded as it is restored
+```
+
+In Rust `Store::upgrade(from, to)` and `Store::upgrade_in_place(dir)` (any `StoreDir`: a path, a
+`.gstore` file, a `MemDir`), in Python `graphersal.Store.upgrade(source, target)` or
+`graphersal.Store.upgrade(source, in_place=True)`; each returns what it did (`UpgradeReport`).
+
+What it does:
+
+- **Everything is carried, exactly**: the graph, its schema and catalog (saved queries,
+  compression rules), the whole history (snapshots and WAL: every point in time stays a recovery
+  target), the marks, the lineage, the attic entries (they stay restorable or forkable) and every
+  [creation parameter](creation_parameters.md), the store id included: the upgraded store is the
+  SAME store in the new format, so an upgraded backup of it continues to take increments.
+- **Only `GRAPH` and `GRAPH.copy` are rewritten** (the store format version word); every
+  snapshot, WAL segment, the `marks` file and the attic stay byte for byte. This build reads them
+  as they are (each file names its own file format version), so nothing is decoded and encoded
+  again and the history stays exactly what was written. The first commit after the upgrade goes
+  into a NEW WAL segment of the current file format version: a record of the new version is
+  never appended to a segment of the older one.
+- **The older store is verified first** (every checksum, as `store verify` does). A damaged store
+  is refused before anything is written (`StoreFailure::DamagedSource`); repair it instead:
+  `graphersal store repair old_store/ --to new_store/` reads a store of an older released
+  version and writes the repaired store in the current format.
+- **Into a copy** (the default) the older store is only read; its writer lock is held while it is
+  copied, so a store still open by a writer (an older Graphersal, a server) is refused as in use.
+  The copy is verified before its `GRAPH` is written: an interrupted upgrade never leaves
+  something that opens as a store in the target, and running the upgrade again into it clears
+  what was left and completes.
+- **In place** the store is verified, then `GRAPH.copy` and `GRAPH` are replaced, each
+  atomically: whatever moment a crash hits, the store is either still the older one (run the
+  upgrade again) or already the upgraded one (a reader takes the intact copy), never lost. No
+  other file changes, so no `INTENT` is needed. Back the store up before (a file copy of the
+  closed store will do): afterwards the older Graphersal refuses it as newer.
+- A store that already has the current format is left alone in place (`already_current`); a copy
+  of it is refused with `StoreFailure::AlreadyCurrent` (use `store convert` or a backup).
+
+**Packed snapshots need no converter.** A `.gsnap` written by 0.1.x (file format version 1)
+loads as it is (`--graph graph.gsnap`, `TraversalGraph::read_snapshot`), and `graphersal store
+create new_store/ --from graph.gsnap` makes a current store from it (its version 1 segment files
+are kept byte for byte). That route carries only the graph state, its schema and its catalog.
+
+**Store format version 1** was never released. A store of it (no store id) keeps the migration
+through a packed snapshot: the build that wrote it exports the current state (`graphersal --graph
+old_store/ -e 'g.export_snapshot("graph.gsnap")'`), and this build creates a new store from the
+file. The full recipe:
 [Command Cheat Sheet](../users_guide/command_cheat_sheet.md#migrate-a-store-from-an-older-format).
 
 What counts as a format change, and the compatibility promises for third-party readers and

@@ -162,6 +162,7 @@ mod storage_wrapper_tests;
 mod store_error_tests;
 mod store_robustness_tests;
 mod store_tests;
+mod store_upgrade_tests;
 mod streaming_snapshot_tests;
 mod string_length_chars_tests;
 mod string_step_tests;
