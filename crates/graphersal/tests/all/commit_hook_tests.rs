@@ -1,5 +1,5 @@
 //! Commit hooks, `capabilities()`, `apply_change_set` / `replay` and the snapshot position
-//! (roadmap/transactions.md, sections 2.1-2.5, 3): veto and rollback, several hooks and their
+//! (`book/src/users_guide/transactions.md`): veto and rollback, several hooks and their
 //! order, `after_rollback` for every hook, empty units, schema changes, the commit sequence,
 //! applying and replaying change sets, GraphML import as a unit, `Execution::mutated`.
 

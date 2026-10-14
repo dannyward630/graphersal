@@ -169,7 +169,7 @@ fn dfs<'b>(
     g.with("repeat.order", "dfs")
 }
 
-// T1: roadmap examples.
+// T1: the motivating examples.
 
 #[test]
 fn repeat_out_times_two() {

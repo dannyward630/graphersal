@@ -27,8 +27,8 @@ use crate::*;
 /// a fixed slot. Adding a narrower `PathRequirement` variant just for "the previous position"
 /// was considered and rejected: it would need its own bookkeeping in the analysis pass and the
 /// executor (`traversal/source.rs`'s `touch_paths`/`extends_path` machinery) for a saving that
-/// only matters on long chains that also use `otherV()`, which this crate's roadmap does not
-/// call out as a hot path — reusing `Full` is the smallest correct change, per this spec's
+/// only matters on long chains that also use `otherV()`, which is not
+/// a known hot path — reusing `Full` is the smallest correct change, per this spec's
 /// non-goals. The cost is paid only by queries that actually call `otherV()`: the path
 /// requirement analysis (`PathAnalysis::analyze_level`) propagates `Full` upstream from this step
 /// alone, so a query without `otherV()` is unaffected.

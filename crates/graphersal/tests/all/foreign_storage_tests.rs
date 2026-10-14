@@ -1,4 +1,4 @@
-//! The DSL differential on a foreign storage (`roadmap/generic-front-ends.md`, task E05a): the
+//! The DSL differential on a foreign storage (`book/src/for_developers/custom_storage.md`): the
 //! same scripts run on `Arc<Graph<TraversalGraph>>` and on `Arc<Graph<Forwarding>>`, both built
 //! from the modern graph, and their rendered results (and the graph state afterwards) must be
 //! equal. `Forwarding` forwards every `GraphStorage` method to a `TraversalGraph` but has its

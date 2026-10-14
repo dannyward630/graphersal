@@ -1,4 +1,4 @@
-//! Saved queries in the session (`roadmap/saved-queries.md` section 8): the operations behind
+//! Saved queries in the session (`book/src/users_guide/saved_queries.md`): the operations behind
 //! the playground's Saved queries menu, editor and run form, the dev server's
 //! `/api/queries*` endpoints and its MCP tools `list_saved_queries` / `run_saved_query`.
 //!

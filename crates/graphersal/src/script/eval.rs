@@ -267,7 +267,7 @@ pub fn eval_value_with_limits(
 ///
 /// By default (every other `eval_*` entry) the unit is one traversal: a failing statement rolls
 /// back only itself, and the statements before it stay (TinkerPop-like). This host option
-/// (`roadmap/transactions.md`, section 1; the script cannot opt in itself) turns the script into
+/// (`book/src/users_guide/transactions.md`; the script cannot opt in itself) turns the script into
 /// one transaction, the script-side counterpart of
 /// [`Transactional::transaction`](crate::graph::Transactional::transaction):
 ///

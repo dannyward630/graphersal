@@ -145,8 +145,8 @@ impl GraphMLImport {
 
     /// Parses GraphML from `reader`, writing vertices/edges/properties into `g`.
     ///
-    /// The import is ONE unit of work on the live graph `g` (`roadmap/transactions.md`, section
-    /// 2.4.2): on an atomic storage a failure leaves nothing behind, and its commit is
+    /// The import is ONE unit of work on the live graph `g` (`book/src/users_guide/transactions.md`):
+    /// on an atomic storage a failure leaves nothing behind, and its commit is
     /// captured and runs the commit hooks like a traversal (a veto is
     /// [`IOError::Graph`] holding [`GraphError::CommitRejected`]).
     /// A graph that is not published yet is loaded outside units by the constructors

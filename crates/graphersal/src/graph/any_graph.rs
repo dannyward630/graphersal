@@ -1,5 +1,5 @@
 //! [`AnyGraph`]: the sealed, object-safe boundary the front ends hold
-//! (`roadmap/generic-front-ends.md`, sections 3.3 and 5.2).
+//! (`book/src/for_developers/custom_storage.md`).
 //!
 //! The engine ([`GraphTraversalSource`]) is generic over the storage and statically dispatched.
 //! A front end (the script layer, a session) holds one graph type for every storage instead:

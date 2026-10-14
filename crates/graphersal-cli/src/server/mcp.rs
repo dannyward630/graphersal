@@ -27,7 +27,7 @@
 //! [`read_only_authorizer`] (creating, updating, deleting data, the schema or a catalog
 //! definition is denied).
 //!
-//! Saved queries (`roadmap/saved-queries.md` section 8): `list_saved_queries` and
+//! Saved queries (`book/src/users_guide/saved_queries.md`): `list_saved_queries` and
 //! `run_saved_query` are always offered (read-only mode included: a saved query never writes),
 //! with the resource `graphersal://saved-queries`; the instructions and the `query` tool tell
 //! the agent to look for a saved query before writing a new one. `--mcp-query-tools` also lists
@@ -42,7 +42,7 @@
 //! user opens a read-only view of a past state there, the view is server-wide: `graph_info`
 //! carries a `note` saying so, and every tool error carries it too (a write is refused).
 //!
-//! Compression rules (`roadmap/compressed-properties.md`): `list_compressions` (also in
+//! Compression rules (`book/src/users_guide/compressed_properties.md`): `list_compressions` (also in
 //! read-only mode), `define_compression`, `drop_compression` and `recompress` (refused in
 //! read-only mode) wrap the session's `compression` operations; a define or drop is a commit
 //! recorded in the change feed with the client `mcp`.

@@ -1,4 +1,4 @@
-//! Capability-conditional contract items (`roadmap/transactions.md`, section 9).
+//! Capability-conditional contract items (`book/src/users_guide/transactions.md`).
 //!
 //! Each function reads [`GraphStorage::capabilities`] first and checks only what the storage
 //! claims: the rollback items run for an `atomic` storage, the hook items for one with

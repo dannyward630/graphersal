@@ -1,4 +1,4 @@
-//! Which storage the suite runs on (`roadmap/generic-front-ends.md`, task E05b).
+//! Which storage the suite runs on (`book/src/for_developers/custom_storage.md`).
 //!
 //! `GRAPHERSAL_TEST_STORAGE` selects it once per process:
 //! - unset, empty or `traversal-graph`: every dataset graph is a `Graph<TraversalGraph>` (the

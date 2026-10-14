@@ -1,7 +1,7 @@
 //! [`Forwarding`]: a storage that is NOT [`TraversalGraph`] but behaves exactly like it.
 //!
 //! **EXPERIMENTAL**, like the rest of this crate. It is the proof storage of
-//! `roadmap/generic-front-ends.md` (task E05a): every [`GraphStorage`] method forwards to a
+//! `book/src/for_developers/custom_storage.md`: every [`GraphStorage`] method forwards to a
 //! wrapped [`TraversalGraph`], so any difference between a front end (the Rhai DSL, saved
 //! queries, the session) running on `Graph<Forwarding>` and on `Graph<TraversalGraph>` is a bug
 //! in the generic path, not a behaviour of another storage.

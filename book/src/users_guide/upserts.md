@@ -289,8 +289,8 @@ map may not be visible, and the option traversals of one merge step share one ne
 - Removing a property by writing `null` (TinkerPop's `@DisallowNullPropertyValues` mode):
   Graphersal stores the `null`. This is deliberate: `null` is a real value of the property model, and
   the four `@AllowNullPropertyValues` scenarios, which expect it to be stored, pass; removing on `null`
-  would trade them for the three `@DisallowNullPropertyValues` ones. Settling it needs a graph-level
-  null mode (`roadmap/first-public-release.md`, section 4). Remove a property explicitly with
+  would trade them for the three `@DisallowNullPropertyValues` ones. Settling it would need a
+  graph-level null mode (not scheduled). Remove a property explicitly with
   `remove_property()` instead, see [Removing Properties](removing_properties.md).
 - `PartitionStrategy` and the other traversal strategies.
 - Multi-label merge (`"T.label"` as a list).

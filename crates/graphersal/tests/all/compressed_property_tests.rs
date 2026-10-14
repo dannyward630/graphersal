@@ -1,4 +1,4 @@
-//! Compressed properties (`roadmap/compressed-properties.md`, book page "Compressed
+//! Compressed properties (`book/src/users_guide/compressed_properties.md`, book page "Compressed
 //! Properties"): rules as catalog definitions of kind `compression`, the storage-only compressed
 //! representation, the invariant after every operation, reads that are always plain, change
 //! capture, transactions, persistence, exchange formats, schema, permissions, a randomized

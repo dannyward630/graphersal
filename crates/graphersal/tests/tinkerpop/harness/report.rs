@@ -1,5 +1,5 @@
-//! Reports of a feature-suite run: the short summary printed on stderr (the
-//! `roadmap/first-public-release.md` §5.3 format) and the detailed Markdown fix backlog written
+//! Reports of a feature-suite run: the short summary printed on stderr and the detailed Markdown
+//! fix backlog written
 //! to `target/tinkerpop-report.md`.
 //!
 //! Both are pure functions of the run's outcomes (sorted by scenario id) and the baseline gate,
@@ -253,7 +253,7 @@ fn scope_line(in_scope: usize, excluded: &[Row<'_>]) -> String {
     )
 }
 
-/// The stderr summary in the roadmap §5.3 format.
+/// The stderr summary.
 pub fn summary(rows: &[Row<'_>], report_path: &str) -> String {
     let (in_scope, excluded) = split_scope(rows);
     let rows = &in_scope[..];

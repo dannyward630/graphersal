@@ -122,7 +122,7 @@ pub(crate) fn stored_edge_label<S: GraphStorage>(
 /// without writing it.
 ///
 /// **EXPERIMENTAL in 0.1.x:** methods and associated types may change in any 0.1.x release
-/// (`roadmap/transactions.md` sections 6 and 12: a layered storage and borrow-free read methods
+/// (`book/src/users_guide/transactions.md`: a layered storage and borrow-free read methods
 /// are still to come). The crate `graphersal-storage-tests` (published, EXPERIMENTAL like this
 /// trait) holds the conformance suite an implementation should pass:
 /// `graphersal_storage_tests::conformance!(name, base = MyStorage::new() => base)`. Its

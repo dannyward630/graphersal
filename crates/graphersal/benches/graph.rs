@@ -236,7 +236,7 @@ fn test_graph_group(bencher: divan::Bencher, _args: usize) {
         });
 }
 
-/// `aggregate()`, per `roadmap/first-public-release.md` §3: a representative shape for the new
+/// `aggregate()`, per `book/src/for_developers/release_plan.md` ("Benchmarks"): a representative shape for the new
 /// `aggregate(sideEffectKey)`/`store(sideEffectKey)` side-effect steps — every vertex of the 110k-vertex graph
 /// collected into one growing side-effect bucket, then read back with `cap()`.
 #[divan::bench(args = [110_000])]
@@ -250,7 +250,7 @@ fn test_graph_aggregate(bencher: divan::Bencher, _args: usize) {
     });
 }
 
-/// `tree()`, per `roadmap/first-public-release.md` §3: a representative shape for the new
+/// `tree()`, per `book/src/for_developers/release_plan.md` ("Benchmarks"): a representative shape for the new
 /// `tree()` step — `large_110k` is itself a 10-way
 /// branching tree, 5 levels deep (10 + 100 + 1,000 + 10,000 + 100,000 vertices), so walking it
 /// from its 10 roots and merging every path back into one hierarchical tree reconstructs the
@@ -273,7 +273,7 @@ fn test_graph_tree(bencher: divan::Bencher, _args: usize) {
 }
 
 /// `order()`: a representative shape per
-/// `roadmap/first-public-release.md` §3 — sorting the full 110k-vertex stream by a property
+/// `book/src/for_developers/release_plan.md` ("Benchmarks") — sorting the full 110k-vertex stream by a property
 /// key (`.by("level")`), the case most likely to regress if the stable `Vec::sort_by` were ever
 /// swapped for something that re-resolves the key per comparison instead of once per traverser.
 #[divan::bench(args = [110_000])]
@@ -668,7 +668,7 @@ fn test_graph_drop_large_label_bucket(bencher: divan::Bencher, args: usize) {
 }
 
 /// `bothV()`, a representative
-/// shape per `roadmap/first-public-release.md` §3: both endpoints of every outgoing edge of
+/// shape per `book/src/for_developers/release_plan.md` ("Benchmarks"): both endpoints of every outgoing edge of
 /// the full 110k-vertex stream (twice the edge count in traversers out). `bothV()` needs no path
 /// lookback at all — see `test_graph_out_e_in_v` for the equal-cardinality, no-path baseline
 /// `test_graph_other_v` below is measured against.
@@ -716,7 +716,7 @@ fn test_graph_other_v(bencher: divan::Bencher, _args: usize) {
 }
 
 /// `range(low, high)`, per
-/// `roadmap/first-public-release.md` §3 — a representative pagination shape: skipping the
+/// `book/src/for_developers/release_plan.md` ("Benchmarks") — a representative pagination shape: skipping the
 /// first 100 of the full 110k-vertex stream and taking the next 1000. Guards against a future
 /// change that turns the skip-then-take `Iterator` chain into a full buffer-then-slice
 /// materialization (D1's lazy-evaluation goal, mirroring `limit()`'s own precedent).
@@ -732,7 +732,7 @@ fn test_graph_range(bencher: divan::Bencher, _args: usize) {
 }
 
 /// `properties()`, per
-/// `roadmap/first-public-release.md` §3. `properties()` is lazy (`materializes() == false`,
+/// `book/src/for_developers/release_plan.md` ("Benchmarks") `properties()` is lazy (`materializes() == false`,
 /// like `values()`): each of the three stored properties (`id`/`label`/`level`) on every one of
 /// the 110k vertices becomes one `VertexProperty` reference, without resolving to a scalar until
 /// `to_list()`'s own terminal `into_node_property`.
@@ -778,7 +778,7 @@ fn test_graph_value_map(bencher: divan::Bencher, _args: usize) {
 /// `local(traversal)`: runs `__.out(None).limit(2)` once per incoming vertex, in isolation, so
 /// each vertex contributes at most 2 of its own out-neighbours instead of the whole flattened
 /// stream being capped at 2 total. Representative shape for this lazy `FlatMap` step, per
-/// `roadmap/first-public-release.md` §3's "one representative shape per step" guidance.
+/// `book/src/for_developers/release_plan.md` ("Benchmarks").
 #[divan::bench(args = [110_000])]
 fn test_graph_local(bencher: divan::Bencher, _args: usize) {
     let graph = graphersal::GraphSource::large_110k();
@@ -795,7 +795,7 @@ fn test_graph_local(bencher: divan::Bencher, _args: usize) {
 
 /// `choose(predicate, onTrue, onFalse)`: the 3-argument if/then/else sugar form, representative
 /// of `choose()`/`branch()`'s shared selection mechanism (`step_choose.rs`'s `StepBranch`). Per
-/// `roadmap/first-public-release.md` §3's "one representative shape per step" guidance.
+/// `book/src/for_developers/release_plan.md` ("Benchmarks").
 #[divan::bench(args = [110_000])]
 fn test_graph_choose(bencher: divan::Bencher, _args: usize) {
     let graph = graphersal::GraphSource::large_110k();

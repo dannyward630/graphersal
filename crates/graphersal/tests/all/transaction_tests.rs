@@ -1,4 +1,4 @@
-//! Units of atomicity and the undo log of `TraversalGraph` (roadmap/transactions.md, section 1).
+//! Units of atomicity and the undo log of `TraversalGraph` (`book/src/users_guide/transactions.md`).
 //!
 //! Storage level: every mutating `GraphStorage` method inside `begin_unit()` is undone by
 //! `rollback_unit()`, restoring the structure, the id and label indexes and the counts (the

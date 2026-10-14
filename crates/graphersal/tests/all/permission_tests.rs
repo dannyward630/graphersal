@@ -1272,7 +1272,7 @@ mod atomic_unit {
     }
 }
 
-/// Saved queries (`roadmap/saved-queries.md`, sections 4 and 7): `Execute` on the query to call
+/// Saved queries (`book/src/users_guide/saved_queries.md`): `Execute` on the query to call
 /// it (asked before the body runs), `Read` to list, `Create`/`Update`/`Delete` to manage; a call
 /// runs under the read-only restriction whatever the host allows.
 mod saved_queries {

@@ -477,7 +477,7 @@ mod tests {
         );
     }
 
-    /// The roadmap's own example: `g.V(1).repeat(__.out()).times(2).tree()`. On
+    /// The motivating example: `g.V(1).repeat(__.out()).times(2).tree()`. On
     /// `tinkerpop_modern`, marko(1)'s two-hop `out()` walk only survives via josh(4) (vadas(2) and
     /// lop(3) both dead-end after one hop), landing on ripple(5) and lop(3) — so the tree is
     /// marko -> josh -> {lop, ripple}.

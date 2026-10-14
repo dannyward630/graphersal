@@ -88,7 +88,7 @@ impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepKey {
 mod tests {
     use super::*;
 
-    /// `g.V().properties().key()` (roadmap Overview): the correct multiset of vertex property
+    /// `g.V().properties().key()`: the correct multiset of vertex property
     /// key names across all six `tinkerpop_modern` vertices — four `person`s (`name`, `age`
     /// each) and two `software`s (`name`, `lang` each): six `name`s, four `age`s, two `lang`s.
     #[test]

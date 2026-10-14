@@ -424,7 +424,7 @@ impl GraphSource {
     /// Loads a graph from a GraphML file.
     ///
     /// The graph is not published yet, so the load runs outside units (no undo log, no change
-    /// capture, no commit hooks; `roadmap/transactions.md` 2.4.1): on error the half-built graph
+    /// capture, no commit hooks; `book/src/users_guide/transactions.md`): on error the half-built graph
     /// is dropped. Importing into a live graph ([`GraphImport`](crate::io::GraphImport)) is one captured unit instead.
     #[cfg(feature = "io")]
     pub fn from_graphml(path: impl AsRef<std::path::Path>) -> Result<Graph, IOError> {

@@ -91,7 +91,7 @@ impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepValue {
 mod tests {
     use super::*;
 
-    /// `g.V().hasLabel("person").properties("name", "age").value()` (roadmap Overview): the
+    /// `g.V().hasLabel("person").properties("name", "age").value()`: the
     /// correct multiset of values across all four `person` vertices.
     #[test]
     fn person_values() {
@@ -126,7 +126,7 @@ mod tests {
         );
     }
 
-    /// The full roadmap Overview chain: `properties()` -> `dedup()` -> `hasKey()` -> `value()`,
+    /// The full chain: `properties()` -> `dedup()` -> `hasKey()` -> `value()`,
     /// filtered by weight after resolution. `hasValue(P.lt(...))` was a pre-existing gap when
     /// this test was first written — `has_value()` only accepted a plain `ElementProperty`, not a
     /// `P` predicate — so this test used `.value().is(P.lt(0.3))` as a workaround, moving the

@@ -6186,7 +6186,7 @@ fn auto_id_sequence_overflow_help_suggests_explicit_ids() {
 }
 
 /// The help of every saved-query error names the fix with a runnable call
-/// (`roadmap/saved-queries.md`, task SQ3; rule 6).
+/// (`book/src/users_guide/saved_queries.md`; rule 6).
 #[cfg(feature = "script")]
 #[test]
 fn saved_query_errors_carry_their_help() {

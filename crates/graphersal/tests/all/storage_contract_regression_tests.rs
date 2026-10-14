@@ -8,7 +8,7 @@
 //!    DIFFERENT edge: silent wrong results.
 //! 3. Element handles were plain slot indices, so a handle held across a drop (step label, side
 //!    effect, path) resolved to the element that reused the slot later in the same query.
-//!    Handles are generational now (`roadmap/transactions.md`, section 1a): a stale handle reads
+//!    Handles are generational now (`book/src/users_guide/transactions.md`): a stale handle reads
 //!    as removed (no properties, no edges), and `id()`/`label()`/materialization fail with
 //!    `GraphError::ElementRemoved`.
 #![cfg(feature = "script")]

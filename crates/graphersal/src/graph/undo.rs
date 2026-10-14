@@ -1,5 +1,5 @@
 //! The undo log of [`TraversalGraph`]: what makes a unit of work (one traversal, later an explicit
-//! transaction) atomic (`roadmap/transactions.md`, section 1).
+//! transaction) atomic (`book/src/users_guide/transactions.md`).
 //!
 //! While a unit is open ([`GraphStorage::begin_unit`](crate::graph::GraphStorage::begin_unit)),
 //! every mutating `GraphStorage` method of `TraversalGraph` pushes the inverse of what it did:
@@ -66,8 +66,8 @@ const KEEP_CAPACITY: usize = 1024;
 pub(crate) struct UndoLog {
     entries: Vec<UndoEntry>,
     depth: u32,
-    /// The commit hooks, in registration order. Change capture (`roadmap/transactions.md`
-    /// 2.4.3) is on while at least one is registered: then the outermost commit of a unit that
+    /// The commit hooks, in registration order. Change capture (`book/src/users_guide/transactions.md`)
+    /// is on while at least one is registered: then the outermost commit of a unit that
     /// changed something derives a [`ChangeSet`] from the log and hands it to them.
     pub(crate) hooks: CommitHooks,
     /// The commit sequence number of the last unit that changed something (0: none yet).
@@ -377,8 +377,8 @@ impl TraversalGraph {
         self.undo.close();
     }
 
-    /// Runs `load` as the loading of a graph nobody sees yet (`roadmap/transactions.md`
-    /// 2.4.1): outside units, so nothing is recorded, captured or reported to hooks, also not a
+    /// Runs `load` as the loading of a graph nobody sees yet (`book/src/users_guide/transactions.md`):
+    /// outside units, so nothing is recorded, captured or reported to hooks, also not a
     /// schema change (which otherwise opens a unit of its own).
     pub(crate) fn load_outside_units<R>(&mut self, load: impl FnOnce(&mut Self) -> R) -> R {
         let previous = std::mem::replace(&mut self.undo.loading, true);

@@ -31,7 +31,7 @@ pub struct Graph<S: GraphStorage = TraversalGraph> {
     lock: parking_lot::RwLock<S>,
     /// The packed-snapshot writer of `S`, set by [`Graph::new_persistent`]: the dyn boundary
     /// ([`AnyGraph::write_snapshot`](crate::graph::AnyGraph::write_snapshot)) cannot test
-    /// `S: PersistentStorage` itself (design `roadmap/generic-front-ends.md` 5.3).
+    /// `S: PersistentStorage` itself (`book/src/for_developers/custom_storage.md`).
     #[cfg(feature = "persist")]
     snapshot_writer: Option<SnapshotWriter<S>>,
 }

@@ -2310,7 +2310,7 @@ pub enum ScriptError {
 
     /// `query(..)` was called after steps (`g.v().query("x")`) or on the anonymous spawn
     /// (`__.query("x")`): a saved query starts a traversal, `g.query("x")`; calling one
-    /// mid-traversal is a later feature (`roadmap/saved-queries.md`, section 9).
+    /// mid-traversal is a later feature (`book/src/users_guide/saved_queries.md`).
     #[error("query(\"{name}\") can only start a traversal, it cannot follow {position}")]
     #[non_exhaustive]
     QueryNotAtStart {

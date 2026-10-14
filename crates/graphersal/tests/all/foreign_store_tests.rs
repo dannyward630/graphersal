@@ -1,5 +1,5 @@
-//! The Store over a storage other than `TraversalGraph` (`roadmap/generic-front-ends.md` 4.2,
-//! 5.4, 5.5; task E07b): a `Store<Forwarding>` (the proof storage of `graphersal-storage-tests`,
+//! The Store over a storage other than `TraversalGraph` (`book/src/for_developers/custom_storage.md`):
+//! a `Store<Forwarding>` (the proof storage of `graphersal-storage-tests`,
 //! included once by path in `main.rs`: its own handle types, every method forwarded) on every
 //! backend (a directory, memory, one file): create, commits, reopen with WAL replay,
 //! checkpoints (manual and automatic), rollback and attic restore (a user hook survives), full

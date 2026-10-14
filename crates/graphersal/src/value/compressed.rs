@@ -1,6 +1,6 @@
 //! A string kept LZ4-compressed in memory ([`CompressedText`]), the payload of the storage-only
 //! value [`ElementProperty::Compressed`](crate::value::ElementProperty::Compressed)
-//! (`roadmap/compressed-properties.md`, D3).
+//! (`book/src/users_guide/compressed_properties.md`).
 //!
 //! A compressed value is **self-contained**: it carries its plain length, its compressed bytes
 //! and (by `Arc`) the dictionary it was compressed with, so it decompresses without any graph

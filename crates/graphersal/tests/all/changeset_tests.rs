@@ -1,4 +1,4 @@
-//! Change capture (roadmap/transactions.md, section 2.3): the `ChangeSet` of a committed unit,
+//! Change capture (`book/src/users_guide/transactions.md`): the `ChangeSet` of a committed unit,
 //! built from the undo log while a commit hook is registered.
 //!
 //! One test per mutation kind (before and after values), the cascade order of a vertex drop,

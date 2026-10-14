@@ -2,8 +2,8 @@
 
 This page lists every place where Graphersal knowingly differs from Apache TinkerPop 3.8.2, and every
 known gap that is deliberately not fixed (yet). Pass/fail numbers are on
-[TinkerPop Compliance](tinkerpop_compliance.md); the backlog is section 4 ("TinkerPop backlog") of
-`roadmap/first-public-release.md`. Each row links to the page that explains the behaviour for users.
+[TinkerPop Compliance](tinkerpop_compliance.md). Each row links to the page that explains the
+behaviour for users.
 
 The scenarios of the rows `select()` of an undeclared label, `order()` of property elements,
 multi-properties and meta-properties, `property(k, null)`, and `asString()` of a map, and the families
@@ -193,7 +193,7 @@ Counts are in-scope scenarios (`missing` unless noted; the current numbers are i
 
 Why `@DisallowNullPropertyValues` stays unfixed: the 3 scenarios expect a write of `null` to remove the
 property, the 4 `@AllowNullPropertyValues` scenarios that pass expect it to be stored. Both cannot hold
-in one mode; the answer is a graph-level null mode (`roadmap/first-public-release.md`, section 4).
+in one mode; the answer would be a graph-level null mode (not scheduled).
 
 ## Number-width literals in the test surface
 

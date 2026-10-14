@@ -1,7 +1,7 @@
 // What the Graph panel draws: the VIEW SELECTOR (pure: no DOM, no Vue; tested under Node).
 //
 // Drawing "the first N vertices" of a large graph shows an arbitrary slice. The selector offers
-// meaningful selections instead (roadmap/graph-rendering.md, principle 10):
+// meaningful selections instead (`playground/README.md`):
 // - WHOLE GRAPH, when it fits the limits (Settings); a larger graph shows the label overview
 //   instead, with the first-N slice only on request;
 // - LABELS: the label meta-graph (vertex labels as nodes sized by their vertex count, label

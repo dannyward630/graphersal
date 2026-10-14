@@ -1,4 +1,4 @@
-//! Compression rules in the session (`roadmap/compressed-properties.md`; book page "Compressed
+//! Compression rules in the session (`book/src/users_guide/compressed_properties.md`; book page "Compressed
 //! Properties"): the operations behind the playground's Catalog ▸ Compression manager, the dev
 //! server's `/api/compression*` endpoints and its MCP tools `list_compressions`,
 //! `define_compression`, `drop_compression`, `recompress`.

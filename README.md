@@ -174,7 +174,6 @@ is the same, what is different and why.
 | [`playground`](playground) | the browser playground (runs `crates/graphersal-wasm`) |
 | [`crates/graphersal-storage-tests`](crates/graphersal-storage-tests) | the conformance suite for your own `GraphStorage` |
 | [`book`](book) | the documentation at [graphersal.dev](https://graphersal.dev) |
-| [`roadmap`](roadmap) | plans and designs |
 
 Building from source needs Rust 1.88 or newer:
 

@@ -3,7 +3,7 @@
 //! A handle is a storage slot plus the generation the slot had when the element was created. The
 //! storage bumps a slot's generation when it frees the slot, so a handle taken before a drop never
 //! resolves to the element that later reuses the slot: it is *stale* and reads as removed
-//! (`roadmap/transactions.md`, section 1a).
+//! (`book/src/users_guide/transactions.md`).
 
 use std::num::NonZeroU32;
 

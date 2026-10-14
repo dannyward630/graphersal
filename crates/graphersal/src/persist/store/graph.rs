@@ -1,4 +1,4 @@
-//! The Store's view of its live graph (design `roadmap/generic-front-ends.md` 5.5): the
+//! The Store's view of its live graph (`book/src/for_developers/custom_storage.md`): the
 //! crate-internal, object-safe [`StoreGraph`], so the store's code (open, recovery, journal,
 //! checkpoints, rollback, backups, close) is compiled once and works on any
 //! [`Graph<S>`](Graph) whose storage is a [`PersistentStorage`].

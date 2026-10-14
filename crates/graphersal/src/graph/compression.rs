@@ -1,4 +1,4 @@
-//! Compressed properties (`roadmap/compressed-properties.md`; book page "Compressed
+//! Compressed properties (`book/src/users_guide/compressed_properties.md`; book page "Compressed
 //! Properties"): rules that keep large strings LZ4-compressed in memory.
 //!
 //! A rule is a catalog definition of kind [`DefinitionKind::COMPRESSION`]

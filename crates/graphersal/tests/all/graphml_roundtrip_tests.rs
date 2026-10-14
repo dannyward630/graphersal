@@ -426,7 +426,7 @@ mod codec {
         }
     }
 
-    /// An import into a live graph is one unit (roadmap/transactions.md 2.4.2): when an element
+    /// An import into a live graph is one unit (`book/src/users_guide/transactions.md`): when an element
     /// is rejected, the vertices imported before it are rolled back too.
     #[test]
     fn import_into_a_closed_schema_is_atomic() {

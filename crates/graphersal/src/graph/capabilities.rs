@@ -1,5 +1,5 @@
 //! [`StorageCapabilities`]: what a [`GraphStorage`](crate::graph::GraphStorage) can do
-//! (`roadmap/transactions.md`, section 3). Storage FACTS, not permissions: a host or a generic
+//! (`book/src/users_guide/transactions.md`). Storage FACTS, not permissions: a host or a generic
 //! server reads them to decide what it can rely on, and the conformance suite
 //! (`graphersal-storage-tests`) runs the atomicity and change-capture items only for a storage
 //! that claims them.

@@ -9,7 +9,7 @@
 //! # Change sets
 //!
 //! Change capture: what one committed unit changed, as an ordered list of [`Mutation`]s
-//! (`roadmap/transactions.md`, section 2.3).
+//! (`book/src/users_guide/transactions.md`).
 //!
 //! A [`ChangeSet`] is what a commit hook (persistence, replication, CDC, audit) receives. It is
 //! built from the undo log of [`TraversalGraph`](crate::graph::TraversalGraph) when the
@@ -74,8 +74,8 @@
 //! # Commit hooks
 //!
 //! Commit hooks: how a host (a server, a persistence layer, a replica, an audit log) learns
-//! what each unit of work changed, and how it can veto a commit (`roadmap/transactions.md`,
-//! sections 2.1, 2.2, 2.5).
+//! what each unit of work changed, and how it can veto a commit
+//! (`book/src/users_guide/transactions.md`).
 //!
 //! A [`CommitHook`] is registered on a storage with
 //! [`GraphStorage::register_commit_hook`](crate::graph::GraphStorage::register_commit_hook).

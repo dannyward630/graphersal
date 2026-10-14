@@ -31,7 +31,7 @@
 //! catalog from `definitions`, the position from `last_commit_seq` / `last_committed_at` /
 //! `id_sequences`. There is no `TraversalGraph` fast path: on `GraphSource::large_110k()` the
 //! generic walk measured within noise of the former petgraph-order walk (design
-//! `roadmap/generic-front-ends.md` 4.3), and the golden fingerprints below pin the bytes.
+//! `book/src/for_developers/custom_storage.md`), and the golden fingerprints below pin the bytes.
 //!
 //! **Consistency.** The caller keeps the graph's read access for both passes (the graph must
 //! not change between them); the snapshot is the graph at

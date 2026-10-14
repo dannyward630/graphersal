@@ -1,4 +1,4 @@
-//! Saved queries in the Rhai DSL (`roadmap/saved-queries.md`, task SQ3): defining
+//! Saved queries in the Rhai DSL (`book/src/users_guide/saved_queries.md`): defining
 //! (`define_query`, `define_queries`), calling (`query`: named arguments, defaults, values and
 //! continued traversals), read-only enforcement (direct, nested, continued, returned), the call
 //! depth bound, the compiled-body cache across redefinition and rollback, management

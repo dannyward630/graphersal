@@ -1,5 +1,5 @@
-//! Explicit transactions and dry runs over every [`GraphStorage`] (`roadmap/transactions.md`,
-//! section 1; `roadmap/generic-front-ends.md`, section 2.4): the [`Transactional`] extension
+//! Explicit transactions and dry runs over every [`GraphStorage`] (`book/src/users_guide/transactions.md`,
+//! `book/src/for_developers/custom_storage.md`): the [`Transactional`] extension
 //! trait. A closure is one unit; every traversal inside it is a nested unit (a savepoint).
 //!
 //! The closure form is deliberate: there is no guard object that could be forgotten. A panic

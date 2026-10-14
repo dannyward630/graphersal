@@ -666,7 +666,7 @@ impl ScriptGraphTraversalSource {
 }
 
 /// The `withSideEffect(name, graph)` target `graph` as the engine's `subgraph()` target: a
-/// [`Graph<TraversalGraph>`](Graph) (decision 3 of `roadmap/generic-front-ends.md`). A graph of
+/// [`Graph<TraversalGraph>`](Graph) (`book/src/for_developers/custom_storage.md`). A graph of
 /// another storage fails with the diagnostic of
 /// [`GraphError::Unsupported`](crate::error::GraphError::Unsupported), naming its storage type.
 fn subgraph_target(graph: &Arc<dyn AnyGraph>) -> Result<Arc<Graph>, Box<rhai::EvalAltResult>> {

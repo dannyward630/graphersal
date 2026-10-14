@@ -17,7 +17,7 @@ impl ScriptGraphTraversalSource {
     /// A traversal built from a saved query's result (or inside a query's body) is never
     /// mutating on the host graph: it carries the query's read-only restriction, so a writing
     /// step in it fails with `PermissionDenied` before anything runs
-    /// (`roadmap/saved-queries.md`, section 4).
+    /// (`book/src/users_guide/saved_queries.md`).
     pub fn is_mutating(&self) -> bool {
         if self.access.read_only && !self.private {
             return false;

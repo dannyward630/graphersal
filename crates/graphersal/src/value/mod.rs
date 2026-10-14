@@ -134,7 +134,7 @@ pub enum ElementProperty {
     /// TinkerPop (a deliberate deviation, same book page and `tinkerpop_deviations.md`).
     Map(Box<ValueMap>),
     /// A string the graph keeps compressed because a compression rule covers its path
-    /// (`roadmap/compressed-properties.md`; book page "Compressed Properties").
+    /// (`book/src/users_guide/compressed_properties.md`; book page "Compressed Properties").
     ///
     /// **Storage-only**, the way `Vertex`/`Edge` are stream-only: only the graph makes one, in a
     /// stored property map. It never appears in a traverser value, a script value, a
@@ -246,7 +246,7 @@ impl ElementProperty {
     /// The logical value: `self` borrowed when it holds no [`ElementProperty::Compressed`]
     /// value at any depth (every scalar, every container without one), otherwise an owned copy
     /// with every compressed string decompressed. The boundary every stored value crosses when
-    /// it leaves the graph (`roadmap/compressed-properties.md`, D5).
+    /// it leaves the graph (`book/src/users_guide/compressed_properties.md`).
     pub fn logical(&self) -> Cow<'_, ElementProperty> {
         if self.holds_compressed() {
             Cow::Owned(self.clone().into_logical())

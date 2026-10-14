@@ -1,4 +1,4 @@
-//! The script layer over `Arc<dyn AnyGraph>` (`roadmap/generic-front-ends.md`, task E04b): the
+//! The script layer over `Arc<dyn AnyGraph>` (`book/src/for_developers/custom_storage.md`): the
 //! DSL serves a host graph of another storage than `TraversalGraph`. `Wrapped` is a minimal
 //! foreign storage (a newtype forwarding to a `TraversalGraph`, units and hooks included) held
 //! as `Graph<Wrapped>`; the scripts run through the `eval_*` entries, which take

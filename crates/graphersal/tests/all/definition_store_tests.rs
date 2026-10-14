@@ -465,7 +465,7 @@ fn store_info_counts_the_definitions() {
     }
 }
 
-/// A compression rule on every backend (`roadmap/compressed-properties.md`, test group 8): the
+/// A compression rule on every backend (`book/src/users_guide/compressed_properties.md`): the
 /// files hold plain values, every load (WAL replay, checkpoint, fork, backups, ZIP, repair,
 /// rollback, attic restore, read-only open) compresses the rule paths again and keeps the
 /// invariant.

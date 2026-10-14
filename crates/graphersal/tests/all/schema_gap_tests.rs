@@ -5,8 +5,8 @@
 //! of an endpoint can satisfy a topology connection; `required` and nullability are separate, as
 //! in JSON Schema).
 //! Gap 4 (partial application of `property(map)`, `property_json`, `mergeV` `onMatch` and `addE`
-//! over several endpoints) is resolved by the implicit auto-commit (roadmap/transactions.md,
-//! section 1): a failing traversal is rolled back, so nothing of it is applied.
+//! over several endpoints) is resolved by the implicit auto-commit
+//! (`book/src/users_guide/transactions.md`): a failing traversal is rolled back, so nothing of it is applied.
 #![cfg(all(feature = "script", feature = "serde"))]
 
 use std::sync::Arc;

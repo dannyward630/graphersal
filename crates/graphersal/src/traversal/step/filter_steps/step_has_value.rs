@@ -1079,7 +1079,7 @@ mod tests {
         );
     }
 
-    /// The roadmap's own motivating query (`roadmap/steps.md`): before this fix, `hasValue(P...)`
+    /// The motivating query: before this fix, `hasValue(P...)`
     /// didn't exist at all, and `properties()`-produced traversers hit the D2 `CastException` bug
     /// on top of that, forcing the `.value().is(P.lt(0.3))` workaround documented in
     /// `step_value.rs`'s `full_chain_bothe_properties_dedup_haskey_value` test. This is the exact

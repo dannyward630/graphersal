@@ -1,4 +1,4 @@
-//! Saved queries in the DSL (`roadmap/saved-queries.md`): defining them
+//! Saved queries in the DSL (`book/src/users_guide/saved_queries.md`): defining them
 //! (`g.define_query(#{..})`, `g.define_queries(folder, source)`), calling them
 //! (`g.query(name, #{..})`) and managing them (`g.queries()`, `g.get_query(name)`,
 //! `g.drop_query(name)`, `g.move_query(name, folder)`, `g.describe_query(name, text)`).

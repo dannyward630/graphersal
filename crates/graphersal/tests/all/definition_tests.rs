@@ -1,5 +1,5 @@
-//! The catalog of definitions in the engine (`roadmap/saved-queries.md` sections 5-7, task
-//! SQ1): validation rules, storage, units (rollback, savepoints, dry run), change capture and
+//! The catalog of definitions in the engine (`book/src/users_guide/saved_queries.md`):
+//! validation rules, storage, units (rollback, savepoints, dry run), change capture and
 //! its serde, replay and `apply_change_set`, vetoes, authorization, opaque definitions and
 //! unknown keys.
 

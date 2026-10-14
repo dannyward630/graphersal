@@ -1,4 +1,4 @@
-//! Applying a [`ChangeSet`] to a storage (`roadmap/transactions.md`, section 2.4): the shared
+//! Applying a [`ChangeSet`] to a storage (`book/src/users_guide/transactions.md`): the shared
 //! body of [`GraphStorage::apply_change_set`] (a live, captured unit) and
 //! [`TraversalGraph::replay`](crate::graph::TraversalGraph::replay) (an unpublished graph,
 //! outside units).

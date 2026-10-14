@@ -794,7 +794,7 @@ impl Session {
         let mut scope = graph_scope_with_options(any, &scope_options, authorizer);
         let hint = trailing_terminal(script);
         let seq_before = self.graph.last_commit_seq();
-        // The whole run is one unit (the host option of `roadmap/transactions.md` section 1):
+        // The whole run is one unit (the host option of `book/src/users_guide/transactions.md`):
         // every statement and the implicit execution of a trailing traversal are savepoints of
         // it, and it commits only when the run is reported as `ok`, so a run that shows an
         // error leaves nothing behind. The session is single-threaded and owns the graph, so

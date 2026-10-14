@@ -1,7 +1,7 @@
 // Which renderer tier draws a drawing, and what the panel offers in it (pure: no DOM, no Vue;
 // tested under Node).
 //
-// Two tiers (roadmap/graph-rendering.md section 2): DETAILED (Cytoscape.js, Canvas 2D: every
+// Two tiers (`playground/README.md`): DETAILED (Cytoscape.js, Canvas 2D: every
 // style, edge labels, curved edges, every layout, the schema graph) and FAST (sigma.js + graphology,
 // WebGL: vertex labels by zoom level, hover, click, straight edges, the engine's force layout).
 // `chooseTier` picks one by the number of elements drawn (vertices + edges), with HYSTERESIS so a

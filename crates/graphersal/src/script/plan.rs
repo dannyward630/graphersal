@@ -6,7 +6,7 @@
 //! The types are `pub` because they appear in the sealed trait's (hidden) methods; this module
 //! is private, so no other crate can name or build them. The engine is monomorphised for `&S`
 //! and `&mut S` inside `run_plan_on`: one indirect call per terminal, never one per element
-//! (`roadmap/generic-front-ends.md`, sections 3.3 and 5.2).
+//! (`book/src/for_developers/custom_storage.md`).
 
 use super::*;
 use crate::error::{BoxedTraverserError, GraphError, TraverserError, TraverserResult};

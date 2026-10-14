@@ -29,7 +29,7 @@ where
 }
 
 /// The generational handles (`VertexHandle`/`EdgeHandle`: slot + non-zero generation, 8 bytes,
-/// `Option` uses the niche) must not grow the stream value (`roadmap/transactions.md`, 1a).
+/// `Option` uses the niche) must not grow the stream value (`book/src/users_guide/transactions.md`).
 #[test]
 fn traverser_value_stays_64_bytes() {
     use std::mem::size_of;

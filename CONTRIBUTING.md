@@ -13,7 +13,7 @@ humans); this file is the short human version.
   to the few vertices and edges that reproduce the problem first. That is the most useful bug report anyway. For a
   larger graph, attach its GraphSON file (Save ▸ Data) instead.
 - A larger change (a new step, a new feature, a format change): open an issue first, so we can agree on the design
-  before you write it. Long-term plans are in `roadmap/`.
+  before you write it. Planned work is tracked in the GitHub issues.
 - Security issues: never in public, see [SECURITY.md](SECURITY.md).
 
 ## Build and test

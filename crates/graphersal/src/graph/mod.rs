@@ -277,7 +277,7 @@ impl TraversalGraph {
 
     /// Applies a [`ChangeSet`] to a graph that is not published yet: the recovery path of a
     /// server (snapshot plus write-ahead log) or a replica's initial load
-    /// (`roadmap/transactions.md`, section 2.4.1).
+    /// (`book/src/users_guide/transactions.md`).
     ///
     /// Runs OUTSIDE units: no undo log, no change capture, no commit hook fires, also when
     /// hooks are already registered (a server must not re-write the journal it is reading).

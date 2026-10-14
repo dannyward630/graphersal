@@ -754,7 +754,7 @@ pub fn decode_payload(bytes: &[u8]) -> Result<PropertyMap, DefinitionError> {
 // ---------------------------------------------------------------------------------------------
 
 /// A saved query: one Rhai function in the database, called by name with named, typed
-/// parameters (`roadmap/saved-queries.md`). Built with [`Self::new`] and the `with_*` methods;
+/// parameters (`book/src/users_guide/saved_queries.md`). Built with [`Self::new`] and the `with_*` methods;
 /// stored as a [`Definition::query`].
 ///
 /// The source is the text of one Rhai function named like the query whose parameters are

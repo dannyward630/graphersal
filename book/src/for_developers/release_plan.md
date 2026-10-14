@@ -74,6 +74,16 @@ BACKUP_FUZZ_CASES=60000 BACKUP_FUZZ_SEED=1 BACKUP_FUZZ_THREADS=8 cargo test --re
 Robustness findings go to `target/robustness-findings.txt` (`ROBUSTNESS_REPLAY=<seed>` replays one case); a failing
 merge or backup case prints `MERGE_FUZZ_REPLAY=<seed>` or `BACKUP_FUZZ_REPLAY=<seed>`.
 
+## Benchmarks
+
+`cargo bench -p graphersal --bench graph --features io,script,display,serde` is the regression
+benchmark. Every supported step or feature has at least one representative shape in
+`crates/graphersal/benches/graph.rs`, run on a graph large enough to surface an O(n²)-class
+regression (the 110k-element `large` graph), so a change that reintroduces an allocation- or
+complexity-class regression is caught by `cargo bench` rather than by a user profiling a real
+dataset. A new step gets its bench shape with the step. Benchmarks run once per release on a quiet
+machine and are compared with the previous release, not per change.
+
 ## Publishing
 
 1. Tag the release commit: `git tag -a v0.1.0 -m "Graphersal 0.1.0" && git push origin v0.1.0` (the tag equals the workspace `version`).

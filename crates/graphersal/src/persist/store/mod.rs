@@ -441,7 +441,7 @@ pub struct Store<S: PersistentStorage = TraversalGraph> {
     graph: Arc<Graph<S>>,
 }
 
-/// The Store's non-generic core (design `roadmap/generic-front-ends.md` 5.5): every operation
+/// The Store's non-generic core (`book/src/for_developers/custom_storage.md`): every operation
 /// of [`Store`] runs here, on the live graph as [`StoreGraph`]; `Store` adds the typed graph.
 struct StoreCore {
     shared: Arc<Shared>,

@@ -409,7 +409,7 @@ mod tests {
 
     #[test]
     fn where_without_side_effect_excludes() {
-        // The roadmap's own combinator, `not(within(key))`, exercised on a case with a real
+        // The motivating combinator, `not(within(key))`, exercised on a case with a real
         // match: marko is who knows vadas/josh, but marko himself was never aggregated into
         // "friends", so `in("knows")` from {vadas, josh} back to marko must pass the filter both
         // times (once per incoming edge).
@@ -433,12 +433,12 @@ mod tests {
 
     #[test]
     fn roadmap_acceptance_query_literal() {
-        // The roadmap's own example, verbatim: g.V(1).out("knows").aggregate("friends")
+        // The motivating example, verbatim: g.V(1).out("knows").aggregate("friends")
         // .out("knows").where(not(within("friends"))). On tinkerpop_modern, vadas/josh (marko's
         // "friends") have no outgoing "knows" edges of their own, so nothing reaches `where()` —
         // the count is 0. Real, non-trivial exercises of the same `within(key)`/`without(key)`
         // resolution live in the two tests above; this one is kept as a literal reproduction of
-        // the query the roadmap and this feature's acceptance section name.
+        // the query this feature's acceptance section named.
         test_dual!(
             graph: GraphSource::tinkerpop_modern(),
             rust: |g| g

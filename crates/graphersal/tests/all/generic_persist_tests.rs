@@ -1,5 +1,5 @@
 //! The snapshot writer, the snapshot reader and recovery over a storage other than
-//! `TraversalGraph` (`roadmap/generic-front-ends.md` 4.2, 5.3; task E06b): the `Forwarding`
+//! `TraversalGraph` (`book/src/for_developers/custom_storage.md`): the `Forwarding`
 //! proof storage (its own handle types, `PersistentStorage` forwarded) is written, loaded and
 //! recovered, and must give the bytes and the state `TraversalGraph` gives.
 #![cfg(feature = "persist")]

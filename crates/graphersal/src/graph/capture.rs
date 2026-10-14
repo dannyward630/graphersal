@@ -1,5 +1,5 @@
 //! Change capture: the undo log of [`TraversalGraph`] read forward as a list of
-//! [`Mutation`]s with before AND after values (`roadmap/transactions.md`, sections 2.3, 2.4.3).
+//! [`Mutation`]s with before AND after values (`book/src/users_guide/transactions.md`).
 //!
 //! The log holds the before-values only (what rollback needs). The after-values are derived at
 //! commit by walking the log backwards over a *shadow* of the touched elements: the shadow

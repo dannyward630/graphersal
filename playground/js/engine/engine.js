@@ -10,7 +10,7 @@
 // shapes. Every method is async.
 //
 // The shapes below are the engine's own (snake_case, the Rust map/JSON shape of `Execution` and
-// `TraversalMetrics`); see roadmap/profile-execute.md and book/src/users_guide/
+// `TraversalMetrics`); see `book/src/users_guide/profiling_and_execute.md` and book/src/users_guide/
 // profiling_and_execute.md. When this file and the Rust code disagree, the Rust code wins.
 
 /**

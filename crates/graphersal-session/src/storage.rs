@@ -1,4 +1,4 @@
-//! The session over ANY storage (`roadmap/generic-front-ends.md` sections 2.2, 5.4 and 5.5): the
+//! The session over ANY storage (`book/src/for_developers/custom_storage.md`): the
 //! object-safe boundary between [`Session`](crate::Session) and the storage it serves.
 //!
 //! The session never names a storage type. It holds

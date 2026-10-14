@@ -9,7 +9,7 @@
 //! # The catalog
 //!
 //! The catalog of definitions: named, typed entries stored IN the database next to the schema
-//! (`roadmap/saved-queries.md`, sections 5 to 7). Two kinds are defined: the **saved query**
+//! (`book/src/users_guide/saved_queries.md`). Two kinds are defined: the **saved query**
 //! ([`QueryDefinition`]) and the **compression rule**
 //! ([`CompressionDefinition`], kind `3`); kind
 //! `2` is reserved for property indexes, kinds `128..=255` belong to hosts, every other kind is
