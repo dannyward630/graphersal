@@ -253,7 +253,7 @@ fn row_cells(value: &ElementProperty) -> Option<Vec<(String, ElementProperty)>> 
 }
 
 /// Column layout: rows that are all maps, vertices or edges get one column per key, in first-seen
-/// order (`id` and `label` first, then an edge's `outV`, `inV`, see [`row_cells`]); anything else
+/// order (`id` and `label` first, then an edge's `outV`, `inV`, see `row_cells`); anything else
 /// is a single `value` column.
 pub fn table_of(rows: &[ElementProperty]) -> Table {
     if rows.is_empty() {
