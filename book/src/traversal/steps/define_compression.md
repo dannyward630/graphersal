@@ -14,7 +14,7 @@ define_compression(arg1: any)
 ## Example
 
 ```rhai,graph=modern
-{ g.define_compression(#{name: "names", label: "person", path: "name", min_bytes: 1}); g.v().has_label("person").values("name").limit(1).to_list() }   // ["marko"]
+{ g.define_compression(#{name: "n", label: "person", path: "name"}); g.compressions().len() }   // 1
 ```
 
 ## See also

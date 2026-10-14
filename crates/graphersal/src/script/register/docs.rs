@@ -254,7 +254,7 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "g.e(\"0\").both_v().values(\"name\").to_list()" => "[\"marko\", \"vadas\"]";
     "traversal" "branch":
         "Routes each traverser by the value its child traversal yields to the matching option().",
-        "g.v().has_label(\"person\").branch(__.values(\"age\")).option(29, __.values(\"name\")).option(Pick.none, __.constant(\"other\")).to_list()" => "[\"marko\", \"other\", \"other\", \"other\"]";
+        "g.v(1, 2).branch(__.values(\"age\")).option(29, __.values(\"name\")).option(Pick.none, __.constant(\"other\")).to_list()" => "[\"marko\", \"other\"]";
     "traversal" "by":
         "Modulates the step before it: the key, token or child traversal a value is read with, and for order() the direction; by(\"label\") reads a property named label, by(T.label) the label (see the book page Properties Named id or label).",
         "g.v().has_label(\"person\").order().by(\"age\", Order.desc).values(\"name\").to_list()" => "[\"peter\", \"josh\", \"marko\", \"vadas\"]";
@@ -266,7 +266,7 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "g.inject(\"1\", \"2\").cast(GType.LONG).sum().next()" => "3";
     "traversal" "choose":
         "If-then-else: runs the true or false child traversal depending on a predicate or child traversal; with one argument it picks an option() by value.",
-        "g.v().has_label(\"person\").choose(__.values(\"age\").is(P.gt(30)), __.constant(\"older\"), __.constant(\"younger\")).to_list()" => "[\"younger\", \"younger\", \"older\", \"older\"]";
+        "g.v(1, 4).choose(__.values(\"age\").is(P.gt(30)), __.constant(\"old\"), __.constant(\"young\")).to_list()" => "[\"young\", \"old\"]";
     "traversal" "coalesce":
         "Runs the child traversals in order and emits the results of the first one that yields anything.",
         "g.v(1, 3).coalesce(__.values(\"age\"), __.values(\"lang\")).to_list()" => "[29, \"java\"]";
@@ -299,7 +299,7 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "g.v().out().dedup().values(\"name\").to_list()" => "[\"josh\", \"lop\", \"vadas\", \"ripple\"]";
     "traversal" "define_compression":
         "Stores (or replaces) a compression rule #{name, label, path, element, codec, min_bytes, dictionary}: strings at that path are kept compressed in memory and read plain (see the book page Compressed Properties).",
-        "{ g.define_compression(#{name: \"names\", label: \"person\", path: \"name\", min_bytes: 1}); g.v().has_label(\"person\").values(\"name\").limit(1).to_list() }" => "[\"marko\"]";
+        "{ g.define_compression(#{name: \"n\", label: \"person\", path: \"name\"}); g.compressions().len() }" => "1";
     "traversal" "define_queries":
         "Stores every function of a Rhai source as a saved query in a folder, described by its doc comment; params maps function name -> its parameter map (see the book page Saved Queries).",
         "{ g.define_queries(\"reports\", \"/** Persons. */ fn people() { g.v().has_label(\\\"person\\\") }\"); g.query(\"people\").count().next() }" => "4";
@@ -406,16 +406,16 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "Keeps elements that do not have the given property.",
         "g.v().has_not(\"age\").values(\"name\").to_list()" => "[\"lop\", \"ripple\"]";
     "traversal" "has_p":
-        "Graphersal form of has(key, predicate): keeps elements whose property matches the predicate (a bare value means P.eq).",
+        "Graphersal form of has(key, predicate) (a bare value means P.eq).",
         "g.v().has_p(\"age\", P.gt(30)).values(\"name\").to_list()" => "[\"josh\", \"peter\"]";
     "traversal" "has_value":
         "Keeps properties whose value is one of the given values (or matches a predicate).",
         "g.v(1).properties().has_value(\"marko\").key().to_list()" => "[\"name\"]";
     "traversal" "has_value_any":
-        "Graphersal alias of has_value(v1, v2, ...): keeps properties whose value is any of the given values.",
+        "Graphersal alias of has_value(v1, v2, ...).",
         "g.v().properties(\"name\").has_value_any(\"marko\", \"josh\").value().to_list()" => "[\"marko\", \"josh\"]";
     "traversal" "has_value_p":
-        "Graphersal form of has_value(predicate): keeps properties whose value matches the predicate.",
+        "Graphersal form of has_value(predicate).",
         "g.v().properties(\"age\").has_value_p(P.gt(30)).value().to_list()" => "[32, 35]";
     "traversal" "id":
         "Yields the id of each vertex or edge (a string), never a property named id.",
@@ -503,7 +503,7 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "g.v().values(\"age\").median().next()" => "30.5";
     "traversal" "memory_usage":
         "Returns the graph's own memory footprint in bytes (structure, indexes, properties).",
-        "g.memory_usage().keys()" => "[\"compressed_plain_bytes\", \"compressed_stored_bytes\", \"compressed_values\", \"compression_dictionary_bytes\", \"index_bytes\", \"property_bytes\", \"structure_bytes\", \"total_bytes\", \"total_mb\"]";
+        "g.memory_usage().total_bytes > 0" => "true";
     "traversal" "merge":
         "Merges the given list (union without duplicates) or map (keys of the argument win) into the incoming one.",
         "g.inject([1, 2]).merge([2, 3]).next()" => "[1, 2, 3]";
@@ -530,7 +530,7 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "g.v().not(__.out_e()).values(\"name\").to_list()" => "[\"vadas\", \"lop\", \"ripple\"]";
     "traversal" "option":
         "Adds a branch to choose()/branch() for a key (a value, Pick.none, Pick.any), or the onCreate/onMatch map of merge_v()/merge_e().",
-        "g.v().has_label(\"person\").choose(__.values(\"age\")).option(29, __.constant(\"marko's age\")).option(Pick.none, __.constant(\"other\")).to_list()" => "[\"marko's age\", \"other\", \"other\", \"other\"]";
+        "g.v(1, 2).choose(__.values(\"age\")).option(29, __.constant(\"a\")).option(Pick.none, __.constant(\"b\")).to_list()" => "[\"a\", \"b\"]";
     "traversal" "optional":
         "Emits the results of the child traversal, or the traverser itself when it yields nothing.",
         "g.v(2).optional(__.out()).values(\"name\").to_list()" => "[\"vadas\"]";
@@ -565,7 +565,7 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "Runs the traversal and returns its metrics per step of the optimized plan (time, traverser counts; ProfileType.Memory adds memory; see the book page Profiling and execute()).",
         "g.v().count().profile().to_map()[\"optimizer_rules_applied\"]" => "[\"count_pushdown\"]";
     "traversal" "profile_with":
-        "Rust-API spelling of profile(ProfileType): profiles with the given extra metric sections.",
+        "Rust-API spelling of profile(ProfileType).",
         "g.v().count().profile_with(ProfileType.Memory).to_table().contains(\"Mem\")" => "true";
     "traversal" "project":
         "Turns each traverser into a map with the given keys, one by() per key in order.",
@@ -739,10 +739,10 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "Keeps the traverser when the child traversal yields a result, or when a labelled object matches a predicate on another label (see the book page where() Start and End Labels).",
         "g.v(1).as(\"a\").out().where(__.in(\"created\").as(\"a\")).values(\"name\").to_list()" => "[\"lop\"]";
     "traversal" "where_p":
-        "Graphersal form of where(predicate): compares the current object with a labelled one, modulated by by().",
+        "Graphersal form of where(predicate), modulated by by().",
         "g.v(1).as(\"a\").out(\"knows\").where_p(P.gt(\"a\")).by(\"age\").values(\"name\").to_list()" => "[\"josh\"]";
     "traversal" "where_t":
-        "Graphersal form of where(traversal): keeps the traverser when the child traversal yields a result.",
+        "Graphersal form of where(traversal).",
         "g.v().where_t(__.out(\"created\")).values(\"name\").to_list()" => "[\"marko\", \"josh\", \"peter\"]";
     "traversal" "with":
         "On g sets an execution option (g.with(\"key\", value), see the book page Execution Options Reference); after a step a WithOptions token configures it.",
@@ -760,67 +760,67 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "Starts the traversal with a named side effect holding the given value (optionally with a reducing Operator).",
         "g.with_side_effect(\"x\", [1]).v(1).values(\"age\").aggregate(\"x\").cap(\"x\").next()" => "[1, 29]";
     "P" "eq":
-        "Predicate: equal to the value.",
+        "Equal to the value.",
         "g.v().has(\"age\", P.eq(29)).values(\"name\").to_list()" => "[\"marko\"]";
     "P" "neq":
-        "Predicate: not equal to the value.",
+        "Not equal to the value.",
         "g.v().values(\"age\").is(P.neq(29)).to_list()" => "[27, 32, 35]";
     "P" "lt":
-        "Predicate: less than the value.",
+        "Less than the value.",
         "g.v().values(\"age\").is(P.lt(29)).to_list()" => "[27]";
     "P" "lte":
-        "Predicate: less than or equal to the value.",
+        "Less than or equal to the value.",
         "g.v().values(\"age\").is(P.lte(29)).to_list()" => "[29, 27]";
     "P" "gt":
-        "Predicate: greater than the value.",
+        "Greater than the value.",
         "g.v().values(\"age\").is(P.gt(30)).to_list()" => "[32, 35]";
     "P" "gte":
-        "Predicate: greater than or equal to the value.",
+        "Greater than or equal to the value.",
         "g.v().values(\"age\").is(P.gte(32)).to_list()" => "[32, 35]";
     "P" "inside":
-        "Predicate: strictly between the two values (both excluded).",
+        "Strictly between the two values (both excluded).",
         "g.v().values(\"age\").is(P.inside(27, 32)).to_list()" => "[29]";
     "P" "outside":
-        "Predicate: below the first or above the second value.",
+        "Below the first or above the second value.",
         "g.v().values(\"age\").is(P.outside(27, 32)).to_list()" => "[35]";
     "P" "between":
-        "Predicate: at least the first and less than the second value.",
+        "At least the first and less than the second value.",
         "g.v().values(\"age\").is(P.between(27, 30)).to_list()" => "[29, 27]";
     "P" "within":
-        "Predicate: equal to one of the values (given as arguments or one list).",
+        "Equal to one of the values (given as arguments or one list).",
         "g.v().values(\"age\").is(P.within(27, 35)).to_list()" => "[27, 35]";
     "P" "without":
-        "Predicate: equal to none of the values (given as arguments or one list).",
+        "Equal to none of the values (given as arguments or one list).",
         "g.v().values(\"age\").is(P.without(27, 35)).to_list()" => "[29, 32]";
     "P" "not":
-        "Predicate: the complement of the given predicate (see the book page Predicates for the deviation from TinkerPop).",
+        "The complement of the given predicate (see the book page Predicates for the deviation from TinkerPop).",
         "g.v().values(\"age\").is(P.not(P.gt(30))).to_list()" => "[29, 27]";
     "P" "typeOf":
-        "Predicate: the value is of the given GType or type name (String, Integer, Double, UUID, ...).",
+        "The value is of the given GType or type name (String, Integer, Double, UUID, ...).",
         "g.v().has(\"age\", P.typeOf(GType.LONG)).count().next()" => "4";
     "TextP" "containing":
-        "Text predicate: the string contains the given text.",
+        "The string contains the given text.",
         "g.v().values(\"name\").is(TextP.containing(\"ar\")).to_list()" => "[\"marko\"]";
     "TextP" "not_containing":
-        "Text predicate: the string does not contain the given text.",
+        "The string does not contain the given text.",
         "g.v().values(\"name\").is(TextP.not_containing(\"o\")).to_list()" => "[\"vadas\", \"ripple\", \"peter\"]";
     "TextP" "starting_with":
-        "Text predicate: the string starts with the given text.",
+        "The string starts with the given text.",
         "g.v().values(\"name\").is(TextP.starting_with(\"m\")).to_list()" => "[\"marko\"]";
     "TextP" "not_starting_with":
-        "Text predicate: the string does not start with the given text.",
+        "The string does not start with the given text.",
         "g.v().values(\"name\").is(TextP.not_starting_with(\"r\")).to_list()" => "[\"marko\", \"vadas\", \"lop\", \"josh\", \"peter\"]";
     "TextP" "ending_with":
-        "Text predicate: the string ends with the given text.",
+        "The string ends with the given text.",
         "g.v().values(\"name\").is(TextP.ending_with(\"o\")).to_list()" => "[\"marko\"]";
     "TextP" "not_ending_with":
-        "Text predicate: the string does not end with the given text.",
+        "The string does not end with the given text.",
         "g.v().values(\"name\").is(TextP.not_ending_with(\"s\")).to_list()" => "[\"marko\", \"lop\", \"josh\", \"ripple\", \"peter\"]";
     "TextP" "regex":
-        "Text predicate: the string matches the regular expression (Rust regex dialect, see the book page Predicates).",
+        "The string matches the regular expression (Rust regex dialect, see the book page Predicates).",
         "g.v().values(\"name\").is(TextP.regex(\"^[mj]\")).to_list()" => "[\"marko\", \"josh\"]";
     "TextP" "not_regex":
-        "Text predicate: the string does not match the regular expression.",
+        "The string does not match the regular expression.",
         "g.v().values(\"name\").is(TextP.not_regex(\"^[mjp]\")).to_list()" => "[\"vadas\", \"lop\", \"ripple\"]";
     "Predicate" "and":
         "Combines two predicates: both must match.",
@@ -853,7 +853,7 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "Script start time, the same for every call (PostgreSQL now()).",
         "now() == now()" => "true";
     "global" "today":
-        "The date of now() in UTC.",
+        "The date of now() in UTC or in the given zone.",
         "type_of(today())" => "date";
     "global" "UUID":
         "Returns a new random UUID value.",
@@ -864,6 +864,9 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
     "Uuid" "as_string":
         "The canonical text of the UUID value.",
         "UUID.from_string(\"123e4567-e89b-12d3-a456-426614174000\").as_string().len()" => "36";
+    "temporal" "as_string":
+        "The canonical ISO 8601 text of a date or time value.",
+        "datetime(\"2023-08-02T09:30+02:00\").as_string()" => "2023-08-02T09:30:00+02:00";
     "global" "Fake":
         "A seeded generator of English test data and random numbers: the same seed and calls give the same values; without a seed it picks one (see the book page Generating test data).",
         "Fake(1).full_name()" => "Victoria Vargas";

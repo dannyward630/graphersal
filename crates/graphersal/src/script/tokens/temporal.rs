@@ -6,7 +6,7 @@
 use crate::script::*;
 use crate::value::dt::DT;
 use crate::value::temporal::{
-    Date, DateTime, Duration, LocalDateTime, Temporal, TemporalError, Time, arith,
+    Date, DateTime, Duration, LocalDateTime, Temporal, TemporalError, Time, arith, zone::Zone,
 };
 
 /// A temporal value as a script value: one Rhai type per temporal type (`type_of()` is
@@ -88,13 +88,16 @@ fn script_duration(text: &str) -> Rhai<Duration> {
         .map_err(|error| temporal_failure("duration", error))
 }
 
-/// `today()`: the date of `now()` in UTC (PostgreSQL `current_date` in a UTC session; the date
-/// in another zone is `g.inject(now()).as_local("Europe/Berlin").as_date(GType.DATE)`).
-fn script_today(ctx: &NativeCallContext) -> Rhai<Date> {
-    let now = access::now_of(ctx)
-        .with_offset(0)
-        .map_err(|error| temporal_failure("today", error))?;
-    Ok(now.local().date())
+/// `today()`: the date of `now()` in UTC (PostgreSQL `current_date` in a UTC session);
+/// `today(zone)`: its date in that zone (an offset such as `+02:00` or an IANA name).
+fn script_today(ctx: &NativeCallContext, zone: Option<&str>) -> Rhai<Date> {
+    let now = access::now_of(ctx);
+    let at = match zone {
+        None => now.with_offset(0),
+        Some(name) => Zone::parse(name).and_then(|zone| zone.at(now)),
+    };
+    let at = at.map_err(|error| temporal_failure("today", error))?;
+    Ok(at.local().date())
 }
 
 /// `a - b` of two values of one type (PostgreSQL): two `datetime`s or `localdatetime`s give the
@@ -159,6 +162,10 @@ macro_rules! register_temporal_type {
             .register_fn_as(&["to_string", "to_debug"], |v: &mut $ty| {
                 crate::value::literal::rhai_temporal(&Temporal::$variant(*v))
             })
+            // The canonical text (`2023-08-02`), what the `as_string()` step gives.
+            .register_fn_as(&["as_string", "asString"], |v: &mut $ty| {
+                Temporal::$variant(*v).to_string()
+            })
             .register_fn("==", |a: $ty, b: $ty| a == b)
             .register_fn("!=", |a: $ty, b: $ty| a != b)
             .register_fn("<", |a: $ty, b: $ty| a < b)
@@ -221,7 +228,10 @@ pub(crate) fn register_temporal(registry: &mut crate::script::register::Registry
         .register_fn("time", |text: &str| script_time(text))
         .register_fn("duration", |text: &str| script_duration(text))
         .register_fn("now", |ctx: NativeCallContext| access::now_of(&ctx))
-        .register_fn("today", |ctx: NativeCallContext| script_today(&ctx));
+        .register_fn("today", |ctx: NativeCallContext| script_today(&ctx, None))
+        .register_fn("today", |ctx: NativeCallContext, zone: &str| {
+            script_today(&ctx, Some(zone))
+        });
 
     // Getters (both spellings where they differ).
     registry

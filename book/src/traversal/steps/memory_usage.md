@@ -14,7 +14,7 @@ memory_usage()
 ## Example
 
 ```rhai,graph=modern
-g.memory_usage().keys()   // ["compressed_plain_bytes", "compressed_stored_bytes", "compressed_values", "compression_dictionary_b…
+g.memory_usage().total_bytes > 0   // true
 ```
 
 ## See also

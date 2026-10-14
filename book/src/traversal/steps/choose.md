@@ -16,7 +16,7 @@ choose(arg1: any, arg2: any, arg3: any)
 ## Example
 
 ```rhai,graph=modern
-g.v().has_label("person").choose(__.values("age").is(P.gt(30)), __.constant("older"), __.constant("younger")).to_list()   // ["younger", "younger", "older", "older"]
+g.v(1, 4).choose(__.values("age").is(P.gt(30)), __.constant("old"), __.constant("young")).to_list()   // ["young", "old"]
 ```
 
 ## See also

@@ -3,7 +3,7 @@
 
 `has_p` · category: [Filters](../../traversal/step_reference.md#filters)
 
-Graphersal form of has(key, predicate): keeps elements whose property matches the predicate (a bare value means P.eq).
+Graphersal form of has(key, predicate) (a bare value means P.eq).
 
 ## Forms
 

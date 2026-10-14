@@ -709,6 +709,13 @@ fn now_can_be_pinned_by_the_host() {
         ),
         r#"datetime("2023-08-03T23:30:00-07:00")"#
     );
+    // today(zone): the date of now() in that zone (an IANA name or an offset).
+    assert_eq!(
+        eval(&engine, r#"today("America/Los_Angeles")"#),
+        r#"date("2023-08-02")"#
+    );
+    assert_eq!(eval(&engine, r#"today("+02:00")"#), r#"date("2023-08-03")"#);
+    assert_eq!(eval(&engine, r#"today("UTC") == today()"#), "true");
     // Unpinned again: the system clock.
     graphersal::script::pin_now(&mut engine, None);
     assert_ne!(
@@ -870,5 +877,37 @@ fn date_steps_ask_no_permission() {
     assert_eq!(
         debug_value(&value),
         r#"[localdatetime("2023-08-01T00:00:00")]"#
+    );
+}
+
+#[test]
+fn today_refuses_an_unknown_zone() {
+    let err = fails(r#"today("Mars/Olympus")"#);
+    assert!(err.contains("Mars/Olympus"), "{err}");
+}
+
+#[test]
+fn script_values_give_their_canonical_text() {
+    assert_eq!(
+        both(
+            r#"datetime("2023-08-02T09:30+02:00").as_string()"#,
+            r#"datetime("2023-08-02T09:30+02:00").asString()"#
+        ),
+        r#""2023-08-02T09:30:00+02:00""#
+    );
+    assert_eq!(run(r#"date("2024-02-29").as_string()"#), r#""2024-02-29""#);
+    assert_eq!(
+        run(r#"localdatetime("2023-08-02T09:30:00.25").as_string()"#),
+        r#""2023-08-02T09:30:00.250""#
+    );
+    assert_eq!(run(r#"time("09:30").as_string()"#), r#""09:30:00""#);
+    assert_eq!(
+        run(r#"duration("P1Y2M3DT4H").as_string()"#),
+        r#""P1Y2M3DT4H""#
+    );
+    // The same text as the as_string() step.
+    assert_eq!(
+        run(r#"g.inject(date("2024-02-29")).as_string().next() == date("2024-02-29").as_string()"#),
+        "true"
     );
 }

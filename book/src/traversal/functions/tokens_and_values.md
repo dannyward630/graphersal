@@ -109,7 +109,7 @@ time("09:30:15").second   // 15
 GraphSource::tinkerpop_modern().e().count().next()   // 6
 ```
 
-**`today`**: The date of now() in UTC.
+**`today`**: The date of now() in UTC or in the given zone.
 
 ```rhai,graph=modern
 type_of(today())   // date
@@ -179,6 +179,12 @@ UUID.from_string("123e4567-e89b-12d3-a456-426614174000").as_string()   // 123e45
 
 ```rhai,graph=modern
 UUID.from_string("123e4567-e89b-12d3-a456-426614174000").as_string().len()   // 36
+```
+
+**`temporal.as_string` · `temporal.asString`**: The canonical ISO 8601 text of a date or time value.
+
+```rhai,graph=modern
+datetime("2023-08-02T09:30+02:00").as_string()   // 2023-08-02T09:30:00+02:00
 ```
 
 **`Set.of`**: A set value (duplicates dropped) of the given values, e.g. to seed a set side effect.

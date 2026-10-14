@@ -3,7 +3,7 @@
 
 `has_value_p` · category: [Filters](../../traversal/step_reference.md#filters)
 
-Graphersal form of has_value(predicate): keeps properties whose value matches the predicate.
+Graphersal form of has_value(predicate).
 
 ## Forms
 

@@ -3,7 +3,7 @@
 
 `profile_with` · category: [Running and showing results](../../traversal/step_reference.md#running-and-showing-results)
 
-Rust-API spelling of profile(ProfileType): profiles with the given extra metric sections.
+Rust-API spelling of profile(ProfileType).
 
 ## Forms
 
