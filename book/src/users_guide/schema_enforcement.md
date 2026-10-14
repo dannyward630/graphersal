@@ -259,19 +259,45 @@ A default must be a valid value of its property (after the write coercion): `set
 below the property's `minimum` with an `InvalidSchema` error. Only the defaults that are applied
 are checked: a `default: null` and a nested `default` are not.
 
-**`defaultFunction`** computes the value instead, a new one for every created element (like
-PostgreSQL's `gen_random_uuid()`/`uuidv7()`):
+**`defaultFunction`** computes the value instead (like PostgreSQL's
+`gen_random_uuid()`/`uuidv7()`/`now()`/`current_date`):
 
-| `defaultFunction` | Value |
-|---|---|
-| `uuidv4` | a random version-4 UUID |
-| `uuidv7` | a time-ordered version-7 UUID (RFC 9562: 48 bits of Unix milliseconds, then random bits; increasing within a process) |
+| `defaultFunction` | Value | The property must admit |
+|---|---|---|
+| `uuidv4` | a random version-4 UUID, new for every element | `{"type": "string", "format": "uuid"}` |
+| `uuidv7` | a time-ordered version-7 UUID (RFC 9562: 48 bits of Unix milliseconds, then random bits; increasing within a process), new for every element | `{"type": "string", "format": "uuid"}` |
+| `now` | the `datetime` of the unit's start: ONE value for every element created in the same unit | `{"type": "string", "format": "date-time"}` |
+| `today` | the UTC `date` of that same time | `{"type": "string", "format": "date"}` |
 
-Both produce a `uuid`, so the property is `{"type": "string", "format": "uuid"}`. A property has
-either `default` or `defaultFunction`, never both, and `defaultFunction` sits only on a label's
-top-level property. The generated value is stored as a plain value: the change set and the
-journal record it, so replay and recovery reproduce the same UUID. `now` and `today` (one value
-per unit) come with the date/time values; until then they are rejected.
+`set_schema`, `patch_schema` and `validate_schema` reject a function on a property that does not
+admit its value (`now` on a `string` or a `date`, `uuidv4` on an `integer`) with an
+`InvalidSchema` error whose hint names the declaration it needs. A property has either `default`
+or `defaultFunction`, never both, and `defaultFunction` sits only on a label's top-level property
+(a saved query's parameter schema rejects it). The generated value is stored as a plain value:
+the change set and the journal record it, so replay and recovery reproduce the same UUID or time.
+
+**Which time `now` stores** (PostgreSQL's `now()`: the start of the transaction):
+
+- **In a script** it is the time the DSL's `now()` returns in the same evaluation: one clock per
+  evaluation, so `let t = now(); g.addV("event").iterate();` stores exactly `t`, and every element
+  the script creates gets the same time. A host pins that clock with `script::pin_now` (the
+  playground and the CLI use the system clock).
+- **In Rust** it is the start of the storage's outermost open unit
+  (`GraphStorage::unit_started_at`): the traversal's own unit, or the explicit
+  `transaction(|g| ..)` around several traversals. `GraphTraversalSource::with_now(t)` pins it for
+  one traversal (deterministic tests); other create calls pass a `CreateContext`
+  (`CreateContext::for_storage(&g)` reads the unit's start, `CreateContext::at(t)` pins).
+- A later unit never gets an earlier time than a previous one of the same graph (the system clock
+  is raised to the previous unit's start and the last commit time).
+
+```rhai,graph=empty,script
+g.set_schema(#{mode: "open", vertices: #{event: #{schema: #{type: "object", properties: #{
+    at: #{type: "string", format: "date-time", defaultFunction: "now"},
+    day: #{type: "string", format: "date", defaultFunction: "today"}}}}}});
+let t = now();
+g.inject(1, 2, 3).addV("event").iterate();
+g.V().values("at").dedup().toList() == [t]   // true: three events, one time
+```
 
 A change of a `default` or `defaultFunction` is listed by `diff_schema` as `default_changed`, and
 it is always backward compatible: it changes only what future creates store.

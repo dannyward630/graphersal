@@ -195,7 +195,7 @@ graph.set_schema({})                   # removes it
 
 Every method takes `policy=` like `execute()` (read methods need `("read", "schema")`, `set`/`patch`
 need `("update", "schema")`). A violation raises `GraphersalError` with the aggregated report and a
-`help`. A schema `default` (or `defaultFunction`: `uuidv4`, `uuidv7`) of a top-level property is
+`help`. A schema `default` (or `defaultFunction`: `uuidv4`, `uuidv7`, `now`, `today`) of a top-level property is
 stored when a vertex or edge is created without it (mode `open`/`closed`), never substituted on
 read and never filled into existing elements. To make a key required that existing elements lack, backfill first in one
 atomic script (patch to optional, write the values, patch to required):
