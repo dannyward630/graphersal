@@ -13,7 +13,7 @@ graph should see **one** creation: the vertex with all its properties. The rule 
 ## Why
 
 - **Required properties.** A schema (`open` or `closed`) that lists a property in `required`
-  rejects an element created without it (a schema `default` does not fill it in). Without the fold, the empty `addV("Person")` would be validated
+  rejects an element created without it (unless its schema has a `default`, which the creation stores). Without the fold, the empty `addV("Person")` would be validated
   before any `property()` ran and could never succeed.
 - **No half-created elements.** The storage validates the complete element before inserting it,
   so a failing property (wrong type, undeclared key in a Closed schema) leaves no element behind.
@@ -124,7 +124,7 @@ Error: Step #0 'add_v("Person")' execution failed
   at #0: add_v("Person").property("name", "Ann").property("age", 30).values("name")
          ^^^^^^^^^^^^^^^
 Caused by: Missing required property 'name' on vertex 'Person'
-Help: Provide a value for 'name' or remove it from the label's "required" in the schema. A schema "default" is an annotation only: it is never filled in, so a required property needs a value even when its schema has a default.
+Help: Provide a value for 'name' or remove it from the label's "required" in the schema, or give it a "default" (or "defaultFunction") in the schema: it is stored when an element is created without the property (mode open or closed), but never filled into existing elements, and never by an import or a property removal.
       A required property must be supplied when the element is created: add_v("L").property("name", value) works because the optimizer rule add_property_fold folds the directly following constant property() steps into add_v()/add_e(). If a property() after it is not folded (the rule is disabled with g.with("optimizer.disabled", ["add_property_fold"]), the value is a traversal, a Cardinality or a jpath key, or another step sits in between), the element is created empty and this error is raised; move a constant property("name", value) directly behind add_v()/add_e() and keep add_property_fold enabled.
 ```
 

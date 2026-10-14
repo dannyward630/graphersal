@@ -35,7 +35,7 @@ export const CONSTRAINTS = Object.freeze({
 export const VALUE_CONSTRAINTS = Object.freeze(['enum', 'const']);
 
 /** Annotation keywords: stored and round-tripped, no effect on validation. */
-export const ANNOTATIONS = Object.freeze(['title', 'description', 'default', 'examples', 'deprecated', '$comment']);
+export const ANNOTATIONS = Object.freeze(['title', 'description', 'default', 'defaultFunction', 'examples', 'deprecated', '$comment']);
 
 /** Keywords that belong to one kind of value; removed when the type changes to another kind. */
 const KIND_KEYWORDS = {
@@ -526,7 +526,7 @@ function placeholder(base) {
  * draft, as ONE playground run (a run is one unit: nothing is kept unless all of it succeeds):
  * 1. the draft with mode `none` (declares the keys, enforces nothing yet),
  * 2. `property(key, value)` on every element of the label that lacks the key; the value is the
- *    draft's `default` (an annotation; the editor uses it to prefill) or a placeholder to edit,
+ *    draft's `default` (a create stores it, existing data needs this backfill) or a placeholder,
  * 3. the draft itself, which validates all data again.
  * Returns null when no group can be backfilled this way.
  * @returns {{title: string, script: string} | null}
