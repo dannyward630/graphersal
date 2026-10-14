@@ -385,7 +385,7 @@ payload     = property map (3) with inline keys (as in a WAL record)
 |---:|---|
 | 0 | invalid |
 | 1 | saved query |
-| 2 | reserved for property index definitions |
+| 2 | property index |
 | 3 | compression rule |
 | 4..127 | unassigned (assigned only by this format) |
 | 128..255 | host kinds: reserved for applications built on the library, never assigned by this format (16 rule 8) |
@@ -425,6 +425,22 @@ order, followed by the unknown keys:
 `label` and `path` are required; `element` defaults to `"vertex"`, `codec` to `"lz4"`,
 `min_bytes` to 256, `dictionary` to `true`. Two rules with the same `element`, `label` and `path`
 are invalid (a writer refuses the second).
+
+A **property index** (kind 2, not critical) orders the elements of one element kind and label by
+the value of one top-level property (book page "Property Indexes"). Its name is an identifier as
+for a saved query. Only the declaration is stored: snapshots and the WAL hold NO index entries, a
+load builds them from the data, so a reader that does not know the kind loses nothing but the
+speed-up. Its payload keys, in this order, followed by the unknown keys:
+
+| Key | Value |
+|---|---|
+| `element` | string: `"vertex"` or `"edge"` |
+| `label` | string: the label |
+| `key` | string: the top-level property name (not a jpath) |
+
+`label` and `key` are required; `element` defaults to `"vertex"`. Two indexes with the same
+`element`, `label` and `key` are invalid (a writer refuses the second). A store written before
+this kind was decoded never holds it (kind 2 was reserved), so no format version changes.
 
 ## 7. Segment files and chunks
 

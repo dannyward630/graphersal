@@ -33,8 +33,8 @@ writers, are in the [format specification, section 15](format.md#15-versioning).
 
 ## Growing without a new version
 
-New kinds of definitions in the catalog (saved queries today; property indexes, procedures and
-others later), new keys of a definition, and new kinds of snapshot files do **not** change the
+New kinds of definitions in the catalog (saved queries, property indexes and compression rules
+today; procedures and others later), new keys of a definition, and new kinds of snapshot files do **not** change the
 format version ([format specification, section 16](format.md#16-extensibility)). A build that
 meets something it does not know:
 
