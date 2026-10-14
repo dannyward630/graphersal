@@ -34,8 +34,9 @@ g.memory_usage()                                                         // comp
   `order().by()`, a jpath read, a result: each decompresses the value it reads (about 1.5 to 3 GB/s,
   below). A read that never touches the field costs nothing.
 - **A filter on such a field decompresses every candidate.** `has("bio", TextP.containing("Rust"))`
-  reads the text of every vertex it tests; there is no index on compressed fields. Filter on other
-  properties first.
+  reads the text of every vertex it tests. Filter on other properties first. A
+  [property index](property_indexes.md) on the field serves equality and ranges without reading
+  the candidates, but it holds the plain text (the memory compression saved).
 - **A write compresses** a string at a rule path (with the rule's dictionary). Only the touched
   top-level property is looked at; with no rule for the element's labels a write costs one lookup.
 - **The disk stays plain.** Snapshots, the write-ahead log, GraphSON and GraphML hold the plain

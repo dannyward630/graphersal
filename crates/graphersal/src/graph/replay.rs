@@ -216,9 +216,7 @@ impl crate::graph::TraversalGraph {
                             after: Some(after), ..
                         } => {
                             let old = graph.definitions.insert((**after).clone());
-                            if after.kind() == crate::graph::DefinitionKind::COMPRESSION {
-                                graph.compression_after_change(old.as_ref(), after.name());
-                            }
+                            graph.catalog_after_change(after.kind(), old.as_ref(), after.name());
                         }
                         _ => {}
                     }

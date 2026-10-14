@@ -1012,6 +1012,70 @@ impl Graph {
         Ok(())
     }
 
+    /// ``graph.create_index(label, key, element="vertex", name=None, *, policy=None)``:
+    /// declares (or replaces) a property index, like the DSL's ``g.create_index(#{..})``: the
+    /// ``element``s labelled ``label``, ordered by their top-level property ``key``; a
+    /// ``has()`` on that key after ``has_label(label)`` then reads the index. ``name``
+    /// defaults to ``<label>_<key>`` (``<label>_<key>_edge`` for edges). The index is built at
+    /// once and rebuilt from the data whenever the graph is loaded.
+    #[pyo3(signature = (label, key, element="vertex", name=None, *, policy=None))]
+    fn create_index(
+        &self,
+        py: Python<'_>,
+        label: &str,
+        key: &str,
+        element: &str,
+        name: Option<&str>,
+        policy: Option<PyRef<'_, AccessPolicy>>,
+    ) -> PyResult<()> {
+        let params = PyDict::new(py);
+        params.set_item("index_label", label)?;
+        params.set_item("index_key", key)?;
+        params.set_item("index_element", element)?;
+        let script = match name {
+            Some(name) => {
+                params.set_item("index_name", name)?;
+                "g.create_index(#{label: index_label, key: index_key, element: index_element, \
+                 name: index_name})"
+            }
+            None => "g.create_index(#{label: index_label, key: index_key, element: index_element})",
+        };
+        self.run(py, script, Some(&params), false, policy.as_deref())?;
+        Ok(())
+    }
+
+    /// ``graph.indexes(*, policy=None)``: the property indexes as a ``list`` of ``dict``
+    /// (``name``, ``element``, ``label``, ``key``, ``served`` and the current ``entries``,
+    /// ``distinct_values``, ``bytes``).
+    #[pyo3(signature = (*, policy=None))]
+    fn indexes(
+        &self,
+        py: Python<'_>,
+        policy: Option<PyRef<'_, AccessPolicy>>,
+    ) -> PyResult<Py<PyAny>> {
+        self.run(py, "g.indexes()", None, false, policy.as_deref())
+    }
+
+    /// ``graph.drop_index(name, *, policy=None)``: drops the property index; ``False`` when
+    /// there is none.
+    #[pyo3(signature = (name, *, policy=None))]
+    fn drop_index(
+        &self,
+        py: Python<'_>,
+        name: &str,
+        policy: Option<PyRef<'_, AccessPolicy>>,
+    ) -> PyResult<Py<PyAny>> {
+        let params = PyDict::new(py);
+        params.set_item("index_name", name)?;
+        self.run(
+            py,
+            "g.drop_index(index_name)",
+            Some(&params),
+            false,
+            policy.as_deref(),
+        )
+    }
+
     /// ``graph.call_query(name, params=None, *, policy=None)``: calls the saved query ``name``
     /// with named arguments (``g.query(name, #{..})``; ``graph.query`` is the alias of
     /// ``execute``) and returns its result like ``execute`` (a traversal's results as a

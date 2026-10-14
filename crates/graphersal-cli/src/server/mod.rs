@@ -954,6 +954,17 @@ fn route(context: &Arc<Context>, request: &mut Request) -> Result<Answer, HttpEr
             let name = body_name(&json_body(request)?)?;
             value(context.call_fallible(move |s| s.recompress(&name))?)
         }
+        // Property indexes (`graphersal_session::indexes`).
+        (Method::Get, "indexes") => value(context.call(|s| s.list_indexes())?),
+        (Method::Post, "indexes/create") => {
+            let body = json_body(request)?;
+            value(context.call(move |s| s.create_index(&body))?)
+        }
+        (Method::Post, "indexes/drop") => {
+            let name = body_name(&json_body(request)?)?;
+            let dropped = context.call_fallible(move |s| s.drop_index(&name))?;
+            value(json!({ "dropped": dropped }))
+        }
         (_, "layout" | "layout/step" | "layout/cancel") => {
             layout::route(context, request, &method, endpoint)
         }
@@ -1033,7 +1044,10 @@ fn route(context: &Arc<Context>, request: &mut Request) -> Result<Answer, HttpEr
             | "compression"
             | "compression/define"
             | "compression/drop"
-            | "compression/recompress",
+            | "compression/recompress"
+            | "indexes"
+            | "indexes/create"
+            | "indexes/drop",
         ) => Err(HttpError(
             405,
             format!("method {method} is not allowed on {path}"),

@@ -5,9 +5,9 @@
 //!
 //! - its graph as `Arc<dyn` [`SessionGraph`]`>`: a [`AnyGraph`] (the script layer's boundary,
 //!   reached by trait upcasting) plus one method per view, selection, edit, creation, saved
-//!   query and compression operation. Each method locks the graph once and runs the generic
-//!   helper of its module (`views`, `selection`, `edit`, `create`, `queries`, `compression`)
-//!   monomorphised for the storage, so the cost of the boundary is one indirect call per
+//!   query, compression and index operation. Each method locks the graph once and runs the
+//!   generic helper of its module (`views`, `selection`, `edit`, `create`, `queries`,
+//!   `compression`, `indexes`) monomorphised for the storage, so the cost of the boundary is one indirect call per
 //!   operation, never one per element. It is blanket-implemented for every
 //!   [`Graph<S>`](Graph) with `S: GraphStorage + Default + Send + Sync + 'static`;
 //! - the host's choice of storage as `Arc<dyn` [`GraphFactory`]`>`: how a loaded graph (a
@@ -209,6 +209,16 @@ pub trait SessionGraph: AnyGraph {
     /// with its `Unsupported` diagnostic.
     fn recompress_rule(&self, name: &str) -> Result<(), String>;
 
+    /// [`crate::indexes::indexes_in`].
+    fn indexes(&self) -> Value;
+
+    /// [`crate::indexes::index_in`].
+    fn index(&self, name: &str) -> Value;
+
+    /// Stores a checked property index (a free name), in ONE commit; a storage without
+    /// property indexes refuses it with its `Unsupported` diagnostic.
+    fn store_index(&self, definition: Definition) -> Result<(), Vec<FieldError>>;
+
     /// Opens the unit of a whole run ([`GraphStorage::begin_unit`]).
     fn begin_run(&self) -> UnitMark;
 
@@ -390,6 +400,18 @@ where
 
     fn recompress_rule(&self, name: &str) -> Result<(), String> {
         crate::compression::recompress_in(&mut *self.write(), name)
+    }
+
+    fn indexes(&self) -> Value {
+        crate::indexes::indexes_in(&*self.read())
+    }
+
+    fn index(&self, name: &str) -> Value {
+        crate::indexes::index_in(&*self.read(), name)
+    }
+
+    fn store_index(&self, definition: Definition) -> Result<(), Vec<FieldError>> {
+        crate::indexes::store_index(&mut *self.write(), definition)
     }
 
     fn begin_run(&self) -> UnitMark {

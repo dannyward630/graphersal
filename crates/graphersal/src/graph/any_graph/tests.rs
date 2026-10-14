@@ -418,3 +418,36 @@ fn a_foreign_storage_cannot_write_a_snapshot() {
     ));
     assert!(bytes.is_empty());
 }
+
+#[test]
+fn a_foreign_storage_keeps_index_definitions_but_does_not_serve_them() {
+    use crate::graph::property_index::PropertyIndexDefinition;
+    let any = Arc::new(Graph::new(Foreign::default())).into_any_graph();
+    let index = Definition::property_index(
+        "person_age",
+        PropertyIndexDefinition::new(ElementKind::Vertex, "person", "age"),
+    );
+    // The definition is stored like any other (a catalog file loaded into it) ...
+    any.set_definitions(vec![index.clone()]).unwrap();
+    assert_eq!(
+        any.definitions(Some(DefinitionKind::PROPERTY_INDEX)),
+        vec![index]
+    );
+    // ... but nothing serves it, and declaring one through the API is refused.
+    assert!(any.property_indexes().is_empty());
+    assert!(!any.capabilities().property_indexes);
+    let mut foreign = Foreign::default();
+    let err = crate::GraphTraversalSource::new(&mut foreign)
+        .create_index(
+            "x",
+            PropertyIndexDefinition::new(ElementKind::Vertex, "person", "age"),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            &*err,
+            crate::error::TraverserError::Graph(GraphError::Unsupported { .. })
+        ),
+        "{err:?}"
+    );
+}

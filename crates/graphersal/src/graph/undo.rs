@@ -551,6 +551,9 @@ impl TraversalGraph {
             }
             UndoEntry::DroppedEdge(edge) => self.restore_edge(*edge),
             UndoEntry::VertexProperty { id, key, old } => {
+                if let Some(handle) = self.index.get_node(&id) {
+                    self.pindex_vertex(handle, false, Some(&key));
+                }
                 let vertex = self
                     .index
                     .get_node(&id)
@@ -561,6 +564,7 @@ impl TraversalGraph {
                 }
                 if let Some(handle) = self.index.get_node(&id) {
                     self.compression_normalize_vertex_key(handle, &key);
+                    self.pindex_vertex(handle, true, Some(&key));
                 }
             }
             UndoEntry::EdgeProperty {
@@ -569,6 +573,9 @@ impl TraversalGraph {
                 old,
                 map_was_none,
             } => {
+                if let Some(handle) = self.index.get_edge(&id) {
+                    self.pindex_edge(handle, false, Some(&key));
+                }
                 let edge = self
                     .index
                     .get_edge(&id)
@@ -589,6 +596,7 @@ impl TraversalGraph {
                 }
                 if let Some(handle) = self.index.get_edge(&id) {
                     self.compression_normalize_edge_key(handle, &key);
+                    self.pindex_edge(handle, true, Some(&key));
                 }
             }
             UndoEntry::VertexLabels { id, old } => {
@@ -596,6 +604,7 @@ impl TraversalGraph {
                     tracing::error!(%id, "undo: vertex of a label change not found");
                     return;
                 };
+                self.pindex_vertex(handle, false, None);
                 let Some(vertex) = self.vertex_weight_mut(handle) else {
                     tracing::error!(%id, "undo: vertex of a label change not found");
                     return;
@@ -609,12 +618,14 @@ impl TraversalGraph {
                     self.index.insert_node_label(label, handle);
                 }
                 self.compression_normalize_vertex(handle);
+                self.pindex_vertex(handle, true, None);
             }
             UndoEntry::EdgeLabel { id, old } => {
                 let Some(handle) = self.index.get_edge(&id) else {
                     tracing::error!(%id, "undo: edge of a label change not found");
                     return;
                 };
+                self.pindex_edge(handle, false, None);
                 let Some(edge) = self.edge_weight_mut(handle) else {
                     tracing::error!(%id, "undo: edge of a label change not found");
                     return;
@@ -629,6 +640,7 @@ impl TraversalGraph {
                     self.index.insert_edge_label(old, handle);
                 }
                 self.compression_normalize_edge(handle);
+                self.pindex_edge(handle, true, None);
             }
             UndoEntry::Schema(old) => *self.schema.write() = *old,
             UndoEntry::Definition { kind, name, old } => {
@@ -636,10 +648,8 @@ impl TraversalGraph {
                     Some(old) => self.definitions.insert(*old),
                     None => self.definitions.remove(kind, &name),
                 };
-                // Undoing a rule change re-runs its pass (D10).
-                if kind == DefinitionKind::COMPRESSION {
-                    self.compression_after_change(replaced.as_ref(), &name);
-                }
+                // Undoing a rule change re-runs its pass (D10); an index is rebuilt.
+                self.catalog_after_change(kind, replaced.as_ref(), &name);
             }
         }
     }
@@ -653,6 +663,7 @@ impl TraversalGraph {
     ) -> Result<(), GraphError> {
         definition.validate()?;
         crate::graph::compression::check_conflict(self, &definition)?;
+        crate::graph::property_index::check_conflict(self, &definition)?;
         let current = self.definitions.get(definition.kind(), definition.name());
         if current == Some(&definition) {
             return Ok(());
@@ -667,11 +678,9 @@ impl TraversalGraph {
         let kind = definition.kind();
         let name = CompactString::from(definition.name());
         let old = self.definitions.insert(definition);
-        // The explicit pass of a rule change (D8): in the same unit, recorded only as the
-        // definition change (the pass changes no logical data).
-        if kind == DefinitionKind::COMPRESSION {
-            self.compression_after_change(old.as_ref(), &name);
-        }
+        // The explicit pass of a rule change (D8) or the build of an index: in the same unit,
+        // recorded only as the definition change (neither changes logical data).
+        self.catalog_after_change(kind, old.as_ref(), &name);
         self.undo.record(UndoEntry::Definition {
             kind,
             name,
@@ -685,9 +694,7 @@ impl TraversalGraph {
     pub(crate) fn remove_definition_recorded(&mut self, kind: DefinitionKind, name: &str) -> bool {
         match self.definitions.remove(kind, name) {
             Some(old) => {
-                if kind == DefinitionKind::COMPRESSION {
-                    self.compression_after_change(Some(&old), name);
-                }
+                self.catalog_after_change(kind, Some(&old), name);
                 self.undo.record(UndoEntry::Definition {
                     kind,
                     name: CompactString::from(name),
@@ -696,6 +703,22 @@ impl TraversalGraph {
                 true
             }
             None => false,
+        }
+    }
+
+    /// The derived state of a catalog change of `kind` (`old`: what was stored before, the
+    /// catalog already holds the new state): a compression rule runs its pass, a property index
+    /// is rebuilt from the data.
+    pub(crate) fn catalog_after_change(
+        &mut self,
+        kind: DefinitionKind,
+        old: Option<&Definition>,
+        name: &str,
+    ) {
+        if kind == DefinitionKind::COMPRESSION {
+            self.compression_after_change(old, name);
+        } else if kind == DefinitionKind::PROPERTY_INDEX {
+            self.property_index_after_change(name);
         }
     }
 
@@ -786,6 +809,7 @@ impl TraversalGraph {
                 self.index.insert_node_label(label.clone(), handle);
             }
         }
+        self.pindex_vertex(handle, true, None);
         handle
     }
 
@@ -820,6 +844,7 @@ impl TraversalGraph {
         if let Some(label) = label {
             self.index.insert_edge_label(label, handle);
         }
+        self.pindex_edge(handle, true, None);
         handle
     }
 
@@ -845,6 +870,7 @@ impl TraversalGraph {
         } else {
             None
         };
+        self.pindex_edge(edge, false, None);
         let (id, label, properties, _) = self.graph.remove_edge(index)?;
         self.statistics.edge_removed(label.as_deref());
         if let Some(label) = &label {
@@ -892,6 +918,7 @@ impl TraversalGraph {
                 edges.push(image);
             }
         }
+        self.pindex_vertex(node, false, None);
         let (id, labels, properties, _) = self.graph.remove_node(index)?;
         self.statistics.vertex_removed(&labels);
         self.index.remove_node(&id);

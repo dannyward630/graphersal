@@ -46,6 +46,11 @@
 //! read-only mode), `define_compression`, `drop_compression` and `recompress` (refused in
 //! read-only mode) wrap the session's `compression` operations; a define or drop is a commit
 //! recorded in the change feed with the client `mcp`.
+//!
+//! Property indexes (`book/src/users_guide/property_indexes.md`): `list_indexes` (also in
+//! read-only mode), `create_index` and `drop_index` (refused in read-only mode, where the
+//! `query` tool's authorizer denies `g.create_index`/`g.drop_index` too) wrap the session's
+//! `indexes` operations; a create or drop is a commit recorded in the change feed.
 
 use std::sync::atomic::Ordering;
 use std::sync::{Mutex, OnceLock};
@@ -441,7 +446,11 @@ new query, check `list_saved_queries`: saved queries are named, parameterized, r
 queries the user stored in the graph; run one with `run_saved_query` {name, params} instead of \
 writing it again. Large text that queries rarely read (CVs, descriptions) can be kept \
 compressed in memory with a compression rule: `list_compressions`, `define_compression`, \
-`drop_compression`, `recompress` (reads stay plain). Resources: graphersal://dsl-reference (every step and function), \
+`drop_compression`, `recompress` (reads stay plain). A query that filters a label on a \
+property (`g.v().has_label(\"person\").has(\"age\", P.gt(30))`) and is slow on a large \
+graph can be served by a property index: `list_indexes`, `create_index` {label, key, \
+element?}, `drop_index`; results never change, `.profile()` names the index it reads. \
+Resources: graphersal://dsl-reference (every step and function), \
 graphersal://examples (runnable examples), graphersal://saved-queries, graphersal://schema, \
 graphersal://statistics. To create test data, use \
 `Fake(seed)` inside a query (reproducible English names, e-mails, addresses, companies and \
@@ -685,6 +694,51 @@ fn all_tools() -> Vec<Tool> {
             json!({
                 "type": "object",
                 "properties": {"name": {"type": "string", "description": "The rule's name (list_compressions)."}},
+                "required": ["name"],
+            }),
+        ),
+        tool(
+            "list_indexes",
+            "Property indexes",
+            Kind::Read,
+            "The property indexes of the graph: the vertices or edges of one label ordered by \
+             one top-level property, so that v()/e() with has_label(label) and has(key, ..) \
+             (equality, P.within, ranges) read only the matching elements. Each has name, \
+             element, label, key, served (false: the storage keeps the definition but no query \
+             reads it) and its current stats (entries, distinctValues, bytes).",
+            no_args(),
+        ),
+        tool(
+            "create_index",
+            "Create a property index",
+            Kind::Write,
+            "Declares a property index on the `element`s labelled `label`, ordered by their \
+             top-level property `key`, and builds it from the data. Queries that start with \
+             g.v().has_label(label) (g.e() for edges) and filter has(key, value), \
+             has(key, P.within(..)) or a range (P.gt/gte/lt/lte/between/inside/outside) then \
+             read only the matching elements; results are the same as without the index, only \
+             their order may differ. It costs memory (see bytes in list_indexes) and a little \
+             time on every write of the key. One index per element, label and key; `name` \
+             defaults to <label>_<key> (<label>_<key>_edge for edges).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string", "description": "The vertex or edge label."},
+                    "key": {"type": "string", "description": "The top-level property name (not a jpath)."},
+                    "element": {"type": "string", "enum": ["vertex", "edge"], "description": "Default vertex."},
+                    "name": {"type": "string", "description": "The index's name (an identifier); default <label>_<key>."},
+                },
+                "required": ["label", "key"],
+            }),
+        ),
+        tool(
+            "drop_index",
+            "Drop a property index",
+            Kind::Destructive,
+            "Removes a property index (no data changes; queries scan again).",
+            json!({
+                "type": "object",
+                "properties": {"name": {"type": "string", "description": "The index's name (list_indexes)."}},
                 "required": ["name"],
             }),
         ),
@@ -1079,6 +1133,41 @@ fn run_tool(
                 .ok_or("missing argument \"name\" (list_compressions)")?
                 .to_string();
             fallible(context, move |s| s.recompress(&name))
+        }
+        "list_indexes" => {
+            let list = context.call(|s| s.list_indexes()).map_err(http_failed)?;
+            Ok(if list.as_array().is_some_and(Vec::is_empty) {
+                "The graph has no property indexes (create_index adds one).".to_string()
+            } else {
+                pretty(&list)
+            })
+        }
+        "create_index" => {
+            let spec = args.clone();
+            let answer = context
+                .call(move |s| s.create_index(&spec))
+                .map_err(http_failed)?;
+            if answer["ok"] == json!(true) {
+                Ok(format!("Index created.\n{}", pretty(&answer["index"])))
+            } else {
+                Err(format!(
+                    "The index was refused:\n{}",
+                    pretty(&answer["errors"])
+                ))
+            }
+        }
+        "drop_index" => {
+            let name = str_arg(args, "name")
+                .ok_or("missing argument \"name\" (list_indexes)")?
+                .to_string();
+            let dropped = context
+                .call(move |s| s.drop_index(&name))
+                .map_err(http_failed)??;
+            Ok(if dropped {
+                "Index dropped.".to_string()
+            } else {
+                "There is no index of that name (list_indexes).".to_string()
+            })
         }
         "graph_info" => {
             let mut info = context.call(|s| s.info()).map_err(http_failed)?;

@@ -310,12 +310,13 @@ compiling it (the core has no Rhai); the DSL compiles it on definition and on ev
 
 ## Host-defined catalog kinds
 
-Saved queries are one kind of catalog definition; compression rules are another. An application
+Saved queries are one kind of catalog definition; [property indexes](property_indexes.md) and
+compression rules are others. An application
 built on the library (a server, say) can keep its own entities in the same catalog, so they are
 stored, journaled, rolled back, forked and backed up with the graph: definition kinds 128 to 255
 are reserved for hosts and never assigned by the library (`DefinitionKind::host(n)` refuses a
-kind below 128; `DefinitionKind::HOST_FIRST`/`HOST_LAST`, `is_host()`). Kind 2 stays reserved for
-a future library property index.
+kind below 128; `DefinitionKind::HOST_FIRST`/`HOST_LAST`, `is_host()`). Kind 2 is the library's
+property index.
 
 ```rust,ignore
 use graphersal::catalog::{decode_payload, encode_payload};

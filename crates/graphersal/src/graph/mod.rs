@@ -33,6 +33,9 @@ pub(crate) mod index;
 pub mod memory;
 #[cfg(feature = "persist")]
 pub(crate) mod persistent;
+/// Property indexes: declared, ordered indexes on `(element kind, label, key)`
+/// ([`property_index::PropertyIndexDefinition`]) and their in-memory state.
+pub mod property_index;
 pub(crate) mod replay;
 /// Schemas: the format, validation, inference, diff, patch and visualization.
 pub mod schema;
@@ -65,6 +68,9 @@ pub(crate) use index::{EdgeIndex, NodeIndex};
 pub use memory::MemoryStats;
 #[cfg(feature = "persist")]
 pub use persistent::PersistentStorage;
+pub use property_index::{
+    PropertyIndexDefinition, PropertyIndexInfo, PropertyIndexRange, PropertyIndexStats,
+};
 pub use schema::*;
 pub use shared::{Graph, GraphRead, GraphWrite};
 pub use statistics::GraphStatistics;
@@ -133,6 +139,9 @@ pub struct TraversalGraph {
     /// The in-memory state of the compression rules of the catalog (see [`compression`]):
     /// derived from `definitions`, like an index.
     pub(crate) compression: compression::CompressionRules,
+    /// The entries of the property indexes of the catalog (see [`property_index`]): derived
+    /// from `definitions` and the data, never persisted.
+    pub(crate) property_indexes: property_index::PropertyIndexes,
     /// The cached total of the last footprint walk (see `memory::footprint_bytes`), read by the
     /// memory budget at the start of every run.
     pub(crate) footprint: memory::FootprintCache,
@@ -173,6 +182,7 @@ impl TraversalGraph {
             graph_id: std::sync::OnceLock::new(),
             definitions: definition::Catalog::default(),
             compression: compression::CompressionRules::default(),
+            property_indexes: property_index::PropertyIndexes::default(),
             footprint: memory::FootprintCache::default(),
         }
     }

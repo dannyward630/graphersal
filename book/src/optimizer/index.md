@@ -21,12 +21,13 @@ The rules run in this order, once per traversal level. Each has a stable name: t
 | 3 | [Filter Reorder](filter_reorder.md) | `filter_reorder` | on | adjacent filters sorted cheapest first |
 | 4 | [Has ID Pushdown](has_id_pushdown.md) | `has_id_pushdown` | on | `v().has_id(..)` → `v(ids)` |
 | 5 | [Source Filter Pushdown](source_filter_pushdown.md) | `source_filter_pushdown` | on | `v().has_label(..)`/`has_id(..)`/`has(k, v)` → `v(labels, ids).has(k, v)` (checked while scanning) |
-| 6 | [Barrier Pushdown](barrier_pushdown.md) | `barrier_pushdown` | on | `out_e().has_label(..)` → `out_e(labels)` |
-| 7 | [Group Count Pushdown](group_count_pushdown.md) | `group_count_pushdown` | on | `v().group_count().by(T.label)` → one fused step |
-| 8 | [Count Pushdown](count_pushdown.md) | `count_pushdown` | on | `v().count()` → one fused step |
-| 9 | [Lazy Barrier](lazy_barrier.md) | `lazy_barrier` | on | inserts `lazy_barrier()` between adjacent adjacency steps |
+| 6 | [Property Index](property_index.md) | `property_index` | on | `v(labels).has(k, ..)` reads a declared [property index](../users_guide/property_indexes.md) (`[index: ..]`) |
+| 7 | [Barrier Pushdown](barrier_pushdown.md) | `barrier_pushdown` | on | `out_e().has_label(..)` → `out_e(labels)` |
+| 8 | [Group Count Pushdown](group_count_pushdown.md) | `group_count_pushdown` | on | `v().group_count().by(T.label)` → one fused step |
+| 9 | [Count Pushdown](count_pushdown.md) | `count_pushdown` | on | `v().count()` → one fused step |
+| 10 | [Lazy Barrier](lazy_barrier.md) | `lazy_barrier` | on | inserts `lazy_barrier()` between adjacent adjacency steps |
 
-All 9 rules ship on by default; none is opt-in today. The order matters: the early rules
+All 10 rules ship on by default; none is opt-in today. The order matters: the early rules
 bring filters into the position where the later ones can fold them. For example
 `g.v().where(__.has_label("person")).count()` becomes `v(labels: ["person"]).count()` through
 `where_unnest`, `source_filter_pushdown` and `count_pushdown` together.
@@ -101,7 +102,7 @@ A name that is neither a rule above nor `"all"`, or a rule named in both lists, 
 
 ```
 $ graphersal -e 'g.with("optimizer.disabled", ["no_such_rule"]).v().count().to_list()'
-Error: Invalid value for option 'optimizer.disabled': unknown optimizer rule "no_such_rule"; valid names are: where_unnest, add_property_fold, filter_reorder, has_id_pushdown, source_filter_pushdown, barrier_pushdown, group_count_pushdown, count_pushdown, lazy_barrier, all
+Error: Invalid value for option 'optimizer.disabled': unknown optimizer rule "no_such_rule"; valid names are: where_unnest, add_property_fold, filter_reorder, has_id_pushdown, source_filter_pushdown, property_index, barrier_pushdown, group_count_pushdown, count_pushdown, lazy_barrier, all
 Help: Set 'optimizer.disabled'/'optimizer.enabled' to an array of optimizer rule names ...
 ```
 
@@ -114,6 +115,7 @@ page:
   schema with required properties at all. Without it, the creation fails.
 - The *order* of results is not part of the guarantee: [Source Filter
   Pushdown](source_filter_pushdown.md) reads elements label by label from the index, and
+  [Property Index](property_index.md) reads them in index order, and
   [Lazy Barrier](lazy_barrier.md) can reorder duplicates. Use `order()` when the order matters.
 
 ## Path requirement analysis

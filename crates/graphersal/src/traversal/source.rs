@@ -361,6 +361,52 @@ fn find_fault<'g, S: GraphStorage + 'g>(
 /// that step would carry (`at #N`, [`TraverserError::step_location`]). Returns `err` unchanged
 /// when no step matches.
 /// The one label `labels` names (repeated names count once), or `None` for none or several.
+/// The candidates of a `v()` source that reads a property index ([`IndexAccess`]): the vertices
+/// of every label in every range of the access, each once. `None` when the storage serves no
+/// index for one of the labels (the source scans its labels instead).
+///
+/// [`IndexAccess`]: crate::traversal::step::IndexAccess
+fn index_vertices<S: GraphStorage>(
+    storage: &S,
+    labels: &[String],
+    access: &crate::traversal::step::IndexAccess,
+) -> Option<Vec<S::VertexId>> {
+    let dedup = labels.len() > 1 || access.ranges.len() > 1;
+    let mut seen: std::collections::HashSet<S::VertexId> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for label in labels {
+        for range in &access.ranges {
+            for node in storage.vertices_by_property_index(label, &access.key, range)? {
+                if !dedup || seen.insert(node) {
+                    out.push(node);
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
+/// The edge counterpart of [`index_vertices`].
+fn index_edges<S: GraphStorage>(
+    storage: &S,
+    labels: &[String],
+    access: &crate::traversal::step::IndexAccess,
+) -> Option<Vec<S::EdgeId>> {
+    let dedup = labels.len() > 1 || access.ranges.len() > 1;
+    let mut seen: std::collections::HashSet<S::EdgeId> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for label in labels {
+        for range in &access.ranges {
+            for edge in storage.edges_by_property_index(label, &access.key, range)? {
+                if !dedup || seen.insert(edge) {
+                    out.push(edge);
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
 fn single_label(labels: &[String]) -> Option<&str> {
     let (first, rest) = labels.split_first()?;
     rest.iter().all(|l| l == first).then_some(first.as_str())
@@ -1347,6 +1393,81 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
         Ok(self.storage.compression_stats(name))
     }
 
+    /// Declares the property index `name` (book page "Property Indexes"): the `element`s
+    /// labelled `label`, ordered by their top-level property `key`. A `v()`/`e()` with that
+    /// label and a `has()` on that key (equality, `P.within`, a range) then reads the index
+    /// instead of every element of the label; `.profile()` shows `[index: ..]` on the source.
+    /// The index is built in the same unit, kept exact on every write, rollback and replay, and
+    /// rebuilt from the data when a graph is loaded (its entries are never stored).
+    ///
+    /// A [`set_definition`](Self::set_definition) of a [`Definition::property_index`] (a
+    /// catalog entry of kind [`DefinitionKind::PROPERTY_INDEX`]); a second index on the same
+    /// `(element, label, key)` fails with
+    /// [`DefinitionError::Conflict`](crate::error::DefinitionError::Conflict). A storage
+    /// without [`property_indexes`](crate::graph::StorageCapabilities::property_indexes)
+    /// refuses it with [`GraphError::Unsupported`](crate::error::GraphError::Unsupported).
+    /// Asks an attached authorizer for `Create` on it (`Update` when it replaces one).
+    ///
+    /// ```
+    /// use graphersal::prelude::*;
+    /// use graphersal::{catalog::PropertyIndexDefinition, storage::ElementKind};
+    ///
+    /// let mut graph = TraversalGraph::tinkerpop_modern();
+    /// let index = PropertyIndexDefinition::new(ElementKind::Vertex, "person", "age");
+    /// graph.traversal_mut().create_index("person_age", index).unwrap();
+    /// let names = graph
+    ///     .traversal()
+    ///     .v(None)
+    ///     .has_label("person")
+    ///     .has("age", 29)
+    ///     .values("name")
+    ///     .to_list()
+    ///     .unwrap();
+    /// assert_eq!(names, vec![ElementProperty::from("marko")]);
+    /// ```
+    pub fn create_index(
+        &mut self,
+        name: &str,
+        index: crate::graph::PropertyIndexDefinition,
+    ) -> TraverserResult<()> {
+        if !self.storage.capabilities().property_indexes {
+            return Err(crate::error::GraphError::unsupported("property indexes").into());
+        }
+        self.set_definition(Definition::property_index(name, index))
+    }
+
+    /// Drops the property index `name`; `false` when there is none. Asks an attached
+    /// authorizer for `Delete` on it.
+    pub fn drop_index(&mut self, name: &str) -> TraverserResult<bool> {
+        self.remove_definition(DefinitionKind::PROPERTY_INDEX, name)
+    }
+
+    /// The property indexes of the catalog, by name, each with what it holds right now
+    /// (`None`: the storage does not serve it). Asks an attached authorizer for `Read` on them.
+    pub fn list_indexes(
+        &self,
+    ) -> TraverserResult<Vec<(Definition, Option<crate::graph::PropertyIndexStats>)>> {
+        self.authorize_definition(
+            "list_indexes",
+            crate::graph::Action::Read,
+            Some(DefinitionKind::PROPERTY_INDEX),
+            None,
+        )?;
+        let served = self.storage.property_indexes();
+        Ok(self
+            .storage
+            .definitions()
+            .filter(|definition| definition.kind() == DefinitionKind::PROPERTY_INDEX)
+            .map(|definition| {
+                let stats = served
+                    .iter()
+                    .find(|info| info.name == definition.name())
+                    .map(|info| info.stats);
+                (definition.clone(), stats)
+            })
+            .collect())
+    }
+
     /// Moves the saved query `name` into `folder` (`None` or `""`: the root). Callers name a
     /// query without its folder, so moving never breaks one. Fails with
     /// [`DefinitionError::NotFound`](crate::error::DefinitionError::NotFound) when there is no
@@ -2143,7 +2264,9 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
         let optimizer = crate::traversal::optimizer::TraversalOptimizer::default_pipeline_with(
             &context.options,
         )
-        .with_diagnostics(context.strategy.contains(TraversalStrategy::Diagnostics));
+        .with_diagnostics(context.strategy.contains(TraversalStrategy::Diagnostics))
+        // The property indexes the storage serves (none: one empty `Vec`, no allocation).
+        .with_property_indexes(context.storage.property_indexes());
         let level = optimizer.apply(steps);
         // Fired-rule names, top-level and nested (the same `&self` optimizes every nested level
         // via `step.optimize_nested`), for the profile's `optimizer_rules_applied`. Collected
@@ -2550,6 +2673,27 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
                                     }
                                 }
                                 count_out = source.len();
+                            } else if let Some(candidates) = init_labels.and_then(|labels| {
+                                index_vertices(&*context.storage, labels, step.index_access()?)
+                            }) {
+                                // A property index serves a condition (book page "Property
+                                // Indexes"): its candidates (a superset) are checked like the
+                                // label scan's elements.
+                                for node_index in candidates {
+                                    tick_deadline(&mut context.deadline).with_step_frame(
+                                        || step.get_name(),
+                                        step_at,
+                                        || plan_frame(steps, level, logical_step_idx),
+                                    )?;
+                                    if !property_filters.iter().all(|filter| {
+                                        filter.vertex_matches(context.storage, node_index)
+                                    }) {
+                                        continue;
+                                    }
+                                    let v1 = TraverserValue::Vertex(node_index);
+                                    source.push(Traverser::start(context, v1));
+                                }
+                                count_out = source.len();
                             } else if let Some(labels) = init_labels {
                                 let single = single_label(labels);
                                 if let Some(stats) = context.storage.statistics()
@@ -2774,6 +2918,25 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
                                         let v1 = TraverserValue::Edge(edge_index);
                                         source.push(Traverser::start(context, v1));
                                     }
+                                }
+                                count_out = source.len();
+                            } else if let Some(candidates) = init_labels.and_then(|labels| {
+                                index_edges(&*context.storage, labels, step.index_access()?)
+                            }) {
+                                // A property index serves a condition (see the vertex case).
+                                for edge_index in candidates {
+                                    tick_deadline(&mut context.deadline).with_step_frame(
+                                        || step.get_name(),
+                                        step_at,
+                                        || plan_frame(steps, level, logical_step_idx),
+                                    )?;
+                                    if !property_filters.iter().all(|filter| {
+                                        filter.edge_matches(context.storage, edge_index)
+                                    }) {
+                                        continue;
+                                    }
+                                    let v1 = TraverserValue::Edge(edge_index);
+                                    source.push(Traverser::start(context, v1));
                                 }
                                 count_out = source.len();
                             } else if let Some(labels) = init_labels {

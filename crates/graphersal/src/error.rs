@@ -3096,11 +3096,14 @@ pub enum DefinitionError {
         /// The name looked for.
         name: String,
     },
-    /// A compression rule covers the same element kind, label and path as another rule.
-    #[error("Conflicting compression rule '{name}': {reason}")]
+    /// A compression rule covers the same element kind, label and path as another rule, or a
+    /// property index the same element kind, label and key as another index.
+    #[error("Conflicting {kind} '{name}': {reason}")]
     #[non_exhaustive]
     Conflict {
-        /// The rule being stored.
+        /// What conflicts: `compression rule` or `property index`.
+        kind: String,
+        /// The rule (or index) being stored.
         name: String,
         /// The rule already stored.
         existing: String,
@@ -3120,6 +3123,13 @@ impl DiagnosticError for DefinitionError {
     fn help(&self) -> Option<String> {
         use crate::graph::definition as d;
         Some(match self {
+            DefinitionError::InvalidName { kind, .. } if kind == "property_index" => format!(
+                "A property index's name is an identifier of 1 to {} bytes (ASCII letters, \
+                 digits and '_', starting with a letter or '_'), for example \"person_title\". \
+                 It names the index for g.drop_index; g.create_index(#{{label, key}}) without a \
+                 name calls it <label>_<key>.",
+                d::MAX_QUERY_NAME_BYTES
+            ),
             DefinitionError::InvalidName { kind, .. } if kind == "compression" => format!(
                 "A compression rule's name is an identifier of 1 to {} bytes (ASCII letters, \
                  digits and '_', starting with a letter or '_'), for example \"customer_cv\". \
@@ -3163,9 +3173,15 @@ impl DiagnosticError for DefinitionError {
                     crate::graph::compression::MAX_MIN_BYTES,
                     crate::graph::compression::DEFAULT_MIN_BYTES
                 ),
-                "label" => "Name the vertex or edge label the rule applies to, for example \
-                            \"customer\"; it need not exist yet."
+                "label" => "Name the vertex or edge label the rule (or index) applies to, for \
+                            example \"customer\"; it need not exist yet."
                     .to_string(),
+                "key" => format!(
+                    "An index orders the elements by one top-level property: name it with 1 to \
+                     {} bytes, for example \"title\" (a plain name, not a jpath; nested values \
+                     are not indexed).",
+                    crate::graph::property_index::MAX_INDEX_KEY_BYTES
+                ),
                 "dialect" => format!(
                     "The dialect names the language of the source; this version writes \"{}\".",
                     d::QUERY_DIALECT
@@ -3195,6 +3211,13 @@ impl DiagnosticError for DefinitionError {
                  body: ..})."
                     .to_string()
             }
+            DefinitionError::Conflict { kind, existing, .. } if kind == "property index" => {
+                format!(
+                    "One index per element kind, label and key, and '{existing}' already is it: \
+                     queries use it as it is (see g.indexes()). To rename it, drop it first with \
+                     g.drop_index(\"{existing}\")."
+                )
+            }
             DefinitionError::Conflict { existing, .. } => format!(
                 "One rule per element kind, label and path: change the existing rule instead \
                  (define it again under its name '{existing}' with the new parameters), or drop \
@@ -3205,8 +3228,9 @@ impl DiagnosticError for DefinitionError {
                  for a query \"source\", \"params\" and optionally \"folder\", \
                  \"description\", \"dialect\" and \"meta\"; a compression rule \
                  (\"kind\": \"compression\") has \"label\", \"path\" and optionally \"element\", \
-                 \"codec\", \"min_bytes\" and \"dictionary\"; a catalog is \
-                 {\"definitions\": [..]}."
+                 \"codec\", \"min_bytes\" and \"dictionary\"; a property index \
+                 (\"kind\": \"property_index\") has \"label\", \"key\" and optionally \
+                 \"element\"; a catalog is {\"definitions\": [..]}."
                     .to_string()
             }
         })
@@ -4616,6 +4640,8 @@ fn timeout_help(limit_ms: u64, steps: Option<Vec<String>>) -> String {
     } else {
         ""
     };
+    // A has() on a labelled start reads every element of the label: a property index serves it.
+    let index_advice = property_index_advice(&query);
     // Duplicates pile up where many paths converge on one vertex: merge them between two
     // expansions of the failing query, or in the example query when it has none.
     let barriered = barrier_between_expansions(&steps)
@@ -4628,6 +4654,7 @@ fn timeout_help(limit_ms: u64, steps: Option<Vec<String>>) -> String {
          one that was running.\n\
          {repeat_advice}\
          {glob_path_advice}\
+         {index_advice}\
          Merge duplicate traversers: barrier() merges equal traversers so later steps process \
          each distinct one once, for example g.{barriered}.\n\
          Narrow the start set with has_label() or has_id(), for example \
@@ -4642,6 +4669,29 @@ fn timeout_help(limit_ms: u64, steps: Option<Vec<String>>) -> String {
         narrowed = with_after_start("has_label(\"<label>\")"),
         limited = with_after_start("limit(1000)"),
     )
+}
+
+/// The first string literal in `text` after `marker` (`has_label("person")` -> `person`).
+fn literal_after<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
+    let rest = &text[text.find(marker)? + marker.len()..];
+    let rest = rest.strip_prefix('"')?;
+    Some(&rest[..rest.find('"')?])
+}
+
+/// Advice to declare a property index when the failing query filters a labelled start on a
+/// property (`v().has_label("person").has("title", ..)`), or `""`.
+fn property_index_advice(query: &str) -> String {
+    let label = literal_after(query, "has_label(").or_else(|| literal_after(query, "labels: ["));
+    let key = literal_after(query, ".has(");
+    match (label, key) {
+        (Some(label), Some(key)) => format!(
+            "A has() on a property reads every \"{label}\" element: declare a property index on \
+             it, for example g.create_index(#{{label: \"{label}\", key: \"{key}\"}}); \
+             equality, P.within and ranges on \"{key}\" then read only the matching elements, \
+             and .profile() shows [index: ..] on the start step (book page Property Indexes).\n"
+        ),
+        _ => String::new(),
+    }
 }
 
 /// `steps` with a `barrier()` between every two adjacent expansion steps (`out()`, `in()`,
@@ -7234,6 +7284,23 @@ mod tests {
                 help.contains("g.with(\"evaluationTimeout\", 500).v().out().out().count()"),
                 "{help}"
             );
+        }
+
+        #[test]
+        fn timeout_help_on_a_property_filter_points_to_a_property_index() {
+            let steps = vec![
+                "v(labels: [\"person\"]).has(\"title\", \"CEO\")".to_string(),
+                "out()".to_string(),
+                "count()".to_string(),
+            ];
+            let help = timeout_help(250, Some(steps));
+            assert!(
+                help.contains("g.create_index(#{label: \"person\", key: \"title\"})"),
+                "{help}"
+            );
+            assert!(help.contains("Narrow the start set"), "{help}");
+            // Without a property filter there is no index advice.
+            assert!(!timeout_help(250, None).contains("create_index"));
         }
 
         #[test]

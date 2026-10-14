@@ -23,10 +23,11 @@ v().has_label("person").has("title", "CEO")   →   v(labels: ["person"]).has("t
   carry one of the labels.
 - `has(key, value)` with a plain property name folds as a condition the start step checks on each
   candidate before it creates a traverser, with exactly the equality of the `has` step. The
-  profile shows the fused step as one row, `v(labels: ["person"]).has("title", "CEO")`. There is
-  no property index yet: every candidate is still read, but the ones that fail cost no traverser,
-  no memory and no second pass (on 546 500 `person` vertices with 500 matches:
-  18 ms → 11 ms, 42 MB → 40 KB).
+  profile shows the fused step as one row, `v(labels: ["person"]).has("title", "CEO")`. Without
+  a [property index](../users_guide/property_indexes.md) every candidate is still read, but the
+  ones that fail cost no traverser, no memory and no second pass (on 546 500 `person` vertices with
+  500 matches: 18 ms → 11 ms, 42 MB → 40 KB); with one, the next rule,
+  [Property Index](property_index.md), lets the start step read only the matches.
 
 ## Why
 

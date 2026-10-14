@@ -54,8 +54,13 @@ pub(super) fn lines(
     let mut parts = Vec::new();
     if memory.is_object() {
         let bytes = |key: &str| bytes_text(memory[key].as_u64().unwrap_or(0));
+        // The property indexes only when the graph has some (declared, never automatic).
+        let property_indexes = match memory["property_index_bytes"].as_u64() {
+            Some(n) if n > 0 => format!(", property indexes {}", bytes_text(n)),
+            _ => String::new(),
+        };
         parts.push(format!(
-            "graph {} (structure {}, indexes {}, properties {})",
+            "graph {} (structure {}, indexes {}, properties {}{property_indexes})",
             bytes("total_bytes"),
             bytes("structure_bytes"),
             bytes("index_bytes"),
@@ -188,6 +193,24 @@ mod tests {
         assert_eq!(
             lines[4],
             "Compressed: 2 values, 4.0 KiB stored as 1.0 KiB (dictionaries 0 B)"
+        );
+    }
+
+    #[test]
+    fn the_memory_line_names_property_indexes_when_there_are_some() {
+        let statistics = json!({
+            "statistics": {"vertex_count": 1, "edge_count": 0, "vertex_labels": [],
+                           "edge_labels": [], "vertex_label_total": 0, "edge_label_total": 0},
+            "memory": {
+                "structure_bytes": 1024, "index_bytes": 512, "property_bytes": 2048,
+                "total_bytes": 5632, "property_index_bytes": 2048,
+            },
+        });
+        let lines = lines(&statistics, Duration::from_millis(5), None, 0);
+        assert_eq!(
+            lines[1],
+            "Memory: graph 5.5 KiB (structure 1.0 KiB, indexes 512 B, properties 2.0 KiB, \
+             property indexes 2.0 KiB)"
         );
     }
 

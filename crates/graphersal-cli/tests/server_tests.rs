@@ -2353,6 +2353,132 @@ fn compression_rules_over_http() {
 }
 
 #[test]
+fn property_indexes_over_http() {
+    let ui = ui_dir("indexes");
+    let server = start(&["--graph", "modern", "--ui-dir", ui.to_str().unwrap()]);
+    let port = server.port;
+    assert_eq!(get(port, "/api/indexes").json(), serde_json::json!([]));
+    let created = post(
+        port,
+        "/api/indexes/create",
+        r#"{"label": "person", "key": "age"}"#,
+    )
+    .json();
+    assert_eq!(created["ok"], true, "{created}");
+    assert_eq!(created["index"]["name"], "person_age");
+    assert_eq!(created["index"]["stats"]["entries"], 4);
+    // Creating an index is a commit: the change feed records it.
+    assert_eq!(changes(port)["commitSeq"], 1);
+    let refused = post(
+        port,
+        "/api/indexes/create",
+        r#"{"label": "person", "key": "age", "name": "ages"}"#,
+    );
+    assert_eq!(refused.status, 200);
+    assert_eq!(refused.json()["errors"][0]["field"], "key");
+    let listed = get(port, "/api/indexes").json();
+    assert_eq!(listed[0]["served"], true, "{listed}");
+    assert_eq!(get(port, "/api/graph").json()["propertyIndexes"], 1);
+    let memory = &get(port, "/api/statistics").json()["memory"];
+    assert!(
+        memory["property_index_bytes"].as_u64().unwrap() > 0,
+        "{memory}"
+    );
+    let run = execute(
+        port,
+        r#"g.v().has_label("person").has("age", P.gt(30)).values("name").order().to_list()"#,
+    );
+    assert_eq!(
+        run["execution"]["results"],
+        serde_json::json!(["josh", "peter"])
+    );
+    // The catalog file carries the index; loading it brings it back.
+    let file = get(port, "/api/catalog/export").body;
+    assert!(file.contains("\"property_index\""), "{file}");
+    assert_eq!(
+        post(port, "/api/indexes/drop", r#"{"name": "person_age"}"#).json()["dropped"],
+        true
+    );
+    assert_eq!(changes(port)["commitSeq"], 2);
+    assert_eq!(get(port, "/api/graph").json()["propertyIndexes"], 0);
+    let loaded = post(port, "/api/catalog/load?replace=true", &file).json();
+    assert_eq!(loaded["graph"]["propertyIndexes"], 1, "{loaded}");
+    assert_eq!(get(port, "/api/indexes/create").status, 405);
+}
+
+#[test]
+fn mcp_property_index_tools_and_read_only() {
+    let ui = ui_dir("mcp-indexes");
+    let ui_arg = ui.to_str().unwrap().to_string();
+    let server = start(&["--graph", "modern", "--ui-dir", &ui_arg, "--mcp"]);
+    let port = server.port;
+    let mut mcp = McpClient::connect(port, &[]);
+    let names = mcp.tool_names();
+    for name in ["list_indexes", "create_index", "drop_index"] {
+        assert!(names.iter().any(|n| n == name), "{name}: {names:?}");
+    }
+    let (error, text) = mcp.call("list_indexes", serde_json::json!({}));
+    assert!(!error && text.contains("no property indexes"), "{text}");
+    let (error, text) = mcp.call(
+        "create_index",
+        serde_json::json!({"label": "person", "key": "age"}),
+    );
+    assert!(!error && text.contains("person_age"), "{text}");
+    assert_eq!(changes(port)["commitSeq"], 1);
+    let (error, text) = mcp.call("create_index", serde_json::json!({"label": "person"}));
+    assert!(error && text.contains("\"key\""), "{text}");
+    let (error, text) = mcp.call("list_indexes", serde_json::json!({}));
+    assert!(!error && text.contains("\"entries\": 4"), "{text}");
+    let (error, text) = mcp.call(
+        "query",
+        serde_json::json!({"script": r#"g.v().has_label("person").has("age", 29).values("name").profile()"#}),
+    );
+    assert!(
+        !error && text.contains("[index: vertex") && text.contains("property_index"),
+        "{text}"
+    );
+    let (error, text) = mcp.call("drop_index", serde_json::json!({"name": "person_age"}));
+    assert!(!error && text.contains("dropped"), "{text}");
+    let (error, text) = mcp.call("drop_index", serde_json::json!({"name": "person_age"}));
+    assert!(!error && text.contains("no index"), "{text}");
+    drop(server);
+
+    // Read-only: list only; the writing tools are not offered and the query tool's authorizer
+    // denies the DSL's index writes.
+    let server = start(&[
+        "--graph",
+        "modern",
+        "--ui-dir",
+        &ui_arg,
+        "--mcp",
+        "--mcp-read-only",
+    ]);
+    let port = server.port;
+    let mut mcp = McpClient::connect(port, &[]);
+    let names = mcp.tool_names();
+    assert!(names.iter().any(|n| n == "list_indexes"), "{names:?}");
+    for writing in ["create_index", "drop_index"] {
+        assert!(!names.iter().any(|n| n == writing), "{names:?}");
+        let refused = mcp.rpc(
+            "tools/call",
+            serde_json::json!({"name": writing, "arguments": {"label": "person", "key": "age", "name": "x"}}),
+        );
+        assert_eq!(refused["error"]["code"], -32602, "{refused}");
+    }
+    for script in [
+        r#"g.create_index(#{label: "person", key: "age"})"#,
+        r#"g.drop_index("person_age")"#,
+    ] {
+        let (error, text) = mcp.call("query", serde_json::json!({"script": script}));
+        assert!(error, "{script}: {text}");
+        assert!(text.to_lowercase().contains("denied"), "{script}: {text}");
+    }
+    let (error, text) = mcp.call("query", serde_json::json!({"script": "g.indexes()"}));
+    assert!(!error, "{text}");
+    assert_eq!(changes(port)["version"], 0);
+}
+
+#[test]
 fn mcp_saved_query_tools_and_resource() {
     let ui = ui_dir("mcp-queries");
     let ui_arg = ui.to_str().unwrap().to_string();

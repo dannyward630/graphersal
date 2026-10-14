@@ -20,6 +20,74 @@ impl<B: Into<PValue> + Debug + Clone + Send + Sync> fmt::Display for StepHasP<B>
     }
 }
 
+/// An operand of a predicate as the stored value it compares with; `None` for `NaN` (it compares
+/// with nothing, the index is not used).
+fn index_operand(value: PValue) -> Option<ElementProperty> {
+    Some(match value {
+        PValue::String(text) => ElementProperty::String(text),
+        PValue::Number(number) => {
+            if number.as_f64().is_some_and(f64::is_nan) {
+                return None;
+            }
+            ElementProperty::Number(number)
+        }
+        PValue::Boolean(flag) => ElementProperty::Boolean(flag),
+        PValue::Uuid(bits) => ElementProperty::Uuid(bits),
+        PValue::Null => ElementProperty::Null,
+    })
+}
+
+/// The slices of an ordered property index that hold every value `predicate` accepts (book
+/// page "Property Indexes"): `eq`, `within`, `gt`, `gte`, `lt`, `lte`, `inside`, `between` and
+/// `outside`; `None` for every other predicate (negations, text predicates, composites,
+/// `typeOf`), which the index does not serve. A string operand of `eq` can name a path label
+/// (`where(P.eq("a"))`), so `eq` with a string is left to the rule to allow (only where no path
+/// label can exist).
+pub(crate) fn index_ranges<B: Into<PValue> + Clone>(
+    predicate: &P<B>,
+) -> Option<Vec<crate::graph::PropertyIndexRange>> {
+    use crate::graph::PropertyIndexRange as R;
+    use std::ops::Bound::{Excluded, Included, Unbounded};
+    let operand = |value: &B| index_operand(value.clone().into());
+    Some(match predicate {
+        P::Eq(value) => vec![R::equal(operand(value)?)],
+        P::WithIn(values) => values
+            .iter()
+            .map(|value| operand(value).map(R::equal))
+            .collect::<Option<Vec<_>>>()?,
+        P::Gt(value) => vec![R::new(Excluded(operand(value)?), Unbounded)],
+        P::Gte(value) => vec![R::new(Included(operand(value)?), Unbounded)],
+        P::Lt(value) => vec![R::new(Unbounded, Excluded(operand(value)?))],
+        P::Lte(value) => vec![R::new(Unbounded, Included(operand(value)?))],
+        P::Inside(low, high) => vec![R::new(Excluded(operand(low)?), Excluded(operand(high)?))],
+        P::Between(low, high) => vec![R::new(Included(operand(low)?), Excluded(operand(high)?))],
+        P::Outside(low, high) => vec![
+            R::new(Unbounded, Excluded(operand(low)?)),
+            R::new(Excluded(operand(high)?), Unbounded),
+        ],
+        P::Neq(_)
+        | P::WithOut(_)
+        | P::StartingWith(_)
+        | P::NotStartingWith(_)
+        | P::EndingWith(_)
+        | P::NotEndingWith(_)
+        | P::Containing(_)
+        | P::NotContaining(_)
+        | P::Regex(_)
+        | P::NotRegex(_)
+        | P::TypeOf(_)
+        | P::And(_, _)
+        | P::Or(_, _)
+        | P::Not(_) => return None,
+    })
+}
+
+/// Whether `predicate` resolves a string operand as a path label first (`eq` does, see
+/// `P::test`): an index can serve it only where the traversers carry no path label.
+fn reads_path_labels<B: Into<PValue> + Clone>(predicate: &P<B>) -> bool {
+    matches!(predicate, P::Eq(value) if matches!(value.clone().into(), PValue::String(_)))
+}
+
 /// The step for `has(key, P)`: the literal-name step for a name, the path step for a path.
 fn has_p_step<'g, S: GraphStorage + 'g, B: Into<PValue> + Debug + Clone + Send + Sync + 'static>(
     key: PropKey,
@@ -85,6 +153,14 @@ impl<'g, S: GraphStorage + 'g> AnonymousTraversal<'g, S> {
 impl<'g, S: GraphStorage + 'g, B: Into<PValue> + Debug + Clone + Send + Sync + 'static>
     GraphStepFilter<'g, S> for StepHasP<B>
 {
+    fn index_condition(&self) -> Option<crate::traversal::step::IndexCondition<'_>> {
+        index_ranges(&self.predicate).map(|ranges| crate::traversal::step::IndexCondition {
+            key: self.key.as_str(),
+            ranges,
+            reads_path_labels: reads_path_labels(&self.predicate),
+        })
+    }
+
     #[inline]
     fn process(
         &self,

@@ -532,8 +532,9 @@ impl Session {
     }
 
     /// `{name, kind, vertexCount, edgeCount, schemaMode, savedQueries, compressionRules,
-    /// catalog, warnings}` of the loaded graph (`savedQueries`, `compressionRules`: how many
-    /// of each its catalog holds; `catalog`: every kind's count by kind name).
+    /// propertyIndexes, catalog, warnings}` of the loaded graph (`savedQueries`,
+    /// `compressionRules`, `propertyIndexes`: how many of each its catalog holds; `catalog`:
+    /// every kind's count by kind name).
     pub fn info(&self) -> Value {
         let g = &self.graph;
         let definitions = g.definitions(None);
@@ -557,6 +558,10 @@ impl Session {
             "compressionRules": definitions
                 .iter()
                 .filter(|d| d.kind() == DefinitionKind::COMPRESSION)
+                .count(),
+            "propertyIndexes": definitions
+                .iter()
+                .filter(|d| d.kind() == DefinitionKind::PROPERTY_INDEX)
                 .count(),
             "catalog": catalog,
             "warnings": self.warnings,

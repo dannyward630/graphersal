@@ -38,7 +38,8 @@
 //!
 //! Every answer is the same JSON for every storage; a storage shows only what it really lacks:
 //! a storage without compressed properties keeps compression rules but reports no statistics
-//! and refuses `recompress`, one without persistence loads no `.gsnap` and keeps no store (the
+//! and refuses `recompress`, one without property indexes keeps index definitions but refuses
+//! to create one, one without persistence loads no `.gsnap` and keeps no store (the
 //! Store menu says so). See the [`storage`] module.
 
 #![deny(missing_docs)]
@@ -47,6 +48,7 @@ pub mod compression;
 pub mod create;
 pub mod display;
 pub mod edit;
+pub mod indexes;
 pub mod layout;
 pub mod queries;
 pub mod selection;

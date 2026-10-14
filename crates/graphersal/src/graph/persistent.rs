@@ -223,10 +223,12 @@ impl PersistentStorage for TraversalGraph {
         Ok(())
     }
 
-    /// The compression load pass (the rules' dictionaries and compressed values), then
+    /// The compression load pass (the rules' dictionaries and compressed values), the build of
+    /// every property index from the data (entries are never persisted), then
     /// [`TraversalGraph::shrink_to_fit`].
     fn finish_load(&mut self) {
         self.compression_load_pass();
+        self.property_index_rebuild_all();
         self.shrink_to_fit();
     }
 

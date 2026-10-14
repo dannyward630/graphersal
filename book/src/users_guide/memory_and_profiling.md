@@ -23,6 +23,9 @@ sizes) and `compression_dictionary_bytes` (the rules' dictionaries, each shared 
 `total_bytes`). `property_bytes` counts the stored, compressed size, so a rule's saving shows there
 directly. All four are `0` without rules.
 
+With [property indexes](property_indexes.md) it reports `property_index_bytes`, an estimate of
+their entries (part of `total_bytes`; `0` without indexes).
+
 All figures are **estimates**: they sum `std::mem::size_of`/capacity-based arithmetic over the
 structures that back the graph, not a true allocator-level accounting. Two caveats worth knowing:
 

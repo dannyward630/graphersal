@@ -221,7 +221,7 @@ export const StartPage = {
                 :title="state.graph ? 'Add the definitions of a catalog file (JSON, saved with Save catalog) to the current graph' : 'Choose a graph first'">
           <span class="card-icon" aria-hidden="true">★</span>
           <h3>Load catalog</h3>
-          <p>The catalog (saved queries and compression rules, later indexes) travels in its own
+          <p>The catalog (saved queries, compression rules and property indexes) travels in its own
           <code>.json</code> file, like the schema. Load it into the current graph; a graph file loaded
           afterwards keeps it. A snapshot (<code>.gsnap</code>) brings its own.</p>
           <div class="card-foot">

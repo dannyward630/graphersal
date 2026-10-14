@@ -606,6 +606,23 @@ export class Engine {
   async recompress(name) { throw notImplemented('recompress'); }
 
   /**
+   * The property indexes with their current stats: `[{name, element, label, key, served,
+   * stats: {entries, distinctValues, bytes} | null}]` (`stats` null when the storage does not
+   * serve indexes).
+   */
+  async listIndexes() { throw notImplemented('listIndexes'); }
+
+  /**
+   * Creates a property index from the form's spec `{label, key, element?, name?}` (built from
+   * the data in the same commit). Never rejects for a refused index: `{ok: true, index}` or
+   * `{ok: false, errors: [{field, message, help?}]}`.
+   */
+  async createIndex(spec) { throw notImplemented('createIndex'); }
+
+  /** Drops the property index `name`: `{dropped}`. */
+  async dropIndex(name) { throw notImplemented('dropIndex'); }
+
+  /**
    * AI Chat (dev server with `--ai` only; js/ai-chat.js): `aiCreateConversation() -> {id}`,
    * `aiSend(id, text) -> {turn}`, `aiEvents(id, after) -> {events, running, last}`,
    * `aiStop(id) -> {stopped}`, `aiDelete(id)`. Errors carry the HTTP status as `status`. The

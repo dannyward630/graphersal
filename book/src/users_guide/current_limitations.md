@@ -18,8 +18,10 @@ are not implemented yet in [TinkerPop Compliance](../for_developers/tinkerpop_co
 - **Ids are strings.** A numeric id becomes its text, and ids order as strings (`"10"` before
   `"9"`; see [Id Arguments](id_arguments.md) and [Predicates](predicates.md)).
 - **Edges have one label**; vertices have a label set ([Multi-Label Vertices](multi_label_vertices.md)).
-- **No property index.** `has(key, value)` is checked while the start step scans; only ids and
-  labels are looked up through an index ([Query Optimizer](../optimizer/index.md)).
+- **Property indexes are declared, top-level and per label.** A `has()` on a property reads an
+  index only when one is declared with `g.create_index(..)` for the start step's label and the key
+  ([Property Indexes](property_indexes.md)); nested values (jpath keys), `has()` without
+  `has_label()` and `order()` scan.
 - **The graph lives in memory.** A [Store](../persistence/store.md) makes it durable, but the
   whole graph is loaded into memory when the store is opened.
 

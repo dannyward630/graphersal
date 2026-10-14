@@ -327,7 +327,8 @@ impl ScriptGraphTraversalSource {
     /// Rhai binding for `GraphStorage::memory_usage()`. Returns a Rhai map with keys
     /// `structure_bytes`, `index_bytes`, `property_bytes`, `total_bytes`, `total_mb` and the
     /// compressed-property counters `compressed_values`, `compressed_plain_bytes`,
-    /// `compressed_stored_bytes`, `compression_dictionary_bytes` when the
+    /// `compressed_stored_bytes`, `compression_dictionary_bytes` and the property indexes'
+    /// `property_index_bytes` when the
     /// backing storage supports introspection (`graphersal::TraversalGraph` always does), or `()`
     /// (Rhai unit) otherwise. This is a plain method call, not a traversal step — it is not
     /// chained with `.to_list()`/`.next()`. Asks for `Read` on `Data`.
@@ -375,6 +376,10 @@ impl ScriptGraphTraversalSource {
         map.insert(
             "compression_dictionary_bytes".into(),
             int(stats.compression_dictionary_bytes),
+        );
+        map.insert(
+            "property_index_bytes".into(),
+            int(stats.property_index_bytes),
         );
         map.insert("total_mb".into(), Dynamic::from_float(stats.total_mb()));
         Ok(Dynamic::from_map(map))

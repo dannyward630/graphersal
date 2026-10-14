@@ -171,6 +171,10 @@ unless a page says otherwise; the differences are collected in
 
 [`define_query`](steps/define_query.md) · [`define_queries`](steps/define_queries.md) · [`query`](steps/query.md) · [`queries`](steps/queries.md) · [`get_query`](steps/get_query.md) · [`drop_query`](steps/drop_query.md) · [`move_query`](steps/move_query.md) · [`describe_query`](steps/describe_query.md)
 
+### Property indexes
+
+[`create_index`](steps/create_index.md) · [`drop_index`](steps/drop_index.md) · [`indexes`](steps/indexes.md)
+
 ### Compressed properties
 
 [`define_compression`](steps/define_compression.md) · [`drop_compression`](steps/drop_compression.md) · [`compressions`](steps/compressions.md) · [`recompress`](steps/recompress.md)
