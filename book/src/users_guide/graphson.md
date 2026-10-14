@@ -58,13 +58,27 @@ if report.has_skips() {
 | `g:List`, `g:Set`, a plain array | `array` | `g:List` |
 | `g:Map` with string keys, a plain object | `object` | `g:Map` |
 | `gx:Char` | `string` | a string |
-| `g:Date`, `g:Timestamp`, `gx:OffsetDateTime`, `gx:LocalDate`, every other date/time type | **skipped** | |
+| `g:Date`, `g:Timestamp` (epoch milliseconds) | `datetime` in UTC | `gx:OffsetDateTime` |
+| `gx:Instant`, `gx:OffsetDateTime` | `datetime` with the offset of the text | `gx:OffsetDateTime` |
+| `gx:ZonedDateTime` (`2007-12-03T10:15:30+01:00[Europe/Paris]`) | `datetime` with the offset of the text; the zone id is dropped (reported) | `gx:OffsetDateTime` |
+| `gx:LocalDate`, `gx:LocalDateTime`, `gx:LocalTime` | `date`, `localdatetime`, `time` | the same tags |
+| `gx:Duration` (a fixed length; `P2DT3H` reads a day as 24 hours) | `duration` of microseconds | `gx:Duration` for a duration of microseconds only (`PT26H`) |
+| `gx:Period` (`P1Y2M3D`, weeks as 7 days) | `duration` of months and days | `gx:Period` for a duration of months and days only |
+| `graphersal:Interval` (Graphersal's own tag) | `duration` | `graphersal:Interval` for a duration with both months or days and a time part (`P1MT2H`): no `java.time` type holds it, so TinkerGraph cannot load such a value |
+| `gx:Year`, `gx:YearMonth`, `gx:MonthDay`, `gx:OffsetTime`, `gx:ZoneOffset`, `g:Calendar`, `g:TimeZone` | **skipped** | |
 | `gx:BigDecimal`, `g:Class`, the enum tokens, `g:Vertex`/`g:Edge`/`g:Path`/... as a value, vendor types (`janusgraph:Geoshape`) | **skipped** | |
 
-Nothing is guessed: a string stays a string whatever it looks like, and a value whose type
-Graphersal cannot hold is **skipped**, never converted to a string or a number. Dates in
-particular are skipped until Graphersal has a date type, so that adding it later changes no
-existing import. A skipped value inside a container skips the whole property value. A value
+Nothing is guessed: a string stays a string whatever it looks like (a date-like text without a
+type tag, as in GraphSON 1.0 or `types=false`, stays a `string`; declare the property in the
+schema to store it as a date), and a value whose type Graphersal cannot hold is **skipped**,
+never converted to a string or a number. The `java.time` types map to the date and time types
+by their tag (both the `gx:` and the `g:` prefix are read); their text is read as `java.time`
+writes it (seconds may be missing, up to nine fraction digits). Graphersal's resolution is one
+microsecond: digits below it are cut, and the import reports it. A date outside the years
+-9999 to 9999, or text that is not of the tag's type, is skipped as malformed. The export writes
+each value's canonical text, which `java.time`'s parsers read: TinkerGraph's `g.io(file).read()`
+loads it (except `graphersal:Interval`). A skipped value inside a container skips the whole
+property value. A value
 nested deeper than 128 levels, a `g:Map` with an odd number of items or a non-string key, and a
 payload that does not fit its type (`{"@type": "g:Int32", "@value": "7"}`) are skipped as
 malformed.
@@ -95,8 +109,8 @@ property, so a round trip never loses it.
 
 A graph exported by Graphersal and imported again is the same graph: ids, label sets, every
 property with its exact logical type (`int64`, `float64` including `NaN` and infinities, `uuid`,
-nested `array`/`object`), edge ids, labels and properties. Only the iteration order of edges may
-differ, because GraphSON groups them by vertex and label. Two Graphersal elements have no
+nested `array`/`object`, every date and time type with a `datetime`'s offset), edge ids, labels
+and properties. Only the iteration order of edges may differ, because GraphSON groups them by vertex and label. Two Graphersal elements have no
 TinkerPop counterpart and come back changed: a vertex without labels is written with TinkerPop's
 default label `vertex`, an edge without a label with `edge`, and both are read back with that
 label.
@@ -111,7 +125,7 @@ representation:
 
 | Kind | Meaning |
 |---|---|
-| `SkippedDateTime { type_tag }` | a date/time value |
+| `SkippedDateTime { type_tag }` | a date/time value of a type Graphersal cannot hold (`gx:Year`, `gx:MonthDay`, ...) |
 | `SkippedUnsupportedType { type_tag }` | a value of a type Graphersal cannot hold |
 | `SkippedMalformedValue` | a value whose payload does not fit its type, or nested too deeply |
 | `SkippedMalformedEntry` | a vertex-property or edge entry without the expected shape |
@@ -120,6 +134,8 @@ representation:
 | `SkippedDuplicateEdge` | an edge whose id a different edge of the file already has |
 | `SkippedReservedMeta` | a `_meta` property of a vertex that also has meta-properties |
 | `MultiValuedToArray`, `MetaPropertiesToMeta`, `LabelSplit`, `VertexWithoutId`, `EdgeCopiesDisagree`, `IgnoredKey { key }` | representation changes |
+| `ZoneDropped { type_tag }` | a `gx:ZonedDateTime` imported as a `datetime` with its offset; the zone id is not kept |
+| `SubMicrosecondsCut { type_tag }` | a date/time value with digits below a microsecond, cut to microseconds |
 
 Its `Display` is the text the CLI, Rhai and Python show: a first line with the counts and one line
 per note.
@@ -212,8 +228,11 @@ Listed in [TinkerPop Deviations](../for_developers/tinkerpop_deviations.md#graph
   (Neptune's convention, see [Multi-Label Vertices](multi_label_vertices.md)).
 - **Unlabeled elements** are written with the default labels `vertex`/`edge` and read back with
   them.
-- **Skipped values**: dates and the other types listed above are skipped and reported where
-  TinkerPop reads them.
+- **Skipped values**: the types listed above as skipped (`gx:Year`, `gx:BigDecimal`, ...) are
+  skipped and reported where TinkerPop reads them.
+- **Dates**: a `gx:ZonedDateTime` keeps its offset but not its zone id, digits below a
+  microsecond are cut (both reported), and a duration with both months or days and a time part
+  is exported as `graphersal:Interval`, which TinkerPop cannot read.
 - **Lenient structure**: an edge to a missing vertex is skipped (TinkerPop's `readGraph` fails), a
   duplicate vertex id keeps the first vertex, and vertex-property ids are not kept.
 - **Widening**: `g:Int32` and `g:Float` come back as `g:Int64` and `g:Double` on export.

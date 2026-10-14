@@ -50,7 +50,8 @@
 //! | key made optional | always |
 //! | `additionalProperties` | `false` → `true` |
 //! | type | the new type admits every kind the old one did (`["integer"]` → `["integer", "null"]`) |
-//! | a bound (`minimum`, `maxLength`, `minItems`, ...) | it is removed or relaxed |
+//! | a bound (`minimum`, `maxLength`, `minItems`, `formatMinimum`, ...) | it is removed or relaxed |
+//! | `format` (`date` → `date-time`, added, removed) | never: it is another type |
 //! | `pattern`, `const` | removed |
 //! | `enum` | removed, or a superset |
 //!

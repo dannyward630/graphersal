@@ -731,7 +731,7 @@ pub(super) fn dynamic_to_json_value(
         // field declared `uuid` in `Open`/`Closed` mode is coerced back to a `Uuid` on write.
         serde_json::Value::String(uuid.canonical())
     } else if let Some(value) = arg.read_lock::<crate::value::Temporal>() {
-        // The same for a temporal value: its canonical text (A2: coerced back by a declared
+        // The same for a temporal value: its canonical text (coerced back by a declared
         // temporal format).
         serde_json::Value::String(value.to_string())
     } else if let Some(map) = arg.read_lock::<ScriptMap>() {

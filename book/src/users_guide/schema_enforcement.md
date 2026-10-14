@@ -130,6 +130,11 @@ schema. The format is described by the meta-schema `graphersal-schema-v1.json`
 | `"number"` | `float64` | An `int64` written to it is coerced when exactly representable; a stored `int64` does not conform. |
 | `"string"` | `string` | |
 | `"string"` + `"format": "uuid"` | `uuid` | A canonical UUID string is coerced on write; a stored string does not conform. |
+| `"string"` + `"format": "date-time"` | `datetime` | An instant with its UTC offset (`2024-05-01T09:30:00+02:00`). |
+| `"string"` + `"format": "date"` | `date` | A calendar day (`2024-05-01`). |
+| `"string"` + `"format": "local-date-time"` | `localdatetime` | A date and time without a zone (`2024-05-01T09:30:00`). A Graphersal format name: JSON Schema has none. |
+| `"string"` + `"format": "time"` | `time` | A time of day **without** an offset (`09:30:00`). JSON Schema's own `time` requires an offset; Graphersal's is local. |
+| `"string"` + `"format": "duration"` | `duration` | ISO 8601 (`P1Y2M3DT4H`): months, days and microseconds. |
 | `"boolean"`, `"null"` | `boolean`, `null` | |
 | `"array"` + `items` | `array<T>` | `items` is a full schema (constraints and nullability apply to the items); without `items` any item. |
 | `"object"` + `properties` | `object` | With `required` and `additionalProperties`. |
@@ -137,14 +142,25 @@ schema. The format is described by the meta-schema `graphersal-schema-v1.json`
 | `anyOf: [..]` | `union<..>` | At least one member accepts the value (Pydantic's `Optional[X]` is `anyOf: [X, {"type": "null"}]`). |
 | `{}` (no `type`) | any | Admits every value. |
 
-Diagnostics, `Display` and `GType` keep the engine's names (`int64`, `float64`, `uuid`).
+Diagnostics, `Display` and `GType` keep the engine's names (`int64`, `float64`, `uuid`,
+`datetime`, `localdatetime`, ...).
+
+**Dates and times.** In `open` and `closed` mode a property declared with a temporal format
+coerces a **string** on write: any text the type's parser accepts (ISO 8601 / RFC 3339; the
+canonical form and the usual variants such as `2024-05-01 09:30Z` or `09:30`) becomes the
+temporal value, and text it refuses is a coercion failure that names the expected form. This is
+the explicit declaration at work, like the `uuid` coercion, never a guess from content: an
+undeclared date-like string stays a `string`. A stored string does not conform to a temporal
+format (reads never coerce), and one temporal type never conforms to another (a `date` is not a
+`datetime`). JSON Schema's `format` is an annotation for other validators, which ignore a format
+they do not know, so a schema with `local-date-time` stays usable with them.
 
 ### Keywords
 
 | Kind | Keywords |
 |---|---|
-| Structure | `type`, `format` (only `uuid`), `items`, `properties`, `required`, `additionalProperties` (`true`/`false`), `anyOf` |
-| Constraints | `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` (numbers), `minLength`, `maxLength`, `pattern` (strings), `minItems`, `maxItems` (arrays), `enum`, `const` (any value) |
+| Structure | `type`, `format` (`uuid`, `date-time`, `date`, `local-date-time`, `time`, `duration`), `items`, `properties`, `required`, `additionalProperties` (`true`/`false`), `anyOf` |
+| Constraints | `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` (numbers), `formatMinimum`, `formatMaximum`, `formatExclusiveMinimum`, `formatExclusiveMaximum` (dates and times), `minLength`, `maxLength`, `pattern` (strings), `minItems`, `maxItems` (arrays), `enum`, `const` (any value) |
 | Annotations (no effect on validation) | `title`, `description`, `$comment`, `examples`, `deprecated`, `default` |
 | References | `$ref: "#/$defs/Name"` with `$defs` at the label schema's root; inlined when the schema is loaded |
 
@@ -152,7 +168,23 @@ A constraint applies to the values of its own kind and ignores the others (JSON 
 semantics): in `{"type": ["integer", "string"], "minimum": 10, "minLength": 3}` the bound checks
 the integers and the length the strings. Next to a declared `type`, a keyword of another kind is
 an error (`minLength` on an `integer` is a mistake, not a no-op). `enum`/`const` compare JSON values
-(`1` equals `1.0`, a `uuid` compares as its canonical string).
+(`1` equals `1.0`, a `uuid` and a date or time compare as their canonical text, so a `datetime`
+matches only the text with its own offset).
+
+`formatMinimum`, `formatMaximum`, `formatExclusiveMinimum` and `formatExclusiveMaximum` bound a
+date or time: the keywords of JSON Schema's format-comparison proposal (ajv-formats implements
+them; other validators ignore unknown keywords). Their value is the text of a value of the node's
+temporal `format`, and they are valid only next to one (`minimum` stays a number keyword):
+
+```json
+{ "type": "string", "format": "date-time", "formatMinimum": "2020-01-01T00:00:00Z" }
+{ "type": "string", "format": "duration", "formatExclusiveMaximum": "P1D" }
+```
+
+A value is compared with its type's ordering: a `datetime` by its instant
+(`2020-01-01T01:00:00+01:00` equals the minimum above), a `duration` by its length (a month counts
+30 days, a day 24 hours, as PostgreSQL orders intervals), the others by their calendar or clock
+value.
 
 Local references are **inlined**: a loaded schema has no `$ref`/`$defs`, and a reference cycle is
 an error (recursive schemas are not supported). Only annotations may sit next to a `$ref`; they
@@ -163,7 +195,8 @@ override the definition's.
 | Input | Why it is rejected |
 |---|---|
 | An unknown key or keyword, anywhere | A typo must never weaken a schema silently. |
-| `format` other than `uuid` (`date-time`, `date`, `email`, ...) | Dates come with a date type in 0.2.0. Accepting `date-time` as a plain string now would let 0.2.0 silently change what an existing schema accepts. Remove the `format` (the value is a string). |
+| `format` other than `uuid`, `date-time`, `date`, `local-date-time`, `time`, `duration` (`email`, `uri`, ...) | Accepting an unknown format as a plain string now would let a later version silently change what an existing schema accepts. Remove the `format` (the value is a string). |
+| `formatMinimum` (and the other format bounds) without a temporal `format`, or with text that is not of the format's type | A bound needs the type it compares in; the hint shows an example of the type's text. |
 | `additionalProperties: {schema}` (a map of T, Pydantic `dict[str, T]`) | No map type yet. Use `{"type": "object", "additionalProperties": true}`. |
 | `oneOf`, `allOf`, `not`, `if`/`then`/`else` | Not implemented; `anyOf` covers `oneOf` when the members cannot both match. |
 | `prefixItems`, `contains`, tuples (`items: [..]`) | An array has one item schema. |
@@ -221,7 +254,7 @@ rejected before anything is written. Removing a required property is rejected in
 
 | | `none` | `open` | `closed` |
 |---|---|---|---|
-| Coercion on write (canonical string to `uuid`, `int64` to `float64`) | no | declared properties | declared properties |
+| Coercion on write (canonical string to `uuid`, date and time text to its declared type, `int64` to `float64`) | no | declared properties | declared properties |
 | Types, constraints, `required` of declared labels (any depth) | no | yes | yes |
 | Undeclared labels | allowed | allowed, unchecked | rejected (also unlabeled elements) |
 | Default `additionalProperties` of an object node | - | `true` | `false` |
@@ -247,7 +280,10 @@ violation. Stored values are not coerced by a label change (reads never coerce);
 coerce by the new label's declarations.
 
 `none` describes without enforcing; the GraphML import still restores the declared logical types
-from it (`uuid`, `array`, `object`; see [UUID Values](uuid_values.md)).
+from it (`uuid`, the date and time types, `array`, `object`; see [UUID Values](uuid_values.md)).
+A date or time is written to GraphML as its canonical text under a `string` key and read back
+as a temporal value where the target schema declares its format (text that is not of the type
+fails the import with `InvalidAttributeValue`); without a declaration it stays a string.
 
 ## Edge topology (`closed`)
 
@@ -433,7 +469,8 @@ in a `before_commit` hook.
 | key made required / optional | never / always |
 | `additionalProperties` | `false` → `true` |
 | type | the new type admits every kind the old one did (`"integer"` → `["integer", "null"]`) |
-| `minimum`, `maxLength`, `minItems`, ... | removed or relaxed |
+| `minimum`, `maxLength`, `minItems`, `formatMinimum`, ... | removed or relaxed (a later `formatMaximum`, an earlier `formatMinimum`) |
+| `format` | never (`date` → `date-time` is another type, so are adding and removing a format) |
 | `pattern`, `const` | removed |
 | `enum` | removed, or a superset |
 
@@ -449,7 +486,8 @@ apply the schema until it is fixed.
 ## Inference
 
 `infer_schema()` (and the step) report what the data holds, at every position: the kinds seen
-(a type array, or `anyOf` when a `string` and a `uuid` share a position), `items` of arrays,
+(a type array, or `anyOf` when a `string`, a `uuid` and the date and time types share a position:
+a `datetime` is `{"type": "string", "format": "date-time"}`), `items` of arrays,
 `properties` of objects, and `required` only for keys every object at that position has, at any
 depth (also inside arrays and next to other kinds). Every label of a vertex is declared;
 connections use the endpoints' first labels. The result has mode `none` and is **valid for the data
@@ -483,13 +521,15 @@ cloud inventory:
 ## Pasting a Pydantic model
 
 `Model.model_json_schema()` loads as a label schema as it is (`$defs`/`$ref`, `anyOf` with null,
-`title`, `description`, `default`, `enum`, `const`, `exclusive*`, `additionalProperties: false`),
-except for two things to remove first:
+`title`, `description`, `default`, `enum`, `const`, `exclusive*`, `additionalProperties: false`,
+and the date and time fields: `datetime` (`"format": "date-time"`), `date`, `time` and
+`timedelta` (`"format": "duration"`)), except for one thing to remove first:
 
-- `datetime`/`date`/`time` fields (`"format": "date-time"`, ...): no date type before 0.2.0; drop
-  the `format` (a plain string) or the field.
 - `dict[str, T]` fields (`"additionalProperties": {..}`): no map type; write
   `{"type": "object", "additionalProperties": true}`.
+
+A Pydantic `time` field is a time of day: Graphersal's `time` has no offset, so a text with one
+(`10:00:00+02:00`) is refused by the coercion (declare a `date-time` for an instant).
 
 Tuples (`prefixItems`) and `Decimal` (`anyOf` with a string pattern for some versions) are not
 supported either. The top level of the model must be an object (`"type": "object"`).

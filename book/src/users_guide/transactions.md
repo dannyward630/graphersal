@@ -333,17 +333,27 @@ With the `serde` feature a `ChangeSet` serializes as JSON (`{"commit_seq": 1, "c
 ...}]}`; a missing `committed_at` or sequence reads as `0`, which `replay` ignores), and a serialized change set replays into an **identical** graph
 without any schema. JSON-native values stay plain JSON; a value of a logical type JSON cannot hold
 carries an explicit per-value type tag, at any depth (in element images, property writes and
-commit attributes). Today that is only `uuid`, in TinkerPop GraphSON style:
+commit attributes): `uuid` and the date and time types, in TinkerPop GraphSON style with the
+canonical text:
 
 ```json
 {"@type": "g:UUID", "@value": "6f1d3c2a-0000-4000-8000-000000000001"}
+{"@type": "gx:OffsetDateTime", "@value": "2024-05-01T09:30:00+02:00"}
 ```
+
+| Type | Tag |
+|---|---|
+| `datetime`, `date`, `localdatetime`, `time` | `gx:OffsetDateTime`, `gx:LocalDate`, `gx:LocalDateTime`, `gx:LocalTime` |
+| `duration` of microseconds only (no months, no days) | `gx:Duration` (`PT26H`) |
+| `duration` of months and days only | `gx:Period` (`P1Y2M3D`) |
+| any other `duration` | `graphersal:Interval` (`P1MT2H`) |
 
 A user map that happens to have an `"@type"` key of its own is escaped, so it can never be misread
 as a tag: `{"@type": "graphersal:Object", "@value": {"@type": "mine", "x": 1}}` (the payload's keys
-are literal). Reading is strict: an object with an `"@type"` key must be exactly one of these two
-forms (only `@type` and `@value`, a canonical lowercase uuid or an object payload); anything else
-is an error, never a guess. The tags exist for the `ChangeSet` only; GraphML and the other exports
+are literal). Reading is strict: an object with an `"@type"` key must be exactly one of these
+forms (only `@type` and `@value`, a canonical lowercase uuid, the text of a value of the tag's
+type, with a `gx:Duration` holding no months or days and a `gx:Period` no time part, or an object
+payload); anything else is an error, never a guess. The tags exist for the `ChangeSet` only; GraphML and the other exports
 are unchanged.
 
 ## Commit hooks

@@ -125,14 +125,15 @@ The command line does the same with `graphersal --graph items.graphml --schema i
 The browser playground's Save menu downloads these two files (Data as GraphML, Schema), and its "Load from
 file" dialog takes both: the schema file is set on the new graph before the GraphML file is imported.
 
-The other value types are written as their own text: `true`/`false`, integers as `long` keys
+The other value types are written as their own text: dates and times as their canonical text
+(restored like a `uuid`, from a declared format), `true`/`false`, integers as `long` keys
 (GraphML's `int` is 32-bit), floats as `double` keys, and arrays and objects as JSON text under a
 `string` key. A property whose type differs between labels is written under a `string` key, so an
 integer there comes back as the string of its digits. A property the target's schema declares
 `array` or `object` (also as a member of a union) is read back from that JSON text and must
 conform to the declared type (`IOError::InvalidJsonValue` names the property when the text is not
 JSON); without a declaration the JSON text stays a string. A union of a container and a text type
-(`string`/`uuid`, e.g. `union<string|array<int64>>`) cannot be imported, because its GraphML text
+(`string`/`uuid`/a date or time type, e.g. `union<string|array<int64>>`) cannot be imported, because its GraphML text
 could be either (`IOError::AmbiguousContainerImport`): declare one of the two. `NaN` and infinite
 floats cannot be exported.
 
