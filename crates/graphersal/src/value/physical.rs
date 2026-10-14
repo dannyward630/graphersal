@@ -351,8 +351,6 @@ pub(crate) fn lift_declared(
 /// Lifts the physical form of a value declared as a temporal type: its text parsed as that type
 /// (the inverse of [`lower`] for a temporal value). Any other physical value, or text that is not
 /// a value of the type, is an error; nothing else is ever turned into a temporal value (rule 7).
-// A2: called by the schema-declared lift (`format: date-time`, ...), GraphML and GraphSON.
-#[allow(dead_code)]
 pub(crate) fn lift_temporal(
     value: &PhysicalValue<'_>,
     kind: crate::value::temporal::TemporalKind,

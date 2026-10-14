@@ -168,6 +168,7 @@ mod string_step_tests;
 mod subgraph_tests;
 mod t_token_tests;
 mod table_visualization_tests;
+mod temporal_format_tests;
 mod temporal_value_tests;
 mod test_serde;
 mod timeout_tests;

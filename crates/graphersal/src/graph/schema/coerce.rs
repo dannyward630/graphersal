@@ -17,7 +17,10 @@
 
 use crate::graph::schema::nested::{NestedCtx, validate_nested};
 use crate::graph::schema::{JsonType, PropertySchema, SchemaFormat};
-use crate::value::temporal::{Temporal, TemporalKind};
+use std::borrow::Cow;
+
+use crate::value::physical::{PhysicalValue, lift_temporal};
+use crate::value::temporal::TemporalKind;
 use crate::value::uuid::parse_canonical;
 use crate::value::{ElementProperty, Number};
 
@@ -90,8 +93,8 @@ pub(crate) fn coerce_to_declared(
         ElementProperty::String(text)
             if let Some(kind) = node.string_format().and_then(SchemaFormat::temporal_kind) =>
         {
-            match Temporal::parse_as(kind, &text) {
-                Ok(temporal) => Ok(ElementProperty::Temporal(temporal)),
+            match lift_temporal(&PhysicalValue::String(Cow::Borrowed(text.as_str())), kind) {
+                Ok(temporal) => Ok(temporal),
                 Err(_) => Err(CoerceFailure {
                     reason: not_a_temporal(kind),
                     value: ElementProperty::String(text),

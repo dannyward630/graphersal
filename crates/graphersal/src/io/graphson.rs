@@ -455,6 +455,23 @@ fn decode_typed(
         },
         reason: None,
     };
+    // Our own tag of a duration no `java.time` type holds (what an export writes).
+    if tag == tags::INTERVAL {
+        return match &payload {
+            PhysicalValue::String(text) => tags::read_tagged(tag, text)
+                .and_then(Result::ok)
+                .map(ElementProperty::Temporal)
+                .ok_or_else(|| {
+                    ValueSkip::malformed(
+                        "graphersal:Interval needs a duration text with both months or days and \
+                         a time part",
+                    )
+                }),
+            _ => Err(ValueSkip::malformed(
+                "graphersal:Interval needs a duration text",
+            )),
+        };
+    }
     if !core {
         return Err(unsupported());
     }
