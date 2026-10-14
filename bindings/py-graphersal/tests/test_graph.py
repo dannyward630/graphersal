@@ -445,3 +445,21 @@ def test_compression_rules_define_list_recompress_and_drop():
     assert graph.drop_compression("cv") is True
     assert graph.drop_compression("cv") is False
     assert graph.execute('g.v().values("cv").to_list()') == [cv]
+
+
+def test_property_indexes_create_list_serve_and_drop():
+    graph = graphersal.Graph.tinkerpop_modern()
+    graph.create_index("person", "age")
+    graph.create_index("knows", "weight", element="edge", name="weights")
+    indexes = {index["name"]: index for index in graph.indexes()}
+    assert set(indexes) == {"person_age", "weights"}
+    assert indexes["person_age"]["entries"] == 4
+    assert indexes["person_age"]["served"] is True
+    assert indexes["weights"]["element"] == "edge"
+    names = graph.execute('g.v().has_label("person").has("age", P.gt(30)).values("name")')
+    assert sorted(names) == ["josh", "peter"]
+    profile = graph.execute('g.v().has_label("person").has("age", P.gt(30)).profile().to_string()')
+    assert "[index: vertex person.age]" in profile
+    assert graph.drop_index("weights") is True
+    assert graph.drop_index("weights") is False
+    assert [index["name"] for index in graph.indexes()] == ["person_age"]

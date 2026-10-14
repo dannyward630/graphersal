@@ -333,6 +333,21 @@ class Graph:
         none."""
     def recompress(self, name: str, *, policy: Optional[AccessPolicy] = None) -> None:
         """Rebuilds the rule's dictionary from the current values and re-encodes them."""
+    def create_index(
+        self,
+        label: str,
+        key: str,
+        element: str = "vertex",
+        name: Optional[str] = None,
+        *,
+        policy: Optional[AccessPolicy] = None,
+    ) -> None:
+        """Declares (or replaces) a property index: the ``element``s labelled ``label``,
+        ordered by their top-level property ``key`` (name: ``<label>_<key>`` by default)."""
+    def indexes(self, *, policy: Optional[AccessPolicy] = None) -> list[dict[str, Any]]:
+        """The property indexes with their current stats."""
+    def drop_index(self, name: str, *, policy: Optional[AccessPolicy] = None) -> bool:
+        """Drops the property index; ``False`` when there is none."""
     def call_query(
         self,
         name: str,
