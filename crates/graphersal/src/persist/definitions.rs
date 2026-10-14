@@ -13,6 +13,7 @@ use crate::graph::definition::{
     Definition, DefinitionBody, DefinitionFlags, DefinitionKind, QueryDefinition,
     RESERVED_PAYLOAD_KEYS,
 };
+use crate::graph::property_index::PropertyIndexDefinition;
 use crate::value::PropertyMap;
 
 /// One definition as stored: kind, flags, name and the payload bytes. The manifest keeps the
@@ -32,6 +33,7 @@ impl DefinitionRecord {
         let known = match definition.body() {
             DefinitionBody::Query(query) => Some(query.to_payload()),
             DefinitionBody::Compression(rule) => Some(rule.to_payload()),
+            DefinitionBody::PropertyIndex(index) => Some(index.to_payload()),
             DefinitionBody::Opaque(_) => None,
         };
         let payload = match (known, definition.body()) {
@@ -43,7 +45,12 @@ impl DefinitionRecord {
                 )
             })?,
             (None, DefinitionBody::Opaque(bytes)) => bytes.clone(),
-            (None, DefinitionBody::Query(_) | DefinitionBody::Compression(_)) => Vec::new(),
+            (
+                None,
+                DefinitionBody::Query(_)
+                | DefinitionBody::Compression(_)
+                | DefinitionBody::PropertyIndex(_),
+            ) => Vec::new(),
         };
         Ok(Self {
             kind: definition.kind().code(),
@@ -74,6 +81,10 @@ impl DefinitionRecord {
         if kind == DefinitionKind::COMPRESSION {
             let rule = CompressionDefinition::from_payload(&map).map_err(invalid)?;
             return Ok(Definition::compression(self.name.clone(), rule).with_flags(flags));
+        }
+        if kind == DefinitionKind::PROPERTY_INDEX {
+            let index = PropertyIndexDefinition::from_payload(&map).map_err(invalid)?;
+            return Ok(Definition::property_index(self.name.clone(), index).with_flags(flags));
         }
         let query = QueryDefinition::from_payload(&map).map_err(invalid)?;
         Ok(Definition::query(self.name.clone(), query).with_flags(flags))

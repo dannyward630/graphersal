@@ -163,6 +163,10 @@ pub trait AnyGraph: Send + Sync + 'static + sealed::Sealed {
     /// a storage without compressed properties.
     fn compression_stats(&self, name: &str) -> Option<CompressionStats>;
 
+    /// [`GraphStorage::property_indexes`] of the storage: the property indexes it serves, with
+    /// their stats (empty on a storage without property indexes).
+    fn property_indexes(&self) -> Vec<crate::graph::PropertyIndexInfo>;
+
     // ---- journal --------------------------------------------------------------------------
 
     /// [`GraphStorage::mark`]: a named mark at the current commit position; without a journal
@@ -348,6 +352,10 @@ where
 
     fn compression_stats(&self, name: &str) -> Option<CompressionStats> {
         self.read().compression_stats(name)
+    }
+
+    fn property_indexes(&self) -> Vec<crate::graph::PropertyIndexInfo> {
+        self.read().property_indexes()
     }
 
     fn mark(&self, name: &str) -> Result<Mark, GraphError> {

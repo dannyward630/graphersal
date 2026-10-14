@@ -20,6 +20,7 @@ pub(crate) use rules::filter_reorder::FilterReorderRule;
 pub(crate) use rules::group_count_pushdown::GroupCountPushdownRule;
 pub(crate) use rules::has_id_pushdown::HasIdPushdownRule;
 pub(crate) use rules::lazy_barrier::LazyBarrierRule;
+pub(crate) use rules::property_index::PropertyIndexRule;
 pub(crate) use rules::where_unnest::WhereUnnestRule;
 
 /// The stable, user-facing name of every optimizer rule this crate knows, and whether it runs by
@@ -37,6 +38,7 @@ pub(crate) const KNOWN_RULES: &[(&str, bool)] = &[
     ("filter_reorder", true),
     ("has_id_pushdown", true),
     ("source_filter_pushdown", true),
+    ("property_index", true),
     ("barrier_pushdown", true),
     ("group_count_pushdown", true),
     ("count_pushdown", true),
@@ -57,6 +59,9 @@ fn new_has_id_pushdown<'g, S: GraphStorage + 'g>() -> Box<dyn OptimizationRule<'
 }
 fn new_source_filter_pushdown<'g, S: GraphStorage + 'g>() -> Box<dyn OptimizationRule<'g, S> + 'g> {
     Box::new(SourceFilterPushdownRule::new())
+}
+fn new_property_index<'g, S: GraphStorage + 'g>() -> Box<dyn OptimizationRule<'g, S> + 'g> {
+    Box::new(PropertyIndexRule::new())
 }
 fn new_barrier_pushdown<'g, S: GraphStorage + 'g>() -> Box<dyn OptimizationRule<'g, S> + 'g> {
     Box::new(BarrierPushdownRule::new())
@@ -92,6 +97,20 @@ pub(crate) struct TraversalOptimizer<'g, S: GraphStorage + 'g> {
     /// instance and its rule set), so this is the one field that needs interior mutability to
     /// record a fired rule from inside that shared borrow.
     fired: RefCell<Vec<&'static str>>,
+    /// The property indexes the storage serves (read once per run, see
+    /// [`Self::with_property_indexes`]); empty: no index is used.
+    indexes: Vec<crate::graph::PropertyIndexInfo>,
+    /// How deep the level being optimized is nested (0: the root traversal).
+    depth: std::cell::Cell<u32>,
+}
+
+/// What a rule may know about the run beyond the plan ([`OptimizationRule::apply_in`]).
+pub(crate) struct OptimizerContext<'a> {
+    /// The property indexes the storage serves, with their stats.
+    pub(crate) indexes: &'a [crate::graph::PropertyIndexInfo],
+    /// Whether the level is the root traversal (its source receives no traverser, so no path
+    /// label exists).
+    pub(crate) root: bool,
 }
 
 impl<'g, S: GraphStorage + 'g> Default for TraversalOptimizer<'g, S> {
@@ -100,6 +119,8 @@ impl<'g, S: GraphStorage + 'g> Default for TraversalOptimizer<'g, S> {
             rules: Vec::new(),
             diagnostics: true,
             fired: RefCell::new(Vec::new()),
+            indexes: Vec::new(),
+            depth: std::cell::Cell::new(0),
         }
     }
 }
@@ -113,6 +134,12 @@ impl<'g, S: GraphStorage + 'g> TraversalOptimizer<'g, S> {
     /// Turns provenance tracking on or off for this pipeline and every nested level it optimizes.
     pub fn with_diagnostics(mut self, diagnostics: bool) -> Self {
         self.diagnostics = diagnostics;
+        self
+    }
+
+    /// Gives the rules the property indexes the storage serves (`GraphStorage::property_indexes`).
+    pub fn with_property_indexes(mut self, indexes: Vec<crate::graph::PropertyIndexInfo>) -> Self {
+        self.indexes = indexes;
         self
     }
 
@@ -133,6 +160,7 @@ impl<'g, S: GraphStorage + 'g> TraversalOptimizer<'g, S> {
                 true,
                 new_source_filter_pushdown::<'g, S>,
             ),
+            ("property_index", true, new_property_index::<'g, S>),
             ("barrier_pushdown", true, new_barrier_pushdown::<'g, S>),
             (
                 "group_count_pushdown",
@@ -189,11 +217,18 @@ impl<'g, S: GraphStorage + 'g> TraversalOptimizer<'g, S> {
     /// wrote it. `None` when no rule changed anything and the executed plan still is that query.
     pub fn apply(&self, steps: &mut Vec<GraphStep<'g, S>>) -> Option<LevelPlan<'g, S>> {
         let mut plan = Plan::from_steps(std::mem::take(steps), self.diagnostics);
+        let depth = self.depth.get();
+        self.depth.set(depth.saturating_add(1));
         for step in plan.steps_mut() {
             step.optimize_nested(self);
         }
+        self.depth.set(depth);
+        let context = OptimizerContext {
+            indexes: &self.indexes,
+            root: depth == 0,
+        };
         for rule in &self.rules {
-            if rule.apply(&mut plan) {
+            if rule.apply_in(&mut plan, &context) {
                 self.fired.borrow_mut().push(rule.name());
             }
         }

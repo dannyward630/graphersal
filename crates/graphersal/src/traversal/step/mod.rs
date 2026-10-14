@@ -920,6 +920,43 @@ impl PropertyFilter {
     }
 }
 
+/// The property index a `v()`/`e()` source reads instead of its label buckets (set by the
+/// `property_index` rule, book page "Property Indexes"): the candidates are the elements of
+/// each source label whose `key` lies in one of `ranges` (a superset); the source still checks
+/// its folded conditions, and the condition the index serves stays in the plan when it is a
+/// `has(key, P)` step, so the result never differs from the label scan.
+#[derive(Debug, Clone)]
+pub(crate) struct IndexAccess {
+    /// The top-level property key of the index.
+    pub(crate) key: String,
+    /// The slices of the index to read (several for `P.within` and `P.outside`).
+    pub(crate) ranges: Vec<crate::graph::PropertyIndexRange>,
+}
+
+impl IndexAccess {
+    /// `[index: vertex person.title, vertex employee.title]`: what `.profile()` shows.
+    pub(crate) fn render(&self, element: &str, labels: &[String]) -> String {
+        let names: Vec<String> = labels
+            .iter()
+            .map(|label| format!("{element} {label}.{}", self.key))
+            .collect();
+        format!(" [index: {}]", names.join(", "))
+    }
+}
+
+/// A `has(key, P)` condition as slices of an ordered property index
+/// ([`GraphStepFilter::index_condition`]).
+#[derive(Debug, Clone)]
+pub(crate) struct IndexCondition<'a> {
+    /// The top-level property key.
+    pub(crate) key: &'a str,
+    /// The slices holding every value the predicate accepts.
+    pub(crate) ranges: Vec<crate::graph::PropertyIndexRange>,
+    /// The predicate reads a string operand as a path label first (`P.eq("a")`): only a source
+    /// whose traversers carry no path label may serve it from an index.
+    pub(crate) reads_path_labels: bool,
+}
+
 pub(crate) trait GraphStepInit<'g, S: GraphStorage + 'g>:
     Send + Sync + fmt::Display
 {
@@ -943,6 +980,15 @@ pub(crate) trait GraphStepInit<'g, S: GraphStorage + 'g>:
     /// Folds one more `has(key, value)` condition into this source step. Returns `false` (and
     /// keeps nothing) for a step that cannot check properties while it scans (the default).
     fn push_property_filter(&mut self, _filter: PropertyFilter) -> bool {
+        false
+    }
+    /// The property index this source reads (see [`IndexAccess`]). Default: none.
+    fn index_access(&self) -> Option<&IndexAccess> {
+        None
+    }
+    /// Sets (or with `None` clears) the property index this source reads. Returns `false` for
+    /// a step that cannot read an index (the default).
+    fn set_index_access(&mut self, _access: Option<IndexAccess>) -> bool {
         false
     }
     fn is_count_only(&self) -> bool {
@@ -1474,6 +1520,12 @@ pub(crate) trait GraphStepFilter<'g, S: GraphStorage + 'g>:
     /// `source_filter_pushdown` rule may fold into a `v()`/`e()` source step (see
     /// [`PropertyFilter`]). Default `None`: the step cannot be folded.
     fn property_equality(&self) -> Option<PropertyFilter> {
+        None
+    }
+    /// The condition of a `has(key, P)` on a literal property name as the slices of an ordered
+    /// property index that hold every value it can accept (book page "Property Indexes"):
+    /// `(key, ranges)`. Default `None`: no index can serve it.
+    fn index_condition(&self) -> Option<IndexCondition<'_>> {
         None
     }
     fn as_where_traversal(&self) -> Option<&AnonymousTraversal<'g, S>> {

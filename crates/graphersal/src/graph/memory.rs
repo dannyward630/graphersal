@@ -71,6 +71,9 @@ pub struct MemoryStats {
     /// The dictionaries of the compression rules, in bytes (each shared dictionary once); part
     /// of [`Self::total_bytes`].
     pub compression_dictionary_bytes: u64,
+    /// The entries of the property indexes (book page "Property Indexes"), an estimate; part
+    /// of [`Self::total_bytes`]. Not part of [`Self::index_bytes`] (the id and label indexes).
+    pub property_index_bytes: u64,
 }
 
 impl MemoryStats {
@@ -87,6 +90,7 @@ impl MemoryStats {
     ///         + stats.index_bytes
     ///         + stats.property_bytes
     ///         + stats.compression_dictionary_bytes
+    ///         + stats.property_index_bytes
     /// );
     /// ```
     pub fn total_bytes(&self) -> u64 {
@@ -94,6 +98,7 @@ impl MemoryStats {
             + self.index_bytes
             + self.property_bytes
             + self.compression_dictionary_bytes
+            + self.property_index_bytes
     }
 
     /// [`Self::total_bytes`] as mebibytes (bytes / 1_048_576.0), for human-readable reporting.
@@ -178,6 +183,7 @@ pub(crate) fn compute(graph: &super::TraversalGraph) -> MemoryStats {
         compressed_plain_bytes: compressed.plain,
         compressed_stored_bytes: compressed.stored,
         compression_dictionary_bytes: graph.compression.dictionary_bytes(),
+        property_index_bytes: graph.property_indexes.bytes(),
     }
 }
 
