@@ -7,6 +7,7 @@ use crate::error::GraphError;
 use crate::graph::change::{ChangeSet, CommitMetadata};
 use crate::graph::definition::{Definition, DefinitionKind};
 use crate::graph::hooks::{Mark, RollbackReason};
+use crate::graph::schema::defaults::CreateContext;
 use crate::graph::schema::{GraphSchema, PropertySchema, SchemaInferer};
 use crate::graph::undo::UndoEntry;
 use crate::graph::{
@@ -561,6 +562,13 @@ pub trait GraphStorage: Send + Sync {
     /// which coerces and validates as always. [`Self::add_vertex`] itself stores exactly what
     /// it is given: imports, change sets and replay use it, so they never apply defaults.
     ///
+    /// `context` carries the time `defaultFunction` `now`/`today` store
+    /// ([`CreateContext::now`]): a query passes one per execution (pinned by the script DSL's
+    /// evaluation `now()` or [`GraphTraversalSource::with_now`](crate::GraphTraversalSource::with_now),
+    /// else the unit's start, [`Self::unit_started_at`]); other callers build one with
+    /// [`CreateContext::for_storage`]. The stored value is a plain value, recorded as such in
+    /// the change set and the journal, so replay is deterministic.
+    ///
     /// The default implementation reads the schema through [`Self::get_schema`]; a storage
     /// that can borrow its schema overrides it to save that copy.
     fn create_vertex(
@@ -568,6 +576,7 @@ pub trait GraphStorage: Send + Sync {
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         mut properties: PropertyMap,
+        context: &CreateContext,
     ) -> Result<Self::VertexId, GraphError> {
         if let Some(schema) = self.get_schema() {
             // A repeated label changes nothing: the first label declaring a key decides.
@@ -576,6 +585,7 @@ pub trait GraphStorage: Send + Sync {
                 GraphNodeType::Vertex,
                 &labels,
                 &mut properties,
+                context,
             );
         }
         self.add_vertex(id, labels, properties)
@@ -591,6 +601,7 @@ pub trait GraphStorage: Send + Sync {
         from: Self::VertexId,
         to: Self::VertexId,
         mut properties: PropertyMap,
+        context: &CreateContext,
     ) -> Result<Self::EdgeId, GraphError> {
         if let Some(schema) = self.get_schema() {
             crate::graph::schema::defaults::fill_defaults(
@@ -598,6 +609,7 @@ pub trait GraphStorage: Send + Sync {
                 GraphNodeType::Edge,
                 label.as_slice(),
                 &mut properties,
+                context,
             );
         }
         self.add_edge(id, label, from, to, properties)
@@ -921,6 +933,18 @@ pub trait GraphStorage: Send + Sync {
     /// Default: `0`.
     fn last_commit_seq(&self) -> u64 {
         0
+    }
+
+    /// The start of the outermost open unit, in microseconds since the Unix epoch (UTC):
+    /// the time `defaultFunction` `now`/`today` store for the elements a query creates in it
+    /// ([`CreateContext::for_storage`]), one value for the whole unit (PostgreSQL `now()`).
+    /// `None` outside a unit.
+    ///
+    /// [`TraversalGraph`] takes it once when the outermost unit opens, never earlier than the
+    /// previous unit's start or the last commit time (so later units never get an earlier
+    /// time). Default: `None` (the caller then reads the system clock).
+    fn unit_started_at(&self) -> Option<i64> {
+        None
     }
 
     /// Raises the vertex and edge auto-id sequences to at least `node_sequence` and
@@ -1295,6 +1319,7 @@ impl GraphStorage for TraversalGraph {
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         mut properties: PropertyMap,
+        context: &CreateContext,
     ) -> Result<VertexHandle, GraphError> {
         // Borrows the schema instead of copying it (the trait default reads `get_schema`).
         crate::graph::schema::defaults::fill_defaults(
@@ -1302,6 +1327,7 @@ impl GraphStorage for TraversalGraph {
             GraphNodeType::Vertex,
             &labels,
             &mut properties,
+            context,
         );
         GraphStorage::add_vertex(self, id, labels, properties)
     }
@@ -1313,12 +1339,14 @@ impl GraphStorage for TraversalGraph {
         from: VertexHandle,
         to: VertexHandle,
         mut properties: PropertyMap,
+        context: &CreateContext,
     ) -> Result<EdgeHandle, GraphError> {
         crate::graph::schema::defaults::fill_defaults(
             &self.schema.read(),
             GraphNodeType::Edge,
             label.as_slice(),
             &mut properties,
+            context,
         );
         GraphStorage::add_edge(self, id, label, from, to, properties)
     }
@@ -2075,6 +2103,10 @@ impl GraphStorage for TraversalGraph {
         self.commit_seq()
     }
 
+    fn unit_started_at(&self) -> Option<i64> {
+        self.undo_unit_started_at()
+    }
+
     /// `max` of each sequence and the given value; nothing is recorded (sequences are never
     /// rolled back). A real raise inside a unit makes its outermost commit a commit even when
     /// nothing else changed (a sequence-only commit), so hooks and the journal keep the raise.
@@ -2421,6 +2453,10 @@ impl<G: GraphStorage> GraphStorage for &G {
     fn last_commit_seq(&self) -> u64 {
         (**self).last_commit_seq()
     }
+
+    fn unit_started_at(&self) -> Option<i64> {
+        (**self).unit_started_at()
+    }
 }
 
 impl<G: GraphStorage> GraphStorage for Box<G> {
@@ -2534,8 +2570,9 @@ impl<G: GraphStorage> GraphStorage for Box<G> {
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         properties: PropertyMap,
+        context: &CreateContext,
     ) -> Result<Self::VertexId, GraphError> {
-        (**self).create_vertex(id, labels, properties)
+        (**self).create_vertex(id, labels, properties, context)
     }
 
     #[inline]
@@ -2546,8 +2583,9 @@ impl<G: GraphStorage> GraphStorage for Box<G> {
         from: Self::VertexId,
         to: Self::VertexId,
         properties: PropertyMap,
+        context: &CreateContext,
     ) -> Result<Self::EdgeId, GraphError> {
-        (**self).create_edge(id, label, from, to, properties)
+        (**self).create_edge(id, label, from, to, properties, context)
     }
 
     #[inline]
@@ -2783,6 +2821,10 @@ impl<G: GraphStorage> GraphStorage for Box<G> {
     #[inline]
     fn last_commit_seq(&self) -> u64 {
         (**self).last_commit_seq()
+    }
+
+    fn unit_started_at(&self) -> Option<i64> {
+        (**self).unit_started_at()
     }
 
     #[inline]
@@ -2911,8 +2953,9 @@ impl<G: GraphStorage> GraphStorage for &mut G {
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         properties: PropertyMap,
+        context: &CreateContext,
     ) -> Result<Self::VertexId, GraphError> {
-        (**self).create_vertex(id, labels, properties)
+        (**self).create_vertex(id, labels, properties, context)
     }
 
     #[inline]
@@ -2923,8 +2966,9 @@ impl<G: GraphStorage> GraphStorage for &mut G {
         from: Self::VertexId,
         to: Self::VertexId,
         properties: PropertyMap,
+        context: &CreateContext,
     ) -> Result<Self::EdgeId, GraphError> {
-        (**self).create_edge(id, label, from, to, properties)
+        (**self).create_edge(id, label, from, to, properties, context)
     }
 
     #[inline]
@@ -3160,6 +3204,10 @@ impl<G: GraphStorage> GraphStorage for &mut G {
     #[inline]
     fn last_commit_seq(&self) -> u64 {
         (**self).last_commit_seq()
+    }
+
+    fn unit_started_at(&self) -> Option<i64> {
+        (**self).unit_started_at()
     }
 
     #[inline]
@@ -3311,9 +3359,10 @@ impl GraphStorage for Arc<TraversalGraph> {
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         properties: PropertyMap,
+        context: &CreateContext,
     ) -> Result<VertexHandle, GraphError> {
         if let Some(graph) = Arc::get_mut(self) {
-            GraphStorage::create_vertex(graph, id, labels, properties)
+            GraphStorage::create_vertex(graph, id, labels, properties, context)
         } else {
             Err(GraphError::InvalidElementState {
                 reason: "Cannot mutate shared Arc<TraversalGraph>".to_string(),
@@ -3388,9 +3437,10 @@ impl GraphStorage for Arc<TraversalGraph> {
         from: VertexHandle,
         to: VertexHandle,
         properties: PropertyMap,
+        context: &CreateContext,
     ) -> Result<EdgeHandle, GraphError> {
         if let Some(graph) = Arc::get_mut(self) {
-            GraphStorage::create_edge(graph, id, label, from, to, properties)
+            GraphStorage::create_edge(graph, id, label, from, to, properties, context)
         } else {
             Err(GraphError::InvalidElementState {
                 reason: "Cannot mutate shared Arc<TraversalGraph>".to_string(),
@@ -3706,6 +3756,10 @@ impl GraphStorage for Arc<TraversalGraph> {
     #[inline]
     fn last_commit_seq(&self) -> u64 {
         GraphStorage::last_commit_seq(self.as_ref())
+    }
+
+    fn unit_started_at(&self) -> Option<i64> {
+        GraphStorage::unit_started_at(self.as_ref())
     }
 
     #[inline]

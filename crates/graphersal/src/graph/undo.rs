@@ -94,6 +94,12 @@ pub(crate) struct UndoLog {
     /// when it opened; `None` when the graph's execution policy sets no `memory.limit` (then
     /// nothing is paid). Reset when the outermost unit closes.
     budget: Option<MemoryBudget>,
+    /// The start of the outermost open unit, in microseconds since the Unix epoch (`None`
+    /// outside a unit): `GraphStorage::unit_started_at`, the time of `defaultFunction`
+    /// `now`/`today`. Taken when the outermost unit opens; reset when it closes.
+    started_at: Option<i64>,
+    /// The start of the last outermost unit: the next one never starts earlier.
+    last_started_at: i64,
 }
 
 impl UndoLog {
@@ -141,6 +147,7 @@ impl UndoLog {
             self.sequences_raised = false;
             self.metadata = CommitMetadata::default();
             self.budget = None;
+            self.started_at = None;
             if self.entries.capacity() > KEEP_CAPACITY {
                 self.entries = Vec::new();
             } else {
@@ -260,6 +267,13 @@ impl TraversalGraph {
             self.undo.budget =
                 crate::traversal::memory_budget::unit_limit(&self.execution_policy, None)
                     .map(|limit| MemoryBudget::new(limit).start(&*self));
+            // The unit's time (`defaultFunction` `now`): never earlier than the previous unit's
+            // or the last commit's, so a later unit never stores an earlier `now`.
+            let started_at = now_micros()
+                .max(self.undo.last_started_at)
+                .max(self.undo.last_committed_at);
+            self.undo.started_at = Some(started_at);
+            self.undo.last_started_at = started_at;
         }
         self.undo.depth = self.undo.depth.saturating_add(1);
         UnitMark::new(self.undo.entries.len() as u64)
@@ -441,6 +455,12 @@ impl TraversalGraph {
             }
         }
         changes
+    }
+
+    /// The start of the outermost open unit (`GraphStorage::unit_started_at`); `None` outside a
+    /// unit.
+    pub(crate) fn undo_unit_started_at(&self) -> Option<i64> {
+        self.undo.started_at
     }
 
     /// The depth of open units (`0`: none).

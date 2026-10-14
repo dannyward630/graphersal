@@ -701,7 +701,37 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
             profile_type: ProfileType::none(),
             sack: None,
             restrictions: None,
+            create_time: None,
         }
+    }
+
+    /// Pins the time `defaultFunction: "now"` stores (and `"today"` takes its UTC date from) for
+    /// every element this traversal creates. Without it the time is the start of the storage's
+    /// outermost open unit
+    /// ([`GraphStorage::unit_started_at`](crate::storage::GraphStorage::unit_started_at): with
+    /// the implicit unit of a traversal, its start), else the system clock. For deterministic
+    /// tests and for hosts that keep one clock (the script DSL pins the evaluation's `now()`,
+    /// which hosts pin with `script::pin_now`).
+    ///
+    /// ```
+    /// use graphersal::prelude::*;
+    /// use graphersal::temporal::DateTime;
+    /// let mut graph = TraversalGraph::new();
+    /// let schema = GraphSchema::from_json(
+    ///     r#"{"mode": "open", "vertices": {"event": {"schema": {"type": "object",
+    ///         "properties": {"at": {"type": "string", "format": "date-time",
+    ///                               "defaultFunction": "now"}}}}}}"#,
+    /// )
+    /// .unwrap();
+    /// graph.traversal_mut().set_schema(schema).unwrap();
+    /// let at: DateTime = "2026-10-15T12:00:00Z".parse().unwrap();
+    /// graph.traversal_mut().with_now(at).add_v("event").iterate().unwrap();
+    /// let stored = graph.traversal().v(None::<()>).values("at").next().unwrap();
+    /// assert_eq!(stored, Some(ElementProperty::Temporal(at.into())));
+    /// ```
+    pub fn with_now(mut self, now: crate::value::temporal::DateTime) -> Self {
+        self.create_time = Some(now);
+        self
     }
 
     /// Checks this traversal with `authorizer`: every execution first asks it for every
@@ -2027,6 +2057,9 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
                     options,
                 );
                 context.profile_type = this.profile_type;
+                context.create_context = this
+                    .create_time
+                    .map(crate::graph::schema::defaults::CreateContext::at);
                 let result = match &this.sack {
                     Some(spec) => context.sacks.intern(spec.initial.clone()).map(|sack| {
                         context.initial_sack = sack;

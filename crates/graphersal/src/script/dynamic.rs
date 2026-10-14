@@ -1175,6 +1175,7 @@ pub(super) fn one_step_source(step: Step) -> ScriptGraphTraversalSource {
         access: Default::default(),
         private: true,
         anonymous: true,
+        now: None,
     }
 }
 

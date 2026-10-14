@@ -179,22 +179,14 @@ fn default_function(
     if let Some(function) = DefaultFunction::from_name(name) {
         return Ok(function);
     }
-    Err(match name {
-        // dates: `now` and `today` are parsed into `DefaultFunction` variants here once the
-        // date/time values exist (one value per unit, like PostgreSQL `now()`).
-        "now" | "today" => invalid(
-            at,
-            format!("defaultFunction '{name}' is not supported yet"),
-            "now and today arrive with the date/time values; until then store the time \
-             explicitly when the element is created.",
-        ),
-        other => invalid(
-            at,
-            format!("unknown defaultFunction '{other}'"),
-            "The supported functions are uuidv4 (random) and uuidv7 (time-ordered), on a \
-             {\"type\": \"string\", \"format\": \"uuid\"} property.",
-        ),
-    })
+    Err(invalid(
+        at,
+        format!("unknown defaultFunction '{name}'"),
+        "The supported functions are uuidv4 (random) and uuidv7 (time-ordered) on a \
+         {\"type\": \"string\", \"format\": \"uuid\"} property, now (the unit's start) on a \
+         {\"type\": \"string\", \"format\": \"date-time\"} property and today (its UTC date) \
+         on a {\"type\": \"string\", \"format\": \"date\"} property.",
+    ))
 }
 
 /// A node has at most one of `default` and `defaultFunction`.

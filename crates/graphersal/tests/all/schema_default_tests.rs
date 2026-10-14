@@ -12,7 +12,7 @@ use graphersal::io::GraphImport;
 use graphersal::prelude::*;
 use graphersal::prelude::{Graph, PropertyMap};
 use graphersal::schema::{DefaultFunction, PropertySchema, SchemaChangeKind, SchemaDiff};
-use graphersal::storage::{AnyGraph, GraphStorage, IntoAnyGraph, Transactional};
+use graphersal::storage::{AnyGraph, CreateContext, GraphStorage, IntoAnyGraph, Transactional};
 
 use crate::forwarding::Forwarding;
 use crate::script_host::{ScriptLimits, eval_value_with_limits};
@@ -203,10 +203,12 @@ fn the_rust_api_creates_with_defaults() {
         .to_list()
         .unwrap();
     // The trait's create path too; the plain `add_vertex` stores exactly what it is given.
+    let create = CreateContext::for_storage(&tg);
     tg.create_vertex(
         Some("c".into()),
         vec!["person".into()],
         PropertyMap::default(),
+        &create,
     )
     .unwrap();
     tg.add_vertex(
@@ -501,7 +503,8 @@ fn a_rolled_back_create_leaves_nothing() {
     let mut tg = TraversalGraph::new();
     tg.traversal_mut().set_schema(schema(SCHEMA)).unwrap();
     let result: Result<(), GraphError> = tg.transaction(|g| {
-        g.create_vertex(None, vec!["person".into()], PropertyMap::default())?;
+        let create = CreateContext::for_storage(&*g);
+        g.create_vertex(None, vec!["person".into()], PropertyMap::default(), &create)?;
         Err(GraphError::unsupported("veto"))
     });
     assert!(result.is_err());
@@ -548,12 +551,12 @@ fn invalid(result: Result<impl std::fmt::Debug, impl DiagnosticError>) -> String
 
 #[test]
 fn default_function_values_outside_the_closed_set_are_rejected() {
+    // `now` and `today` belong to the set (their type checks: `schema_default_date_tests`).
     for name in ["now", "today"] {
-        let text = invalid(GraphSchema::from_json(&person_with(&format!(
+        GraphSchema::from_json(&person_with(&format!(
             r#"{{"type": "string", "defaultFunction": "{name}"}}"#
-        ))));
-        assert!(text.contains("not supported yet"), "{text}");
-        assert!(text.contains("date/time values"), "{text}");
+        )))
+        .unwrap_or_else(|err| panic!("{name}: {}", format_diagnostic(&err)));
     }
     let text = invalid(GraphSchema::from_json(&person_with(
         r#"{"type": "string", "defaultFunction": "uuidv1"}"#,
@@ -655,7 +658,10 @@ fn an_invalid_default_is_rejected_by_the_dsl_and_a_patch() {
         g.clone(),
         r#"g.set_schema(#{mode: "open", vertices: #{p: #{schema: #{type: "object", properties: #{a: #{type: "string", defaultFunction: "today"}}}}}})"#,
     );
-    assert!(err.contains("date/time values"), "{err}");
+    assert!(
+        err.contains(r#"declare {"type": "string", "format": "date"}"#),
+        "{err}"
+    );
 }
 
 #[test]

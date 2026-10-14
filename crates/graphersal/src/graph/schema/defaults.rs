@@ -16,9 +16,63 @@ use crate::error::SchemaError;
 use crate::graph::GraphNodeType;
 use crate::graph::schema::coerce::coerce_to_declared;
 use crate::graph::schema::nested::{self, NestedCtx};
-use crate::graph::schema::{GraphSchema, PropertySchema, SchemaMode};
+use crate::graph::schema::node::CreateDefault;
+use crate::graph::schema::{DefaultFunction, GraphSchema, PropertySchema, SchemaMode};
 use crate::value::PropertyMap;
 use crate::value::json_path::JsonPathSegment;
+use crate::value::temporal::{Date, DateTime};
+
+/// What a create needs besides the element: the time `defaultFunction` `now` and `today` store
+/// (see [`GraphStorage::create_vertex`](crate::storage::GraphStorage::create_vertex)).
+///
+/// A query takes it once per execution (every element one traversal creates gets the same time):
+/// a time the caller pinned
+/// ([`GraphTraversalSource::with_now`](crate::GraphTraversalSource::with_now); a script's
+/// creating steps pin the evaluation's `now()`, which hosts pin with `script::pin_now`), else
+/// [`Self::for_storage`]: the start of the storage's outermost open unit
+/// ([`GraphStorage::unit_started_at`](crate::storage::GraphStorage::unit_started_at)), else the
+/// system clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CreateContext {
+    now: DateTime,
+}
+
+impl CreateContext {
+    /// A context whose time is `now` (kept with its UTC offset, as the DSL's `now()` keeps a
+    /// pinned time).
+    pub fn at(now: DateTime) -> Self {
+        CreateContext { now }
+    }
+
+    /// The context of a create on `storage` that no caller pinned: the start of its outermost
+    /// open unit ([`GraphStorage::unit_started_at`](crate::storage::GraphStorage::unit_started_at)),
+    /// or the system clock when the storage reports none (no unit open, or a storage that does
+    /// not track it).
+    pub fn for_storage<S: crate::graph::GraphStorage + ?Sized>(storage: &S) -> Self {
+        let micros = storage
+            .unit_started_at()
+            .unwrap_or_else(crate::graph::undo::now_micros);
+        CreateContext::at(datetime_of_micros(micros))
+    }
+
+    /// The time of `defaultFunction: "now"`.
+    pub fn now(&self) -> DateTime {
+        self.now
+    }
+
+    /// The time of `defaultFunction: "today"`: the UTC date of [`Self::now`] (the DSL's
+    /// `today()`).
+    pub fn today(&self) -> Date {
+        self.now.with_offset(0).unwrap_or(self.now).local().date()
+    }
+}
+
+/// The UTC `datetime` of `micros` since the Unix epoch; a time outside the years -9999 to 9999
+/// reads as the epoch (as the DSL's `now()` reads such a system clock).
+pub(crate) fn datetime_of_micros(micros: i64) -> DateTime {
+    DateTime::from_micros(micros, 0).unwrap_or(DateTime::EPOCH)
+}
 
 /// Adds the create-time default of every top-level property the element's labels declare and
 /// `properties` lacks (an explicit value, `null` included, is kept). The first label, in label
@@ -31,6 +85,7 @@ pub(crate) fn fill_defaults(
     kind: GraphNodeType,
     labels: &[CompactString],
     properties: &mut PropertyMap,
+    context: &CreateContext,
 ) {
     if schema.mode == SchemaMode::None {
         return;
@@ -52,7 +107,7 @@ pub(crate) fn fill_defaults(
                     .is_some_and(|root| root.properties.contains_key(key))
             });
             if !decided_before {
-                properties.insert(key.as_str(), default.value());
+                properties.insert(key.as_str(), default.value(context));
             }
         }
     }
@@ -91,21 +146,23 @@ pub(crate) fn check_defaults(schema: &GraphSchema) -> Result<(), SchemaError> {
             let Some(default) = node.create_default() else {
                 continue;
             };
-            let keyword = match default {
-                crate::graph::schema::node::CreateDefault::Value(_) => "default",
-                crate::graph::schema::node::CreateDefault::Function(_) => "defaultFunction",
+            let (keyword, hint) = match default {
+                CreateDefault::Value(_) => ("default", DEFAULT_HINT.to_string()),
+                CreateDefault::Function(function) => ("defaultFunction", function_hint(function)),
             };
             let fail = |reason: String| SchemaError::InvalidSchema {
                 path: format!("{at}/{keyword}"),
                 reason: format!("the {keyword} does not fit the property: {reason}"),
-                hint: "A default is stored when an element is created without the property, so \
-                       it must be a valid value of the property's schema (defaultFunction uuidv4 \
-                       and uuidv7 produce a uuid: declare {\"type\": \"string\", \"format\": \
-                       \"uuid\"})."
-                    .to_string(),
+                hint: hint.clone(),
             };
-            let value = coerce_to_declared(default.value(), node)
-                .map_err(|failure| fail(failure.reason.to_string()))?;
+            // `now`/`today` are checked with the current time: a value the property admits.
+            let value = coerce_to_declared(
+                default.value(&CreateContext::at(datetime_of_micros(
+                    crate::graph::undo::now_micros(),
+                ))),
+                node,
+            )
+            .map_err(|failure| fail(failure.reason.to_string()))?;
             let ctx = NestedCtx {
                 element_type,
                 label,
@@ -118,6 +175,32 @@ pub(crate) fn check_defaults(schema: &GraphSchema) -> Result<(), SchemaError> {
         }
     }
     Ok(())
+}
+
+/// The hint of a `default` that does not fit its property.
+const DEFAULT_HINT: &str = "A default is stored when an element is created without the \
+     property, so it must be a valid value of the property's schema.";
+
+/// The hint of a `defaultFunction` that does not fit its property: the declaration its value
+/// needs.
+fn function_hint(function: DefaultFunction) -> String {
+    let declaration = match function.temporal_format() {
+        Some(format) => format!(
+            "{{\"type\": \"string\", \"format\": \"{}\"}}",
+            format.as_str()
+        ),
+        None => "{\"type\": \"string\", \"format\": \"uuid\"}".to_string(),
+    };
+    let produces = match function {
+        DefaultFunction::Now => "a datetime (the unit's start)",
+        DefaultFunction::Today => "a date (the UTC date of the unit's start)",
+        DefaultFunction::Uuidv4 | DefaultFunction::Uuidv7 => "a uuid",
+    };
+    format!(
+        "defaultFunction {} produces {produces} for every created element, so the property \
+         must admit it: declare {declaration}.",
+        function.as_str()
+    )
 }
 
 /// The child nodes of `node` with the pointer segment(s) leading to them.
@@ -151,6 +234,12 @@ fn misplaced_function(node: &PropertySchema, at: &str, root: bool) -> Option<Str
         .into_iter()
         .filter(|(name, _)| !(root && name.starts_with("properties/")))
         .find_map(|(name, child)| misplaced_function(child, &format!("{at}/{name}"), false))
+}
+
+/// The location (JSON Pointer below `at`) of the first `defaultFunction` in `node` or any node
+/// below it; a saved query's parameter schema must have none.
+pub(crate) fn default_function_in(node: &PropertySchema, at: &str) -> Option<String> {
+    misplaced_function(node, at, false)
 }
 
 fn misplaced(at: String) -> SchemaError {

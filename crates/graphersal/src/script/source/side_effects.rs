@@ -335,6 +335,7 @@ impl ScriptGraphTraversalSource {
             access: Default::default(),
             private: true,
             anonymous: true,
+            now: None,
         };
         self.add_step(Step::MergeV(ScriptMergeArg::Traversal(identity)))
     }
@@ -347,7 +348,7 @@ impl ScriptGraphTraversalSource {
         arg: Dynamic,
     ) -> Result<Self, Box<rhai::EvalAltResult>> {
         let arg = script_merge_arg(arg, access::value_depth_of(&ctx))?;
-        Ok(this.add_step(Step::MergeV(arg)))
+        Ok(this.add_step(Step::MergeV(arg)).stamped(&ctx))
     }
 
     /// `mergeE()` / `merge_e()`: the incoming traverser is the merge map
@@ -360,6 +361,7 @@ impl ScriptGraphTraversalSource {
             access: Default::default(),
             private: true,
             anonymous: true,
+            now: None,
         };
         self.add_step(Step::MergeE(ScriptMergeArg::Traversal(identity)))
     }
@@ -372,7 +374,7 @@ impl ScriptGraphTraversalSource {
         arg: Dynamic,
     ) -> Result<Self, Box<rhai::EvalAltResult>> {
         let arg = script_merge_arg(arg, access::value_depth_of(&ctx))?;
-        Ok(this.add_step(Step::MergeE(arg)))
+        Ok(this.add_step(Step::MergeE(arg)).stamped(&ctx))
     }
 
     /// `option(Merge.x, map|()|traversal, Cardinality)`: the map's default cardinality.

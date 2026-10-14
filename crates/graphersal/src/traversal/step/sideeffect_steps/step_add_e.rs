@@ -73,6 +73,9 @@ struct StepAddE<'g, S: GraphStorage + 'g> {
     /// The properties every created edge gets, folded in by the `add_property_fold` rule; empty
     /// when the rule did not fire. Built once per step, cloned per created edge.
     properties: PropertyMap,
+    /// The time of `defaultFunction` `now`/`today` the script DSL pinned for this step (the
+    /// evaluation's `now()`); `None`: the execution's ([`TraverserContext::create_context`]).
+    create_time: Option<crate::value::temporal::DateTime>,
 }
 
 impl<'g, S: GraphStorage + 'g> Clone for StepAddE<'g, S> {
@@ -83,6 +86,7 @@ impl<'g, S: GraphStorage + 'g> Clone for StepAddE<'g, S> {
             to: self.to.clone(),
             id: self.id.clone(),
             properties: self.properties.clone(),
+            create_time: self.create_time,
         }
     }
 }
@@ -157,6 +161,7 @@ fn add_e_step<'g, S: GraphStorage + 'g>(label: AddLabel<'g, S>) -> GraphStep<'g,
             to: None,
             id: None,
             properties: PropertyMap::default(),
+            create_time: None,
         }),
     )
 }
@@ -370,6 +375,10 @@ impl<'g, S: GraphStorage + 'g> StepAddE<'g, S> {
 }
 
 impl<'g, S: GraphStorage + 'g> GraphStepSideEffectMut<'g, S> for StepAddE<'g, S> {
+    fn set_create_time(&mut self, now: crate::value::temporal::DateTime) {
+        self.create_time = Some(now);
+    }
+
     fn static_labels(&self) -> Vec<&str> {
         match &self.label {
             AddLabel::Name(name) => vec![name.as_str()],
@@ -446,6 +455,7 @@ impl<'g, S: GraphStorage + 'g> GraphStepSideEffectMut<'g, S> for StepAddE<'g, S>
             },
         };
 
+        let create = context.create_context_or(self.create_time);
         for index_from in &from_ids {
             for index_to in &to_ids {
                 let index = context.storage.create_edge(
@@ -454,6 +464,7 @@ impl<'g, S: GraphStorage + 'g> GraphStepSideEffectMut<'g, S> for StepAddE<'g, S>
                     *index_from,
                     *index_to,
                     self.properties.clone(),
+                    &create,
                 )?;
                 result.push(Traverser::with_parts(
                     TraverserValue::Edge(index),

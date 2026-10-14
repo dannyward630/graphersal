@@ -650,6 +650,11 @@ pub(crate) trait GraphStepSideEffectMut<'g, S: GraphStorage + 'g>:
     fn static_labels(&self) -> Vec<&str> {
         Vec::new()
     }
+    /// Pins the time `defaultFunction` `now`/`today` use for the elements this step creates
+    /// (the script DSL's evaluation `now()`). The default ignores it: a step that creates no
+    /// element.
+    #[cfg_attr(not(feature = "script"), allow(dead_code))]
+    fn set_create_time(&mut self, _now: crate::value::temporal::DateTime) {}
     fn process(
         &self,
         context: &mut TraverserContext<'_, S>,

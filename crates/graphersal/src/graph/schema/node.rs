@@ -8,6 +8,7 @@
 use indexmap::IndexMap;
 
 use crate::graph::schema::SchemaPattern;
+use crate::graph::schema::defaults::CreateContext;
 use crate::value::temporal::{Temporal, TemporalKind};
 use crate::value::{ElementProperty, Number};
 
@@ -257,8 +258,10 @@ impl Constraints {
 /// they are given. A `default` below the top level (inside an object value) stays an annotation.
 ///
 /// [`default_function`](Self::default_function) (`defaultFunction`) computes the value instead:
-/// a new one for every created element. A property has at most one of the two, and a top-level
-/// default must be valid for its property (both checked when the schema is set).
+/// a new one for every created element (`uuidv4`, `uuidv7`), or the unit's start time, one
+/// value for the whole unit (`now`, `today`; see [`DefaultFunction`]). A property has at most
+/// one of the two, and a top-level default must be valid for its property (both checked when
+/// the schema is set: `now` needs a property admitting a `date-time`, `today` a `date`).
 #[derive(Debug, Clone, PartialEq, Default)]
 #[non_exhaustive]
 pub struct Annotations {
@@ -290,8 +293,13 @@ pub enum DefaultFunction {
     /// `uuidv7`: a time-ordered RFC 9562 version-7 UUID (48 bits of Unix milliseconds, then
     /// random bits; increasing within a process), new for every element.
     Uuidv7,
-    // dates: `now` and `today` (one value per unit, like PostgreSQL `now()`) become variants
-    // here when date/time values exist; `parse.rs` rejects them until then.
+    /// `now`: the `datetime` of the unit's start ([`CreateContext::now`]), the same value for
+    /// every element created in one unit (PostgreSQL `now()`: the start of the transaction).
+    /// Valid only on a property admitting a `date-time`.
+    Now,
+    /// `today`: the UTC `date` of [`Self::Now`]'s time. Valid only on a property admitting a
+    /// `date`.
+    Today,
 }
 
 /// What a create stores for an absent property: [`PropertySchema::create_default`].
@@ -304,21 +312,23 @@ pub(crate) enum CreateDefault<'a> {
 }
 
 impl CreateDefault<'_> {
-    /// The value to store: the default, or a new value of the function.
-    pub(crate) fn value(self) -> ElementProperty {
+    /// The value to store: the default, or a new value of the function at `context`'s time.
+    pub(crate) fn value(self, context: &CreateContext) -> ElementProperty {
         match self {
             CreateDefault::Value(value) => value.clone(),
-            CreateDefault::Function(function) => function.generate(),
+            CreateDefault::Function(function) => function.generate(context),
         }
     }
 }
 
 impl DefaultFunction {
-    /// The keyword value: `uuidv4`, `uuidv7`.
+    /// The keyword value: `uuidv4`, `uuidv7`, `now`, `today`.
     pub fn as_str(self) -> &'static str {
         match self {
             DefaultFunction::Uuidv4 => "uuidv4",
             DefaultFunction::Uuidv7 => "uuidv7",
+            DefaultFunction::Now => "now",
+            DefaultFunction::Today => "today",
         }
     }
 
@@ -327,15 +337,29 @@ impl DefaultFunction {
         match name {
             "uuidv4" => Some(DefaultFunction::Uuidv4),
             "uuidv7" => Some(DefaultFunction::Uuidv7),
+            "now" => Some(DefaultFunction::Now),
+            "today" => Some(DefaultFunction::Today),
             _ => None,
         }
     }
 
-    /// A new value of this function.
-    pub(crate) fn generate(self) -> ElementProperty {
+    /// A new value of this function; `now`/`today` take `context`'s time.
+    pub(crate) fn generate(self, context: &CreateContext) -> ElementProperty {
         match self {
             DefaultFunction::Uuidv4 => ElementProperty::Uuid(crate::value::uuid::new_v4()),
             DefaultFunction::Uuidv7 => ElementProperty::Uuid(crate::value::uuid::new_v7()),
+            DefaultFunction::Now => ElementProperty::Temporal(Temporal::DateTime(context.now())),
+            DefaultFunction::Today => ElementProperty::Temporal(Temporal::Date(context.today())),
+        }
+    }
+
+    /// The temporal format a property must admit for this function (`now`: `date-time`,
+    /// `today`: `date`); `None` for the uuid functions.
+    pub(crate) fn temporal_format(self) -> Option<SchemaFormat> {
+        match self {
+            DefaultFunction::Uuidv4 | DefaultFunction::Uuidv7 => None,
+            DefaultFunction::Now => Some(SchemaFormat::DateTime),
+            DefaultFunction::Today => Some(SchemaFormat::Date),
         }
     }
 }
