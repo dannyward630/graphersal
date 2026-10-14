@@ -75,7 +75,7 @@ The **File tree** sample is a small directory tree: good for recursive traversal
 - several query tabs side by side, a history and saved scripts;
 - a graph editor (add, change and delete vertices and edges by clicking);
 - a fast WebGL drawing for large graphs, label graphs and neighbourhood views;
-- saved queries and compression rules in the **Catalog** menu;
+- saved queries, compression rules and property indexes in the **Catalog** menu;
 - a Store in memory with commits, marks, point-in-time views, forks and rollback (the **Store**
   menu);
 - downloads of the graph (GraphSON, GraphML, snapshot), the schema and the catalog.

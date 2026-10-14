@@ -312,8 +312,8 @@ the WebAssembly playground and on the [dev server](../persistence/dev_server.md)
 - In the editor, `g.query("` completes the names of the saved queries, grouped by folder.
 - Saved queries travel in the **catalog file**, like the schema: **Catalog ▾ ▸ Save catalog
   (.json)** (`graphersal-catalog-YYYYMMDD-HHMMSS.json`, also **Save catalog** on the start page)
-  holds the whole catalog, saved queries and [compression rules](compressed_properties.md) (and
-  future kinds such as indexes); **Catalog ▾ ▸ Load catalog…** (or **Load catalog** on the start
+  holds the whole catalog, saved queries, [compression rules](compressed_properties.md) and
+  [property indexes](property_indexes.md); **Catalog ▾ ▸ Load catalog…** (or **Load catalog** on the start
   page) adds the file's definitions to the current graph (one of the same kind and name is
   replaced; a compression rule compresses its values at once). A graph loaded from a GraphSON or
   GraphML file afterwards keeps them; a sample graph starts without any, a snapshot (`.gsnap`)
@@ -333,10 +333,16 @@ its count, and opens its manager:
   **Drop**, and **New rule…**: a form with name, element (vertex or edge), label (the graph's
   labels are suggested), path, minimum size and dictionary; the engine's errors show next to their
   field. Saving re-encodes the label's values at once.
+- **Property indexes**: the [property indexes](property_indexes.md) with their stats (entries,
+  distinct values, elements per value, memory; *not served* on a storage that keeps the
+  definition but serves no index) and **Drop** (after a confirmation), and **New index…**: a form
+  with element (vertex or edge), label (the graph's labels are suggested), key and an optional
+  name (the default `<label>_<key>` is shown as you type); the engine's errors show next to their
+  field. Creating builds the index from the data at once.
 
 The same dropdown holds **Save catalog (.json)** and **Load catalog…**. The Statistics tab of the
-Profile panel shows the compressed strings and the dictionaries in its memory part when there are
-any.
+Profile panel shows the compressed strings and the dictionaries, and the property indexes' memory,
+in its memory part when there are any.
 
 A catalog change is a commit: in the [store in memory](#the-store-in-memory) it is part of the
 history, and on the dev server another browser tab or an AI agent sees it through the change feed.

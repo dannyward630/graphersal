@@ -780,7 +780,7 @@ same way.
 downloads ONE file per entry: the data as GraphSON 3.0 (`graphersal-graph-YYYYMMDD-HHMMSS.json`)
 or GraphML (`.graphml`), the schema (`graphersal-schema-YYYYMMDD-HHMMSS.json`; neither data
 format carries it), or a packed snapshot (`.gsnap`, data, schema and catalog). The catalog
-(saved queries, compression rules, every kind) is ONE file of its own, in the **Catalog ▾**
+(saved queries, compression rules, property indexes, every kind) is ONE file of its own, in the **Catalog ▾**
 dropdown: **Save catalog (.json)** (`graphersal-catalog-YYYYMMDD-HHMMSS.json`, the catalog JSON) and
 **Load catalog…** (also on the start page), which adds the file's definitions to the current graph
 (a compression rule compresses its values at once); a graph file loaded afterwards keeps them. One
@@ -803,17 +803,23 @@ does (schema first, then the data) and warns about what does not survive (for Gr
 whose type comes back as a string without a declaration, an undeclared `uuid`, `array`/`object`
 values, a key with different types on different labels).
 
-**The Catalog** (the top bar's **Catalog ▾**, `components/catalog.js`; model `js/compression.js`,
-tested in `tests/compression.test.mjs`): one item per catalog kind with its count from the graph
-info's `catalog` (`CATALOG_KINDS`; a new kind such as indexes is one entry and one manager),
+**The Catalog** (the top bar's **Catalog ▾**, `components/catalog.js`; models `js/compression.js`
+and `js/indexes.js`, tested in `tests/compression.test.mjs` and `tests/indexes.test.mjs`): one
+item per catalog kind with its count from the graph info's `catalog` (`CATALOG_KINDS`, plus the
+property indexes appended by `catalogMenuItems` of `js/indexes.js`),
 each opening its manager through `openCatalog(id)` (`state.catalogDialog`, the workspace hosts
 `CatalogDialogs` once), plus **Save catalog (.json)** and **Load catalog…**. The **Saved queries**
 manager lists the queries by folder with Run, Edit, Delete and New; the **Compression** manager
 lists the rules with their stats (values, plain → stored, ratio, saving, dictionary) with Edit,
 Recompress and Drop, and the rule form (name, element, label with the graph's labels from
 `statistics()` as a datalist, path, minimum size, dictionary) shows the engine's field errors in
-place. The Store menu shows the catalog per kind (`definitionsByKind`). The Statistics tab adds the
-compressed strings and dictionaries to its memory part when there are any.
+place; the **Property indexes** manager lists the indexes with their stats (entries, distinct
+values, elements per value, memory, "not served") with Drop (confirmed), and the create form
+(element, label with the same datalist, key, optional name with `defaultIndexName` as its
+placeholder) shows the engine's field errors in place (engine `listIndexes`/`createIndex`/
+`dropIndex`). The Store menu shows the catalog per kind (`definitionsByKind`). The Statistics tab
+adds the compressed strings and dictionaries, and the property indexes' memory, to its memory
+part when there are any.
 
 **Saved queries** (the **Catalog ▾ ▸ Saved queries** manager, `components/catalog.js`; the dialog
 `components/saved-queries.js`; models in `js/saved-queries.js`): the tree by folder (descriptions

@@ -139,6 +139,21 @@ in its catalog (a catalog file loaded into it, say) and is listed with `served: 
 query reads it. A storage that serves indexes implements `GraphStorage::property_indexes` and the
 lookups `vertices_by_property_index`/`edges_by_property_index`.
 
+## In the playground, the dev server and MCP
+
+- **Playground** (WebAssembly and over the dev server): **Catalog ▾ ▸ Property indexes** lists the
+  indexes with their entries, distinct values, elements per value (what an equality reads) and
+  memory, creates one from a form (element, label, key, optional name; the default name is shown
+  as you type) and drops one after a confirmation. The **Statistics** tab of the Profile panel
+  shows *Property indexes* with their memory when the graph has some. Indexes travel with the
+  catalog file (**Catalog ▾ ▸ Save catalog**).
+- **Dev server**: `GET /api/indexes`, `POST /api/indexes/create` `{label, key, element?, name?}`,
+  `POST /api/indexes/drop` `{name}` (see [the dev server](../persistence/dev_server.md)); a
+  create or drop is a commit recorded in the change feed, so open browsers reload. The start
+  block on stderr names the index memory.
+- **MCP**: the tools `list_indexes` (also with `--mcp-read-only`), `create_index` and
+  `drop_index` (not offered read-only, where `query` refuses `g.create_index` too).
+
 ## Limits
 
 - Not indexed: nested values (jpath keys), lists and maps as values, labels other than the one
