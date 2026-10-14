@@ -6,6 +6,7 @@
 /// Applying a schema to existing data: the aggregated violation report.
 pub mod apply;
 pub(crate) mod coerce;
+pub(crate) mod defaults;
 /// Schema diff and its backward-compatibility classification.
 pub mod diff;
 /// Per-label schemas, connections, the mode and [`ElementKind`].

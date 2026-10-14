@@ -35,8 +35,11 @@ pub enum SchemaChangeKind {
     ConstraintChanged,
     /// `additionalProperties` changed.
     AdditionalPropertiesChanged,
-    /// An annotation (`title`, `description`, `default`, ...) changed.
+    /// An annotation (`title`, `description`, `examples`, ...) changed.
     AnnotationChanged,
+    /// `default` or `defaultFunction` changed (added, changed, removed): what a create stores
+    /// for an absent property. Always compatible: no existing data or valid write is affected.
+    DefaultChanged,
 }
 
 impl SchemaChangeKind {
@@ -57,6 +60,7 @@ impl SchemaChangeKind {
             SchemaChangeKind::ConstraintChanged => "constraint_changed",
             SchemaChangeKind::AdditionalPropertiesChanged => "additional_properties_changed",
             SchemaChangeKind::AnnotationChanged => "annotation_changed",
+            SchemaChangeKind::DefaultChanged => "default_changed",
         }
     }
 }
@@ -380,7 +384,37 @@ impl Differ {
             }
         }
         self.constraints(&path, old, new);
-        if old.annotations != new.annotations {
+        // `default`/`defaultFunction` change what a create stores (compatible: no existing data
+        // or valid write is affected), the other annotations change nothing.
+        let empty = crate::graph::schema::Annotations::default();
+        let a = old.annotations.as_deref().unwrap_or(&empty);
+        let b = new.annotations.as_deref().unwrap_or(&empty);
+        if a.default != b.default || a.default_function != b.default_function {
+            let show = |annotations: &crate::graph::schema::Annotations| match (
+                &annotations.default,
+                annotations.default_function,
+            ) {
+                (_, Some(function)) => Some(format!("defaultFunction {}", function.as_str())),
+                (Some(value), None) => Some(format!(
+                    "default {}",
+                    crate::traversal::step::barrier_steps::numeric::preview(value)
+                )),
+                (None, None) => None,
+            };
+            self.push(
+                SchemaChangeKind::DefaultChanged,
+                Some(path.clone()),
+                show(a),
+                show(b),
+                true,
+            );
+        }
+        if a.title != b.title
+            || a.description != b.description
+            || a.comment != b.comment
+            || a.examples != b.examples
+            || a.deprecated != b.deprecated
+        {
             self.push(
                 SchemaChangeKind::AnnotationChanged,
                 Some(path.clone()),

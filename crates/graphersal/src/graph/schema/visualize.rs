@@ -125,8 +125,10 @@ pub(crate) fn constraint_text(node: &PropertySchema) -> String {
     parts.join(", ")
 }
 
-/// Description and `default` of a node (`default` is shown as the annotation it is).
-fn note_text(node: &PropertySchema) -> String {
+/// Title, description and `default`/`defaultFunction` of a node. A `default` is applied on
+/// create only on a label's `top_level` property and never when it is `null`; elsewhere it is
+/// shown as the annotation it is.
+fn note_text(node: &PropertySchema, top_level: bool) -> String {
     let Some(a) = node.annotations() else {
         return String::new();
     };
@@ -138,7 +140,14 @@ fn note_text(node: &PropertySchema) -> String {
         parts.push(description.replace('\n', " "));
     }
     if let Some(default) = &a.default {
-        parts.push(format!("default {} (annotation)", json_text(default)));
+        if top_level && !matches!(default, crate::value::ElementProperty::Null) {
+            parts.push(format!("default {}", json_text(default)));
+        } else {
+            parts.push(format!("default {} (annotation)", json_text(default)));
+        }
+    }
+    if let Some(function) = a.default_function {
+        parts.push(format!("defaultFunction {}", function.as_str()));
     }
     parts.join("; ")
 }
@@ -226,7 +235,8 @@ pub struct SchemaRow {
     pub nullable: String,
     /// The constraints, compact (`0..150`, `length 1..80`, `pattern ^x$`); `-` without any.
     pub constraints: String,
-    /// Title, description and `default` (shown as the annotation it is).
+    /// Title, description, `default` (`(annotation)` where it is not applied: `null`, nested)
+    /// and `defaultFunction`.
     pub notes: String,
 }
 
@@ -242,7 +252,7 @@ impl GraphSchema {
                 let mut rows = Vec::new();
                 flatten(root, "", &mut rows);
                 let label_text = label_cell(label, root);
-                let label_notes = note_text(root);
+                let label_notes = note_text(root, false);
                 // The label's own title/description: its own row before the property rows
                 // (a label without properties gets one row anyway, below).
                 if !rows.is_empty() && !label_notes.is_empty() {
@@ -274,7 +284,7 @@ impl GraphSchema {
                 }
                 for row in rows {
                     let constraints = constraint_text(row.node);
-                    let notes = note_text(row.node);
+                    let notes = note_text(row.node, !row.path.contains(['.', '[']));
                     out.push(SchemaRow {
                         element,
                         label: label_text.clone(),
@@ -448,7 +458,7 @@ impl GraphSchema {
 
     /// The schema as an indented tree: labels, then their properties at every depth.
     pub fn to_tree(&self) -> String {
-        fn line(node: &PropertySchema, name: &str, required: bool) -> String {
+        fn line(node: &PropertySchema, name: &str, required: bool, top_level: bool) -> String {
             let mut text = format!("{name}: {}", node.non_null_type_name());
             let mut notes = Vec::new();
             if required {
@@ -461,7 +471,7 @@ impl GraphSchema {
             if !constraints.is_empty() {
                 notes.push(constraints);
             }
-            let extra = note_text(node);
+            let extra = note_text(node, top_level);
             if !extra.is_empty() {
                 notes.push(extra);
             }
@@ -479,7 +489,7 @@ impl GraphSchema {
                 let text = if is_items {
                     format!("[] items: {}", child.non_null_type_name())
                 } else {
-                    line(child, &name, required)
+                    line(child, &name, required, prefix.chars().count() == 4)
                 };
                 out.push(format!("{prefix}{branch}{text}"));
                 let deeper = format!("{prefix}{}", if last { "    " } else { "│   " });

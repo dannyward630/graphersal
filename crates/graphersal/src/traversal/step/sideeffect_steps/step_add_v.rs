@@ -127,7 +127,7 @@ impl<'g, S: GraphStorage + 'g> GraphStepSideEffectMut<'g, S> for StepAddV {
         let node_index =
             context
                 .storage
-                .add_vertex(self.id.clone(), labels, self.properties.clone())?;
+                .create_vertex(self.id.clone(), labels, self.properties.clone())?;
         match source {
             // Derived from the incoming traverser (TinkerPop `split`): its path, bulk and sack.
             Some(source) => Ok(vec![source.split(TraverserValue::Vertex(node_index))]),
@@ -294,7 +294,7 @@ impl<'g, S: GraphStorage + 'g> GraphStepSideEffectMut<'g, S> for StepAddVBy<'g, 
         let node_index =
             context
                 .storage
-                .add_vertex(self.id.clone(), vec![label], self.properties.clone())?;
+                .create_vertex(self.id.clone(), vec![label], self.properties.clone())?;
         match source {
             // Derived from the incoming traverser: its path, bulk and sack.
             Some(source) => Ok(vec![source.split(TraverserValue::Vertex(node_index))]),

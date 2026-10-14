@@ -9,7 +9,8 @@
 //!   is exactly representable.
 //!
 //! Everything else passes through unchanged, and validation reports any remaining mismatch.
-//! Reads never coerce. A schema's `default` is never applied here or anywhere else.
+//! Reads never coerce. A schema's `default` is coerced like a written value when a create stores
+//! it (`schema/defaults.rs` fills it in, the write path coerces it).
 
 use crate::graph::schema::nested::{NestedCtx, validate_nested};
 use crate::graph::schema::{JsonType, PropertySchema};
