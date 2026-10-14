@@ -129,6 +129,7 @@ mod saved_query_tests;
 mod schema_api_tests;
 mod schema_apply_tests;
 mod schema_constraint_tests;
+mod schema_default_date_tests;
 mod schema_default_tests;
 mod schema_diff_tests;
 mod schema_enforcement_tests;
