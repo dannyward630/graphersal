@@ -69,6 +69,7 @@ graphersal store rollback --help      # the same (-h works too)
 | [`compact`](#compact) | prune to now; give a single file's free space back |
 | [`compact-advice`](#compact-advice) | is `compact` worth it? |
 | [`convert`](#convert) | a directory into a single file, or back |
+| [`upgrade`](#upgrade) | a store of an older Graphersal, converted to the current format |
 | [`repair`](#repair) | a damaged store, repaired into a new directory |
 
 ### create
@@ -316,8 +317,9 @@ graphersal store restore <FILE.zip> <DIR>
 ```
 
 With one argument: makes the backup in `BACKUP_DIR` the **live** store, in place, with the
-original's graph id. With two: unpacks a ZIP backup into the new directory `DIR` as the live
-store. To keep a backup as it is, fork it instead (`store fork BACKUP_DIR NEW_DIR`).
+original's graph id (a backup directory of an older Graphersal: [`upgrade`](#upgrade) it first).
+With two: unpacks a ZIP backup into the new directory `DIR` as the live store; a ZIP of an older
+Graphersal's store is upgraded to the current format as it is unpacked (verified). To keep a backup as it is, fork it instead (`store fork BACKUP_DIR NEW_DIR`).
 
 ```text
 $ graphersal store restore backup/
@@ -417,6 +419,43 @@ Copied the store data/ into the single file graph.gstore: 9 file(s), 9.6 KiB; ve
 Use it: graphersal --graph graph.gstore. data/ is unchanged.
 ```
 
+### upgrade
+
+```text
+graphersal store upgrade <DIR> <NEW> [--single-file]
+graphersal store upgrade <DIR> --in-place
+```
+
+Converts a store written by an older Graphersal (store format version 2: Graphersal 0.1.x) to the
+current format, **without the older binary**. `DIR` is a store directory, a single-file store or a
+backup directory (it stays a backup). With `NEW`: a new store in `NEW` (a new or empty directory,
+or a single file: `NEW` ending in `.gstore`, or `--single-file`); `DIR` is not changed. With
+`--in-place`: `DIR` itself; back it up first (a copy of the closed directory or file will do):
+afterwards the older Graphersal refuses it as newer.
+
+Everything is carried: the graph, its schema and catalog, the history (snapshots and WAL), the
+marks, the lineage, the attic entries and the store's identity and
+[creation parameters](creation_parameters.md); only `GRAPH` and `GRAPH.copy` are rewritten, every
+other file stays byte for byte. `DIR` is verified first. Exit **1** when it is damaged (nothing is
+written; `store repair DIR --to NEW` writes a repaired store of the current format), in use (a
+server or another writer has it open), of a newer or a pre-release version, or a copy of a store
+that is already current; exit **2** without `NEW` or `--in-place`, or with a `NEW` that exists. An
+upgrade in place of a current store prints `nothing to do` (exit 0). An interrupted upgrade leaves
+no store in `NEW` (run it again: it clears what was left), and in place leaves the store either
+older or upgraded (run it again). A ZIP backup of an older store is upgraded by
+`store restore FILE.zip DIR`. See [Format Versions](store_versions.md).
+
+```text
+$ graphersal store upgrade old/ new/
+Verified the store old/ (store format version 2): 2 snapshot(s), 2 WAL segment(s), 10 record(s).
+Upgraded into new/ (store format version 3): 15 file(s), 21.2 KiB; verified. old/ is unchanged (keep using new/: it is the same store, with the same identity).
+Use it: graphersal --graph new/
+$ graphersal store upgrade old/ --in-place
+Verified the store old/ (store format version 2): 2 snapshot(s), 2 WAL segment(s), 10 record(s).
+Upgraded old/ in place to store format version 3: GRAPH rewritten, every other file kept. The older Graphersal no longer opens it.
+Use it: graphersal --graph old/
+```
+
 ### repair
 
 ```text
@@ -424,7 +463,8 @@ graphersal store repair <DIR> --to <NEW_DIR>
 ```
 
 Builds a repaired copy of a damaged store in `NEW_DIR` (never in place; the damaged files are not
-changed) and reports what was repaired, lost and diverged. Exit **0** with `ok: nothing lost`,
+changed) and reports what was repaired, lost and diverged. A store of an older released format
+(Graphersal 0.1.x) is read as it is; the repaired store has the current format. Exit **0** with `ok: nothing lost`,
 exit **1** when data is lost or diverged (the repaired store is written anyway: read the lists),
 exit **2** without `--to`. The repaired store starts without marks: one `mark not carried: name @
 commit N` line per mark of the damaged store at or before the repaired position. When both
