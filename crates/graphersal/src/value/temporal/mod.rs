@@ -32,6 +32,9 @@ pub(crate) mod arith;
 pub(crate) mod civil;
 mod format;
 mod parse;
+#[cfg_attr(not(any(feature = "serde", feature = "io")), allow(dead_code))]
+// ChangeSet serde, GraphSON.
+pub(crate) mod tags;
 #[cfg(test)]
 mod tests;
 #[allow(dead_code)] // A3: zone arguments of the date steps.

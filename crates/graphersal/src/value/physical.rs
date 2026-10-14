@@ -97,9 +97,6 @@ pub(crate) enum PhysicalError {
     IntegerOutOfRange(u64),
     /// Writing to the output sink failed.
     Write,
-    /// The format cannot hold a value of this type yet (the temporal types until phase A2).
-    #[cfg_attr(not(feature = "io"), allow(dead_code))] // Only GraphSON export refuses a type.
-    Unsupported(&'static str),
 }
 
 impl fmt::Display for PhysicalError {
@@ -115,9 +112,6 @@ impl fmt::Display for PhysicalError {
                 write!(f, "u64 ({value}) exceeding i64::MAX")
             }
             PhysicalError::Write => f.write_str("failed to write JSON output"),
-            PhysicalError::Unsupported(kind) => {
-                write!(f, "a {kind} value cannot be written in this format yet")
-            }
         }
     }
 }
@@ -810,6 +804,8 @@ mod serde_glue {
     use serde::ser::{self, SerializeMap, SerializeSeq};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+    use crate::value::temporal::tags;
+
     const NON_FINITE: &str = "non-finite float cannot be represented in JSON";
 
     impl Serialize for PhysicalValue<'_> {
@@ -989,7 +985,8 @@ mod serde_glue {
 
     /// The *tagged* JSON form of a value (rule 7: an explicit per-value type tag): JSON-native
     /// types are plain JSON, a `uuid` is `{"@type": "g:UUID", "@value": "<canonical>"}` at any
-    /// depth, and an object that has an `"@type"` key of its own is escaped with
+    /// depth, a temporal value is `{"@type": "gx:OffsetDateTime", "@value": "<canonical>"}` (the
+    /// tags of `temporal::tags`), and an object that has an `"@type"` key of its own is escaped with
     /// [`OBJECT_TAG`], so no user map can be misread as a tag. [`TaggedOwned`] reads it back
     /// exactly. Used where a value must survive a round trip without a schema (the serialized
     /// `ChangeSet`); everything else keeps the plain codec.
@@ -1031,12 +1028,14 @@ mod serde_glue {
                     map.end()
                 }
                 ElementProperty::Object(fields) => TaggedEntries(fields).serialize(serializer),
-                // A2: the temporal tags (`gx:OffsetDateTime`, ...). Until then a clean error,
-                // never an untagged string a reader would take for a string.
-                ElementProperty::Temporal(value) => Err(ser::Error::custom(format!(
-                    "a {} value cannot be serialized in a change set yet",
-                    value.kind()
-                ))),
+                // `{"@type": "gx:OffsetDateTime", "@value": "<canonical text>"}`, ...
+                // (`temporal::tags`).
+                ElementProperty::Temporal(value) => {
+                    let mut map = serializer.serialize_map(Some(2))?;
+                    map.serialize_entry(TYPE_KEY, tags::tag_of(value))?;
+                    map.serialize_entry(VALUE_KEY, &value.to_string())?;
+                    map.end()
+                }
                 // Scalars are JSON-native. Vertices, edges and non-string-keyed maps are never
                 // property values; they keep the plain codec.
                 ElementProperty::Null
@@ -1052,10 +1051,12 @@ mod serde_glue {
     }
 
     /// A value read from the tagged JSON form written by [`Tagged`]: a `g:UUID` tag becomes a
-    /// `Uuid`, a `graphersal:Object` tag the escaped object, every other JSON type the logical
-    /// type of the same name. An object with an `"@type"` key that is not exactly one of these
-    /// two tags (`@type` and `@value` only, a canonical uuid string, an object payload) is an
-    /// error: it cannot have been written by [`Tagged`], and guessing would corrupt data.
+    /// `Uuid`, a temporal tag (`gx:OffsetDateTime`, ...) its temporal value, a
+    /// `graphersal:Object` tag the escaped object, every other JSON type the logical type of the
+    /// same name. An object with an `"@type"` key that is not exactly one of these tags (`@type`
+    /// and `@value` only, a canonical uuid string, a temporal text of the tag's type, an object
+    /// payload) is an error: it cannot have been written by [`Tagged`], and guessing would
+    /// corrupt data.
     pub(crate) struct TaggedOwned(pub(crate) ElementProperty);
 
     impl<'de> Deserialize<'de> for TaggedOwned {
@@ -1122,8 +1123,17 @@ mod serde_glue {
             {
                 lift_tagged_entries(fields)
             }
+            (Some(PhysicalValue::String(tag)), Some(PhysicalValue::String(text)))
+                if tags::is_tag(&tag) =>
+            {
+                match tags::read_tagged(&tag, &text) {
+                    Some(Ok(value)) => Ok(ElementProperty::Temporal(value)),
+                    Some(Err(err)) => Err(format!("{tag}: {err}")),
+                    None => Err(format!("unknown type tag \"{tag}\"")),
+                }
+            }
             (Some(PhysicalValue::String(tag)), Some(_)) => Err(format!(
-                "unknown or malformed type tag \"{tag}\" (known: \"{UUID_TAG}\" with a uuid string, \"{OBJECT_TAG}\" with an object)"
+                "unknown or malformed type tag \"{tag}\" (known: \"{UUID_TAG}\" with a uuid string, \"{OBJECT_TAG}\" with an object, the temporal tags \"gx:OffsetDateTime\", \"gx:LocalDate\", \"gx:LocalDateTime\", \"gx:LocalTime\", \"gx:Duration\", \"gx:Period\", \"graphersal:Interval\" with their text)"
             )),
             _ => Err(format!(
                 "a tagged value needs a string \"{TYPE_KEY}\" and a \"{VALUE_KEY}\""
