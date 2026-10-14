@@ -670,6 +670,31 @@ impl Playground {
             .map_err(|e| JsError::new(&e))
     }
 
+    /// The property indexes with their current stats, as JSON text: `[{name, element, label,
+    /// key, served, stats}]` (`graphersal_session::indexes`).
+    #[wasm_bindgen(js_name = listIndexes)]
+    pub fn list_indexes(&self) -> String {
+        to_text(&self.session.list_indexes())
+    }
+
+    /// Creates a property index from the form's spec (JSON text `{label, key, element?,
+    /// name?}`): `{ok, index}` or `{ok: false, errors: [{field, message, help?}]}`; never throws
+    /// for a refused index.
+    #[wasm_bindgen(js_name = createIndex)]
+    pub fn create_index(&mut self, spec: &str) -> Result<String, JsError> {
+        let spec = body_json(spec)?;
+        Ok(to_text(&self.session.create_index(&spec)))
+    }
+
+    /// Drops the property index `name`: `{dropped}`.
+    #[wasm_bindgen(js_name = dropIndex)]
+    pub fn drop_index(&mut self, name: &str) -> Result<String, JsError> {
+        self.session
+            .drop_index(name)
+            .map(|dropped| to_text(&serde_json::json!({ "dropped": dropped })))
+            .map_err(|e| JsError::new(&e))
+    }
+
     /// "Save graph" as GraphSON: `{text, schema, warnings}`: the graph as GraphSON 3.0 text (line
     /// form), the stored schema as JSON text (`null` without one), checked by loading both back.
     #[wasm_bindgen(js_name = saveGraphson)]
@@ -771,6 +796,29 @@ mod tests {
         assert_eq!(json(p.load_catalog(&file, true).unwrap())["loaded"], 1);
         assert_eq!(json(p.info())["compressionRules"], 1);
         assert_eq!(json(p.info())["catalog"]["compression"], 1);
+    }
+
+    #[test]
+    fn property_indexes_through_the_playground_api() {
+        let json = |text: String| -> Value { serde_json::from_str(&text).expect("JSON") };
+        let mut p = Playground::new();
+        p.load_sample("modern").unwrap();
+        let created = json(
+            p.create_index(r#"{"label": "person", "key": "age"}"#)
+                .unwrap(),
+        );
+        assert_eq!(created["ok"], true, "{created}");
+        assert_eq!(created["index"]["name"], "person_age");
+        assert_eq!(json(p.list_indexes())[0]["stats"]["entries"], 4);
+        let refused = json(p.create_index(r#"{"label": "person"}"#).unwrap());
+        assert_eq!(refused["errors"][0]["field"], "key");
+        assert_eq!(json(p.info())["propertyIndexes"], 1);
+        let file = p.save_catalog();
+        assert!(file.contains("\"property_index\""), "{file}");
+        assert_eq!(json(p.drop_index("person_age").unwrap())["dropped"], true);
+        assert_eq!(json(p.info())["propertyIndexes"], 0);
+        assert_eq!(json(p.load_catalog(&file, true).unwrap())["loaded"], 1);
+        assert_eq!(json(p.info())["catalog"]["property_index"], 1);
     }
 
     /// The property editor: the typed edit view, a dry run, a save, a refused value.
