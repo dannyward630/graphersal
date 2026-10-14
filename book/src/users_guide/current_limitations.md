@@ -7,9 +7,11 @@ are not implemented yet in [TinkerPop Compliance](../for_developers/tinkerpop_co
 
 ## Data model
 
-- **No date or time values.** They come with a date type in 0.2.0. A GraphSON import skips dates
-  and reports them ([GraphSON](graphson.md)); a schema refuses `"format": "date-time"`
-  ([Schemas](schema_enforcement.md#what-is-an-error-and-why)).
+- **Dates keep an offset, not a zone.** A `datetime` stores its UTC offset; a time zone is an
+  argument of the operations that need one, never part of a value, and the zone database is the
+  one bundled with the release ([Time Zones](../dates/time_zones.md)). GraphSON's `gx:Year`,
+  `gx:YearMonth`, `gx:MonthDay`, `gx:OffsetTime` and `gx:ZoneOffset` are skipped on import
+  ([GraphSON](graphson.md)).
 - **One value per property key.** Only `Cardinality.single` is written; store several values as
   one array ([Upserts](upserts.md)). There are no meta-properties: a GraphSON import folds them
   into the `_meta` property.

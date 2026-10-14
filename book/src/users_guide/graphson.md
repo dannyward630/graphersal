@@ -72,7 +72,8 @@ Nothing is guessed: a string stays a string whatever it looks like (a date-like 
 type tag, as in GraphSON 1.0 or `types=false`, stays a `string`; declare the property in the
 schema to store it as a date), and a value whose type Graphersal cannot hold is **skipped**,
 never converted to a string or a number. The `java.time` types map to the date and time types
-by their tag (both the `gx:` and the `g:` prefix are read); their text is read as `java.time`
+by their tag (both the `gx:` and the `g:` prefix are read; the types are described in
+[Dates and Times](../dates/index.md)); their text is read as `java.time`
 writes it (seconds may be missing, up to nine fraction digits). Graphersal's resolution is one
 microsecond: digits below it are cut, and the import reports it. A date outside the years
 -9999 to 9999, or text that is not of the tag's type, is skipped as malformed. The export writes

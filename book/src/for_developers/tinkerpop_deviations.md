@@ -23,8 +23,9 @@ These TinkerPop features are not planned. Their scenarios are listed by id in
 | `io-step` | `io()`, `read()`, `write()`, the `IO` tokens | GraphSON and GraphML import and export is Graphersal's own API (`GraphSource::from_graphson`, `from_graphml`, `import_graphson`, `import_graphml`, the CLI's `--graph`), not a traversal step ([GraphSON](#graphson)) |
 | `graph-algorithms` | `pageRank()`, `shortestPath()`, `connectedComponent()`, `peerPressure()` and their token classes | GraphComputer vertex programs, not planned for the traversal language (the scenarios are `@GraphComputerOnly` as well) |
 
-Dates (`asDate`, `dateAdd`, `dateDiff`, `DT`, `GType.DATETIME`) are *not* in this list: they are planned for 0.2.0
-and stay unsupported until then.
+Dates (`asDate`, `dateAdd`, `dateDiff`, `DT`, `GType.DATETIME`) are implemented as TinkerPop specifies them,
+with no deviation; Graphersal's additions are listed in
+[Dates and Times: TinkerPop Compatibility](../dates/tinkerpop.md).
 
 ## Deliberate differences
 
@@ -186,7 +187,7 @@ Counts are in-scope scenarios (`missing` unless noted; the current numbers are i
 |---|---|---|
 | `repeat.order = dfs` body `limit()` | counts per traverser, not per iteration (a Graphersal addition, see above) | none |
 | `local(tree("a"))` needs a streaming executor | a step after the `local()` child sees the finished tree, not the progressive one | none known to fail |
-| literal types the harness cannot express (`datetime`, `set`) | `translate`; a `{..}` set literal is not mapped to `Set.of(..)` because Graphersal has no set *value* (only a set side-effect seed), so `GType.SET` would have nothing to match | about 30 (byte/short/bigint/bigdecimal are [excluded for good](#excluded-for-good)) |
+| literal types the harness cannot express (`set`) | `translate`; a `{..}` set literal is not mapped to `Set.of(..)` because Graphersal has no set *value* (only a set side-effect seed), so `GType.SET` would have nothing to match | a few, two of them `Orderability` scenarios that also hold dates (byte/short/bigint/bigdecimal are [excluded for good](#excluded-for-good)) |
 | `GType.SET`, `GType.TREE`, `GType.VPROPERTY` | `missing`; no set, tree or vertex-property value type | 7 |
 | `call()` service step | `translate` (`call` is a Rhai built-in function, so a future step needs a DSL name of its own); no service model (registry, `tinkerpop.dc`, `list`, `search`) yet; may come with the server | 20 |
 | `@DisallowNullPropertyValues`, multi-/meta-properties, `valueMap().asString()` | deliberate, outside the compatibility scope | see [Deliberate incompatibilities](tinkerpop_compliance.md#deliberate-incompatibilities) |

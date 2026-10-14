@@ -157,7 +157,9 @@ the explicit declaration at work, like the `uuid` coercion, never a guess from c
 undeclared date-like string stays a `string`. A stored string does not conform to a temporal
 format (reads never coerce), and one temporal type never conforms to another (a `date` is not a
 `datetime`). JSON Schema's `format` is an annotation for other validators, which ignore a format
-they do not know, so a schema with `local-date-time` stays usable with them.
+they do not know, so a schema with `local-date-time` stays usable with them. The part
+[Dates and Times](../dates/index.md) describes the types themselves; its page
+[Dates in a Schema](../dates/schema.md) has examples.
 
 ### Keywords
 

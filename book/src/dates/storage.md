@@ -1,0 +1,71 @@
+# Storage and Exchange
+
+A date keeps its type wherever it goes: in memory, in a snapshot or a Store, in a change set and
+in a GraphSON file. GraphML has no date type and needs the schema.
+
+## In memory
+
+A date is stored inline in the property value, 16 bytes at most, without a heap allocation: a
+`date` is a day number, a `time` and a `localdatetime` microseconds, a `datetime` microseconds
+since the epoch plus its offset in seconds, a `duration` its months, days and microseconds. Equality
+and ordering compare these numbers ([Comparing and Sorting](comparing.md)).
+
+## Snapshots, journals and the Store
+
+The binary format (packed snapshots `.gsnap`, Store segments, the write-ahead log) has a value
+tag per type, 9 to 13, defined in [the format specification](../persistence/format.md#3-value-encoding):
+the exact payload, the range of each type, and the rule that a `datetime` keeps its offset while
+equality uses the instant. These tags came with **file format version 2**: a build that knows them
+writes version 2 and reads versions 1 and 2, so a `.gsnap` written by 0.1.x still loads, while an
+older build refuses a version 2 file instead of misreading it. See
+[Format Versions and Upgrade](../persistence/store_versions.md) for a Store written by 0.1.x.
+
+## Change sets
+
+A serialized [`ChangeSet`](../users_guide/transactions.md#serialization) (feature `serde`) writes a
+date as a per-value type tag in TinkerPop's GraphSON style, so a replay restores the type without a
+schema:
+
+| Type | Tag |
+|---|---|
+| `datetime` | `{"@type": "gx:OffsetDateTime", "@value": "2024-05-01T09:30:00+02:00"}` |
+| `date`, `localdatetime`, `time` | `gx:LocalDate`, `gx:LocalDateTime`, `gx:LocalTime` |
+| `duration` of microseconds only | `gx:Duration` (`PT26H`) |
+| `duration` of months and days only | `gx:Period` (`P1Y2M3D`) |
+| any other `duration` | `graphersal:Interval` (`P1MT2H`) |
+
+Reading is strict: the text must be a value of the tag's type, and a `gx:OffsetDateTime` must carry
+its offset.
+
+## GraphSON
+
+GraphSON 3.0 reads and writes the `java.time` types: `g:Date`/`g:Timestamp` (epoch milliseconds)
+become a `datetime` in UTC, `gx:OffsetDateTime`, `gx:Instant` and `gx:ZonedDateTime` a `datetime`
+with the offset of the text (the zone id of a `gx:ZonedDateTime` is dropped and reported),
+`gx:LocalDate`, `gx:LocalDateTime` and `gx:LocalTime` the local types, `gx:Duration` and `gx:Period`
+a `duration`. The export writes the tags of the change set table above, which TinkerGraph's
+`g.io(file).read()` loads, with one exception: a `duration` with both months or days **and** a time
+part has no `java.time` type, so it is written as `graphersal:Interval`, which only Graphersal
+reads (a [deliberate deviation](../for_developers/tinkerpop_deviations.md)). Digits below a
+microsecond are cut and reported, and the `java.time` types Graphersal cannot hold (`gx:Year`,
+`gx:YearMonth`, `gx:MonthDay`, `gx:OffsetTime`, `gx:ZoneOffset`) are skipped and reported. The
+full mapping is on the [GraphSON](../users_guide/graphson.md#type-mapping) page.
+
+A date-like string without a type tag (GraphSON 1.0, `types=false`) stays a string; declare the
+property in the schema to store it as a date.
+
+## GraphML
+
+GraphML has no date type: a date is written as its canonical text under a `string` key. It is read
+back as a date only when the **target graph's schema** declares the property with a date
+`format`: set the schema on the empty graph first, then import (the playground's "Load from file"
+takes the schema file next to the graph file; the CLI's `--schema`). Without a schema the text
+stays a string. See [UUID Values](../users_guide/uuid_values.md), which describes the same rule for
+UUIDs, and the [Schemas](../users_guide/schema_enforcement.md) page.
+
+## JSON, tables and the playground
+
+Tables, JSON results, the CLI's visualizers, MCP and the dev server write the canonical text
+(`"2023-08-02T09:30:00+02:00"`); a script value prints as its literal
+(`datetime("2023-08-02T09:30:00+02:00")`). The playground's property editor keeps the type: it
+shows and edits a date property as one of the five date types ([Text Formats](text_formats.md)).
