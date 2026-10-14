@@ -1085,3 +1085,39 @@ mod stores {
         served(&loaded, 4);
     }
 }
+
+/// Dates and times are not index keys (integration of #3 and #4): an indexed key holding dates
+/// keeps the index exact, a condition on a date is served by a scan, and the results are the
+/// same with and without the index.
+#[test]
+fn date_values_are_not_index_keys_and_conditions_on_them_scan() {
+    let graph = Arc::new(GraphSource::tinkerpop_modern());
+    ok(&graph, r#"g.create_index(#{label: "person", key: "born"})"#);
+    ok(
+        &graph,
+        r#"g.v().has("name", "marko").property("born", date("1990-01-01")).iterate();
+           g.v().has("name", "josh").property("born", date("1985-06-30")).iterate();
+           g.v().has("name", "vadas").property("born", 1990).iterate()"#,
+    );
+    check(&graph);
+    for query in [
+        r#"v().has_label("person").has("born", P.gt(date("1988-01-01")))"#,
+        r#"v().has_label("person").has("born", date("1985-06-30"))"#,
+        r#"v().has_label("person").has("born", P.lt(datetime("2000-01-01T00:00Z")))"#,
+    ] {
+        assert!(!uses_index(&graph, query), "{query}");
+        let (with, without) = both(&graph, query);
+        assert_eq!(with, without, "{query}");
+    }
+    let query = r#"v().has_label("person").has("born", 1990)"#;
+    assert!(uses_index(&graph, query));
+    let (with, without) = both(&graph, query);
+    assert_eq!(with, without);
+    assert_eq!(with.unwrap().len(), 1);
+    ok(
+        &graph,
+        r#"g.v().has("name", "marko").property("born", date("1991-01-01")).iterate();
+           g.v().has("name", "josh").drop().iterate()"#,
+    );
+    check(&graph);
+}

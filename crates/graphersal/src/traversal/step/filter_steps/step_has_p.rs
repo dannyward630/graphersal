@@ -21,7 +21,7 @@ impl<B: Into<PValue> + Debug + Clone + Send + Sync> fmt::Display for StepHasP<B>
 }
 
 /// An operand of a predicate as the stored value it compares with; `None` for `NaN` (it compares
-/// with nothing, the index is not used).
+/// with nothing, the index is not used) and for a date or time (not an index key yet: scanned).
 fn index_operand(value: PValue) -> Option<ElementProperty> {
     Some(match value {
         PValue::String(text) => ElementProperty::String(text),
@@ -34,6 +34,7 @@ fn index_operand(value: PValue) -> Option<ElementProperty> {
         PValue::Boolean(flag) => ElementProperty::Boolean(flag),
         PValue::Uuid(bits) => ElementProperty::Uuid(bits),
         PValue::Null => ElementProperty::Null,
+        PValue::Temporal(_) => return None,
     })
 }
 

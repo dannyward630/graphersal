@@ -432,7 +432,7 @@ enum KeyKind {
 
 impl IndexKey {
     /// The key of a stored (or queried) value; `None` for a value that is not indexed (arrays,
-    /// objects, elements, maps).
+    /// objects, elements, maps, dates and times).
     fn of(value: &ElementProperty) -> Option<IndexKey> {
         match value {
             ElementProperty::Null => Some(IndexKey::Null),
@@ -444,7 +444,9 @@ impl IndexKey {
             ElementProperty::String(text) => Some(IndexKey::Str(text.clone())),
             ElementProperty::Compressed(text) => Some(IndexKey::Str(text.text())),
             ElementProperty::Uuid(bits) => Some(IndexKey::Uuid((*bits >> 64) as u64, *bits as u64)),
-            ElementProperty::Object(_)
+            // Dates and times are not index keys yet: a condition on one is served by a scan.
+            ElementProperty::Temporal(_)
+            | ElementProperty::Object(_)
             | ElementProperty::Array(_)
             | ElementProperty::Vertex(_)
             | ElementProperty::Edge(_)

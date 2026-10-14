@@ -64,6 +64,7 @@ A `v()`/`e()` start step reads an index when
 | `has(key, P.outside(a, b))` | two ranges |
 | `P.neq`, `P.without`, text predicates, `P.typeOf`, `and`/`or`/`not` composites | not served (scan) |
 | a value that is a list or a map (`has("tags", ["a"])`) | not served (scan) |
+| a date or time value (`has("born", P.gt(date("1990-01-01")))`) | not served (scan); dates and times are not index keys yet |
 | `v().has("title", "CEO")` without a label, a jpath key | not served (scan) |
 
 With several served conditions the optimizer picks the **most selective** index from the index
