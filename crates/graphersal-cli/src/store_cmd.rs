@@ -29,6 +29,9 @@ USAGE:
                                      --chunk-size and --on-damage are fixed for its life
     graphersal store convert <DIR> <NEW> [--single-file]
                                      copy a closed store into a new directory or a single file
+    graphersal store upgrade <DIR> <NEW> | <DIR> --in-place
+                                     convert a store (or backup) of an older Graphersal to the
+                                     current format, into NEW or in place; no older binary needed
     graphersal store compact <DIR> [--drop-marks]
                                      prune, then give a single file's free space back;
                                      refused when marks would become unreachable, unless
@@ -126,6 +129,22 @@ pub fn command_help(command: &str) -> Option<String> {
              a directory into a single file (NEW ending in .gstore, or --single-file) or back.\n\
              NEW must not exist (or be empty); DIR must be closed (no server on it). The copy\n\
              is verified; DIR is not changed.",
+            false,
+        ),
+        "upgrade" => (
+            "graphersal store upgrade <DIR> <NEW> [--single-file] | graphersal store upgrade <DIR> --in-place",
+            "Converts a store written by an older Graphersal (0.1.x) to the current format; no\n\
+             older binary is needed. With NEW: a new store in NEW (a new directory, or a single\n\
+             file: NEW ending in .gstore, or --single-file); DIR is not changed. With\n\
+             --in-place: DIR itself (back it up first: afterwards the older Graphersal no longer\n\
+             opens it). Everything is carried: the graph, schema, catalog, the history, marks,\n\
+             attic entries and the store's identity and creation parameters; only GRAPH and\n\
+             GRAPH.copy are rewritten, every other file is kept byte for byte. DIR may be a\n\
+             directory, a .gstore file or a backup directory (it stays a backup). DIR is verified\n\
+             first: a damaged store is refused (store repair DIR --to NEW writes a repaired\n\
+             store of the current format), and so is a store in use (no server on it). The copy\n\
+             is verified before it becomes a store; an interrupted upgrade leaves no store in\n\
+             NEW (run it again). A ZIP backup of an older store is upgraded by `store restore`.",
             false,
         ),
         "compact" => (
@@ -596,6 +615,7 @@ pub fn run(args: &[String]) -> i32 {
     let known: &[&str] = match command.as_str() {
         "create" => &["from", "chunk-size", "single-file", "on-damage"],
         "convert" => &["single-file"],
+        "upgrade" => &["single-file", "in-place"],
         "compact-advice" => &["min-ratio", "min-reclaimable", "min-size"],
         "checkpoint" => &["name"],
         "prune" => &["up-to", "drop-marks"],
@@ -1295,6 +1315,11 @@ pub fn run(args: &[String]) -> i32 {
                 Err(err) => fail(err),
             }
         }
+        "upgrade" => run_upgrade(
+            &positional,
+            flag("in-place").is_some(),
+            flag("single-file").is_some(),
+        ),
         "compact" => {
             try_code!(need(1));
             let dir = &positional[0];
@@ -1397,6 +1422,86 @@ pub fn run(args: &[String]) -> i32 {
         }
         other => usage(&format!("Unknown store command: {other}")),
     }
+}
+
+/// `graphersal store upgrade`: into a copy (`<DIR> <NEW>`) or `--in-place`.
+fn run_upgrade(positional: &[String], in_place: bool, single_file: bool) -> i32 {
+    let report = match (in_place, positional) {
+        (true, [dir]) => {
+            if single_file {
+                return usage(
+                    "`store upgrade --in-place` keeps the store's backend: drop --single-file",
+                );
+            }
+            Store::upgrade_in_place(dir.as_str())
+        }
+        (false, [from, to]) => {
+            if Path::new(to).exists()
+                && !Path::new(to)
+                    .read_dir()
+                    .is_ok_and(|mut entries| entries.next().is_none())
+                && !Path::new(to).join("upgrade-in-progress.tmp").exists()
+            {
+                return usage(&format!(
+                    "'{to}' exists already: choose a new directory or file"
+                ));
+            }
+            Store::upgrade(from.as_str(), backend_of(to, single_file))
+        }
+        (true, _) => return usage("`store upgrade <DIR> --in-place` takes 1 argument"),
+        (false, _) => {
+            return usage("`store upgrade` takes <DIR> <NEW> (a new store), or <DIR> --in-place");
+        }
+    };
+    let report = match report {
+        Ok(report) => report,
+        Err(err) => return fail(err),
+    };
+    let dir = &positional[0];
+    if report.already_current {
+        outln!(
+            "{dir} already has the current store format (version {}): nothing to do.",
+            report.to_version
+        );
+        return EXIT_OK;
+    }
+    let what = if report.backup.is_some() {
+        "backup"
+    } else {
+        "store"
+    };
+    let verify = &report.verify;
+    outln!(
+        "Verified the {what} {dir} (store format version {}): {} snapshot(s), {} WAL segment(s), \
+         {} record(s).",
+        report.from_version,
+        verify.snapshots_checked,
+        verify.segments_checked,
+        verify.records_checked
+    );
+    if report.in_place {
+        outln!(
+            "Upgraded {dir} in place to store format version {}: GRAPH rewritten, every other \
+             file kept. The older Graphersal no longer opens it.",
+            report.to_version
+        );
+    } else {
+        let to = &positional[1];
+        outln!(
+            "Upgraded into {to} (store format version {}): {} file(s), {}; verified. {dir} is \
+             unchanged (keep using {to}: it is the same store, with the same identity).",
+            report.to_version,
+            report.files_copied,
+            bytes_text(report.bytes_copied)
+        );
+    }
+    let target = if report.in_place { dir } else { &positional[1] };
+    if report.backup.is_some() {
+        outln!("It stays a backup: graphersal store restore {target} makes it the live store.");
+    } else {
+        outln!("Use it: graphersal --graph {target}");
+    }
+    EXIT_OK
 }
 
 /// The marks a fork or repair did not carry, one line each (`name @ commit N`), with where they
@@ -1616,6 +1721,7 @@ mod tests {
             "attic",
             "repair",
             "convert",
+            "upgrade",
             "compact",
             "compact-advice",
             "help",

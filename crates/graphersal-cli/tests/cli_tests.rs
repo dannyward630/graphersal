@@ -3493,3 +3493,88 @@ fn store_commands_survive_closed_pipes() {
     assert_eq!(res.stdout.trim(), "6", "{}", res.stderr);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Copies a directory tree (a store fixture) to `to`.
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let path = entry.unwrap().path();
+        let target = to.join(path.file_name().unwrap());
+        if path.is_dir() {
+            copy_tree(&path, &target);
+        } else {
+            std::fs::copy(&path, &target).unwrap();
+        }
+    }
+}
+
+/// `graphersal store upgrade`: a store written by the released 0.1.0 (the golden fixture of
+/// `graphersal`'s tests) is refused by `--graph` with the command that upgrades it; the
+/// upgrade into a copy and in place both work without the older binary.
+#[test]
+fn store_upgrade_converts_a_store_of_graphersal_0_1() {
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../graphersal/tests/data/v0.1.0");
+    let root = temp_path("store-upgrade");
+    let _ = std::fs::remove_dir_all(&root);
+    let old = root.join("old");
+    copy_tree(&fixtures.join("store"), &old);
+    let old = old.to_string_lossy().to_string();
+    let new = root.join("new").to_string_lossy().to_string();
+
+    let res = run(&["--graph", &old, "-e", "g.v().count().next()"], "");
+    assert_eq!(res.code, 1);
+    assert!(
+        res.stderr
+            .contains(&format!("graphersal store upgrade {old} <new_dir>")),
+        "{}",
+        res.stderr
+    );
+    // The dev server does not start on it either, with the same help.
+    let res = run(&["--graph", &old, "--server", "--port", "0"], "");
+    assert_eq!(res.code, 1);
+    assert!(
+        res.stderr.contains("graphersal store upgrade"),
+        "{}",
+        res.stderr
+    );
+    let res = run(&["store", "upgrade", &old], "");
+    assert_eq!(
+        res.code, 2,
+        "neither a target nor --in-place: {}",
+        res.stderr
+    );
+    let res = run(&["store", "upgrade", &old, &new], "");
+    assert_eq!(res.code, 0, "{}", res.stderr);
+    assert!(
+        res.stdout.contains("store format version 2"),
+        "{}",
+        res.stdout
+    );
+    assert!(
+        res.stdout
+            .contains(&format!("Use it: graphersal --graph {new}"))
+    );
+    let res = run(&["--graph", &new, "-e", "g.v().count().next()"], "");
+    assert_eq!(res.stdout.trim(), "9", "{}", res.stderr);
+    let res = run(&["store", "marks", &new], "");
+    assert!(res.stdout.contains("before-rollback"), "{}", res.stdout);
+    // An existing target is refused; the older store is unchanged and still older.
+    let res = run(&["store", "upgrade", &old, &new], "");
+    assert_eq!(res.code, 2, "{}", res.stderr);
+    let res = run(&["store", "info", &old], "");
+    assert_eq!(res.code, 1, "{}", res.stdout);
+
+    // In place, then again (nothing to do).
+    let res = run(&["store", "upgrade", &old, "--in-place"], "");
+    assert_eq!(res.code, 0, "{}", res.stderr);
+    assert!(res.stdout.contains("in place"), "{}", res.stdout);
+    let res = run(&["store", "upgrade", &old, "--in-place"], "");
+    assert_eq!(res.code, 0, "{}", res.stderr);
+    assert!(res.stdout.contains("nothing to do"), "{}", res.stdout);
+    let res = run(&["store", "verify", &old], "");
+    assert_eq!(res.code, 0, "{}{}", res.stdout, res.stderr);
+    let res = run(&["store", "help", "upgrade"], "");
+    assert!(res.stdout.contains("--in-place"), "{}", res.stdout);
+    let _ = std::fs::remove_dir_all(&root);
+}
