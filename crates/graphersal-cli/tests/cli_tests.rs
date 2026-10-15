@@ -204,6 +204,21 @@ fn dates_print_as_their_canonical_text_and_values_as_literals() {
 }
 
 #[test]
+fn vectors_print_their_kind_in_tables_and_as_literals_as_values() {
+    let query =
+        r#"g.v(1).property("emb", vector([0.5, -1.0, 0.25, 2.0, 3.0], "i8")).values("emb")"#;
+    let table = run(&["-e", query], "");
+    assert_eq!(table.code, 0, "stderr: {}", table.stderr);
+    assert!(table.stdout.contains("vector[5 i8] ["), "{}", table.stdout);
+    let json = run(&["--format", "json", "-e", query], "");
+    assert_eq!(json.code, 0, "stderr: {}", json.stderr);
+    assert!(json.stdout.contains("3.0"), "{}", json.stdout);
+    let value = run(&["-e", r#"vector([0.5, 1.0])"#], "");
+    assert_eq!(value.code, 0, "stderr: {}", value.stderr);
+    assert_eq!(value.stdout.trim(), "vector([0.5, 1.0])");
+}
+
+#[test]
 fn failing_query_reports_diagnostic_on_stderr() {
     let res = run(&["-e", "g.v().values(\"name\").sum().next()"], "");
 

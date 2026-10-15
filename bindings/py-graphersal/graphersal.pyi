@@ -15,6 +15,7 @@ __all__ = [
     "Vertex",
     "Edge",
     "Interval",
+    "Vector",
     "GraphersalError",
     "PermissionDeniedError",
     "CommitRejectedError",
@@ -37,6 +38,7 @@ _ParamValue = Union[
     datetime.time,
     datetime.timedelta,
     "Interval",
+    "Vector",
     "Vertex",
     "Edge",
 ]
@@ -62,6 +64,35 @@ class Interval:
         """The time part in microseconds."""
     def to_iso(self) -> str:
         """The ISO 8601 text (``P1Y2M3DT4H``), the engine's canonical form."""
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+
+class Vector:
+    """A vector (an embedding): a fixed-length list of numbers stored as one value, with the
+    element kind ``"f32"`` (default), ``"f16"``, ``"i8"`` (symmetric scalar quantization: one
+    code per component and one scale per vector) or ``"bit"`` (one sign bit per component). A
+    vector property read back is a ``Vector``; a ``Vector`` passed as a parameter is a vector in
+    the script (``g.v().has("emb", q)``). Immutable; equal when element, dimension and
+    components are equal. Embeddings are computed outside the engine (book page "Vectors")."""
+
+    def __init__(self, values: Any, element: Literal["f32", "f16", "i8", "bit"] = "f32") -> None:
+        """``Vector(values, element="f32")``: ``values`` is a list (or tuple) of numbers or any
+        one-dimensional ``float32``/``float64`` buffer (a ``numpy.ndarray``, ``array.array``),
+        read without a ``numpy`` dependency. Another element quantizes the values. A NaN, an
+        infinity, an empty list or more than 65536 components raise ``ValueError``."""
+    @property
+    def element(self) -> str:
+        """The element kind: ``"f32"``, ``"f16"``, ``"i8"`` or ``"bit"``."""
+    @property
+    def dimension(self) -> int:
+        """The number of components (also ``len(v)``)."""
+    def tolist(self) -> list[float]:
+        """The components as floats (dequantized: an ``i8`` component is ``code * scale``, a
+        ``bit`` one ``1.0`` or ``-1.0``); ``numpy.array(v.tolist(), dtype="float32")`` gives an
+        array."""
+    def quantize(self, element: Literal["f32", "f16", "i8", "bit"]) -> "Vector":
+        """This vector in another element kind (``quantize("f32")`` dequantizes)."""
+    def __len__(self) -> int: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
 

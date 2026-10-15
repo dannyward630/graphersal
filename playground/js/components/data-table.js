@@ -1,6 +1,6 @@
 // A plain table for {columns, rows}: sticky header, row numbers, typed cell styling.
 
-import { formatValue } from '../util.js';
+import { formatValue, isVectorCell, vectorPreview, vectorSummary } from '../util.js';
 
 export const DataTable = {
   props: {
@@ -15,6 +15,7 @@ export const DataTable = {
   setup() {
     function cellClass(v) {
       if (v === null || v === undefined) return 'cell-null';
+      if (isVectorCell(v)) return 'cell-vector';
       if (typeof v === 'number') return 'num';
       if (typeof v === 'boolean') return 'cell-bool';
       if (typeof v === 'object') return 'cell-json';
@@ -24,7 +25,7 @@ export const DataTable = {
       if (v === undefined) return '';
       return formatValue(v);
     }
-    return { cellClass, cellText };
+    return { cellClass, cellText, isVectorCell, vectorPreview, vectorSummary };
   },
   template: `
   <div class="data-table-wrap">
@@ -39,7 +40,10 @@ export const DataTable = {
         <tr v-for="(row, i) in table.rows" :key="i">
           <td v-if="rowNumbers" class="rownum">{{ i + 1 }}<button v-if="rowAction && rowAction.applies(row, table.columns)" type="button"
               class="row-action" :title="rowAction.title" :aria-label="rowAction.title" @click="rowAction.run(row, table.columns)">{{ rowAction.label }}</button></td>
-          <td v-for="(v, j) in row" :key="j" :class="cellClass(v)" :title="cellText(v)">{{ cellText(v) }}</td>
+          <td v-for="(v, j) in row" :key="j" :class="cellClass(v)" :title="cellText(v)">
+            <details v-if="isVectorCell(v)"><summary>{{ vectorSummary(v) }}</summary><span class="mono">{{ vectorPreview(v) }}</span></details>
+            <template v-else>{{ cellText(v) }}</template>
+          </td>
         </tr>
       </tbody>
     </table>

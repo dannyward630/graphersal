@@ -4,7 +4,9 @@
 use graphersal::prelude::{CompactString, ElementProperty, Number};
 use graphersal::profile::TraversalMetrics;
 use graphersal::script::rhai::Dynamic;
-use graphersal::script::{ScriptEdge, ScriptExecution, ScriptUuid, ScriptVertex, metrics_to_map};
+use graphersal::script::{
+    ScriptEdge, ScriptExecution, ScriptUuid, ScriptVector, ScriptVertex, metrics_to_map,
+};
 use graphersal::temporal::{Date, DateTime, Duration, LocalDateTime, Temporal, Time};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
@@ -78,6 +80,10 @@ pub(crate) fn dynamic_to_pyobject(py: Python<'_>, value: Dynamic) -> PyResult<Py
         let uuid = uuid::Uuid::from_u128(uuid.as_u128());
         return Ok(uuid.into_pyobject(py)?.into_any().unbind());
     }
+    if value.is::<ScriptVector>() {
+        let vector = value.cast::<ScriptVector>();
+        return crate::vector::vector_to_pyobject(py, vector.vector().clone());
+    }
     if value.is::<ScriptVertex>() {
         let vertex = value.cast::<ScriptVertex>();
         return Ok(crate::element::vertex_to_python(
@@ -119,6 +125,7 @@ fn property_to_pyobject(py: Python<'_>, value: &ElementProperty) -> PyResult<Py<
             .into_any()
             .unbind(),
         ElementProperty::Temporal(value) => crate::temporal::temporal_to_pyobject(py, value)?,
+        ElementProperty::Vector(vector) => crate::vector::vector_to_pyobject(py, vector)?,
         ElementProperty::Array(items) => {
             let items = items
                 .iter()
@@ -254,11 +261,14 @@ fn python_value_to_element_property(value: &Bound<'_, PyAny>) -> Result<ElementP
     if let Some(temporal) = crate::temporal::python_to_temporal(value)? {
         return Ok(ElementProperty::Temporal(temporal));
     }
+    if let Some(vector) = crate::vector::python_vector(value) {
+        return Ok(ElementProperty::Vector(vector));
+    }
     if let Some(element) = crate::element::python_element_to_property(value) {
         return Ok(element);
     }
     Err(format!(
-        "unsupported parameter type '{}'; only int, float, str, bool, None, uuid.UUID, datetime.datetime, datetime.date, datetime.time, datetime.timedelta, graphersal.Interval, Vertex and Edge are accepted",
+        "unsupported parameter type '{}'; only int, float, str, bool, None, uuid.UUID, datetime.datetime, datetime.date, datetime.time, datetime.timedelta, graphersal.Interval, graphersal.Vector, Vertex and Edge are accepted",
         value
             .get_type()
             .name()

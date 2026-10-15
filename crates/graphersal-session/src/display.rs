@@ -34,6 +34,38 @@ pub const SUBGRAPH_MAX_BYTES: usize = 16 * 1024 * 1024;
 /// Most columns a table of maps gets before it falls back to one `value` column.
 const MAX_COLUMNS: usize = 50;
 
+/// The components of a vector a table cell previews.
+pub const VECTOR_PREVIEW: usize = 16;
+
+/// A table cell's value: a vector becomes the marker the playground shows as
+/// `vector[768 f32]` with an expandable preview, `{"@type": "graphersal:Vector", "element",
+/// "dimension", "preview": [first values]}` (the JSON view keeps the full list of values);
+/// anything else is unchanged.
+pub fn table_cell(value: ElementProperty) -> ElementProperty {
+    let ElementProperty::Vector(vector) = &value else {
+        return value;
+    };
+    let mut marker = PropertyMap::default();
+    marker.insert("@type", ElementProperty::from("graphersal:Vector"));
+    marker.insert("element", ElementProperty::from(vector.element().name()));
+    marker.insert(
+        "dimension",
+        ElementProperty::from(i64::try_from(vector.dimension()).unwrap_or(i64::MAX)),
+    );
+    marker.insert(
+        "preview",
+        ElementProperty::Array(
+            vector
+                .to_f32_vec()
+                .into_iter()
+                .take(VECTOR_PREVIEW)
+                .map(|value| ElementProperty::from(f64::from(value)))
+                .collect(),
+        ),
+    );
+    ElementProperty::Object(Box::new(marker))
+}
+
 /// Display limits: `None` is unbounded.
 #[derive(Debug, Clone, Copy)]
 pub struct Bounds {
@@ -289,7 +321,9 @@ pub fn table_of(rows: &[ElementProperty]) -> Table {
                         .map(|k| {
                             row.iter()
                                 .find(|(key, _)| key == k)
-                                .map_or(ElementProperty::Null, |(_, value)| value.clone())
+                                .map_or(ElementProperty::Null, |(_, value)| {
+                                    table_cell(value.clone())
+                                })
                         })
                         .collect()
                 })
@@ -302,7 +336,7 @@ pub fn table_of(rows: &[ElementProperty]) -> Table {
     }
     Table {
         columns: vec!["value".to_string()],
-        rows: rows.iter().map(|r| vec![r.clone()]).collect(),
+        rows: rows.iter().map(|r| vec![table_cell(r.clone())]).collect(),
     }
 }
 
@@ -704,5 +738,34 @@ mod tests {
             serde_json::to_value(tg_view).unwrap(),
             serde_json::to_value(fw_view).unwrap()
         );
+    }
+
+    #[test]
+    fn a_vector_cell_is_a_marker_with_a_preview_and_the_json_keeps_the_values() {
+        let vector = ElementProperty::Vector(Vector::from_f32(vec![0.5; 40]).unwrap());
+        let d = bounded_display(
+            std::slice::from_ref(&vector),
+            true,
+            &Bounds {
+                max_rows: None,
+                max_items: None,
+            },
+        );
+        let cell = serde_json::to_value(&d.table.rows[0][0]).unwrap();
+        assert_eq!(cell["@type"], "graphersal:Vector");
+        assert_eq!(cell["element"], "f32");
+        assert_eq!(cell["dimension"], 40);
+        assert_eq!(
+            cell["preview"].as_array().map(Vec::len),
+            Some(VECTOR_PREVIEW)
+        );
+        let json: serde_json::Value = serde_json::from_str(&d.json).unwrap();
+        assert_eq!(json[0].as_array().map(Vec::len), Some(40));
+        // In a map's column too.
+        let mut map = PropertyMap::default();
+        map.insert("emb", vector);
+        let table = table_of(&[ElementProperty::Object(Box::new(map))]);
+        let cell = serde_json::to_value(&table.rows[0][0]).unwrap();
+        assert_eq!(cell["@type"], "graphersal:Vector");
     }
 }

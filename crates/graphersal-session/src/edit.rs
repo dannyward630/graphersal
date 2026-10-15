@@ -15,6 +15,9 @@
 //! - `uuid`: the canonical text (lowercase `8-4-4-4-12`);
 //! - `date`, `localdatetime`, `datetime`, `time`, `duration`: the canonical ISO 8601 text
 //!   (`2023-08-02T00:00:00Z`);
+//! - `vector`: a list of JSON numbers (the dequantized values) with `"element"` (`f32`, `f16`,
+//!   `i8`, `bit`; default `f32`): `{"type": "vector", "element": "i8", "value": [0.5, -1.0]}`;
+//!   the values are quantized to the element on input;
 //! - `array`: a list of typed values; `object`: a list of `[key, typed value]` pairs (the
 //!   engine's key order).
 //!
@@ -33,6 +36,7 @@ use graphersal::prelude::*;
 use graphersal::prelude::{CompactString, Number, PropertyMap};
 use graphersal::storage::ElementKind;
 use graphersal::temporal::{Temporal, TemporalKind};
+use graphersal::vector::VectorElement;
 use serde_json::{Map, Value, json};
 
 use crate::Session;
@@ -67,6 +71,13 @@ pub fn typed_value(value: &ElementProperty) -> Value {
             "value": serde_json::to_value(value.logical().as_ref()).unwrap_or(Value::Null),
         }),
         ElementProperty::Temporal(t) => json!({"type": t.kind().name(), "value": t.to_string()}),
+        // The element kind and the (dequantized) values; written back, the values are quantized
+        // to the element again (the same vector).
+        ElementProperty::Vector(v) => json!({
+            "type": "vector",
+            "element": v.element().name(),
+            "value": serde_json::to_value(value.logical().as_ref()).unwrap_or(Value::Null),
+        }),
         ElementProperty::Array(items) => json!({
             "type": "array",
             "value": items.iter().map(typed_value).collect::<Vec<_>>(),
@@ -176,9 +187,32 @@ pub fn value_from_typed(typed: &Value) -> Result<ElementProperty, String> {
                 .map(ElementProperty::Temporal)
                 .map_err(|err| err.to_string())
         }
+        "vector" => {
+            let element = match typed.get("element") {
+                None | Some(Value::Null) => VectorElement::F32,
+                Some(Value::String(name)) => VectorElement::from_name(name).ok_or_else(|| {
+                    format!("unknown vector element \"{name}\": f32, f16, i8 or bit")
+                })?,
+                Some(_) => return Err("a vector's element is f32, f16, i8 or bit".to_string()),
+            };
+            let items = value
+                .as_array()
+                .ok_or("a vector value must be a list of numbers")?;
+            let mut numbers = Vec::with_capacity(items.len());
+            for item in items {
+                numbers.push(
+                    item.as_f64()
+                        .ok_or("a vector value must be a list of numbers")?,
+                );
+            }
+            Vector::from_f64(&numbers)
+                .and_then(|vector| vector.quantize(element))
+                .map(ElementProperty::Vector)
+                .map_err(|err| err.to_string())
+        }
         other => Err(format!(
             "unknown type \"{other}\": null, boolean, int64, float64, string, uuid, datetime, \
-             localdatetime, date, time, duration, array or object"
+             localdatetime, date, time, duration, vector, array or object"
         )),
     }
 }
@@ -799,5 +833,61 @@ mod tests {
             errors(update_in(&mut tg, ElementKind::Edge, "none", &bad, false)),
             errors(update_in(&mut fw, ElementKind::Edge, "none", &bad, false))
         );
+    }
+
+    #[test]
+    fn vectors_are_typed_with_their_element_and_round_trip() {
+        let i8 = Vector::from_f32(vec![0.5, -1.0, 0.25])
+            .unwrap()
+            .quantize(VectorElement::I8)
+            .unwrap();
+        let value = ElementProperty::Vector(i8.clone());
+        let typed = typed_value(&value);
+        assert_eq!(typed["type"], "vector");
+        assert_eq!(typed["element"], "i8");
+        assert_eq!(typed["value"].as_array().map(Vec::len), Some(3));
+        // Written back: the same vector (the dequantized values quantize to the same codes).
+        assert_eq!(value_from_typed(&typed).unwrap(), value);
+        // Without an element: f32.
+        let plain = value_from_typed(&json!({"type": "vector", "value": [1, 2.5]})).unwrap();
+        assert_eq!(
+            plain,
+            ElementProperty::Vector(Vector::from_f32(vec![1.0, 2.5]).unwrap())
+        );
+        for bad in [
+            json!({"type": "vector", "value": []}),
+            json!({"type": "vector", "value": [1, "x"]}),
+            json!({"type": "vector", "value": "1, 2"}),
+            json!({"type": "vector", "element": "f64", "value": [1]}),
+            json!({"type": "vector", "element": "f16", "value": [1e10]}),
+        ] {
+            assert!(value_from_typed(&bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_json_list_written_to_a_declared_vector_becomes_one() {
+        let mut s = Session::new();
+        s.load_sample("empty").expect("empty");
+        s.set_schema(
+            r#"{"mode": "open", "vertices": {"doc": {"schema": {"type": "object", "properties": {
+                "emb": {"type": "array", "format": "vector", "element": "f16", "dimension": 2}}}}}}"#,
+            None,
+        )
+        .expect("schema");
+        let out = s.execute(
+            r#"g.add_v("doc").property(T.id, "d").iterate()"#,
+            &crate::RunOptions::default(),
+        );
+        assert!(out.contains("\"ok\":true"), "{out}");
+        let request = json!({"kind": "vertex", "id": "d",
+            "set": [["emb", {"type": "array", "value": [
+                {"type": "float64", "value": 0.5}, {"type": "float64", "value": 1.0}]}]]});
+        let answer = s.update_element(&request);
+        assert_eq!(answer["ok"], true, "{answer}");
+        let view = s.element_for_edit("vertex", "d").unwrap();
+        let emb = prop(&view, "emb").expect("emb");
+        assert_eq!(emb["type"], "vector");
+        assert_eq!(emb["element"], "f16");
     }
 }

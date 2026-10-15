@@ -248,6 +248,7 @@ fn receiver_of(first_param_type: Option<&str>) -> &'static str {
         "ScriptCastPolicy" | "CastPolicy" => "CastPolicy",
         "ArgP" | "Predicate" => "Predicate",
         "ScriptUuid" | "Uuid" => "Uuid",
+        "ScriptVector" | "Vector" => "Vector",
         "ScriptFake" | "Fake" => "Fake",
         "DateTime" | "datetime" | "Date" | "date" | "LocalDateTime" | "localdatetime" | "Time"
         | "time" | "Duration" | "duration" => "temporal",

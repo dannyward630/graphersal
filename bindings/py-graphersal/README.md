@@ -356,6 +356,36 @@ graph.query('duration("P1Y2M")')
 - Saved queries (`call_query`) take the same values; they travel as their ISO 8601 text, and the
   parameter's schema (`#{type: "string", format: "date-time"}`, ...) reads them back.
 
+## Vectors
+
+A vector property (an embedding) is a `graphersal.Vector` both ways. Build one from a list of
+numbers or from any one-dimensional `float32`/`float64` buffer, such as a `numpy` array (read
+through `memoryview`: the extension does not depend on `numpy`). Embeddings are computed outside
+the engine, by your model; the engine stores, quantizes and compares them.
+
+```python
+import numpy as np
+from graphersal import Graph, Vector
+
+g = Graph()
+emb = np.array([0.12, -0.5, 0.33], dtype=np.float32)      # model.encode(text) in practice
+g.execute('g.add_v("doc").property("title", t).property("emb", e).iterate()',
+          params={"t": "Graph databases 101", "e": Vector(emb)})
+
+v = g.query('g.v().values("emb").next()')                # graphersal.Vector
+v.element, v.dimension, v.tolist()                       # ('f32', 3, [0.12, -0.5, 0.33])
+small = Vector(emb, element="i8")                        # quantized: 1 byte per component
+back = np.array(v.tolist(), dtype=np.float32)
+```
+
+- `Vector(values, element="f32")`; the elements are `"f32"`, `"f16"`, `"i8"` and `"bit"`.
+  `v.quantize("i8")` converts, `quantize("f32")` dequantizes. A NaN, an infinity, an empty list
+  or more than 65536 components raise `ValueError`.
+- A vector is immutable, hashable and equal when element, dimension and components are equal.
+- A schema property `{"type": "array", "format": "vector", "element": "i8", "dimension": 384}`
+  turns a written list (or a vector of another element) into the declared vector in mode
+  `open` or `closed`; saved queries (`call_query`) take a `Vector` argument the same way.
+
 ## Error handling
 
 Every script/engine failure — parse errors, a failed cast, a broken GraphML file — raises

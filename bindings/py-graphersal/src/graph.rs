@@ -1097,6 +1097,14 @@ impl Graph {
             Some(args) => {
                 let texts = PyDict::new(py);
                 for (key, value) in args.iter() {
+                    if let Some(vector) = crate::vector::python_vector(&value) {
+                        // A vector travels as its list of values; a vector parameter's schema
+                        // turns it back (quantized to its element).
+                        let values: Vec<f64> =
+                            vector.iter_f32().map(crate::vector::short_f64).collect();
+                        texts.set_item(key, values)?;
+                        continue;
+                    }
                     match crate::temporal::python_temporal_text(&value) {
                         Some(text) => texts.set_item(key, text)?,
                         None => texts.set_item(key, value)?,

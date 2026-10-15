@@ -18,10 +18,14 @@
 
 /** The date and time types (book "Dates and Times"), each written as its ISO 8601 text. */
 export const TEMPORAL_TYPES = Object.freeze(['datetime', 'localdatetime', 'date', 'time', 'duration']);
+/** The element kinds of a vector (book "Vectors"); a new vector is f32. */
+export const VECTOR_ELEMENTS = Object.freeze(['f32', 'f16', 'i8', 'bit']);
+/** The most components of a vector. */
+export const MAX_VECTOR_DIMENSION = 65536;
 /** The logical types of a value, in the order the type menus list them. */
-export const TYPES = Object.freeze(['string', 'int64', 'float64', 'boolean', 'uuid', ...TEMPORAL_TYPES, 'array', 'object', 'null']);
-/** The scalar types edited as one line of text. */
-export const TEXT_TYPES = Object.freeze(['string', 'int64', 'float64', 'uuid', ...TEMPORAL_TYPES]);
+export const TYPES = Object.freeze(['string', 'int64', 'float64', 'boolean', 'uuid', ...TEMPORAL_TYPES, 'vector', 'array', 'object', 'null']);
+/** The scalar types edited as one line of text (a vector as its JSON list of numbers). */
+export const TEXT_TYPES = Object.freeze(['string', 'int64', 'float64', 'uuid', ...TEMPORAL_TYPES, 'vector']);
 /** The JSON Schema `format` of a string that declares a uuid or a date and time type. */
 export const FORMAT_TYPES = Object.freeze({
   uuid: 'uuid', 'date-time': 'datetime', 'local-date-time': 'localdatetime', date: 'date', time: 'time', duration: 'duration',
@@ -32,7 +36,7 @@ export function placeholderOf(type) {
   return {
     string: 'value', int64: '42', float64: '1.5', uuid: '550e8400-e29b-41d4-a716-446655440000',
     datetime: '2023-08-02T09:30:00+02:00', localdatetime: '2023-08-02T09:30:00', date: '2023-08-02',
-    time: '09:30:00', duration: 'P1DT2H',
+    time: '09:30:00', duration: 'P1DT2H', vector: '[0.1, 0.2, 0.3]',
   }[type] ?? '';
 }
 /** Containers: edited as a tree (or as raw JSON). */
@@ -97,6 +101,11 @@ export function nodeFromTyped(typed) {
   if (type === 'boolean') node.bool = v === true;
   else if (type === 'float64') node.text = floatText(v);
   else if (type === 'string' || type === 'int64' || type === 'uuid' || TEMPORAL_TYPES.includes(type)) node.text = v == null ? '' : String(v);
+  else if (type === 'vector') {
+    // The values as a JSON list; the element kind is kept (a new vector is f32).
+    node.text = Array.isArray(v) ? `[${v.map((x) => floatText(x)).join(', ')}]` : '';
+    node.element = VECTOR_ELEMENTS.includes(typed.element) ? typed.element : 'f32';
+  }
   else if (type === 'array') node.items = (Array.isArray(v) ? v : []).map(nodeFromTyped);
   else if (type === 'object') {
     node.entries = (Array.isArray(v) ? v : []).map(([key, item]) => ({ id: newId(), key, node: nodeFromTyped(item) }));
@@ -122,7 +131,26 @@ export function scalarError(type, text) {
   }
   if (type === 'uuid') return UUID_RE.test(t) ? null : 'a uuid is lowercase 8-4-4-4-12 hex digits, e.g. 550e8400-e29b-41d4-a716-446655440000';
   if (TEMPORAL_TYPES.includes(type)) return TEMPORAL_RE[type].test(t) ? null : TEMPORAL_HELP[type];
+  if (type === 'vector') return vectorValues(t).error ?? null;
   return null;
+}
+
+/**
+ * The numbers of a vector's JSON list text: `{values}` or `{error}` (a non-empty list of finite
+ * numbers, at most 65536). The engine checks the element range (f16) in its dry run.
+ */
+export function vectorValues(text) {
+  const help = 'a vector is a JSON list of numbers, e.g. [0.1, 0.2, 0.3]';
+  let parsed;
+  try {
+    parsed = JSON.parse(String(text ?? '').trim());
+  } catch {
+    return { error: help };
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) return { error: help };
+  if (parsed.length > MAX_VECTOR_DIMENSION) return { error: `a vector has at most ${MAX_VECTOR_DIMENSION} components` };
+  if (!parsed.every((x) => typeof x === 'number' && Number.isFinite(x))) return { error: help };
+  return { values: parsed };
 }
 
 /**
@@ -150,6 +178,12 @@ export function typedFromNode(node, path = []) {
         return { typed: { type: 'float64', value: special ? t : Number(t) } };
       }
       return { typed: { type: node.type, value: t } };
+    }
+    case 'vector': {
+      const r = vectorValues(node.text);
+      if (r.error) return { error: r.error, path };
+      const element = VECTOR_ELEMENTS.includes(node.element) ? node.element : 'f32';
+      return { typed: { type: 'vector', element, value: r.values } };
     }
     case 'array': {
       const value = [];
@@ -235,6 +269,12 @@ export function nodeToJson(node, indent = 2) {
       case 'float64': {
         const t = String(n.text).trim();
         out.push(t && Number.isFinite(Number(t)) ? floatText(Number(t)) : JSON.stringify(t));
+        break;
+      }
+      case 'vector': {
+        // Its list of numbers (read back as a vector where one was: `nodeFromJson`).
+        const r = vectorValues(n.text);
+        out.push(r.error ? JSON.stringify(String(n.text ?? '')) : `[${r.values.map((x) => floatText(x)).join(', ')}]`);
         break;
       }
       case 'array':
@@ -358,6 +398,13 @@ export function nodeFromJson(ast, hint = null) {
       return n;
     }
     case 'array': {
+      // A list of numbers where a vector was stays a vector (its element kind kept).
+      if (h === 'vector' && ast.items.length && ast.items.every((item) => item.kind === 'number')) {
+        const n = emptyNode('vector');
+        n.text = `[${ast.items.map((item) => item.text).join(', ')}]`;
+        n.element = hint.element;
+        return n;
+      }
       const n = emptyNode('array');
       const old = h === 'array' ? hint.items : [];
       n.items = ast.items.map((item, i) => nodeFromJson(item, old[i] || null));
@@ -400,7 +447,12 @@ export function typesOf(schema) {
     if (Array.isArray(schema.enum)) return [...new Set(schema.enum.map(typeOfLiteral))];
     return TYPES.slice();
   }
-  return raw.map((t) => (t === 'string' && FORMAT_TYPES[schema.format] ? FORMAT_TYPES[schema.format] : SCHEMA_TYPES[t])).filter(Boolean);
+  return raw.map((t) => {
+    if (t === 'string' && FORMAT_TYPES[schema.format]) return FORMAT_TYPES[schema.format];
+    // `{"type": "array", "format": "vector", ..}` declares a vector (a list is coerced to it).
+    if (t === 'array' && schema.format === 'vector') return 'vector';
+    return SCHEMA_TYPES[t];
+  }).filter(Boolean);
 }
 
 function typeOfLiteral(v) {

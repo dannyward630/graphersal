@@ -15,7 +15,10 @@
 export const TEMPORAL_BASES = Object.freeze(['datetime', 'localdatetime', 'date', 'time', 'duration']);
 
 /** The base types of the type dropdown, in menu order. */
-export const BASE_TYPES = Object.freeze(['string', 'integer', 'number', 'boolean', 'uuid', ...TEMPORAL_BASES, 'array', 'object', 'null', 'any']);
+export const BASE_TYPES = Object.freeze(['string', 'integer', 'number', 'boolean', 'uuid', ...TEMPORAL_BASES, 'vector', 'array', 'object', 'null', 'any']);
+
+/** The element kinds of a vector node (`{"type": "array", "format": "vector", "element": ..}`). */
+export const VECTOR_ELEMENTS = Object.freeze(['f32', 'f16', 'i8', 'bit']);
 
 /** The `format` of a base type written as `{"type": "string", "format": ..}`. */
 export const FORMAT_OF_BASE = Object.freeze({
@@ -42,6 +45,8 @@ export const CONSTRAINTS = Object.freeze({
   uuid: [],
   ...Object.fromEntries(TEMPORAL_BASES.map((b) => [b, FORMAT_BOUNDS])),
   array: ['minItems', 'maxItems'],
+  // `element` and `dimension` are the vector's type (edited in the JSON tab), `metric` an annotation.
+  vector: [],
   object: [],
   boolean: [],
   null: [],
@@ -62,10 +67,11 @@ const KIND_KEYWORDS = {
   minItems: 'array', maxItems: 'array', items: 'array',
   properties: 'object', required: 'object', additionalProperties: 'object',
   formatMinimum: 'temporal', formatMaximum: 'temporal', formatExclusiveMinimum: 'temporal', formatExclusiveMaximum: 'temporal',
+  element: 'vector', dimension: 'vector', metric: 'vector',
 };
 
 const KIND_OF_BASE = {
-  integer: 'numeric', number: 'numeric', string: 'string', uuid: 'string', array: 'array', object: 'object',
+  integer: 'numeric', number: 'numeric', string: 'string', uuid: 'string', array: 'array', object: 'object', vector: 'vector',
   ...Object.fromEntries(TEMPORAL_BASES.map((b) => [b, 'temporal'])),
 };
 
@@ -190,6 +196,7 @@ export function describe(node) {
   if (kinds.length > 1) return { base: 'union', nullable, value: [] };
   let base = kinds[0];
   if (base === 'string') base = stringBase(node);
+  if (base === 'array' && node.format === 'vector') base = 'vector';
   if (!BASE_TYPES.includes(base)) base = 'union';
   return { base, nullable, value: [] };
 }
@@ -204,6 +211,10 @@ export function typeText(node, { collapsed = false } = {}) {
   const d = describe(node);
   const v = valueNode(node);
   if (d.base === 'union') return unionText(node);
+  if (d.base === 'vector') {
+    const element = VECTOR_ELEMENTS.includes(v.element) ? v.element : 'f32';
+    return Number.isInteger(v.dimension) ? `vector<${element}, ${v.dimension}>` : `vector<${element}>`;
+  }
   if (d.base === 'array') {
     if (!isPlainObject(v.items)) return 'array';
     return `array of ${typeText(v.items, { collapsed: true })}`;
@@ -310,9 +321,13 @@ export function setBaseType(doc, path, base) {
   delete node.type;
   if (base === 'any') return;
   const format = FORMAT_OF_BASE[base];
-  const t = format ? 'string' : base;
+  const t = format ? 'string' : base === 'vector' ? 'array' : base;
   node.type = base === 'null' ? 'null' : nullable ? [t, 'null'] : t;
   if (format) node.format = format;
+  if (base === 'vector') {
+    node.format = 'vector';
+    node.element = 'f32';
+  }
   if (base === 'array' && !isPlainObject(node.items)) node.items = { type: 'string' };
   if (base === 'object' && !isPlainObject(node.properties)) node.properties = {};
   reorderType(node);
