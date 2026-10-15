@@ -342,6 +342,9 @@ pub(crate) fn frame_segment(
         return Err(DecodeError::new(60, "segment header checksum mismatch"));
     }
     let version = header.u32()?;
+    if version > FORMAT_VERSION {
+        return Err(DecodeError::newer(8, "segment", version));
+    }
     if version != FORMAT_VERSION {
         return Err(DecodeError::new(
             8,

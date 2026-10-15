@@ -120,6 +120,9 @@ impl ManifestFixed {
             return Err(DecodeError::new(0, "not a manifest (bad magic)"));
         }
         let version = r.u32()?;
+        if version > FORMAT_VERSION {
+            return Err(DecodeError::newer(8, "manifest", version));
+        }
         if version != FORMAT_VERSION {
             return Err(DecodeError::new(
                 8,

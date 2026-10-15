@@ -578,6 +578,7 @@ impl Store {
     ) -> Result<(usize, u64), PersistError> {
         let from = DirPath::root(from.into_store_dir());
         let to = DirPath::root(to.into_store_dir());
+        files::refuse_other_version(&from)?;
         if !Self::is_store(from.store_dir()) {
             return Err(PersistError::NotAStore {
                 path: from.display(),
@@ -677,6 +678,7 @@ impl Store {
         name: Option<&str>,
     ) -> Result<CheckpointReport, PersistError> {
         let dir = DirPath::root(dir.into_store_dir());
+        files::refuse_other_version(&dir)?;
         if !Self::is_store(dir.store_dir()) {
             return Err(PersistError::NotAStore {
                 path: dir.display(),
@@ -763,6 +765,7 @@ impl Store {
     /// (works while a writer has it open): the position is the last complete commit in the WAL.
     pub fn inspect(dir: impl IntoStoreDir) -> Result<StoreInfo, PersistError> {
         let dir = &DirPath::root(dir.into_store_dir());
+        files::refuse_other_version(dir)?;
         let file = read_graph_file(dir)?.file;
         let mut info = info_of(dir, &file)?;
         let (commit_seq, time) = maintenance::last_commit_in_files(dir, &info.snapshots)?;
@@ -793,6 +796,7 @@ impl Store {
         policy: CompactionPolicy,
     ) -> Result<CompactionAdvice, PersistError> {
         let dir = DirPath::root(dir.into_store_dir());
+        files::refuse_other_version(&dir)?;
         let file = read_graph_file(&dir)?.file;
         let blocked = file.backup.map(|marker| {
             format!(
@@ -814,6 +818,7 @@ impl Store {
         up_to: u64,
     ) -> Result<PruneReport, PersistError> {
         let dir = DirPath::root(dir.into_store_dir());
+        files::refuse_other_version(&dir)?;
         read_graph_file(&dir)?;
         Ok(maintenance::prune_estimate(&dir, up_to)?.0)
     }
@@ -871,15 +876,12 @@ impl Store {
         let dir = DirPath::root(dir.into_store_dir());
         let existed = dir.exists();
         zip::restore(reader, &dir)?;
-        let mut file = match read_graph_file(&dir) {
-            Ok(read) => read.file,
-            // A backup of an older store format: nothing of it is left behind.
-            Err(err @ PersistError::OlderFormat { .. }) => {
-                files::undo_new_dir(&dir, existed);
-                return Err(err);
-            }
-            Err(err) => return Err(err),
-        };
+        // A backup of an older or newer format (format spec 15): nothing of it is left behind.
+        if let Err(err) = files::refuse_other_version(&dir) {
+            files::undo_new_dir(&dir, existed);
+            return Err(err);
+        }
+        let mut file = read_graph_file(&dir)?.file;
         if file.backup.take().is_some() {
             write_graph_file(&dir, &file)?;
         }
@@ -1476,6 +1478,7 @@ impl StoreCore {
         maker: &dyn GraphMaker,
     ) -> Result<StoreCore, PersistError> {
         maker.check()?;
+        files::refuse_other_version(&dir)?;
         let graph_file = read_graph_file(&dir)?.file;
         guard_version(&dir, graph_file.version)?;
         let Some(marker) = graph_file.backup else {
@@ -1626,6 +1629,9 @@ impl StoreCore {
         maker: &dyn GraphMaker,
     ) -> Result<StoreCore, PersistError> {
         maker.check()?;
+        // A newer (or older) format is refused before the lock and before any file is read
+        // as this version's (format spec 15): never damage, never maintenance mode.
+        files::refuse_other_version(&dir)?;
         if !dir.join(files::GRAPH_FILE).exists() && !dir.join(files::GRAPH_COPY).exists() {
             return Err(PersistError::NotAStore {
                 path: dir.display(),
@@ -1926,6 +1932,8 @@ impl StoreCore {
     }
 
     fn repair_at(dir: &DirPath, new_dir: &DirPath) -> Result<RepairReport, PersistError> {
+        // Never a lossy repair of files a newer Graphersal wrote (format spec 15).
+        files::refuse_other_version(dir)?;
         if dir.join(files::GRAPH_FILE).exists() || dir.join(files::GRAPH_COPY).exists() {
             match read_graph_file(dir) {
                 Ok(file) => guard_version(dir, file.file.version)?,
@@ -2010,6 +2018,7 @@ impl StoreCore {
         target: RecoveryTarget,
         read: &ReadOptions,
     ) -> Result<LoadPlan, PersistError> {
+        files::refuse_other_version(dir)?;
         let graph_file = read_graph_file(dir)?.file;
         guard_version(dir, graph_file.version)?;
         let not_reached = |reason: String| PersistError::TargetNotReached {
@@ -2197,6 +2206,7 @@ impl StoreCore {
         target: RecoveryTarget,
         new_dir: &DirPath,
     ) -> Result<ForkReport, PersistError> {
+        files::refuse_other_version(dir)?;
         let parent = read_graph_file(dir)?.file;
         let options = StoreOptions::new()
             .with_chunk_bytes(parent.chunk_bytes)

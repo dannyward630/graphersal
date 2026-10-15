@@ -530,6 +530,8 @@ pub(super) fn verify(
     dir: &DirPath,
     durable: Option<DurablePosition>,
 ) -> Result<VerifyReport, PersistError> {
+    // A newer (or older) format is refused, never listed as damage (format spec 15).
+    super::files::refuse_other_version(dir)?;
     let mut report = VerifyReport::default();
     fn problem(report: &mut VerifyReport, path: &str, offset: Option<u64>, reason: String) {
         report.problems.push(VerifyProblem {
@@ -1284,6 +1286,7 @@ pub(super) fn backup_to_zip<W>(
 where
     W: Read + Write + std::io::Seek + Send,
 {
+    super::files::refuse_other_version(dir)?;
     let _pin = BackupPin::shared(dir)?;
     let plan = checked_plan(dir, durable, "the ZIP archive")?;
     let start = archive
