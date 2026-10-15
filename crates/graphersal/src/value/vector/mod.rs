@@ -240,6 +240,7 @@ pub enum VectorError {
 }
 
 impl VectorError {
+    #[cfg_attr(not(feature = "script"), allow(dead_code))]
     pub(crate) fn unknown_element(name: &str) -> Self {
         let cut: String = name.chars().take(64).collect();
         VectorError::UnknownElement {

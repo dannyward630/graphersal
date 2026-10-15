@@ -43,6 +43,7 @@ pub(crate) fn lower_values(vector: &Vector) -> PhysicalValue<'static> {
     )
 }
 
+#[cfg_attr(not(feature = "serde"), allow(dead_code))]
 fn field(
     key: &'static str,
     value: PhysicalValue<'static>,
@@ -50,10 +51,11 @@ fn field(
     (Cow::Borrowed(key), value)
 }
 
+#[cfg_attr(not(feature = "serde"), allow(dead_code))]
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
 /// The exact `@value` payload of a vector (module docs).
-#[cfg_attr(not(any(feature = "serde", feature = "io")), allow(dead_code))]
+#[cfg_attr(not(feature = "serde"), allow(dead_code))] // the serialized `ChangeSet`
 pub(crate) fn payload(vector: &Vector) -> PhysicalValue<'static> {
     let element = field(
         "element",
@@ -198,7 +200,7 @@ pub(crate) fn from_payload(value: &PhysicalValue<'_>) -> Result<Vector, String> 
                 _ => None,
             };
             let mut bytes = Vec::with_capacity(digits.len() / 2);
-            for pair in digits.chunks_exact(2) {
+            for pair in digits.as_chunks::<2>().0 {
                 match (nibble(pair[0]), nibble(pair[1])) {
                     (Some(high), Some(low)) => bytes.push(high << 4 | low),
                     _ => return Err(format!("{VECTOR_TAG}: \"bits\" is lowercase hex")),

@@ -176,7 +176,7 @@ fn equality_hash_and_order() {
         ElementProperty::Array(vec![1.0.into(), 2.0.into()])
     );
     // Kind, then dimension, then the components.
-    let mut sorted = vec![
+    let mut sorted = [
         f32v(&[1.0]).quantize(VectorElement::I8).unwrap(),
         f32v(&[2.0, 0.0]),
         f32v(&[1.0, 5.0]),
