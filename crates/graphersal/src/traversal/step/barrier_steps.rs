@@ -11,3 +11,4 @@ mod step_median;
 mod step_min;
 mod step_sum;
 pub(crate) mod step_tree;
+mod step_vector_mean;

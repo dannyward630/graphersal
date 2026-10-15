@@ -166,3 +166,171 @@ fn literals_and_summary() {
         assert_eq!(VectorElement::from_code(kind.code()), Some(kind));
     }
 }
+
+/// A deterministic pseudo-random stream in -1..1.
+fn pseudo_random(seed: u64, n: usize) -> Vec<f32> {
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    (0..n)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 40) as f64 / (1u64 << 24) as f64 * 2.0 - 1.0) as f32
+        })
+        .collect()
+}
+
+/// The naive reference: every component dequantized to f64, one sequential sum.
+fn reference(a: &Vector, b: &Vector, metric: VectorMetric) -> f64 {
+    let x: Vec<f64> = a.iter_f32().map(f64::from).collect();
+    let y: Vec<f64> = b.iter_f32().map(f64::from).collect();
+    let dot: f64 = x.iter().zip(&y).map(|(p, q)| p * q).sum();
+    match metric {
+        VectorMetric::Cosine => {
+            let na: f64 = x.iter().map(|p| p * p).sum::<f64>().sqrt();
+            let nb: f64 = y.iter().map(|q| q * q).sum::<f64>().sqrt();
+            if na == 0.0 || nb == 0.0 {
+                0.0
+            } else {
+                (dot / (na * nb)).clamp(-1.0, 1.0)
+            }
+        }
+        VectorMetric::Dot => dot,
+        VectorMetric::L2 => x
+            .iter()
+            .zip(&y)
+            .map(|(p, q)| (p - q) * (p - q))
+            .sum::<f64>()
+            .sqrt(),
+        VectorMetric::Hamming => x.iter().zip(&y).filter(|(p, q)| p != q).count() as f64,
+    }
+}
+
+fn close(left: f64, right: f64) -> bool {
+    // i8 x i8 runs on the integer codes (exact for code * scale), the reference on the f32
+    // products: they differ in the f32 rounding of the products.
+    (left - right).abs() <= 1e-6 * (1.0 + left.abs().max(right.abs()))
+}
+
+#[test]
+fn kernels_match_the_naive_reference_for_every_kind_pair() {
+    // Dimensions around the chunk size (8) and the bit byte boundaries.
+    for dimension in [1, 3, 7, 8, 9, 16, 17, 64, 65, 384] {
+        for seed in 0..4u64 {
+            let a = Vector::from_f32(pseudo_random(seed, dimension)).unwrap();
+            let b = Vector::from_f32(pseudo_random(seed + 100, dimension)).unwrap();
+            let kinds = [VectorElement::F32, VectorElement::F16, VectorElement::I8];
+            for ka in kinds {
+                for kb in kinds {
+                    let x = a.quantize(ka).unwrap();
+                    let y = b.quantize(kb).unwrap();
+                    for metric in [VectorMetric::Cosine, VectorMetric::Dot, VectorMetric::L2] {
+                        let got = x.similarity(&y, metric).unwrap();
+                        let want = reference(&x, &y, metric);
+                        assert!(
+                            close(got, want),
+                            "{ka} x {kb} {metric} d={dimension}: {got} vs {want}"
+                        );
+                        assert!(close(got, y.similarity(&x, metric).unwrap()), "symmetric");
+                        if ka != VectorElement::I8 || kb != VectorElement::I8 {
+                            // Dequantized lanes in f64: only the order of the additions
+                            // differs from the reference.
+                            assert!((got - want).abs() <= 1e-12 * (1.0 + want.abs()));
+                        }
+                    }
+                    assert!(matches!(
+                        x.similarity(&y, VectorMetric::Hamming),
+                        Err(VectorError::HammingNeedsBits { .. })
+                    ));
+                }
+            }
+            let x = a.quantize(VectorElement::Bit).unwrap();
+            let y = b.quantize(VectorElement::Bit).unwrap();
+            for metric in VectorMetric::ALL {
+                let got = x.similarity(&y, metric).unwrap();
+                let want = reference(&x, &y, metric);
+                assert!(
+                    close(got, want),
+                    "bit {metric} d={dimension}: {got} vs {want}"
+                );
+            }
+            assert!(matches!(
+                x.similarity(&a, VectorMetric::Cosine),
+                Err(VectorError::BitMismatch {
+                    element: VectorElement::F32
+                })
+            ));
+            assert!(matches!(
+                a.similarity(&x, VectorMetric::L2),
+                Err(VectorError::BitMismatch { .. })
+            ));
+        }
+    }
+}
+
+#[test]
+fn similarity_edge_cases() {
+    let zero = Vector::from_f32(vec![0.0, 0.0]).unwrap();
+    let one = Vector::from_f32(vec![1.0, 0.0]).unwrap();
+    // A zero vector has cosine 0.0, never NaN.
+    assert_eq!(zero.similarity(&one, VectorMetric::Cosine).unwrap(), 0.0);
+    assert_eq!(zero.similarity(&zero, VectorMetric::Cosine).unwrap(), 0.0);
+    let zero_i8 = zero.quantize(VectorElement::I8).unwrap();
+    assert_eq!(
+        zero_i8.similarity(&zero_i8, VectorMetric::Cosine).unwrap(),
+        0.0
+    );
+    // The same direction is 1.0 (clamped, never above).
+    let v = Vector::from_f32(pseudo_random(7, 384)).unwrap();
+    let cosine = v.similarity(&v, VectorMetric::Cosine).unwrap();
+    assert!((cosine - 1.0).abs() < 1e-12 && cosine <= 1.0);
+    assert_eq!(v.similarity(&v, VectorMetric::L2).unwrap(), 0.0);
+    // Dimension mismatch is an error, never a truncation.
+    let three = Vector::from_f32(vec![1.0, 0.0, 0.0]).unwrap();
+    assert_eq!(
+        one.similarity(&three, VectorMetric::Dot),
+        Err(VectorError::DimensionMismatch { left: 2, right: 3 })
+    );
+    // Large components: f64 accumulation, no overflow.
+    let big = Vector::from_f32(vec![f32::MAX; 4]).unwrap();
+    let dot = big.similarity(&big, VectorMetric::Dot).unwrap();
+    assert!(dot.is_finite() && dot > 1e77);
+    for error in [
+        VectorError::DimensionMismatch { left: 2, right: 3 },
+        VectorError::BitMismatch {
+            element: VectorElement::I8,
+        },
+        VectorError::HammingNeedsBits {
+            element: VectorElement::F32,
+        },
+        VectorError::QueryNotConstant,
+        VectorError::MetricConflict {
+            first: VectorMetric::Cosine,
+            second: VectorMetric::L2,
+        },
+        VectorError::unknown_metric("manhattan"),
+    ] {
+        assert!(!error.help().is_empty());
+        assert!(!error.to_string().is_empty());
+    }
+    assert!(VectorMetric::Cosine.higher_is_better() && !VectorMetric::L2.higher_is_better());
+}
+
+#[test]
+fn mean_accumulator() {
+    use super::similarity::MeanAccumulator;
+    let mut mean = MeanAccumulator::new();
+    mean.add(&Vector::from_f32(vec![1.0, 0.0]).unwrap(), 3)
+        .unwrap();
+    mean.add(&Vector::from_i8(vec![0, 127], 1.0 / 127.0).unwrap(), 1)
+        .unwrap();
+    assert_eq!(
+        mean.add(&Vector::from_f32(vec![1.0]).unwrap(), 1),
+        Err(VectorError::DimensionMismatch { left: 2, right: 1 })
+    );
+    let result = mean.finish().unwrap().unwrap();
+    assert_eq!(result.to_f32_vec(), vec![0.75, 0.25]);
+    assert!(MeanAccumulator::new().finish().unwrap().is_none());
+}

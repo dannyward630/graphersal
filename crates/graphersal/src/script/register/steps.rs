@@ -284,6 +284,15 @@ pub(super) fn register(registry: &mut Registry) {
             ScriptGraphTraversalSource::as_vector,
         )
         .register_fn("quantize", ScriptGraphTraversalSource::quantize)
+        .register_fn("similarity", ScriptGraphTraversalSource::similarity)
+        .register_fn("similarity", ScriptGraphTraversalSource::similarity_2)
+        .register_fn("similarity", ScriptGraphTraversalSource::similarity_3)
+        .register_fn("nearest", ScriptGraphTraversalSource::nearest)
+        .register_fn("nearest", ScriptGraphTraversalSource::nearest_with)
+        .register_fn_as(
+            &["vector_mean", "vectorMean"],
+            ScriptGraphTraversalSource::vector_mean,
+        )
         .register_fn_as(
             &["date_add", "dateAdd"],
             ScriptGraphTraversalSource::date_add,

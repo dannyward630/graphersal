@@ -133,7 +133,7 @@ unless a page says otherwise; the differences are collected in
 
 ### Vectors
 
-[`as_vector`](steps/as_vector.md) · [`quantize`](steps/quantize.md)
+[`as_vector`](steps/as_vector.md) · [`quantize`](steps/quantize.md) · [`similarity`](steps/similarity.md) · [`nearest`](steps/nearest.md) · [`vector_mean`](steps/vector_mean.md)
 
 ### Lists and ordering
 

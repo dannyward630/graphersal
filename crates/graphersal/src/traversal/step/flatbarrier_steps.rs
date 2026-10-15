@@ -1,6 +1,7 @@
 pub(crate) mod step_barrier;
 pub(crate) mod step_dedup;
 mod step_limit;
+mod step_nearest;
 mod step_order;
 mod step_range;
 pub(crate) mod step_repeat;

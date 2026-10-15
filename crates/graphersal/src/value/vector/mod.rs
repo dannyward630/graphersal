@@ -25,6 +25,7 @@
 //! vector then by its scale).
 
 pub(crate) mod half;
+pub(crate) mod similarity;
 pub(crate) mod tagged;
 
 use std::cmp::Ordering;
@@ -237,6 +238,48 @@ pub enum VectorError {
         /// The name (quoted, cut after 64 characters).
         name: String,
     },
+    /// Two vectors of different dimensions compared (or averaged).
+    #[error("vectors of dimensions {left} and {right} cannot be compared")]
+    #[non_exhaustive]
+    DimensionMismatch {
+        /// The dimension of the first vector (the stored one).
+        left: usize,
+        /// The dimension of the second vector (the query).
+        right: usize,
+    },
+    /// A bit vector compared with a vector of another element kind.
+    #[error("a bit vector compares only with another bit vector, not with a {element} vector")]
+    #[non_exhaustive]
+    BitMismatch {
+        /// The element kind of the other vector.
+        element: VectorElement,
+    },
+    /// The hamming metric asked for vectors that are not bit vectors.
+    #[error("the hamming metric compares bit vectors, not {element} vectors")]
+    #[non_exhaustive]
+    HammingNeedsBits {
+        /// The element kind found.
+        element: VectorElement,
+    },
+    /// `nearest()` got different query vectors for different inputs from its query traversal.
+    #[error("the query traversal gave different vectors for different inputs")]
+    QueryNotConstant,
+    /// `nearest()` without a metric over elements whose schema declares different metrics.
+    #[error("the schema declares the metric {first} for one element and {second} for another")]
+    #[non_exhaustive]
+    MetricConflict {
+        /// The metric of the first element.
+        first: VectorMetric,
+        /// The other metric.
+        second: VectorMetric,
+    },
+    /// An unknown metric name.
+    #[error("unknown vector metric {name}: the metrics are cosine, dot, l2 and hamming")]
+    #[non_exhaustive]
+    UnknownMetric {
+        /// The name (quoted, cut after 64 characters).
+        name: String,
+    },
 }
 
 impl VectorError {
@@ -244,6 +287,14 @@ impl VectorError {
     pub(crate) fn unknown_element(name: &str) -> Self {
         let cut: String = name.chars().take(64).collect();
         VectorError::UnknownElement {
+            name: format!("{cut:?}"),
+        }
+    }
+
+    #[cfg_attr(not(feature = "script"), allow(dead_code))]
+    pub(crate) fn unknown_metric(name: &str) -> Self {
+        let cut: String = name.chars().take(64).collect();
+        VectorError::UnknownMetric {
             name: format!("{cut:?}"),
         }
     }
@@ -282,6 +333,34 @@ impl VectorError {
                 .to_string(),
             VectorError::UnknownElement { .. } => "The element kinds are \"f32\", \"f16\", \
                  \"i8\" and \"bit\": vector([0.1, 0.2], \"i8\") or .quantize(\"f16\")."
+                .to_string(),
+            VectorError::DimensionMismatch { .. } => "similarity(), nearest() and \
+                 vector_mean() compare vectors of one dimension. Embed the query with the model \
+                 that produced the stored vectors, and declare the dimension in the schema \
+                 ({\"type\": \"array\", \"format\": \"vector\", \"dimension\": 384}) so a vector \
+                 of another dimension is refused when it is written."
+                .to_string(),
+            VectorError::BitMismatch { .. } => "A bit vector keeps only the signs, so it \
+                 compares only with another bit vector. Quantize the query the same way \
+                 (nearest(\"emb\", q.quantize(\"bit\"), 10)), or compare the dequantized values \
+                 (values(\"emb\").quantize(\"f32\").similarity(q))."
+                .to_string(),
+            VectorError::HammingNeedsBits { .. } => "The hamming metric counts the differing \
+                 bits of bit vectors. Quantize both sides with quantize(\"bit\"), or use the \
+                 metric \"cosine\", \"dot\" or \"l2\" for f32, f16 and i8 vectors."
+                .to_string(),
+            VectorError::QueryNotConstant => "nearest() ranks all its inputs against one query \
+                 vector. Compute it once before the search: g.v(\"d42\").values(\"emb\").as(\"q\")\
+                 .v().has_label(\"doc\").nearest(\"emb\", __.select(\"q\"), 5). To score every \
+                 input against its own vector, use similarity() instead."
+                .to_string(),
+            VectorError::MetricConflict { .. } => "nearest() ranks with one metric. Name it: \
+                 nearest(\"emb\", q, 10, #{metric: \"cosine\"}), or declare the same metric for \
+                 the property on every label in the schema."
+                .to_string(),
+            VectorError::UnknownMetric { .. } => "The metrics are \"cosine\" (the default), \
+                 \"dot\", \"l2\" and \"hamming\" (bit vectors): similarity(\"emb\", q, \"l2\") or \
+                 nearest(\"emb\", q, 10, #{metric: \"dot\"})."
                 .to_string(),
         }
     }

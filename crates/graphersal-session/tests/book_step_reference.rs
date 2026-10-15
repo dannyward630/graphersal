@@ -141,7 +141,16 @@ const CATEGORIES: &[(&str, &[&str])] = &[
             "as_local",
         ],
     ),
-    ("Vectors", &["as_vector", "quantize"]),
+    (
+        "Vectors",
+        &[
+            "as_vector",
+            "quantize",
+            "similarity",
+            "nearest",
+            "vector_mean",
+        ],
+    ),
     (
         "Lists and ordering",
         &[

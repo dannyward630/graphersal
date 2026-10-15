@@ -221,6 +221,17 @@ impl ScriptGraphTraversalSource {
                 Step::AsDuration => graph.as_duration(),
                 Step::AsVector => graph.as_vector(),
                 Step::Quantize(element) => graph.quantize(*element),
+                Step::Similarity(key, query, metric) => {
+                    let query = lower_vector_query(query);
+                    match key {
+                        Some(key) => graph.similarity(key.clone(), query, *metric),
+                        None => graph.similarity_value(query, *metric),
+                    }
+                }
+                Step::Nearest(key, query, k, metric) => {
+                    graph.nearest(key.clone(), lower_vector_query(query), *k, *metric)
+                }
+                Step::VectorMean => graph.vector_mean(),
                 Step::DateAdd(unit, n, None) => graph.date_add(*unit, *n),
                 Step::DateAdd(unit, n, Some(zone)) => graph.date_add_in(*unit, *n, zone),
                 Step::DateAddDuration(duration, None) => graph.date_add_duration(*duration),
@@ -442,6 +453,17 @@ impl ScriptGraphTraversalSource {
             };
         }
         graph
+    }
+}
+
+/// Lowers the query vector of `similarity()` / `nearest()`.
+fn lower_vector_query<'g, S: GraphStorage + 'g>(
+    query: &ScriptVectorQuery,
+) -> crate::traversal::step::map_steps::step_similarity::VectorQuery<'g, S> {
+    use crate::traversal::step::map_steps::step_similarity::VectorQuery;
+    match query {
+        ScriptVectorQuery::Value(vector) => VectorQuery::Value(vector.clone()),
+        ScriptVectorQuery::Traversal(gts) => VectorQuery::Traversal(gts.ast_convert_to_anonymous()),
     }
 }
 

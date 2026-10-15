@@ -48,6 +48,7 @@ pub(crate) mod step_select;
 mod step_select_column;
 mod step_select_token;
 mod step_select_traversal;
+pub(crate) mod step_similarity;
 mod step_split;
 mod step_substring;
 mod step_to_lower;

@@ -22,6 +22,14 @@ pub(super) enum ScriptListArg {
     Traversal(ScriptGraphTraversalSource),
 }
 
+/// The query vector of a DSL `similarity()` / `nearest()`: a constant vector (a list of numbers
+/// is made one when the step is built) or a child traversal whose first result is the query.
+#[derive(Debug, Clone)]
+pub(super) enum ScriptVectorQuery {
+    Value(crate::value::Vector),
+    Traversal(ScriptGraphTraversalSource),
+}
+
 /// Which token `property(T.x, v)` names in the DSL.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum PropertyTokenKey {
@@ -284,6 +292,21 @@ pub(super) enum Step {
     AsVector,
     /// `quantize(kind)`.
     Quantize(crate::value::VectorElement),
+    /// `similarity([key,] q[, metric])`: no key compares the incoming vector value.
+    Similarity(
+        Option<PropKey>,
+        ScriptVectorQuery,
+        Option<crate::value::VectorMetric>,
+    ),
+    /// `nearest(key, q, k[, #{metric}])`.
+    Nearest(
+        PropKey,
+        ScriptVectorQuery,
+        usize,
+        Option<crate::value::VectorMetric>,
+    ),
+    /// `vector_mean()`.
+    VectorMean,
     /// `date_add(DT, n[, zone])`.
     DateAdd(crate::value::dt::DT, i64, Option<CompactString>),
     /// `date_add(duration[, zone])`.
