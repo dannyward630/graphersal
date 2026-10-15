@@ -342,6 +342,7 @@ fn every_store_operation_refuses_a_newer_store_and_changes_nothing() {
                 err_of(Store::attic_fork_dir(d, &attic_id, new_dir.path())),
             ),
             ("backup_dir", err_of(Store::backup_dir(d, new_dir.path()))),
+            #[cfg(feature = "persist-zip")]
             (
                 "backup_zip_dir",
                 err_of(Store::backup_zip_dir(d, std::io::Cursor::new(Vec::new()))),

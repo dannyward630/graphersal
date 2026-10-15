@@ -291,6 +291,7 @@ fn assert_store_fixture(held: &Holds, graph_bytes: &[u8]) {
 /// The pinned content of the `backup/` fixture and of the store `backup.zip` restores: the
 /// state of `store/` at commit 7 without its attic (a backup carries no attic) and with only the
 /// newest snapshot.
+#[cfg(feature = "persist-zip")]
 fn assert_backup_fixture(held: &Holds, graph_bytes: &[u8]) {
     let identity = identity(graph_bytes);
     assert_eq!(held.commit, 7);
