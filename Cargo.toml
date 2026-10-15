@@ -96,7 +96,7 @@ fd-lock = "4"
 rustix = { version = "1", features = ["fs"] }
 # zstd chunks (codec 2, `persist-zstd` feature): the pure-Rust zstd encoder and decoder (no C
 # library), builds for wasm32.
-ruzstd = { version = "0.9", default-features = false, features = ["std"] }
+ruzstd = { version = "0.9.1", default-features = false, features = ["std"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

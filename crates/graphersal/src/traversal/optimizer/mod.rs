@@ -28,7 +28,7 @@ pub(crate) use rules::where_unnest::WhereUnnestRule;
 /// line, and the strings `g.with("optimizer.disabled", [...])`/`g.with("optimizer.enabled", [...])`
 /// accept — `ExecutionOptions::parse` (`traversal/context.rs`) validates against this list.
 /// Independent of the storage type parameter `S`, since a rule's name never depends on it;
-/// [`TraversalOptimizer::registry`] pairs each of these names with the per-`S` constructor. All 9
+/// [`TraversalOptimizer::registry`] pairs each of these names with the per-`S` constructor. All 10
 /// rules that exist today default to on: nothing in this crate ships off-by-default yet, but the
 /// mechanism is ready for a future rule that should (per the spec motivating this list, a
 /// cardinality-aware hop-direction rewrite is expected to be the first).
