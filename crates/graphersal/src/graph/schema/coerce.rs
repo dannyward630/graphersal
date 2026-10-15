@@ -95,9 +95,16 @@ pub(crate) fn coerce_to_declared(
                 }),
             }
         }
+        // Plain guards, not `if let` guards: those need a newer Rust than the MSRV.
         ElementProperty::String(text)
-            if let Some(kind) = node.string_format().and_then(SchemaFormat::temporal_kind) =>
+            if node
+                .string_format()
+                .and_then(SchemaFormat::temporal_kind)
+                .is_some() =>
         {
+            let Some(kind) = node.string_format().and_then(SchemaFormat::temporal_kind) else {
+                return Ok(ElementProperty::String(text));
+            };
             match lift_temporal(&PhysicalValue::String(Cow::Borrowed(text.as_str())), kind) {
                 Ok(temporal) => Ok(temporal),
                 Err(_) => Err(CoerceFailure {
@@ -116,7 +123,10 @@ pub(crate) fn coerce_to_declared(
         }
         // A list of numbers where the node declares a vector: a vector of the declared element
         // (quantized from the f32 values), so a property is stored quantized from the start.
-        ElementProperty::Array(items) if let Some(declared) = &node.vector => {
+        ElementProperty::Array(items) if node.vector.is_some() => {
+            let Some(declared) = &node.vector else {
+                return Ok(ElementProperty::Array(items));
+            };
             let vector = match Vector::from_values(&items) {
                 Ok(vector) => vector,
                 Err(err) => {
@@ -133,10 +143,15 @@ pub(crate) fn coerce_to_declared(
         }
         // A vector of another element: quantized to the declared one.
         ElementProperty::Vector(vector)
-            if let Some(declared) = &node.vector
-                && vector.element() != declared.element =>
+            if node
+                .vector
+                .as_ref()
+                .is_some_and(|declared| vector.element() != declared.element) =>
         {
-            quantize_to(vector, declared.element)
+            match &node.vector {
+                Some(declared) => quantize_to(vector, declared.element),
+                None => Ok(ElementProperty::Vector(vector)),
+            }
         }
         ElementProperty::Array(items) => match &node.items {
             Some(item_node) => items
