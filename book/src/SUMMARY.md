@@ -97,6 +97,7 @@
   - [Dropping Elements](users_guide/dropping_elements.md)
   - [Removing Properties](users_guide/removing_properties.md)
   - [Compressed Properties](users_guide/compressed_properties.md)
+- [Vectors](users_guide/vectors.md)
 - [Dates and Times](dates/index.md)
   - [Comparing and Sorting](dates/comparing.md)
   - [Text Formats](dates/text_formats.md)
