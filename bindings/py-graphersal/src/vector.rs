@@ -67,14 +67,18 @@ fn buffer_values(values: &Bound<'_, PyAny>) -> PyResult<Option<Vec<f64>>> {
     match (format, itemsize) {
         ("f", 4) => Ok(Some(
             bytes
-                .chunks_exact(4)
-                .map(|c| f64::from(f32::from_ne_bytes([c[0], c[1], c[2], c[3]])))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f64::from(f32::from_ne_bytes(*c)))
                 .collect(),
         )),
         ("d", 8) => Ok(Some(
             bytes
-                .chunks_exact(8)
-                .map(|c| f64::from_ne_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|c| f64::from_ne_bytes(*c))
                 .collect(),
         )),
         _ => Err(PyValueError::new_err(format!(
