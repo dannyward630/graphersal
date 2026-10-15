@@ -115,7 +115,8 @@ One encoding is shared by segment chunks and WAL records. A value starts with a 
 | 11 | `datetime` | `svar micros` since 1970-01-01T00:00:00Z (the instant), then `svar offset`: the UTC offset in seconds (file format version 2) |
 | 12 | `time` | `uvar micros`: microseconds since midnight (file format version 2) |
 | 13 | `duration` | `svar months`, `svar days`, `svar micros`, each with its own sign (file format version 2) |
-| 14..254 | reserved | invalid in versions 1 and 2 |
+| 14 | `vector` | `u8 element` (0 `f32`, 1 `f16`, 2 `i8`, 3 `bit`), `uvar dimension`, then for `i8` the scale (4 bytes, IEEE 754 binary32, little-endian), then the packed components: `f32` 4 bytes each (binary32, little-endian), `f16` 2 bytes each (binary16, little-endian), `i8` 1 byte each (two's complement), `bit` `ceil(dimension / 8)` bytes in all, the first component in the most significant bit of the first byte (file format version 2) |
+| 15..254 | reserved | invalid in versions 1 and 2 |
 | 255 | absent | only where a field explicitly allows it (the *before* value of a SetProperty mutation, 9.3) |
 
 - The order of object entries (and of property maps, 7.3) is the insertion order and MUST be
@@ -134,7 +135,15 @@ One encoding is shared by segment chunks and WAL records. A value starts with a 
   A `datetime` keeps the offset it was written with; equality and order of two `datetime`s use
   the instant only (the offset is not compared). A `duration` is not normalized: `P1M`, `P30D`
   and `PT720H` are three different values.
-- Tags 9 to 13 are **invalid in a file of format version 1** (15): a reader MUST report such a
+- **Vector values** (tag 14): `dimension` is 1 to 65536; a component of an `f32` or `f16`
+  vector is finite (no NaN, no infinity; `-0.0` is valid and equals `0.0`); the `i8` scale is
+  finite and `>= 0` (`-0.0` is written as `0.0`); the value of an `i8` component is
+  `code * scale`; a `bit` component is `1.0` for a set bit and `-1.0` otherwise, and the padding
+  bits of the last byte are 0. An unknown element byte, a dimension out of range and any other
+  violation are invalid (damage): every element kind of version 2 is defined here. A reader
+  checks the payload length (`dimension` times the component size) against the remaining bytes
+  before it allocates.
+- Tags 9 to 14 are **invalid in a file of format version 1** (15): a reader MUST report such a
   value as damage, never decode it. A reader takes the version from the header of the file the
   value is in: a segment chunk from its segment's header (7.1, also when the chunk is read
   through the chunk index without framing the whole segment), a WAL record from its WAL
@@ -1321,7 +1330,8 @@ many small appends).
   and offer a repair that loses data; with version 3 in `GRAPH` it refuses the store as newer
   before it reads any other file.
 - Version history of the file format: 1 (Graphersal 0.1.x); 2 (Graphersal 0.2.0) added the
-  temporal value tags 9 to 13 (3). Nothing else differs, so a reader of version 2 reads version
+  temporal value tags 9 to 13 and the vector value tag 14 (3). Nothing else differs, so a reader
+  of version 2 reads version
   1 files as they are: a packed snapshot written by 0.1.x loads, and a store created from it
   keeps its version 1 manifest and segment files byte for byte (8, 12.1). Every file carries its
   own version: a snapshot of file format version 2 MAY reference (6.2) or a packed snapshot MAY

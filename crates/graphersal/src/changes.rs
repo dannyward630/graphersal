@@ -63,7 +63,10 @@
 //! `{"@type": "g:UUID", "@value": "<canonical lowercase uuid>"}`, and the date and time types
 //! with their canonical text: `gx:OffsetDateTime`, `gx:LocalDate`, `gx:LocalDateTime`,
 //! `gx:LocalTime`, and for a `duration` `gx:Duration` (microseconds only), `gx:Period` (months
-//! and days only) or `graphersal:Interval` (both). JSON-native types stay untagged.
+//! and days only) or `graphersal:Interval` (both), and a vector as
+//! `{"@type": "graphersal:Vector", "@value": {"element": "f32", "data": [..]}}` (exact for every
+//! element kind: an `i8` vector with `scale` and `codes`, a `bit` vector with `dimension` and
+//! `bits` in hex). JSON-native types stay untagged.
 //!
 //! Escaping: a user object that has an `"@type"` key of its own is wrapped as
 //! `{"@type": "graphersal:Object", "@value": {..the object..}}` (its keys are then taken

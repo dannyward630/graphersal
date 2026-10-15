@@ -65,6 +65,7 @@ if report.has_skips() {
 | `gx:Duration` (a fixed length; `P2DT3H` reads a day as 24 hours) | `duration` of microseconds | `gx:Duration` for a duration of microseconds only (`PT26H`) |
 | `gx:Period` (`P1Y2M3D`, weeks as 7 days) | `duration` of months and days | `gx:Period` for a duration of months and days only |
 | `graphersal:Interval` (Graphersal's own tag) | `duration` | `graphersal:Interval` for a duration with both months or days and a time part (`P1MT2H`): no `java.time` type holds it, so TinkerGraph cannot load such a value |
+| `g:List` of numbers, read as a list; a vector where the target graph's schema declares one (mode `open` or `closed`, coerced on write); `graphersal:Vector` (Graphersal's own exact tag, as a serialized `ChangeSet` writes it) | `vector` (book page [Vectors](vectors.md)) | `g:List` of `g:Float`, which TinkerGraph loads; an `i8` or `bit` vector as its dequantized values |
 | `gx:Year`, `gx:YearMonth`, `gx:MonthDay`, `gx:OffsetTime`, `gx:ZoneOffset`, `g:Calendar`, `g:TimeZone` | **skipped** | |
 | `gx:BigDecimal`, `g:Class`, the enum tokens, `g:Vertex`/`g:Edge`/`g:Path`/... as a value, vendor types (`janusgraph:Geoshape`) | **skipped** | |
 

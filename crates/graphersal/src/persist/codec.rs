@@ -21,7 +21,7 @@ pub(crate) const FORMAT_VERSION: u32 = 2;
 /// version 2 only by the temporal value tags it does not have (format spec 3, 15).
 pub(crate) const MIN_FORMAT_VERSION: u32 = 1;
 
-/// The first file format version with the temporal value tags (9 to 13).
+/// The first file format version with the temporal value tags (9 to 13) and the vector tag (14).
 pub(crate) const TEMPORAL_FORMAT_VERSION: u32 = 2;
 
 /// Whether this build reads files of format `version` (1 and 2).

@@ -141,6 +141,7 @@ const CATEGORIES: &[(&str, &[&str])] = &[
             "as_local",
         ],
     ),
+    ("Vectors", &["as_vector", "quantize"]),
     (
         "Lists and ordering",
         &[

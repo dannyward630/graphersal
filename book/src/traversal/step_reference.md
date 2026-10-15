@@ -131,6 +131,10 @@ unless a page says otherwise; the differences are collected in
 
 [`as_date`](steps/as_date.md) · [`as_duration`](steps/as_duration.md) · [`date_add`](steps/date_add.md) · [`date_diff`](steps/date_diff.md) · [`age`](steps/age.md) · [`date_trunc`](steps/date_trunc.md) · [`date_part`](steps/date_part.md) · [`at_zone`](steps/at_zone.md) · [`as_local`](steps/as_local.md)
 
+### Vectors
+
+[`as_vector`](steps/as_vector.md) · [`quantize`](steps/quantize.md)
+
 ### Lists and ordering
 
 [`fold`](steps/fold.md) · [`unfold`](steps/unfold.md) · [`combine`](steps/combine.md) · [`conjoin`](steps/conjoin.md) · [`difference`](steps/difference.md) · [`disjunct`](steps/disjunct.md) · [`intersect`](steps/intersect.md) · [`merge`](steps/merge.md) · [`product`](steps/product.md) · [`reverse`](steps/reverse.md) · [`order`](steps/order.md)

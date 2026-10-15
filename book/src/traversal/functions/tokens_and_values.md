@@ -93,6 +93,12 @@ now() == now()   // true
 
 **`outside`**: the same as `P.outside`, without the class name.
 
+**`quantize`**: The vector in another element kind (f32, f16, i8, bit).
+
+```rhai,graph=modern
+vector([0.5, -1.0]).quantize("i8").dimension   // 2
+```
+
 **`regex`**: the same as `TextP.regex`, without the class name.
 
 **`starting_with` · `startingWith`**: the same as `P.starting_with`, without the class name.
@@ -115,12 +121,24 @@ GraphSource::tinkerpop_modern().e().count().next()   // 6
 type_of(today())   // date
 ```
 
+**`to_list` · `toList`**: The values of the vector as a list of floats (dequantized).
+
+```rhai,graph=modern
+vector([0.5, 2]).to_list()   // [0.5, 2.0]
+```
+
 **`typeOf`**: the same as `P.typeOf`, without the class name.
 
 **`UUID`**: Returns a new random UUID value.
 
 ```rhai,graph=modern
 type_of(UUID())   // Uuid
+```
+
+**`vector`**: A vector value (an embedding) from a list of numbers: f32, or quantized to f16, i8 or bit.
+
+```rhai,graph=modern
+vector([0.5, -1.0], "bit").to_list()   // [1.0, -1.0]
 ```
 
 **`within`**: the same as `P.within`, without the class name.
