@@ -306,6 +306,7 @@ const GROUPS: &[(&str, &str, &[&str])] = &[
             "UUID",
             "Uuid",
             "temporal",
+            "Vector",
             "Set",
             "Map",
             "V",

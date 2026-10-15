@@ -93,12 +93,6 @@ now() == now()   // true
 
 **`outside`**: the same as `P.outside`, without the class name.
 
-**`quantize`**: The vector in another element kind (f32, f16, i8, bit).
-
-```rhai,graph=modern
-vector([0.5, -1.0]).quantize("i8").dimension   // 2
-```
-
 **`regex`**: the same as `TextP.regex`, without the class name.
 
 **`starting_with` · `startingWith`**: the same as `P.starting_with`, without the class name.
@@ -119,12 +113,6 @@ GraphSource::tinkerpop_modern().e().count().next()   // 6
 
 ```rhai,graph=modern
 type_of(today())   // date
-```
-
-**`to_list` · `toList`**: The values of the vector as a list of floats (dequantized).
-
-```rhai,graph=modern
-vector([0.5, 2]).to_list()   // [0.5, 2.0]
 ```
 
 **`typeOf`**: the same as `P.typeOf`, without the class name.
@@ -203,6 +191,18 @@ UUID.from_string("123e4567-e89b-12d3-a456-426614174000").as_string().len()   // 
 
 ```rhai,graph=modern
 datetime("2023-08-02T09:30+02:00").as_string()   // 2023-08-02T09:30:00+02:00
+```
+
+**`Vector.quantize`**: The vector in another element kind (f32, f16, i8, bit).
+
+```rhai,graph=modern
+vector([0.5, -1.0]).quantize("i8").dimension   // 2
+```
+
+**`Vector.to_list` · `Vector.toList`**: The values of the vector as a list of floats (dequantized).
+
+```rhai,graph=modern
+vector([0.5, 2]).to_list()   // [0.5, 2.0]
 ```
 
 **`Set.of`**: A set value (duplicates dropped) of the given values, e.g. to seed a set side effect.
