@@ -65,6 +65,10 @@ fn test_meta_schema_constant_validity() {
         "maximum",
         "exclusiveMinimum",
         "exclusiveMaximum",
+        "formatMinimum",
+        "formatMaximum",
+        "formatExclusiveMinimum",
+        "formatExclusiveMaximum",
         "minLength",
         "maxLength",
         "pattern",
@@ -76,20 +80,42 @@ fn test_meta_schema_constant_validity() {
         "examples",
         "deprecated",
         "default",
+        "defaultFunction",
         "$ref",
     ] {
         assert!(node_keys.iter().any(|k| k == keyword), "{keyword} missing");
     }
-    assert_eq!(node_keys.len(), 25, "{node_keys:?}");
+    assert_eq!(node_keys.len(), 30, "{node_keys:?}");
     for rejected in ["oneOf", "allOf", "uniqueItems", "multipleOf", "nullable"] {
         assert!(!node_keys.iter().any(|k| k == rejected), "{rejected}");
     }
-    // `default` is documented as an annotation only.
+    // The formats are uuid and the date/time types.
+    assert_eq!(
+        parsed["$defs"]["node"]["properties"]["format"]["enum"],
+        serde_json::json!([
+            "uuid",
+            "date-time",
+            "date",
+            "local-date-time",
+            "time",
+            "duration"
+        ])
+    );
+    // `default` is documented as applied on create only, never on read or to existing data.
+    let default = parsed["$defs"]["node"]["properties"]["default"]["description"]
+        .as_str()
+        .unwrap();
     assert!(
-        parsed["$defs"]["node"]["properties"]["default"]["description"]
-            .as_str()
-            .unwrap()
-            .contains("never applied")
+        default.contains("stored when a vertex or edge is created without the property"),
+        "{default}"
+    );
+    assert!(
+        default.contains("never applied on read or to existing data"),
+        "{default}"
+    );
+    assert_eq!(
+        parsed["$defs"]["node"]["properties"]["defaultFunction"]["enum"],
+        serde_json::json!(["uuidv4", "uuidv7", "now", "today"])
     );
 }
 
