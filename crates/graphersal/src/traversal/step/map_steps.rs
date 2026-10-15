@@ -55,3 +55,4 @@ mod step_to_upper;
 mod step_trim;
 mod step_value;
 pub(crate) mod step_value_map;
+mod step_vector;

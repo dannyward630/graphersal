@@ -60,6 +60,8 @@ pub enum GType {
     List,
     /// Any map, whatever its fields.
     Map,
+    /// Any vector, whatever its element kind and dimension (a Graphersal extension).
+    Vector,
     /// A graph element kind.
     Stream(StreamKind),
 }
@@ -93,6 +95,9 @@ impl GType {
     pub const LOCALDATETIME: GType = GType::Value(ValueType::LocalDateTime);
     /// `GType.TIME` — a time of day (a Graphersal extension).
     pub const TIME: GType = GType::Value(ValueType::Time);
+    /// `GType.VECTOR` — any vector, whatever its element kind (a Graphersal extension); as a
+    /// conversion target (`as_vector()`) an f32 vector.
+    pub const VECTOR: GType = GType::Vector;
     /// `GType.NUMBER` — any numeric type.
     pub const NUMBER: GType = GType::Number;
     /// `GType.LIST` — any array.
@@ -124,6 +129,7 @@ impl GType {
             GType::Value(ValueType::Date) => "DATE",
             GType::Value(ValueType::LocalDateTime) => "LOCALDATETIME",
             GType::Value(ValueType::Time) => "TIME",
+            GType::Value(ValueType::Vector(_)) | GType::Vector => "VECTOR",
             GType::Value(ValueType::Array(_)) => "LIST",
             GType::Value(ValueType::Object) => "MAP",
             GType::Value(union @ ValueType::Union(_)) => return union.to_string(),
@@ -154,6 +160,7 @@ impl GType {
         "LocalDate",
         "LocalDateTime",
         "LocalTime",
+        "Vector",
         "Number",
         "List",
         "Map",
@@ -180,6 +187,7 @@ impl GType {
             "LocalDate" => GType::DATE,
             "LocalDateTime" => GType::LOCALDATETIME,
             "LocalTime" => GType::TIME,
+            "Vector" => GType::VECTOR,
             "Number" => GType::NUMBER,
             "List" => GType::LIST,
             "Map" => GType::MAP,
@@ -203,6 +211,7 @@ impl GType {
             GType::Number => matches!(observed, ValueType::Int64 | ValueType::Float64),
             GType::List => matches!(observed, ValueType::Array(_)),
             GType::Map => matches!(observed, ValueType::Object),
+            GType::Vector => matches!(observed, ValueType::Vector(_)),
             GType::Stream(_) => false,
         }
     }
@@ -246,6 +255,7 @@ impl fmt::Display for GType {
             GType::Number => f.write_str("number"),
             GType::List => f.write_str("list"),
             GType::Map => f.write_str("map"),
+            GType::Vector => f.write_str("vector"),
             GType::Stream(kind) => write!(f, "{kind}"),
         }
     }

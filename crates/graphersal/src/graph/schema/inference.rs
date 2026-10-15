@@ -12,13 +12,15 @@
 //! UUID, a date or an IP address is `string`; a real `uuid` value is
 //! `{"type": "string", "format": "uuid"}`, a real `datetime` `{"type": "string", "format":
 //! "date-time"}` (and `date`, `local-date-time`, `time`, `duration` for the other temporal
-//! types; a position holding a string and a temporal value is an `anyOf`). No content-sniffing
+//! types; a position holding a string and a temporal value is an `anyOf`), a vector
+//! `{"type": "array", "format": "vector", "element": .., "dimension": ..}` (the dimension when
+//! every vector of that element at the position has the same one). No content-sniffing
 //! detector may ever be added here
 //! (CLAUDE.md rule 7). The inferred schema has mode `none` and no `additionalProperties`; set
 //! the mode when applying it (`GraphSchema::with_mode`, the DSL's
 //! `g.set_schema(g.infer_schema(), SchemaMode.closed)`): "freeze the structure you have".
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use indexmap::IndexMap;
 
@@ -27,7 +29,7 @@ use crate::graph::schema::{
     EdgeConnection, EdgeSchema, GraphSchema, JsonType, PropertySchema, VertexSchema,
 };
 use crate::value::temporal::TemporalKind;
-use crate::value::{ElementProperty, PropertyMap};
+use crate::value::{ElementProperty, PropertyMap, VectorElement};
 
 /// What was observed at one position.
 #[derive(Debug, Default, Clone)]
@@ -40,6 +42,8 @@ struct Observed {
     uuid: bool,
     /// The temporal types seen here (`format: date-time`, ...), in their order.
     temporal: BTreeSet<TemporalKind>,
+    /// The vector elements seen here, each with its dimension (`None` once two differ).
+    vectors: BTreeMap<VectorElement, Option<u32>>,
     /// Arrays seen here: the observation of their items (`None` while every array was empty).
     array: Option<Option<Box<Observed>>>,
     /// Objects seen here.
@@ -99,6 +103,19 @@ impl Observed {
             ElementProperty::Temporal(value) => {
                 self.temporal.insert(value.kind());
             }
+            // A vector is `{"type": "array", "format": "vector", ..}` of its element, with its
+            // dimension while every vector of that element here has the same one.
+            ElementProperty::Vector(vector) => {
+                let dimension = vector.dimension() as u32;
+                self.vectors
+                    .entry(vector.element())
+                    .and_modify(|seen| {
+                        if *seen != Some(dimension) {
+                            *seen = None;
+                        }
+                    })
+                    .or_insert(Some(dimension));
+            }
             ElementProperty::Array(items) => {
                 let slot = self.array.get_or_insert(None);
                 for item in items {
@@ -140,6 +157,9 @@ impl Observed {
         for kind in &self.temporal {
             members.push(PropertySchema::temporal(*kind));
         }
+        for (element, dimension) in &self.vectors {
+            members.push(PropertySchema::vector(*element, *dimension));
+        }
         if let Some(items) = self.array {
             members.push(match items {
                 Some(items) => PropertySchema::array(items.into_schema()),
@@ -158,7 +178,9 @@ impl Observed {
     fn into_schema(self) -> PropertySchema {
         // A `string`, a `uuid` and the temporal types at one position cannot share a `type`
         // array (the format applies to every string): then each kind is an `anyOf` member.
-        let split = usize::from(self.string) + usize::from(self.uuid) + self.temporal.len() > 1;
+        let split = usize::from(self.string) + usize::from(self.uuid) + self.temporal.len() > 1
+            // Likewise lists and the vector elements: each is an `array` with its own keywords.
+            || usize::from(self.array.is_some()) + self.vectors.len() > 1;
         let members = self.members();
         if members.len() == 1 {
             return members.into_iter().next().unwrap_or_default();
@@ -180,6 +202,9 @@ impl Observed {
             }
             if member.items.is_some() {
                 node.items = member.items;
+            }
+            if member.vector.is_some() {
+                node.vector = member.vector;
             }
             if !member.properties.is_empty() || !member.required.is_empty() {
                 node.properties = member.properties;

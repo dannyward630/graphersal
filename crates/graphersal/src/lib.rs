@@ -44,6 +44,7 @@ pub mod temporal;
 // internal; the public items are re-exported by `prelude`, `profile` and `exec`.
 pub(crate) mod traversal;
 pub(crate) mod value;
+pub mod vector;
 
 // The domain types at the crate root (rule 8). No glob re-exports: query writers use
 // `prelude`, integrators the topic modules.

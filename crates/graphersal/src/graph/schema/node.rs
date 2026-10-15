@@ -10,7 +10,7 @@ use indexmap::IndexMap;
 use crate::graph::schema::SchemaPattern;
 use crate::graph::schema::defaults::CreateContext;
 use crate::value::temporal::{Temporal, TemporalKind};
-use crate::value::{ElementProperty, Number};
+use crate::value::{ElementProperty, Number, Vector, VectorElement, VectorMetric};
 
 /// A JSON Schema `type` name of the supported subset.
 ///
@@ -184,6 +184,66 @@ impl SchemaFormat {
                 self.temporal_kind() == Some(temporal.kind())
             }
             _ => false,
+        }
+    }
+}
+
+/// The vector declaration of an `array` node: `{"type": "array", "format": "vector",
+/// "element": "i8", "dimension": 768, "metric": "cosine"}` (book page "Vectors").
+///
+/// `format: "vector"` keeps the schema a strict subset of JSON Schema with custom formats (as
+/// the dates do on `string`): another validator ignores the unknown format and the custom
+/// keywords and sees an array, which is what a vector exports as. `element` (default `f32`) and
+/// `dimension` (default: any) are checked exactly; `metric` is an annotation for the search
+/// steps. `items` is not allowed next to it. A list of numbers written to the property in mode
+/// `open`/`closed` is coerced to a vector of the declared element, and a vector of another
+/// element is quantized to it: a property can be stored quantized from the start.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct VectorSchema {
+    /// `element`: the element kind of the stored vectors.
+    pub element: VectorElement,
+    /// `dimension`: the number of components; `None` admits any.
+    pub dimension: Option<u32>,
+    /// `metric`: an annotation, the metric the vectors are meant to be compared with.
+    pub metric: Option<VectorMetric>,
+}
+
+impl VectorSchema {
+    /// A declaration of vectors of `element`, any dimension, no metric.
+    pub fn new(element: VectorElement) -> Self {
+        VectorSchema {
+            element,
+            dimension: None,
+            metric: None,
+        }
+    }
+
+    /// The same declaration with a dimension.
+    pub fn with_dimension(mut self, dimension: u32) -> Self {
+        self.dimension = Some(dimension);
+        self
+    }
+
+    /// The same declaration with a metric annotation.
+    pub fn with_metric(mut self, metric: VectorMetric) -> Self {
+        self.metric = Some(metric);
+        self
+    }
+
+    /// Whether a vector has the declared element and dimension.
+    pub(crate) fn admits(&self, vector: &Vector) -> bool {
+        vector.element() == self.element
+            && self
+                .dimension
+                .is_none_or(|dimension| vector.dimension() == dimension as usize)
+    }
+
+    /// The type name of a diagnostic: `vector<i8>`, `vector<i8, 768>`.
+    pub(crate) fn type_name(&self) -> String {
+        match self.dimension {
+            Some(dimension) => format!("vector<{}, {dimension}>", self.element),
+            None => format!("vector<{}>", self.element),
         }
     }
 }
@@ -403,6 +463,9 @@ pub struct PropertySchema {
     pub format: Option<SchemaFormat>,
     /// `items`: the schema of every array item.
     pub items: Option<Box<PropertySchema>>,
+    /// `format: "vector"` with `element`/`dimension`/`metric`: the node declares vectors
+    /// ([`VectorSchema`]; its `type` is `array`, [`Self::format`] stays `None`).
+    pub vector: Option<VectorSchema>,
     /// `properties`: the declared keys of an object.
     pub properties: IndexMap<String, PropertySchema>,
     /// `required`: the keys an object must have.
@@ -509,6 +572,19 @@ impl PropertySchema {
     /// The node of a temporal type (`{"type": "string", "format": ..}`).
     pub fn temporal(kind: TemporalKind) -> Self {
         Self::with_string_format(SchemaFormat::of_temporal(kind))
+    }
+
+    /// `{"type": "array", "format": "vector", "element": .., "dimension": ..}`: a vector of
+    /// `element` with `dimension` components (`None`: any dimension).
+    pub fn vector(element: VectorElement, dimension: Option<u32>) -> Self {
+        Self {
+            vector: Some(VectorSchema {
+                element,
+                dimension,
+                metric: None,
+            }),
+            ..Self::of(JsonType::Array)
+        }
     }
 
     /// `{"type": "array", "items": <items>}`.
@@ -708,9 +784,10 @@ impl PropertySchema {
             types
                 .iter()
                 .map(|ty| match ty {
-                    JsonType::Array => match &self.items {
-                        Some(items) => format!("array<{}>", items.type_name()),
-                        None => "array".to_string(),
+                    JsonType::Array => match (&self.vector, &self.items) {
+                        (Some(vector), _) => vector.type_name(),
+                        (None, Some(items)) => format!("array<{}>", items.type_name()),
+                        (None, None) => "array".to_string(),
                     },
                     other => other.engine_name(self.format).to_string(),
                 })

@@ -76,7 +76,8 @@ impl StepHasValue {
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
             | ElementProperty::Uuid(_)
-            | ElementProperty::Temporal(_) => self.value.eq(value),
+            | ElementProperty::Temporal(_)
+            | ElementProperty::Vector(_) => self.value.eq(value),
             ElementProperty::Object(_) | ElementProperty::Vertex(_) | ElementProperty::Edge(_) => {
                 value
                     .map_entries()
@@ -361,7 +362,8 @@ impl<B: Into<PValue> + Debug + Clone + Send + Sync> StepHasValueP<B> {
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
             | ElementProperty::Uuid(_)
-            | ElementProperty::Temporal(_) => {
+            | ElementProperty::Temporal(_)
+            | ElementProperty::Vector(_) => {
                 let candidate = TraverserValue::Computed(value.to_logical(), None);
                 self.predicate.test(context, &candidate, path)
             }
@@ -638,7 +640,8 @@ impl StepHasValueAny {
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
             | ElementProperty::Uuid(_)
-            | ElementProperty::Temporal(_) => self.values.iter().any(|v| v.eq(value)),
+            | ElementProperty::Temporal(_)
+            | ElementProperty::Vector(_) => self.values.iter().any(|v| v.eq(value)),
             ElementProperty::Object(_) | ElementProperty::Vertex(_) | ElementProperty::Edge(_) => {
                 value.map_entries().is_some_and(|nested| {
                     nested.values().any(|r| self.values.iter().any(|v| v.eq(r)))

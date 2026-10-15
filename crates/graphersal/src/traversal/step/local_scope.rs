@@ -98,6 +98,7 @@ fn classify_property<S: GraphStorage>(
         | ElementProperty::Boolean(_)
         | ElementProperty::Uuid(_)
         | ElementProperty::Temporal(_)
+        | ElementProperty::Vector(_)
         | ElementProperty::Vertex(_)
         | ElementProperty::Edge(_) => LocalShape::Scalar(fallback(property.into_logical())),
     }
@@ -170,6 +171,7 @@ pub(crate) fn local_len<S: GraphStorage>(
             | ElementProperty::Boolean(_)
             | ElementProperty::Uuid(_)
             | ElementProperty::Temporal(_)
+            | ElementProperty::Vector(_)
             | ElementProperty::Vertex(_)
             | ElementProperty::Edge(_) => 1,
         }
@@ -249,6 +251,7 @@ fn slice_stored<S: GraphStorage>(
         | ElementProperty::Boolean(_)
         | ElementProperty::Uuid(_)
         | ElementProperty::Temporal(_)
+        | ElementProperty::Vector(_)
         | ElementProperty::Vertex(_)
         | ElementProperty::Edge(_) => None,
     }
@@ -455,6 +458,7 @@ fn local_string_item<S: GraphStorage>(
             | ElementProperty::Boolean(_)
             | ElementProperty::Uuid(_)
             | ElementProperty::Temporal(_)
+            | ElementProperty::Vector(_)
             | ElementProperty::Array(_)
             | ElementProperty::Object(_)
             | ElementProperty::Map(_)

@@ -75,7 +75,7 @@
     "local_ref": { "type": "string", "pattern": "^#/\\$defs/" },
     "count": { "type": "integer", "minimum": 0 },
     "node": {
-      "description": "One property schema node. integer = int64, number = float64, string + format uuid = uuid, string + format date-time / date / local-date-time / time / duration = datetime / date / localdatetime / time / duration (time and local-date-time have no UTC offset). formatMinimum, formatMaximum, formatExclusiveMinimum and formatExclusiveMaximum (text of the format's type) need one of these temporal formats.",
+      "description": "One property schema node. integer = int64, number = float64, string + format uuid = uuid, string + format date-time / date / local-date-time / time / duration = datetime / date / localdatetime / time / duration (time and local-date-time have no UTC offset). formatMinimum, formatMaximum, formatExclusiveMinimum and formatExclusiveMaximum (text of the format's type) need one of these temporal formats. array + format vector = a vector (an embedding) with element (f32, f16, i8, bit; default f32), dimension (optional) and metric (an annotation); items is not allowed next to it.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -85,7 +85,10 @@
             { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/type_name" } }
           ]
         },
-        "format": { "enum": ["uuid", "date-time", "date", "local-date-time", "time", "duration"] },
+        "format": { "enum": ["uuid", "date-time", "date", "local-date-time", "time", "duration", "vector"] },
+        "element": { "enum": ["f32", "f16", "i8", "bit"], "description": "With format vector: the element kind of the stored vectors (default f32)." },
+        "dimension": { "type": "integer", "minimum": 1, "maximum": 65536, "description": "With format vector: the number of components." },
+        "metric": { "enum": ["cosine", "dot", "l2", "hamming"], "description": "With format vector: an annotation, the metric the vectors are compared with." },
         "items": { "$ref": "#/$defs/node" },
         "properties": { "type": "object", "additionalProperties": { "$ref": "#/$defs/node" } },
         "required": { "$ref": "#/$defs/key_list" },

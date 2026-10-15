@@ -280,6 +280,10 @@ pub(super) enum Step {
     AsDate(Option<GType>),
     /// `as_duration()`.
     AsDuration,
+    /// `as_vector()`.
+    AsVector,
+    /// `quantize(kind)`.
+    Quantize(crate::value::VectorElement),
     /// `date_add(DT, n[, zone])`.
     DateAdd(crate::value::dt::DT, i64, Option<CompactString>),
     /// `date_add(duration[, zone])`.

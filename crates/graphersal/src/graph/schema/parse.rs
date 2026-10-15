@@ -5,11 +5,13 @@ use std::borrow::Cow;
 use crate::error::{DiagnosticError, SchemaError};
 use crate::graph::schema::{
     Annotations, Constraints, DefaultFunction, EdgeConnection, EdgeSchema, GraphSchema, JsonType,
-    PropertySchema, SCHEMA_FORMAT_URL, SchemaFormat, SchemaMode, SchemaPattern, VertexSchema,
+    PropertySchema, SCHEMA_FORMAT_URL, SchemaFormat, SchemaMode, SchemaPattern, VectorSchema,
+    VertexSchema,
 };
 use crate::value::physical::{PhysicalValue, lift_untyped, lower, read_json, to_json_text};
 use crate::value::temporal::{Temporal, TemporalKind};
-use crate::value::{ElementProperty, Number, PropertyMap};
+use crate::value::vector::MAX_VECTOR_DIMENSION;
+use crate::value::{ElementProperty, Number, PropertyMap, VectorElement, VectorMetric};
 
 /// How deeply a schema document may nest (arrays and objects), and how deeply `$ref`s may
 /// expand. A schema can come from an untrusted source; this keeps it from exhausting the stack.
@@ -22,9 +24,18 @@ pub(crate) const MAX_SCHEMA_NODES: usize = 100_000;
 /// The keywords a property node accepts.
 const NODE_KEYWORDS: &str = "type, format, items, properties, required, additionalProperties, \
      anyOf, enum, const, minimum, maximum, exclusiveMinimum, exclusiveMaximum, formatMinimum, \
-     formatMaximum, formatExclusiveMinimum, formatExclusiveMaximum, minLength, \
+     formatMaximum, formatExclusiveMinimum, formatExclusiveMaximum, element, dimension, \
+     metric (with format vector), minLength, \
      maxLength, pattern, minItems, maxItems, title, description, $comment, examples, \
      deprecated, default, defaultFunction, $ref (and $defs, $schema, $id at a label schema's root)";
+
+/// The `format` of a vector node (on `array`, not one of the string formats).
+pub(crate) const VECTOR_FORMAT: &str = "vector";
+
+/// The advice of a misplaced vector keyword.
+const VECTOR_HINT: &str = "A vector property is {\"type\": \"array\", \"format\": \"vector\", \
+     \"element\": \"f32\", \"dimension\": 768} (element f32, f16, i8 or bit, default f32; \
+     dimension optional; metric an optional annotation: cosine, dot, l2, hamming).";
 
 /// The general advice appended to every schema format error.
 pub(crate) const FORMAT_HELP: &str = "The schema format is an envelope ($schema, meta, mode, \
@@ -532,6 +543,7 @@ fn parse_label_schema(
         || schema.any_of.is_some()
         || schema.items.is_some()
         || schema.format.is_some()
+        || schema.vector.is_some()
         || schema.constraints.as_deref().is_some_and(|c| !c.is_empty())
     {
         return Err(invalid(
@@ -654,6 +666,12 @@ impl NodeParser<'_, '_> {
         let mut uses: Vec<(&str, JsonType)> = Vec::new();
         // `formatMinimum`, ...: their text is read once the node's `format` is known.
         let mut format_bounds: Vec<(&'static str, String)> = Vec::new();
+        // `format: "vector"` and its keywords `element`, `dimension`, `metric`.
+        let mut vector_format = false;
+        let mut vector_keywords: Vec<&'static str> = Vec::new();
+        let mut element = None;
+        let mut dimension = None;
+        let mut metric = None;
         for (key, field) in fields {
             let at = at.child(key.as_ref());
             let key = key.as_ref();
@@ -661,18 +679,63 @@ impl NodeParser<'_, '_> {
                 "type" => node.types = Some(parse_types(field, &at)?),
                 "format" => {
                     let name = string(field, &at, "format")?;
+                    if name == VECTOR_FORMAT {
+                        vector_format = true;
+                        uses.push(("format", JsonType::Array));
+                        continue;
+                    }
                     node.format = Some(SchemaFormat::from_name(name).ok_or_else(|| {
                         invalid(
                             &at,
                             format!("unsupported format '{name}'"),
                             "The supported formats are uuid, date-time (an instant with its \
                              offset), date, local-date-time (a date and time without a zone), \
-                             time (a time of day without a zone) and duration. Remove any \
-                             other format (the value is a plain string), so a later version \
-                             cannot change what this schema accepts.",
+                             time (a time of day without a zone) and duration on a string, and \
+                             vector on an array. Remove any other format (the value is a plain \
+                             string), so a later version cannot change what this schema \
+                             accepts.",
                         )
                     })?);
                     uses.push(("format", JsonType::String));
+                }
+                "element" => {
+                    let name = string(field, &at, key)?;
+                    element = Some(VectorElement::from_name(name).ok_or_else(|| {
+                        invalid(
+                            &at,
+                            format!("unknown vector element '{name}'"),
+                            "The vector elements are f32, f16, i8 and bit: \
+                             {\"type\": \"array\", \"format\": \"vector\", \"element\": \"i8\"}.",
+                        )
+                    })?);
+                    vector_keywords.push("element");
+                    uses.push(("element", JsonType::Array));
+                }
+                "dimension" => {
+                    let n = count(field, &at, key)?;
+                    if n == 0 || n > MAX_VECTOR_DIMENSION as u64 {
+                        return Err(invalid(
+                            &at,
+                            format!("dimension must be between 1 and {MAX_VECTOR_DIMENSION}"),
+                            "Write the number of components of the vectors: \
+                             \"dimension\": 768.",
+                        ));
+                    }
+                    dimension = Some(n as u32);
+                    vector_keywords.push("dimension");
+                    uses.push(("dimension", JsonType::Array));
+                }
+                "metric" => {
+                    let name = string(field, &at, key)?;
+                    metric = Some(VectorMetric::from_name(name).ok_or_else(|| {
+                        invalid(
+                            &at,
+                            format!("unknown vector metric '{name}'"),
+                            "The metrics are cosine, dot, l2 and hamming.",
+                        )
+                    })?);
+                    vector_keywords.push("metric");
+                    uses.push(("metric", JsonType::Array));
                 }
                 "formatMinimum"
                 | "formatMaximum"
@@ -896,6 +959,35 @@ impl NodeParser<'_, '_> {
                 "format needs \"type\": \"string\" on the same node",
                 "Write {\"type\": \"string\", \"format\": \"uuid\"}.",
             ));
+        } else if vector_format {
+            return Err(invalid(
+                &at.child("format"),
+                "format vector needs \"type\": \"array\" on the same node",
+                VECTOR_HINT,
+            ));
+        }
+        if let Some(keyword) = vector_keywords.first().filter(|_| !vector_format) {
+            return Err(invalid(
+                &at.child(*keyword),
+                format!("{keyword} needs \"format\": \"vector\" on the same node"),
+                VECTOR_HINT,
+            ));
+        }
+        if vector_format {
+            if node.items.is_some() {
+                return Err(invalid(
+                    &at.child("items"),
+                    "items is not allowed next to format vector",
+                    "A vector's components are numbers of its element kind; remove items. \
+                     Write {\"type\": \"array\", \"format\": \"vector\", \"element\": \"f32\", \
+                     \"dimension\": 768}.",
+                ));
+            }
+            node.vector = Some(VectorSchema {
+                element: element.unwrap_or(VectorElement::F32),
+                dimension,
+                metric,
+            });
         }
         for (keyword, text) in format_bounds {
             let bound_at = at.child(keyword);
@@ -1096,6 +1188,10 @@ fn parse_types(value: &PhysicalValue<'_>, at: &Pointer) -> Result<Vec<JsonType>,
                 "duration" | "interval" => {
                     "duration is written {\"type\": \"string\", \"format\": \"duration\"}."
                 }
+                "vector" | "embedding" => {
+                    "a vector is written {\"type\": \"array\", \"format\": \"vector\", \
+                     \"element\": \"f32\", \"dimension\": 768}."
+                }
                 "union" => {
                     "A union is written anyOf: [{..}, {..}] (or a type array for \
                             plain types: \"type\": [\"string\", \"null\"])."
@@ -1168,6 +1264,16 @@ impl PropertySchema {
         }
         if let Some(format) = self.format {
             map.insert("format", ElementProperty::from(format.as_str()));
+        }
+        if let Some(vector) = &self.vector {
+            map.insert("format", ElementProperty::from(VECTOR_FORMAT));
+            map.insert("element", ElementProperty::from(vector.element.name()));
+            if let Some(dimension) = vector.dimension {
+                map.insert("dimension", count_value(u64::from(dimension)));
+            }
+            if let Some(metric) = vector.metric {
+                map.insert("metric", ElementProperty::from(metric.name()));
+            }
         }
         if let Some(c) = self.constraints.as_deref() {
             if let Some(values) = &c.enum_values {

@@ -427,6 +427,7 @@ fn transition<S: GraphStorage>(
                 | ElementProperty::Boolean(_)
                 | ElementProperty::Uuid(_)
                 | ElementProperty::Temporal(_)
+                | ElementProperty::Vector(_)
                 | ElementProperty::Object(_)
                 | ElementProperty::Map(_)
                 | ElementProperty::Array(_)

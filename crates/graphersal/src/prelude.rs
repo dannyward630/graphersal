@@ -30,7 +30,7 @@ pub use crate::value::{
     Barrier, Cardinality, CastPolicy, Column, DT, Direction, EdgeValue, ElementProperty, GType,
     JsonPath, Merge, Number, Operator, P, PValue, Pop, PropKey, PropKeys, PropertyHandleKind,
     PropertyMap, RecordKey, Scope, StreamKind, StreamMap, Temporal, TraverserValue, ValueMap,
-    VertexRef, VertexValue, WithOptions,
+    Vector, VertexRef, VertexValue, WithOptions,
 };
 /// The small-string type of labels, property keys and string values (`ElementProperty::String`,
 /// `TraverserValue` variants, `GraphStorage` signatures), re-exported from `compact_str` so a

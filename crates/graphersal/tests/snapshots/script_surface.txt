@@ -50,6 +50,7 @@
 {"displayName":"UUIDTokens","typeName":"graphersal::script::tokens::uuid::ScriptUuidTokens"}
 {"displayName":"Uuid","typeName":"graphersal::script::tokens::uuid::ScriptUuid"}
 {"displayName":"V","typeName":"graphersal::script::tokens::visualizer::ScriptV"}
+{"displayName":"Vector","typeName":"graphersal::script::tokens::vector::ScriptVector"}
 {"displayName":"Vertex","typeName":"graphersal::script::tokens::element::ScriptVertex"}
 {"displayName":"VertexRef","typeName":"graphersal::script::tokens::element::ScriptVertexRef"}
 {"displayName":"VisualizeFormat","typeName":"graphersal::graph::schema::visualize::VisualizeFormat"}
@@ -312,6 +313,8 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 {"access":"public","docComments":["/// A set value (duplicates dropped) of the given values, e.g. to seed a set side effect.","///","/// Example: `g.with_side_effect(\"s\", Set.of()).v().out().values(\"name\").aggregate(\"s\").cap(\"s\").next()` returns `[\"josh\", \"lop\", \"vadas\", \"ripple\"]`"],"name":"of","namespace":"global","numParams":8,"params":[{"type":"graphersal::script::tokens::set::ScriptSetTokens"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"}],"returnType":"core::result::Result<graphersal::script::tokens::set::ScriptSet,alloc::boxed::Box<rhai::types::error::EvalAltResult>>"}
 {"access":"public","docComments":["/// A set value (duplicates dropped) of the given values, e.g. to seed a set side effect.","///","/// Example: `g.with_side_effect(\"s\", Set.of()).v().out().values(\"name\").aggregate(\"s\").cap(\"s\").next()` returns `[\"josh\", \"lop\", \"vadas\", \"ripple\"]`"],"name":"of","namespace":"global","numParams":9,"params":[{"type":"graphersal::script::tokens::set::ScriptSetTokens"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"}],"returnType":"core::result::Result<graphersal::script::tokens::set::ScriptSet,alloc::boxed::Box<rhai::types::error::EvalAltResult>>"}
 {"access":"public","docComments":["/// A time of day.","///","/// Example: `time(\"09:30:15\").second` returns `15`"],"name":"time","namespace":"global","numParams":1,"params":[{"type":"string"}],"returnType":"core::result::Result<graphersal::value::temporal::Time,alloc::boxed::Box<rhai::types::error::EvalAltResult>>"}
+{"access":"public","docComments":["/// A vector value (an embedding) from a list of numbers: f32, or quantized to f16, i8 or bit.","///","/// Example: `vector([0.5, -1.0], \"bit\").to_list()` returns `[1.0, -1.0]`"],"name":"vector","namespace":"global","numParams":1,"params":[{"type":"array"}],"returnType":"core::result::Result<graphersal::script::tokens::vector::ScriptVector,alloc::boxed::Box<rhai::types::error::EvalAltResult>>"}
+{"access":"public","docComments":["/// A vector value (an embedding) from a list of numbers: f32, or quantized to f16, i8 or bit.","///","/// Example: `vector([0.5, -1.0], \"bit\").to_list()` returns `[1.0, -1.0]`"],"name":"vector","namespace":"global","numParams":2,"params":[{"type":"array"},{"type":"string"}],"returnType":"core::result::Result<graphersal::script::tokens::vector::ScriptVector,alloc::boxed::Box<rhai::types::error::EvalAltResult>>"}
 {"access":"public","docComments":["/// Adds a branch to choose()/branch() for a key (a value, Pick.none, Pick.any), or the onCreate/onMatch map of merge_v()/merge_e().","///","/// Example: `g.v(1, 2).choose(__.values(\"age\")).option(29, __.constant(\"a\")).option(Pick.none, __.constant(\"b\")).to_list()` returns `[\"a\", \"b\"]`"],"name":"option","namespace":"global","numParams":3,"params":[{"type":"&mut GraphTraversalSource"},{"type":"types::dynamic::Dynamic"},{"type":"types::dynamic::Dynamic"}],"returnType":"core::result::Result<graphersal::script::source::ScriptGraphTraversalSource,alloc::boxed::Box<rhai::types::error::EvalAltResult>>"}
 {"access":"public","docComments":["/// Adds a branch to choose()/branch() for a key (a value, Pick.none, Pick.any), or the onCreate/onMatch map of merge_v()/merge_e().","///","/// Example: `g.v(1, 2).choose(__.values(\"age\")).option(29, __.constant(\"a\")).option(Pick.none, __.constant(\"b\")).to_list()` returns `[\"a\", \"b\"]`"],"name":"option","namespace":"global","numParams":4,"params":[{"type":"&mut GraphTraversalSource"},{"type":"Merge"},{"type":"types::dynamic::Dynamic"},{"type":"Cardinality"}],"returnType":"core::result::Result<graphersal::script::source::ScriptGraphTraversalSource,alloc::boxed::Box<rhai::types::error::EvalAltResult>>"}
 {"access":"public","docComments":["/// Adds a label to the label set of each incoming vertex and passes it on (Graphersal extension; edges use set_label()).","///","/// Example: `g.v(1).add_label(\"employee\").labels().next()` returns `[\"person\", \"employee\"]`"],"name":"addLabel","namespace":"global","numParams":2,"params":[{"type":"&mut GraphTraversalSource"},{"type":"string"}],"returnType":"GraphTraversalSource"}
@@ -378,6 +381,9 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 {"access":"public","docComments":["/// Compares the stored schema with the given schema map: {changes, compatible}.","///","/// Example: `g.diff_schema(g.infer_schema())[\"compatible\"]` returns `true`"],"name":"diff_schema","namespace":"global","numParams":2,"params":[{"type":"&mut GraphTraversalSource"},{"type":"types::dynamic::Dynamic"}],"returnType":"core::result::Result<rhai::types::dynamic::Dynamic,alloc::boxed::Box<rhai::types::error::EvalAltResult>>"}
 {"access":"public","docComments":["/// Converts ISO 8601 text to a duration.","///","/// Example: `g.inject(\"P1D\").as_duration().next().days` returns `1`"],"name":"asDuration","namespace":"global","numParams":1,"params":[{"type":"&mut GraphTraversalSource"}],"returnType":"GraphTraversalSource"}
 {"access":"public","docComments":["/// Converts ISO 8601 text to a duration.","///","/// Example: `g.inject(\"P1D\").as_duration().next().days` returns `1`"],"name":"as_duration","namespace":"global","numParams":1,"params":[{"type":"&mut GraphTraversalSource"}],"returnType":"GraphTraversalSource"}
+{"access":"public","docComments":["/// Converts a list of numbers to an f32 vector; a vector passes (see the book page Vectors).","///","/// Example: `g.inject([0.5, 1]).as_vector().next()` returns `vector([0.5, 1.0])`"],"name":"asVector","namespace":"global","numParams":1,"params":[{"type":"&mut GraphTraversalSource"}],"returnType":"GraphTraversalSource"}
+{"access":"public","docComments":["/// Converts a list of numbers to an f32 vector; a vector passes (see the book page Vectors).","///","/// Example: `g.inject([0.5, 1]).as_vector().next()` returns `vector([0.5, 1.0])`"],"name":"as_vector","namespace":"global","numParams":1,"params":[{"type":"&mut GraphTraversalSource"}],"returnType":"GraphTraversalSource"}
+{"access":"public","docComments":["/// Converts a vector to the element kind f32, f16, i8 or bit; quantize(\"f32\") dequantizes.","///","/// Example: `g.inject(vector([0.5, -1.0])).quantize(\"i8\").next().element` returns `i8`"],"name":"quantize","namespace":"global","numParams":2,"params":[{"type":"&mut GraphTraversalSource"},{"type":"string"}],"returnType":"core::result::Result<graphersal::script::source::ScriptGraphTraversalSource,alloc::boxed::Box<rhai::types::error::EvalAltResult>>"}
 {"access":"public","docComments":["/// Converts each string to lower case.","///","/// Example: `g.inject(\"ABC\").to_lower().next()` returns `abc`"],"name":"toLower","namespace":"global","numParams":1,"params":[{"type":"&mut GraphTraversalSource"}],"returnType":"GraphTraversalSource"}
 {"access":"public","docComments":["/// Converts each string to lower case.","///","/// Example: `g.inject(\"ABC\").to_lower().next()` returns `abc`"],"name":"toLower","namespace":"global","numParams":2,"params":[{"type":"&mut GraphTraversalSource"},{"type":"Scope"}],"returnType":"GraphTraversalSource"}
 {"access":"public","docComments":["/// Converts each string to lower case.","///","/// Example: `g.inject(\"ABC\").to_lower().next()` returns `abc`"],"name":"to_lower","namespace":"global","numParams":1,"params":[{"type":"&mut GraphTraversalSource"}],"returnType":"GraphTraversalSource"}
@@ -1226,6 +1232,9 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 {"access":"public","docComments":["/// The value is of the given GType or type name (String, Integer, Double, UUID, ...).","///","/// Example: `g.v().has(\"age\", P.typeOf(GType.LONG)).count().next()` returns `4`"],"name":"typeOf","namespace":"global","numParams":2,"params":[{"type":"P"},{"type":"graphersal::value::gtype::GType"}],"returnType":"Predicate"}
 {"access":"public","docComments":["/// The value is of the given GType or type name (String, Integer, Double, UUID, ...).","///","/// Example: `g.v().has(\"age\", P.typeOf(GType.LONG)).count().next()` returns `4`"],"name":"typeOf","namespace":"global","numParams":2,"params":[{"type":"P"},{"type":"string"}],"returnType":"core::result::Result<graphersal::script::tokens::predicate::ArgP,alloc::boxed::Box<rhai::types::error::EvalAltResult>>"}
 {"access":"public","docComments":["/// The values of a map with non-string keys.","///","/// Example: `g.v().has_label(\"person\").group_count().by(\"age\").next().values()` returns `[1, 1, 1, 1]`"],"name":"values","namespace":"global","numParams":1,"params":[{"type":"&mut Map"}],"returnType":"array"}
+{"access":"public","docComments":["/// The values of the vector as a list of floats (dequantized).","///","/// Example: `vector([0.5, 2]).to_list()` returns `[0.5, 2.0]`"],"name":"toList","namespace":"global","numParams":1,"params":[{"type":"&mut Vector"}],"returnType":"array"}
+{"access":"public","docComments":["/// The values of the vector as a list of floats (dequantized).","///","/// Example: `vector([0.5, 2]).to_list()` returns `[0.5, 2.0]`"],"name":"to_list","namespace":"global","numParams":1,"params":[{"type":"&mut Vector"}],"returnType":"array"}
+{"access":"public","docComments":["/// The vector in another element kind (f32, f16, i8, bit).","///","/// Example: `vector([0.5, -1.0]).quantize(\"i8\").dimension` returns `2`"],"name":"quantize","namespace":"global","numParams":2,"params":[{"type":"&mut Vector"},{"type":"string"}],"returnType":"core::result::Result<graphersal::script::tokens::vector::ScriptVector,alloc::boxed::Box<rhai::types::error::EvalAltResult>>"}
 {"access":"public","docComments":["/// True with the given probability (0.0 to 1.0).","///","/// Example: `Fake(1).chance(0.5)` returns `false`"],"name":"chance","namespace":"global","numParams":2,"params":[{"type":"&mut Fake"},{"type":"f64"}],"returnType":"core::result::Result<bool,alloc::boxed::Box<rhai::types::error::EvalAltResult>>"}
 {"access":"public","docComments":["/// Truncates to a DT unit (PostgreSQL date_trunc).","///","/// Example: `g.inject(date(\"2023-08-17\")).date_trunc(DT.month).next().day` returns `1`"],"name":"dateTrunc","namespace":"global","numParams":2,"params":[{"type":"&mut GraphTraversalSource"},{"type":"DT"}],"returnType":"GraphTraversalSource"}
 {"access":"public","docComments":["/// Truncates to a DT unit (PostgreSQL date_trunc).","///","/// Example: `g.inject(date(\"2023-08-17\")).date_trunc(DT.month).next().day` returns `1`"],"name":"dateTrunc","namespace":"global","numParams":3,"params":[{"type":"&mut GraphTraversalSource"},{"type":"DT"},{"type":"string"}],"returnType":"GraphTraversalSource"}
@@ -1375,8 +1384,11 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 {"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"RenderedText"},{"type":"string"}],"returnType":"bool"}
 {"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"Uuid"},{"type":"Uuid"}],"returnType":"bool"}
 {"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"Uuid"},{"type":"string"}],"returnType":"bool"}
+{"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"Vector"},{"type":"Vector"}],"returnType":"bool"}
+{"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"Vector"},{"type":"array"}],"returnType":"bool"}
 {"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"Vertex"},{"type":"Vertex"}],"returnType":"bool"}
 {"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"VertexRef"},{"type":"VertexRef"}],"returnType":"bool"}
+{"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"array"},{"type":"Vector"}],"returnType":"bool"}
 {"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"date"},{"type":"date"}],"returnType":"bool"}
 {"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"date"},{"type":"string"}],"returnType":"bool"}
 {"access":"public","name":"!=","namespace":"global","numParams":2,"params":[{"type":"datetime"},{"type":"datetime"}],"returnType":"bool"}
@@ -1424,10 +1436,13 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 {"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"RenderedText"},{"type":"string"}],"returnType":"bool"}
 {"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"Uuid"},{"type":"Uuid"}],"returnType":"bool"}
 {"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"Uuid"},{"type":"string"}],"returnType":"bool"}
+{"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"Vector"},{"type":"Vector"}],"returnType":"bool"}
+{"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"Vector"},{"type":"array"}],"returnType":"bool"}
 {"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"Vertex"},{"type":"Vertex"}],"returnType":"bool"}
 {"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"Vertex"},{"type":"VertexRef"}],"returnType":"bool"}
 {"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"VertexRef"},{"type":"Vertex"}],"returnType":"bool"}
 {"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"VertexRef"},{"type":"VertexRef"}],"returnType":"bool"}
+{"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"array"},{"type":"Vector"}],"returnType":"bool"}
 {"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"date"},{"type":"date"}],"returnType":"bool"}
 {"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"date"},{"type":"string"}],"returnType":"bool"}
 {"access":"public","name":"==","namespace":"global","numParams":2,"params":[{"type":"datetime"},{"type":"datetime"}],"returnType":"bool"}
@@ -1503,6 +1518,7 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 {"access":"public","name":"get$Tree","namespace":"global","numParams":1,"params":[{"type":"&mut V"}],"returnType":"graphersal::graph::schema::visualize::VisualizeFormat"}
 {"access":"public","name":"get$UUID","namespace":"global","numParams":1,"params":[{"type":"&mut GTypeTokens"}],"returnType":"GType"}
 {"access":"public","name":"get$Unproductive","namespace":"global","numParams":1,"params":[{"type":"&mut Pick"}],"returnType":"Pick"}
+{"access":"public","name":"get$VECTOR","namespace":"global","numParams":1,"params":[{"type":"&mut GTypeTokens"}],"returnType":"GType"}
 {"access":"public","name":"get$VERTEX","namespace":"global","numParams":1,"params":[{"type":"&mut GTypeTokens"}],"returnType":"GType"}
 {"access":"public","name":"get$Value","namespace":"global","numParams":1,"params":[{"type":"&mut By"}],"returnType":"By"}
 {"access":"public","name":"get$addAll","namespace":"global","numParams":1,"params":[{"type":"&mut OperatorTokens"}],"returnType":"Operator"}
@@ -1526,8 +1542,10 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 {"access":"public","name":"get$days","namespace":"global","numParams":1,"params":[{"type":"&mut duration"}],"returnType":"i64"}
 {"access":"public","name":"get$decade","namespace":"global","numParams":1,"params":[{"type":"&mut DTTokens"}],"returnType":"DT"}
 {"access":"public","name":"get$desc","namespace":"global","numParams":1,"params":[{"type":"&mut Order"}],"returnType":"Order"}
+{"access":"public","name":"get$dimension","namespace":"global","numParams":1,"params":[{"type":"&mut Vector"}],"returnType":"i64"}
 {"access":"public","name":"get$div","namespace":"global","numParams":1,"params":[{"type":"&mut OperatorTokens"}],"returnType":"Operator"}
 {"access":"public","name":"get$duration_ns","namespace":"global","numParams":1,"params":[{"type":"&mut TraversalMetrics"}],"returnType":"i64"}
+{"access":"public","name":"get$element","namespace":"global","numParams":1,"params":[{"type":"&mut Vector"}],"returnType":"string"}
 {"access":"public","name":"get$epoch","namespace":"global","numParams":1,"params":[{"type":"&mut DTTokens"}],"returnType":"DT"}
 {"access":"public","name":"get$epochMillis","namespace":"global","numParams":1,"params":[{"type":"&mut datetime"}],"returnType":"i64"}
 {"access":"public","name":"get$epoch_millis","namespace":"global","numParams":1,"params":[{"type":"&mut datetime"}],"returnType":"i64"}
@@ -1687,6 +1705,7 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 {"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut UUIDTokens"}],"returnType":"string"}
 {"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut Uuid"}],"returnType":"string"}
 {"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut V"}],"returnType":"string"}
+{"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut Vector"}],"returnType":"string"}
 {"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut Vertex"}],"returnType":"string"}
 {"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut VertexRef"}],"returnType":"string"}
 {"access":"public","name":"to_debug","namespace":"global","numParams":1,"params":[{"type":"&mut WithOptionsTokens"}],"returnType":"string"}
@@ -1729,6 +1748,7 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 {"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut UUIDTokens"}],"returnType":"string"}
 {"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut Uuid"}],"returnType":"string"}
 {"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut V"}],"returnType":"string"}
+{"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut Vector"}],"returnType":"string"}
 {"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut Vertex"}],"returnType":"string"}
 {"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut VertexRef"}],"returnType":"string"}
 {"access":"public","name":"to_string","namespace":"global","numParams":1,"params":[{"type":"&mut WithOptionsTokens"}],"returnType":"string"}
@@ -1767,8 +1787,11 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 !=(_: RenderedText, _: string) -> bool
 !=(_: Uuid, _: Uuid) -> bool
 !=(_: Uuid, _: string) -> bool
+!=(_: Vector, _: Vector) -> bool
+!=(_: Vector, _: array) -> bool
 !=(_: Vertex, _: Vertex) -> bool
 !=(_: VertexRef, _: VertexRef) -> bool
+!=(_: array, _: Vector) -> bool
 !=(_: date, _: date) -> bool
 !=(_: date, _: string) -> bool
 !=(_: datetime, _: datetime) -> bool
@@ -1816,10 +1839,13 @@ WithOptions::{"access":"public","docComments":["/// Printing"],"name":"to_string
 ==(_: RenderedText, _: string) -> bool
 ==(_: Uuid, _: Uuid) -> bool
 ==(_: Uuid, _: string) -> bool
+==(_: Vector, _: Vector) -> bool
+==(_: Vector, _: array) -> bool
 ==(_: Vertex, _: Vertex) -> bool
 ==(_: Vertex, _: VertexRef) -> bool
 ==(_: VertexRef, _: Vertex) -> bool
 ==(_: VertexRef, _: VertexRef) -> bool
+==(_: array, _: Vector) -> bool
 ==(_: date, _: date) -> bool
 ==(_: date, _: string) -> bool
 ==(_: datetime, _: datetime) -> bool
@@ -2142,6 +2168,7 @@ asString(_: &mut datetime) -> string
 asString(_: &mut duration) -> string
 asString(_: &mut localdatetime) -> string
 asString(_: &mut time) -> string
+asVector(_: &mut GraphTraversalSource) -> GraphTraversalSource
 as_(_: &mut GraphTraversalSource, _: array) -> GraphTraversalSource
 as_(_: &mut GraphTraversalSource, _: types::dynamic::Dynamic) -> GraphTraversalSource
 as_(_: &mut GraphTraversalSource, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic) -> GraphTraversalSource
@@ -2172,6 +2199,7 @@ as_string(_: &mut datetime) -> string
 as_string(_: &mut duration) -> string
 as_string(_: &mut localdatetime) -> string
 as_string(_: &mut time) -> string
+as_vector(_: &mut GraphTraversalSource) -> GraphTraversalSource
 atZone(_: &mut GraphTraversalSource, _: string) -> GraphTraversalSource
 at_zone(_: &mut GraphTraversalSource, _: string) -> GraphTraversalSource
 barrier(_: &mut GraphTraversalSource) -> GraphTraversalSource
@@ -2479,6 +2507,7 @@ get$Table(_: &mut V) -> graphersal::graph::schema::visualize::VisualizeFormat
 get$Tree(_: &mut V) -> graphersal::graph::schema::visualize::VisualizeFormat
 get$UUID(_: &mut GTypeTokens) -> GType
 get$Unproductive(_: &mut Pick) -> Pick
+get$VECTOR(_: &mut GTypeTokens) -> GType
 get$VERTEX(_: &mut GTypeTokens) -> GType
 get$Value(_: &mut By) -> By
 get$addAll(_: &mut OperatorTokens) -> Operator
@@ -2502,8 +2531,10 @@ get$day_of_year(_: &mut DTTokens) -> DT
 get$days(_: &mut duration) -> i64
 get$decade(_: &mut DTTokens) -> DT
 get$desc(_: &mut Order) -> Order
+get$dimension(_: &mut Vector) -> i64
 get$div(_: &mut OperatorTokens) -> Operator
 get$duration_ns(_: &mut TraversalMetrics) -> i64
+get$element(_: &mut Vector) -> string
 get$enum_type(arg_p: &mut ArgP) -> String
 get$epoch(_: &mut DTTokens) -> DT
 get$epochMillis(_: &mut datetime) -> i64
@@ -3036,6 +3067,8 @@ property(_: &mut GraphTraversalSource, _: map) -> core::result::Result<graphersa
 property(_: &mut GraphTraversalSource, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic) -> core::result::Result<graphersal::script::source::ScriptGraphTraversalSource,alloc::boxed::Box<rhai::types::error::EvalAltResult>>
 propertyJson(_: &mut GraphTraversalSource, _: types::dynamic::Dynamic) -> core::result::Result<graphersal::script::source::ScriptGraphTraversalSource,alloc::boxed::Box<rhai::types::error::EvalAltResult>>
 property_json(_: &mut GraphTraversalSource, _: types::dynamic::Dynamic) -> core::result::Result<graphersal::script::source::ScriptGraphTraversalSource,alloc::boxed::Box<rhai::types::error::EvalAltResult>>
+quantize(_: &mut GraphTraversalSource, _: string) -> core::result::Result<graphersal::script::source::ScriptGraphTraversalSource,alloc::boxed::Box<rhai::types::error::EvalAltResult>>
+quantize(_: &mut Vector, _: string) -> core::result::Result<graphersal::script::tokens::vector::ScriptVector,alloc::boxed::Box<rhai::types::error::EvalAltResult>>
 queries(_: &mut GraphTraversalSource) -> core::result::Result<alloc::vec::Vec<rhai::types::dynamic::Dynamic>,alloc::boxed::Box<rhai::types::error::EvalAltResult>>
 queries(_: &mut GraphTraversalSource, _: string) -> core::result::Result<alloc::vec::Vec<rhai::types::dynamic::Dynamic>,alloc::boxed::Box<rhai::types::error::EvalAltResult>>
 query(_: &mut GraphTraversalSource, _: string) -> core::result::Result<rhai::types::dynamic::Dynamic,alloc::boxed::Box<rhai::types::error::EvalAltResult>>
@@ -3163,6 +3196,7 @@ toJson(_: &mut TraversalMetrics) -> string
 toJsonSchema(_: &mut GraphTraversalSource) -> RenderedText
 toJsonSchema(_: &mut GraphTraversalSource, _: types::dynamic::Dynamic) -> core::result::Result<graphersal::script::render::RenderedText,alloc::boxed::Box<rhai::types::error::EvalAltResult>>
 toList(_: &mut GraphTraversalSource) -> core::result::Result<alloc::vec::Vec<rhai::types::dynamic::Dynamic>,alloc::boxed::Box<rhai::types::error::EvalAltResult>>
+toList(_: &mut Vector) -> array
 toLower(_: &mut GraphTraversalSource) -> GraphTraversalSource
 toLower(_: &mut GraphTraversalSource, _: Scope) -> GraphTraversalSource
 toMap(_: &mut Execution) -> types::dynamic::Dynamic
@@ -3216,6 +3250,7 @@ to_debug(_: &mut TraversalMetrics) -> string
 to_debug(_: &mut UUIDTokens) -> string
 to_debug(_: &mut Uuid) -> string
 to_debug(_: &mut V) -> string
+to_debug(_: &mut Vector) -> string
 to_debug(_: &mut Vertex) -> string
 to_debug(_: &mut VertexRef) -> string
 to_debug(_: &mut WithOptionsTokens) -> string
@@ -3246,6 +3281,7 @@ to_json(_: &mut TraversalMetrics) -> string
 to_json_schema(_: &mut GraphTraversalSource) -> RenderedText
 to_json_schema(_: &mut GraphTraversalSource, _: types::dynamic::Dynamic) -> core::result::Result<graphersal::script::render::RenderedText,alloc::boxed::Box<rhai::types::error::EvalAltResult>>
 to_list(_: &mut GraphTraversalSource) -> core::result::Result<alloc::vec::Vec<rhai::types::dynamic::Dynamic>,alloc::boxed::Box<rhai::types::error::EvalAltResult>>
+to_list(_: &mut Vector) -> array
 to_lower(_: &mut GraphTraversalSource) -> GraphTraversalSource
 to_lower(_: &mut GraphTraversalSource, _: Scope) -> GraphTraversalSource
 to_map(_: &mut Execution) -> types::dynamic::Dynamic
@@ -3289,6 +3325,7 @@ to_string(_: &mut TraversalMetrics) -> string
 to_string(_: &mut UUIDTokens) -> string
 to_string(_: &mut Uuid) -> string
 to_string(_: &mut V) -> string
+to_string(_: &mut Vector) -> string
 to_string(_: &mut Vertex) -> string
 to_string(_: &mut VertexRef) -> string
 to_string(_: &mut WithOptionsTokens) -> string
@@ -3390,6 +3427,8 @@ values(_: &mut GraphTraversalSource, _: types::dynamic::Dynamic, _: types::dynam
 values(_: &mut GraphTraversalSource, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic) -> GraphTraversalSource
 values(_: &mut GraphTraversalSource, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic, _: types::dynamic::Dynamic) -> GraphTraversalSource
 values(_: &mut map) -> array
+vector(_: array) -> core::result::Result<graphersal::script::tokens::vector::ScriptVector,alloc::boxed::Box<rhai::types::error::EvalAltResult>>
+vector(_: array, _: string) -> core::result::Result<graphersal::script::tokens::vector::ScriptVector,alloc::boxed::Box<rhai::types::error::EvalAltResult>>
 visualize(_: &mut GraphTraversalSource) -> RenderedText
 visualize(_: &mut GraphTraversalSource, _: VisualizeFormat) -> RenderedText
 visualize(_: &mut GraphTraversalSource, _: VisualizeFormat, _: types::dynamic::Dynamic) -> core::result::Result<graphersal::script::render::RenderedText,alloc::boxed::Box<rhai::types::error::EvalAltResult>>
@@ -3527,6 +3566,7 @@ GType
   STRING: GType
   TIME: GType
   UUID: GType
+  VECTOR: GType
   VERTEX: GType
 GraphSource
 Merge
@@ -3712,6 +3752,7 @@ asDuration
 asLocal
 asNumber
 asString
+asVector
 as_
 as_bool
 as_date
@@ -3719,6 +3760,7 @@ as_duration
 as_local
 as_number
 as_string
+as_vector
 atZone
 at_zone
 barrier
@@ -3959,6 +4001,7 @@ properties
 property
 propertyJson
 property_json
+quantize
 queries
 query
 rTrim
@@ -4060,6 +4103,7 @@ value
 valueMap
 value_map
 values
+vector
 visualize
 where
 where_p

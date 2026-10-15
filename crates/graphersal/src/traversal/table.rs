@@ -8,6 +8,9 @@ use crate::value::ElementProperty;
 #[cfg(feature = "display")]
 use crate::value::PropertyMap;
 
+/// The components a table cell shows of a vector.
+pub(crate) const VECTOR_PREVIEW_COMPONENTS: usize = 4;
+
 /// Formats a table cell, cutting every nested collection to the item limit and marking the cut
 /// with `…` (for example `[1, 2, 3, …]`).
 pub(crate) fn format_cell(prop: &ElementProperty, limit: &ItemLimit) -> String {
@@ -25,6 +28,8 @@ pub(crate) fn format_cell(prop: &ElementProperty, limit: &ItemLimit) -> String {
         }
         ElementProperty::Uuid(u) => crate::value::uuid::format_canonical(*u).to_string(),
         ElementProperty::Temporal(t) => t.to_string(),
+        // `vector[768 f32] [0.1, -0.2, 0.3, …]`: the kind, then the first components.
+        ElementProperty::Vector(v) => v.preview(VECTOR_PREVIEW_COMPONENTS),
         ElementProperty::Array(arr) => {
             let keep = limit.keep(arr.len());
             let mut items: Vec<String> = arr

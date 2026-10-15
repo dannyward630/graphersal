@@ -368,6 +368,7 @@ fn non_data(value: &Dynamic, levels: usize) -> Option<String> {
         || value.is_bool()
         || value.is_unit()
         || value.is::<ScriptUuid>()
+        || value.is::<ScriptVector>()
         || value.is::<ScriptMap>()
     {
         return None;

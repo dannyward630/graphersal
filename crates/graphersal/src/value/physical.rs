@@ -158,7 +158,10 @@ pub(crate) fn encoding_of(ty: &ValueType) -> Option<Encoding> {
         | ValueType::DateTime
         | ValueType::Time
         | ValueType::Duration => Some(Encoding::String),
-        ValueType::Array(_) | ValueType::Object | ValueType::Union(_) => None,
+        // A vector is carried as the list of its values (a container in every format).
+        ValueType::Vector(_) | ValueType::Array(_) | ValueType::Object | ValueType::Union(_) => {
+            None
+        }
     }
 }
 
@@ -183,6 +186,10 @@ pub(crate) fn lower(value: &ElementProperty) -> PhysicalValue<'_> {
         }
         // The canonical ISO 8601 / RFC 3339 text; [`lift_temporal`] reads it back.
         ElementProperty::Temporal(t) => PhysicalValue::String(Cow::Owned(t.to_string())),
+        // The list of its values, dequantized (an i8 or bit vector as its f32 values): a JSON
+        // reader gets numbers, and a declared vector property turns them back into the vector
+        // (`quantize` of the dequantized values gives the same codes).
+        ElementProperty::Vector(v) => crate::value::vector::tagged::lower_values(v),
         ElementProperty::Array(items) => PhysicalValue::Array(items.iter().map(lower).collect()),
         ElementProperty::Object(map) => lower_map(map),
         ElementProperty::Vertex(vertex) => lower_vertex(vertex),
@@ -802,6 +809,7 @@ mod serde_glue {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     use crate::value::temporal::tags;
+    use crate::value::vector::tagged as vector_tagged;
 
     const NON_FINITE: &str = "non-finite float cannot be represented in JSON";
 
@@ -1033,6 +1041,14 @@ mod serde_glue {
                     map.serialize_entry(VALUE_KEY, &value.to_string())?;
                     map.end()
                 }
+                // `{"@type": "graphersal:Vector", "@value": {"element": .., ..}}` (exact,
+                // `vector::tagged`).
+                ElementProperty::Vector(value) => {
+                    let mut map = serializer.serialize_map(Some(2))?;
+                    map.serialize_entry(TYPE_KEY, vector_tagged::VECTOR_TAG)?;
+                    map.serialize_entry(VALUE_KEY, &vector_tagged::payload(value))?;
+                    map.end()
+                }
                 // Scalars are JSON-native. Vertices, edges and non-string-keyed maps are never
                 // property values; they keep the plain codec.
                 ElementProperty::Null
@@ -1120,6 +1136,11 @@ mod serde_glue {
             {
                 lift_tagged_entries(fields)
             }
+            (Some(PhysicalValue::String(tag)), Some(payload))
+                if tag == vector_tagged::VECTOR_TAG =>
+            {
+                vector_tagged::from_payload(&payload).map(ElementProperty::Vector)
+            }
             (Some(PhysicalValue::String(tag)), Some(PhysicalValue::String(text)))
                 if tags::is_tag(&tag) =>
             {
@@ -1130,7 +1151,7 @@ mod serde_glue {
                 }
             }
             (Some(PhysicalValue::String(tag)), Some(_)) => Err(format!(
-                "unknown or malformed type tag \"{tag}\" (known: \"{UUID_TAG}\" with a uuid string, \"{OBJECT_TAG}\" with an object, the temporal tags \"gx:OffsetDateTime\", \"gx:LocalDate\", \"gx:LocalDateTime\", \"gx:LocalTime\", \"gx:Duration\", \"gx:Period\", \"graphersal:Interval\" with their text)"
+                "unknown or malformed type tag \"{tag}\" (known: \"{UUID_TAG}\" with a uuid string, \"{OBJECT_TAG}\" with an object, the temporal tags \"gx:OffsetDateTime\", \"gx:LocalDate\", \"gx:LocalDateTime\", \"gx:LocalTime\", \"gx:Duration\", \"gx:Period\", \"graphersal:Interval\" with their text, \"graphersal:Vector\" with its object)"
             )),
             _ => Err(format!(
                 "a tagged value needs a string \"{TYPE_KEY}\" and a \"{VALUE_KEY}\""

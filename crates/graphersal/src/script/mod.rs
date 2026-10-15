@@ -100,7 +100,7 @@ pub use tokens::{
     ScriptDT, ScriptDirection, ScriptEdge, ScriptGType, ScriptMap, ScriptMerge, ScriptOperator,
     ScriptOrder, ScriptP, ScriptPick, ScriptPop, ScriptProfileType, ScriptSchemaMode, ScriptScope,
     ScriptSet, ScriptSetTokens, ScriptT, ScriptTextP, ScriptUuid, ScriptUuidTokens, ScriptV,
-    ScriptVertex, ScriptVertexRef, ScriptWithOptions,
+    ScriptVector, ScriptVertex, ScriptVertexRef, ScriptWithOptions,
 };
 
 use crate::graph::schema::{GraphSchema, SchemaMode, VisualizeFormat};

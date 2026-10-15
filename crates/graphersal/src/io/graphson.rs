@@ -26,6 +26,7 @@
 //! | `g:Date`, `g:Timestamp` (epoch ms), `gx:Instant`, `gx:OffsetDateTime`, `gx:ZonedDateTime` (zone id dropped, reported) | `datetime` | `gx:OffsetDateTime` |
 //! | `gx:LocalDate`, `gx:LocalDateTime`, `gx:LocalTime` | `date`, `localdatetime`, `time` | the same tags |
 //! | `gx:Duration` (a day = 24 h), `gx:Period` | `duration` | `gx:Duration` (time part only), `gx:Period` (months and days only), else `graphersal:Interval` |
+//! | `g:List` of numbers where the target schema declares a vector (mode `open`/`closed`: coerced on write); `graphersal:Vector` (exact, our own tag) | `vector` | `g:List` of `g:Float` (an i8 or bit vector as its f32 values) |
 //! | `gx:Year`, `gx:YearMonth`, `gx:MonthDay`, `gx:OffsetTime`, `gx:ZoneOffset`, other types | skipped, reported | - |
 //!
 //! Structure: element ids become strings (`g:Int32 1` -> `"1"`), a label `"A::B"` becomes the
@@ -471,6 +472,17 @@ fn decode_typed(
                 "graphersal:Interval needs a duration text",
             )),
         };
+    }
+    // Our own exact vector tag (what a serialized `ChangeSet` writes; an export writes a
+    // `g:List` of `g:Float`, which stays a list unless the target schema declares a vector).
+    if tag == crate::value::vector::tagged::VECTOR_TAG {
+        return crate::value::vector::tagged::from_payload(&payload)
+            .map(ElementProperty::Vector)
+            .map_err(|_| {
+                ValueSkip::malformed(
+                    "graphersal:Vector needs {\"element\", \"data\"} (or the i8 or bit fields)",
+                )
+            });
     }
     if !core {
         return Err(unsupported());
@@ -1909,6 +1921,20 @@ fn write_typed(value: &ElementProperty, out: &mut String) -> Result<(), Physical
             write!(out, "{{\"@type\":\"{}\",\"@value\":", tags::tag_of(value))?;
             write_json_string(&value.to_string(), out)?;
             out.push('}');
+        }
+        // A `g:List` of `g:Float` (TinkerGraph loads it; an i8 or bit vector as its f32 values):
+        // a list on import, a vector again where the target schema declares one.
+        ElementProperty::Vector(vector) => {
+            out.push_str("{\"@type\":\"g:List\",\"@value\":[");
+            for (i, value) in vector.iter_f32().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str("{\"@type\":\"g:Float\",\"@value\":");
+                write_float(crate::value::vector::tagged::short_f64(value), out)?;
+                out.push('}');
+            }
+            out.push_str("]}");
         }
         ElementProperty::Array(items) => {
             out.push_str("{\"@type\":\"g:List\",\"@value\":[");

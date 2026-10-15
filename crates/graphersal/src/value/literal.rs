@@ -156,6 +156,8 @@ fn write_literal(out: &mut String, value: &ElementProperty) {
             );
         }
         ElementProperty::Temporal(value) => out.push_str(&rhai_temporal(value)),
+        // `vector([0.1, 0.2], "i8")`, cut after the first components like a list.
+        ElementProperty::Vector(value) => out.push_str(&value.literal(Some(MAX_LITERAL_ITEMS))),
         ElementProperty::Array(items) => {
             out.push('[');
             for (i, item) in items.iter().take(MAX_LITERAL_ITEMS).enumerate() {
@@ -241,6 +243,7 @@ pub(crate) fn rhai_pvalue(value: &PValue) -> String {
             rhai_string(&crate::value::uuid::format_canonical(*bits))
         ),
         PValue::Temporal(value) => rhai_temporal(value),
+        PValue::Vector(value) => value.literal(Some(MAX_LITERAL_ITEMS)),
         PValue::Null => "()".to_string(),
     }
 }

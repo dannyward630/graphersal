@@ -82,6 +82,7 @@ impl ElementProperty {
             | ValueType::DateTime
             | ValueType::Time
             | ValueType::Duration => self.cast_to_temporal(target),
+            ValueType::Vector(element) => self.cast_to_vector(*element),
 
             // A container target would have to describe how to build the container, which a
             // 1-to-1 coercion cannot express; a union target names no single type at all.
@@ -147,6 +148,8 @@ impl ElementProperty {
                 Ok(ElementProperty::from(uuid_codec::format_canonical(*value)))
             }
             ElementProperty::Temporal(value) => Ok(ElementProperty::from(value.to_string())),
+            // The DSL literal (`vector([0.1, 0.2])`), every component.
+            ElementProperty::Vector(value) => Ok(ElementProperty::from(value.to_string())),
             _ => self.cast_failure(target),
         }
     }
@@ -171,6 +174,24 @@ impl ElementProperty {
             }
             _ => self.cast_failure(target),
         }
+    }
+
+    /// Converts to a vector of `element`: a list of numbers becomes an f32 vector quantized to
+    /// `element`, a vector is quantized to it (`as_vector()`); anything else fails.
+    fn cast_to_vector(
+        &self,
+        element: crate::value::VectorElement,
+    ) -> TraverserResult<ElementProperty> {
+        let converted = match self {
+            ElementProperty::Vector(vector) => vector.quantize(element),
+            ElementProperty::Array(items) => {
+                crate::value::Vector::from_values(items).and_then(|vector| vector.quantize(element))
+            }
+            _ => return self.cast_failure(&ValueType::Vector(element)),
+        };
+        converted
+            .map(ElementProperty::Vector)
+            .map_err(|error| crate::value::vector::vector_error("as_vector", error))
     }
 
     /// Parses a canonical UUID string, or accepts a value that already is one.

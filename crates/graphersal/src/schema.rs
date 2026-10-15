@@ -62,7 +62,7 @@ pub use crate::graph::schema::{
     Annotations, Constraints, DefaultFunction, EdgeConnection, EdgeSchema, GraphSchema, JsonType,
     META_SCHEMA_JSON, PropertySchema, SCHEMA_FORMAT_URL, SchemaChange, SchemaChangeKind,
     SchemaDiff, SchemaFormat, SchemaInferer, SchemaMode, SchemaPatch, SchemaPattern, SchemaRow,
-    SchemaValidation, SchemaViolationReport, ValueType, VertexSchema, ViolationGroup,
+    SchemaValidation, SchemaViolationReport, ValueType, VectorSchema, VertexSchema, ViolationGroup,
     ViolationKind, VisualizeFormat, type_of,
 };
 /// The bounds of an aggregated `SchemaError::ExistingDataViolatesSchema` report (groups kept and

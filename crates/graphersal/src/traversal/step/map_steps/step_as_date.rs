@@ -200,6 +200,7 @@ pub(super) fn convert(value: &ElementProperty, kind: TemporalKind) -> Result<Tem
         ElementProperty::Null => Err("null is not a date".to_string()),
         ElementProperty::Boolean(_)
         | ElementProperty::Uuid(_)
+        | ElementProperty::Vector(_)
         | ElementProperty::Array(_)
         | ElementProperty::Object(_)
         | ElementProperty::Map(_)

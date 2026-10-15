@@ -275,6 +275,7 @@ enum Scalar<'a> {
     Str(Cow<'a, str>),
     Uuid(u128),
     Temporal(Temporal),
+    Vector(&'a crate::value::Vector),
 }
 
 impl<'a> Scalar<'a> {
@@ -291,6 +292,7 @@ impl<'a> Scalar<'a> {
             }
             ElementProperty::Uuid(u) => Some(Scalar::Uuid(*u)),
             ElementProperty::Temporal(t) => Some(Scalar::Temporal(*t)),
+            ElementProperty::Vector(v) => Some(Scalar::Vector(v)),
             ElementProperty::Object(_)
             | ElementProperty::Map(_)
             | ElementProperty::Array(_)
@@ -320,6 +322,10 @@ pub enum PValue {
     /// A date or time literal ([`Temporal`]). It compares with a stored value of the same
     /// temporal type only (a `datetime` by its instant), never with a string.
     Temporal(Temporal),
+    /// A vector literal (`vector([..])`, a Graphersal extension). It equals a stored vector of
+    /// the same element kind, dimension and components, and orders among vectors by their order
+    /// (kind, dimension, components); never against a list.
+    Vector(crate::value::Vector),
     /// The `null` literal (`P.eq(null)`; `()` in the DSL). Following TinkerPop's comparability
     /// rules, `null` equals only `null`, `lte`/`gte` hold only for `null` itself, and `lt`/`gt`
     /// never hold.
@@ -476,6 +482,7 @@ impl<T: Into<PValue> + Debug + Clone> P<T> {
                     ElementProperty::String(s) => Some(PValue::String(s)),
                     ElementProperty::Uuid(u) => Some(PValue::Uuid(u)),
                     ElementProperty::Temporal(t) => Some(PValue::Temporal(t)),
+                    ElementProperty::Vector(v) => Some(PValue::Vector(v)),
                     _ => None,
                 }
             }
@@ -683,6 +690,9 @@ impl<T: Into<PValue> + Debug + Clone> P<T> {
             }
             Some(TraverserValue::Computed(ElementProperty::Uuid(u), _)) => PValue::Uuid(*u),
             Some(TraverserValue::Computed(ElementProperty::Temporal(t), _)) => PValue::Temporal(*t),
+            Some(TraverserValue::Computed(ElementProperty::Vector(v), _)) => {
+                PValue::Vector(v.clone())
+            }
             _ => {
                 // A collection or an element takes part in `eq`/`neq` as a whole value.
                 let bucket = bucket.to_traverser_value();
@@ -906,6 +916,7 @@ impl<T: Into<PValue> + Debug + Clone> P<T> {
                 | PValue::Boolean(_)
                 | PValue::Uuid(_)
                 | PValue::Temporal(_)
+                | PValue::Vector(_)
                 | PValue::Null => Ok(false),
             },
 
@@ -920,6 +931,7 @@ impl<T: Into<PValue> + Debug + Clone> P<T> {
                 | PValue::Boolean(_)
                 | PValue::Uuid(_)
                 | PValue::Temporal(_)
+                | PValue::Vector(_)
                 | PValue::Null => Ok(false),
             },
 
@@ -934,6 +946,7 @@ impl<T: Into<PValue> + Debug + Clone> P<T> {
                 | PValue::Boolean(_)
                 | PValue::Uuid(_)
                 | PValue::Temporal(_)
+                | PValue::Vector(_)
                 | PValue::Null => Ok(false),
             },
 
@@ -1000,6 +1013,8 @@ impl<T: Into<PValue> + Debug + Clone> P<T> {
             // Temporal values compare within one temporal type only (TinkerPop compares dates
             // with dates); a `datetime` by its instant.
             (Scalar::Temporal(a), PValue::Temporal(b)) if a.kind() == b.kind() => Some(a.cmp(b)),
+            // Vectors with vectors only (a Graphersal extension), by their total order.
+            (Scalar::Vector(a), PValue::Vector(b)) => Some((*a).cmp(b)),
             (Scalar::Null, PValue::Null) => Some(Ordering::Equal),
             _ => None,
         })
@@ -1248,6 +1263,12 @@ impl From<f64> for PValue {
 impl From<bool> for PValue {
     fn from(value: bool) -> Self {
         PValue::Boolean(value)
+    }
+}
+
+impl From<crate::value::Vector> for PValue {
+    fn from(value: crate::value::Vector) -> Self {
+        PValue::Vector(value)
     }
 }
 

@@ -8,6 +8,7 @@ mod dates;
 mod filter_map;
 mod navigation;
 mod side_effects;
+mod vectors;
 
 /// Script-facing `GraphSource` factory (`GraphSource::empty()`, `GraphSource::tinkerpop_modern()`,
 /// ...; also reachable as a bare global function, e.g. `tinkerpop_modern()`), registered with Rhai

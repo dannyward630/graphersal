@@ -85,7 +85,9 @@ impl ScalarKey {
             ElementProperty::Compressed(text) => ScalarKey::Str(text.text()),
             ElementProperty::Uuid(u) => ScalarKey::Uuid(*u),
             ElementProperty::Temporal(t) => ScalarKey::Temporal(Box::new(t.bits())),
-            ElementProperty::Array(_)
+            // Not interned: a vector gets a fresh handle like a container.
+            ElementProperty::Vector(_)
+            | ElementProperty::Array(_)
             | ElementProperty::Object(_)
             | ElementProperty::Map(_)
             | ElementProperty::Vertex(_)

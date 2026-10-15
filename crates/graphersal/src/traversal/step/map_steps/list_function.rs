@@ -316,6 +316,8 @@ pub(crate) fn kind_of<S: GraphStorage>(
         | ElementProperty::Boolean(_)
         | ElementProperty::Uuid(_)
         | ElementProperty::Temporal(_)
+        // A vector is one value, not a list.
+        | ElementProperty::Vector(_)
         | ElementProperty::Vertex(_)
         | ElementProperty::Edge(_) => Kind::Other,
     };

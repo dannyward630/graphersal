@@ -295,6 +295,7 @@ fn literal_matches<S: GraphStorage>(
         ElementProperty::Boolean(flag) => PValue::Boolean(*flag),
         ElementProperty::Uuid(bits) => PValue::Uuid(*bits),
         ElementProperty::Temporal(value) => PValue::Temporal(*value),
+        ElementProperty::Vector(value) => PValue::Vector(value.clone()),
         // A container literal has no predicate operand: structural equality.
         ElementProperty::Object(_)
         | ElementProperty::Map(_)

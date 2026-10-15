@@ -11,7 +11,8 @@ use compact_str::CompactString;
 
 use crate::value::number::{N, Number};
 use crate::value::temporal::{Date, DateTime, Duration, LocalDateTime, Temporal, Time};
-use crate::value::{ElementProperty, PropertyMap};
+use crate::value::vector::MAX_VECTOR_DIMENSION;
+use crate::value::{ElementProperty, PropertyMap, Vector, VectorElement};
 
 /// The file format version every file of this build writes (format spec 15).
 pub(crate) const FORMAT_VERSION: u32 = 2;
@@ -236,6 +237,11 @@ pub(crate) mod tag {
     pub(crate) const TIME: u8 = 12;
     /// `duration`: `svar` months, `svar` days, `svar` microseconds.
     pub(crate) const DURATION: u8 = 13;
+    /// `vector`: `u8` element kind (0 f32, 1 f16, 2 i8, 3 bit), `uvar` dimension
+    /// (1..=65536), for i8 the `f32` scale, then the packed components little endian (f32: 4
+    /// bytes, f16: 2, i8: 1, bit: `ceil(dimension / 8)` bytes in all, first component in the
+    /// most significant bit) (file format version 2).
+    pub(crate) const VECTOR: u8 = 14;
     /// "Absent" in the `before` of a journal SetProperty (never a value).
     pub(crate) const ABSENT: u8 = 255;
 }
@@ -308,6 +314,7 @@ fn put_value_at<K: KeyWriter>(
             }
         }
         ElementProperty::Temporal(value) => put_temporal(out, value),
+        ElementProperty::Vector(vector) => put_vector(out, vector),
         ElementProperty::Vertex(_) => return Err("a vertex is not a storable value".into()),
         ElementProperty::Edge(_) => return Err("an edge is not a storable value".into()),
         ElementProperty::Map(_) => {
@@ -315,6 +322,90 @@ fn put_value_at<K: KeyWriter>(
         }
     }
     Ok(())
+}
+
+/// Writes a vector with its tag (format spec 3, file format version 2).
+fn put_vector(out: &mut Vec<u8>, vector: &Vector) {
+    put_u8(out, tag::VECTOR);
+    put_u8(out, vector.element().code());
+    put_uvar(out, vector.dimension() as u64);
+    out.reserve(vector.data_bytes() + 4);
+    if let Some(values) = vector.as_f32() {
+        for value in values {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    } else if let Some(values) = vector.as_f16_bits() {
+        for value in values {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    } else if let Some((codes, scale)) = vector.as_i8() {
+        out.extend_from_slice(&scale.to_le_bytes());
+        out.extend(codes.iter().map(|code| code.to_le_bytes()[0]));
+    } else if let Some(bits) = vector.as_bits() {
+        out.extend_from_slice(bits);
+    }
+}
+
+/// Reads the payload of a vector tag; an unknown element kind, a dimension out of range or a
+/// component the constructors refuse (NaN, an infinity, a negative scale, padding bits) is
+/// invalid (damage), and so is the tag in a file of format version 1. The payload length is
+/// checked against the remaining bytes before anything is allocated.
+fn read_vector(reader: &mut Reader<'_>, start: u64) -> DecodeResult<Vector> {
+    if reader.version < TEMPORAL_FORMAT_VERSION {
+        return Err(DecodeError::new(
+            start,
+            format!(
+                "value tag {} (a vector) in a file of format version {}",
+                tag::VECTOR,
+                reader.version
+            ),
+        ));
+    }
+    let invalid = |why: String| DecodeError::new(start, format!("invalid vector value: {why}"));
+    let code = reader.u8()?;
+    let element = VectorElement::from_code(code)
+        .ok_or_else(|| invalid(format!("unknown element kind {code}")))?;
+    let dimension = reader.uvar()?;
+    if dimension == 0 || dimension > MAX_VECTOR_DIMENSION as u64 {
+        return Err(invalid(format!("dimension {dimension}")));
+    }
+    let dimension = dimension as usize;
+    let vector = match element {
+        VectorElement::F32 => {
+            let bytes = reader.bytes(dimension * 4)?;
+            Vector::from_f32(
+                bytes
+                    .chunks_exact(4)
+                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                    .collect::<Vec<_>>(),
+            )
+        }
+        VectorElement::F16 => {
+            let bytes = reader.bytes(dimension * 2)?;
+            Vector::from_f16_bits(
+                bytes
+                    .chunks_exact(2)
+                    .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+                    .collect::<Vec<_>>(),
+            )
+        }
+        VectorElement::I8 => {
+            let scale = f32::from_bits(reader.u32()?);
+            let bytes = reader.bytes(dimension)?;
+            Vector::from_i8(
+                bytes
+                    .iter()
+                    .map(|byte| i8::from_le_bytes([*byte]))
+                    .collect::<Vec<_>>(),
+                scale,
+            )
+        }
+        VectorElement::Bit => {
+            let bytes = reader.bytes(dimension.div_ceil(8))?;
+            Vector::from_bits(bytes.to_vec(), dimension)
+        }
+    };
+    vector.map_err(|err| invalid(err.to_string()))
 }
 
 /// Writes a temporal value with its tag (format spec 3, file format version 2).
@@ -616,6 +707,7 @@ pub(crate) fn read_tagged_value<K: KeyReader>(
         tag::DATE | tag::LOCAL_DATE_TIME | tag::DATE_TIME | tag::TIME | tag::DURATION => {
             ElementProperty::Temporal(read_temporal(reader, tag, start)?)
         }
+        tag::VECTOR => ElementProperty::Vector(read_vector(reader, start)?),
         tag::ARRAY => {
             if depth >= max_depth {
                 return Err(DecodeError::new(

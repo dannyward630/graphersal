@@ -571,6 +571,19 @@ pub enum ValueError {
         #[source]
         error: crate::value::temporal::TemporalError,
     },
+
+    /// A vector could not be built or converted: an empty or too long list, a component that is
+    /// not a finite number, an unknown element kind, a component beyond the range of the target
+    /// kind (`vector([..])`, `as_vector()`, `quantize(..)`).
+    #[error("The {step}() step failed: {error}")]
+    #[non_exhaustive]
+    Vector {
+        /// The step or function's name (`vector`, `as_vector`, `quantize`).
+        step: &'static str,
+        /// What went wrong.
+        #[source]
+        error: crate::value::VectorError,
+    },
 }
 
 /// Why an [`Operator`](crate::value::Operator) failed: the kind of a [`ValueError::OperatorFailed`].
@@ -1558,6 +1571,7 @@ impl DiagnosticError for ValueError {
                 Some(temporal_parse_help(step, target))
             }
             ValueError::Temporal { step, error } => Some(temporal_help(step, error)),
+            ValueError::Vector { error, .. } => Some(error.help()),
         }
     }
 
@@ -3387,6 +3401,19 @@ impl DiagnosticError for SchemaError {
                 if let Some(convert) = coercion_step(&expected_type.to_lowercase()) {
                     help.push_str(&format!(
                         "\nIn a query, convert the values with values({key}).{convert}."
+                    ));
+                }
+                if let Some(declared) = expected_type.strip_prefix("vector<") {
+                    let element = declared
+                        .split([',', '>'])
+                        .next()
+                        .unwrap_or("f32")
+                        .trim();
+                    help.push_str(&format!(
+                        "\nA list of numbers written to a declared vector becomes a vector of its \
+                         element on write (mode open or closed), and a vector of another element \
+                         is quantized; the dimension is never changed. In a query, convert the \
+                         values with values({key}).as_vector().quantize(\"{element}\")."
                     ));
                 }
                 if expected_type == "uuid" && actual_type != "string" {

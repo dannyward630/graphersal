@@ -131,6 +131,9 @@ pub(crate) fn constraint_text(node: &PropertySchema) -> String {
     if let Some(allowed) = node.additional_properties {
         parts.push(format!("additional: {allowed}"));
     }
+    if let Some(metric) = node.vector.as_ref().and_then(|vector| vector.metric) {
+        parts.push(format!("metric {metric}"));
+    }
     if node.annotations().and_then(|a| a.deprecated) == Some(true) {
         parts.push("deprecated".to_string());
     }
@@ -814,6 +817,16 @@ fn explicit_additional(node: &PropertySchema, default: Option<bool>) -> Property
                 .is_some_and(|t| t.contains(&JsonType::Object))
         {
             node.additional_properties = default;
+        }
+        // A vector is an array of numbers to another validator (which ignores the custom
+        // `format`, `element` and `dimension`): spelled out, so it checks the structure too.
+        if let Some(vector) = &node.vector {
+            node.items = Some(Box::new(PropertySchema::number()));
+            if let Some(dimension) = vector.dimension {
+                let constraints = node.constraints.get_or_insert_with(Box::default);
+                constraints.min_items = Some(u64::from(dimension));
+                constraints.max_items = Some(u64::from(dimension));
+            }
         }
         for child in node.properties.values_mut() {
             fill(child, default);

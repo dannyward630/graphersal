@@ -1,6 +1,6 @@
 //! Coercion on write: converts an incoming property value to the type a schema declares for it.
 //!
-//! Only three conversions exist, and all happen only because the schema *explicitly declares*
+//! Only four conversions exist, and all happen only because the schema *explicitly declares*
 //! the target type (this is not content sniffing, see CLAUDE.md rule 7):
 //!
 //! - a canonical UUID string becomes a [`ElementProperty::Uuid`] where the node is
@@ -10,7 +10,10 @@
 //!   `{"type": "string", "format": "date-time"}` (`date`, `local-date-time`, `time`,
 //!   `duration`); text the parser refuses is a coercion failure;
 //! - an `int64` becomes a `float64` where the node admits `number` but not `integer`, when it
-//!   is exactly representable.
+//!   is exactly representable;
+//! - a list of numbers becomes a [`ElementProperty::Vector`] of the declared element where the
+//!   node is `{"type": "array", "format": "vector", ..}`, and a vector of another element is
+//!   quantized to the declared one (the dimension is not changed: validation checks it).
 //!
 //! Everything else passes through unchanged, and validation reports any remaining mismatch.
 //! Reads never coerce. A schema's `default` is coerced like a written value when a create stores
@@ -23,7 +26,7 @@ use std::borrow::Cow;
 use crate::value::physical::{PhysicalValue, lift_temporal};
 use crate::value::temporal::TemporalKind;
 use crate::value::uuid::parse_canonical;
-use crate::value::{ElementProperty, Number};
+use crate::value::{ElementProperty, Number, Vector, VectorElement, VectorError};
 
 /// Why a value could not be coerced to its declared type.
 #[derive(Debug, Clone, PartialEq)]
@@ -111,6 +114,30 @@ pub(crate) fn coerce_to_declared(
                 None => Ok(ElementProperty::Number(number)),
             }
         }
+        // A list of numbers where the node declares a vector: a vector of the declared element
+        // (quantized from the f32 values), so a property is stored quantized from the start.
+        ElementProperty::Array(items) if let Some(declared) = &node.vector => {
+            let vector = match Vector::from_values(&items) {
+                Ok(vector) => vector,
+                Err(err) => {
+                    return Err(CoerceFailure {
+                        reason: match err {
+                            VectorError::Dimension { .. } => NOT_A_VECTOR_LENGTH,
+                            _ => NOT_A_VECTOR,
+                        },
+                        value: ElementProperty::Array(items),
+                    });
+                }
+            };
+            quantize_to(vector, declared.element)
+        }
+        // A vector of another element: quantized to the declared one.
+        ElementProperty::Vector(vector)
+            if let Some(declared) = &node.vector
+                && vector.element() != declared.element =>
+        {
+            quantize_to(vector, declared.element)
+        }
         ElementProperty::Array(items) => match &node.items {
             Some(item_node) => items
                 .into_iter()
@@ -129,6 +156,29 @@ pub(crate) fn coerce_to_declared(
             Ok(ElementProperty::Object(map))
         }
         other => Ok(other),
+    }
+}
+
+/// The reason reported for a list that is not a list of finite numbers where a vector is
+/// declared.
+pub(crate) const NOT_A_VECTOR: &str =
+    "not a list of finite numbers (the property declares a vector)";
+
+/// The reason reported for an empty or too long list where a vector is declared.
+pub(crate) const NOT_A_VECTOR_LENGTH: &str = "a vector has 1 to 65536 components";
+
+/// The reason reported for a vector that does not fit the declared element.
+pub(crate) const NOT_IN_ELEMENT_RANGE: &str =
+    "a component lies beyond the range of the declared element (f16: 65504)";
+
+/// A vector in the declared element.
+fn quantize_to(vector: Vector, element: VectorElement) -> Result<ElementProperty, CoerceFailure> {
+    match vector.quantize(element) {
+        Ok(quantized) => Ok(ElementProperty::Vector(quantized)),
+        Err(_) => Err(CoerceFailure {
+            reason: NOT_IN_ELEMENT_RANGE,
+            value: ElementProperty::Vector(vector),
+        }),
     }
 }
 

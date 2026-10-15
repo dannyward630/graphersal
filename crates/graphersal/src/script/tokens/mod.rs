@@ -25,6 +25,7 @@ mod set;
 mod t;
 mod temporal;
 mod uuid;
+mod vector;
 mod visualizer;
 mod with_options;
 
@@ -52,6 +53,8 @@ pub use t::*;
 pub use temporal::ScriptDT;
 pub(crate) use temporal::{dynamic_temporal, is_temporal, register_temporal, temporal_to_dynamic};
 pub use uuid::*;
+pub use vector::ScriptVector;
+pub(crate) use vector::{element_of as vector_element_of, register_vector};
 pub use visualizer::*;
 pub use with_options::*;
 

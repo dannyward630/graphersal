@@ -46,7 +46,7 @@ use std::sync::Arc;
 
 use crate::error::SchemaError;
 use crate::graph::schema::types::value_type_name;
-use crate::graph::schema::{Constraints, JsonType, PropertySchema, SchemaFormat};
+use crate::graph::schema::{Constraints, JsonType, PropertySchema, SchemaFormat, VectorSchema};
 use crate::value::json_path::JsonPathSegment;
 use crate::value::physical::{PhysicalValue, lower};
 use crate::value::{ElementProperty, JsonPath, Number};
@@ -89,9 +89,15 @@ fn mismatch(
     }
 }
 
-/// The kind of a value, as `type` names it, given the `format` of the node's `string` (`None`
-/// for a graph element, and for a string-like value the format does not declare).
-fn kind_of(value: &ElementProperty, format: Option<SchemaFormat>) -> Option<JsonType> {
+/// The kind of a value, as `type` names it, given the `format` of the node's `string` and the
+/// node's vector declaration (`None` for a graph element, for a string-like value the format
+/// does not declare, for a vector the node does not declare and for a list where the node
+/// declares a vector).
+fn kind_of(
+    value: &ElementProperty,
+    format: Option<SchemaFormat>,
+    vector: Option<&VectorSchema>,
+) -> Option<JsonType> {
     Some(match value {
         ElementProperty::Null => JsonType::Null,
         ElementProperty::Boolean(_) => JsonType::Boolean,
@@ -110,6 +116,13 @@ fn kind_of(value: &ElementProperty, format: Option<SchemaFormat>) -> Option<Json
         | ElementProperty::Compressed(_)
         | ElementProperty::Uuid(_)
         | ElementProperty::Temporal(_) => return None,
+        // `array` + `format: vector` is a vector of the declared element and dimension; a
+        // stored list does not conform (a list of numbers is coerced on write).
+        ElementProperty::Vector(v) if vector.is_some_and(|declared| declared.admits(v)) => {
+            JsonType::Array
+        }
+        ElementProperty::Vector(_) => return None,
+        ElementProperty::Array(_) if vector.is_some() => return None,
         ElementProperty::Array(_) => JsonType::Array,
         ElementProperty::Object(_) | ElementProperty::Map(_) => JsonType::Object,
         ElementProperty::Vertex(_) | ElementProperty::Edge(_) => return None,
@@ -121,9 +134,8 @@ pub(crate) fn admits_type(node: &PropertySchema, value: &ElementProperty) -> boo
     match &node.types {
         None => !matches!(value, ElementProperty::Vertex(_) | ElementProperty::Edge(_)),
         // `string` + `format` admits the format's logical type; without one, a plain string.
-        Some(types) => {
-            kind_of(value, node.string_format()).is_some_and(|kind| types.contains(&kind))
-        }
+        Some(types) => kind_of(value, node.string_format(), node.vector.as_ref())
+            .is_some_and(|kind| types.contains(&kind)),
     }
 }
 

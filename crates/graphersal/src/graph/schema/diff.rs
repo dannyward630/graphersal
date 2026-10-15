@@ -224,6 +224,14 @@ struct Differ {
     label: Option<String>,
 }
 
+/// The type part of a node's vector declaration (element and dimension; `metric` is an
+/// annotation and changes nothing).
+fn vector_type(node: &PropertySchema) -> Option<(crate::value::VectorElement, Option<u32>)> {
+    node.vector
+        .as_ref()
+        .map(|vector| (vector.element, vector.dimension))
+}
+
 /// Whether a node admits every value (no type, no `anyOf`, no constraints, no keys).
 fn accepts_any(node: &PropertySchema) -> bool {
     node.types.is_none()
@@ -232,6 +240,7 @@ fn accepts_any(node: &PropertySchema) -> bool {
         && node.properties.is_empty()
         && node.required.is_empty()
         && node.items.is_none()
+        && node.vector.is_none()
 }
 
 impl Differ {
@@ -357,9 +366,25 @@ impl Differ {
         if old == new {
             return;
         }
-        let same_type = old.types == new.types && old.format == new.format;
+        let same_vector = vector_type(old) == vector_type(new);
+        let same_type = old.types == new.types && old.format == new.format && same_vector;
         let same_any_of = old.any_of == new.any_of;
-        if !same_type || !same_any_of {
+        if old.types == new.types && old.format == new.format && !same_vector && same_any_of {
+            // A vector declaration added, removed or changed: incompatible (the stored vectors,
+            // or the stored lists, no longer conform), except dropping a dimension (any
+            // dimension then, a relaxation).
+            let ok = match (vector_type(old), vector_type(new)) {
+                (Some((a, _)), Some((b, None))) => a == b,
+                _ => false,
+            };
+            self.push(
+                SchemaChangeKind::TypeChanged,
+                Some(path.clone()),
+                Some(old.type_name()),
+                Some(new.type_name()),
+                ok,
+            );
+        } else if !same_type || !same_any_of {
             match (&old.any_of, &new.any_of) {
                 (Some(a), Some(b)) if a.len() == b.len() && same_type => {
                     for (index, (a, b)) in a.iter().zip(b).enumerate() {

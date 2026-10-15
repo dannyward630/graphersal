@@ -74,6 +74,7 @@ pub(crate) fn receiver_of(first_param: Option<&str>) -> &'static str {
         "ScriptCastPolicy" | "CastPolicy" => "CastPolicy",
         "ArgP" | "Predicate" => "Predicate",
         "ScriptUuid" | "Uuid" => "Uuid",
+        "ScriptVector" | "Vector" => "Vector",
         "ScriptFake" | "Fake" => "Fake",
         "DateTime" | "datetime" | "Date" | "date" | "LocalDateTime" | "localdatetime" | "Time"
         | "time" | "Duration" | "duration" => "temporal",
@@ -112,6 +113,7 @@ fn lookup_order(receiver: &'static str) -> &'static [&'static str] {
         "CastPolicy" => &["CastPolicy"],
         "Predicate" => &["Predicate"],
         "Uuid" => &["Uuid"],
+        "Vector" => &["Vector"],
         "Fake" => &["Fake"],
         "temporal" => &["temporal"],
         "map" => &["map"],
@@ -213,6 +215,12 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
     "traversal" "as_duration":
         "Converts ISO 8601 text to a duration.",
         "g.inject(\"P1D\").as_duration().next().days" => "1";
+    "traversal" "as_vector":
+        "Converts a list of numbers to an f32 vector; a vector passes (see the book page Vectors).",
+        "g.inject([0.5, 1]).as_vector().next()" => "vector([0.5, 1.0])";
+    "traversal" "quantize":
+        "Converts a vector to the element kind f32, f16, i8 or bit; quantize(\"f32\") dequantizes.",
+        "g.inject(vector([0.5, -1.0])).quantize(\"i8\").next().element" => "i8";
     "traversal" "date_add":
         "Adds n DT units or a duration, optionally in a zone (TinkerPop dateAdd()).",
         "g.inject(date(\"2024-01-31\")).date_add(DT.month, 1).next().day" => "29";
@@ -870,6 +878,15 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
     "UUID" "from_string":
         "Parses a UUID value from its canonical text.",
         "UUID.from_string(\"123e4567-e89b-12d3-a456-426614174000\").as_string()" => "123e4567-e89b-12d3-a456-426614174000";
+    "global" "vector":
+        "A vector value (an embedding) from a list of numbers: f32, or quantized to f16, i8 or bit.",
+        "vector([0.5, -1.0], \"bit\").to_list()" => "[1.0, -1.0]";
+    "Vector" "quantize":
+        "The vector in another element kind (f32, f16, i8, bit).",
+        "vector([0.5, -1.0]).quantize(\"i8\").dimension" => "2";
+    "Vector" "to_list":
+        "The values of the vector as a list of floats (dequantized).",
+        "vector([0.5, 2]).to_list()" => "[0.5, 2.0]";
     "Uuid" "as_string":
         "The canonical text of the UUID value.",
         "UUID.from_string(\"123e4567-e89b-12d3-a456-426614174000\").as_string().len()" => "36";

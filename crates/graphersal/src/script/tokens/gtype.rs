@@ -30,6 +30,7 @@ pub(crate) mod GTypeModule {
     pub const DATE: GType = GType::DATE;
     pub const LOCALDATETIME: GType = GType::LOCALDATETIME;
     pub const TIME: GType = GType::TIME;
+    pub const VECTOR: GType = GType::VECTOR;
     pub const LIST: GType = GType::LIST;
     pub const MAP: GType = GType::MAP;
     pub const VERTEX: GType = GType::VERTEX;

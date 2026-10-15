@@ -278,6 +278,12 @@ pub(super) fn register(registry: &mut Registry) {
             &["as_duration", "asDuration"],
             ScriptGraphTraversalSource::as_duration,
         )
+        // The vector steps (book page "Vectors").
+        .register_fn_as(
+            &["as_vector", "asVector"],
+            ScriptGraphTraversalSource::as_vector,
+        )
+        .register_fn("quantize", ScriptGraphTraversalSource::quantize)
         .register_fn_as(
             &["date_add", "dateAdd"],
             ScriptGraphTraversalSource::date_add,

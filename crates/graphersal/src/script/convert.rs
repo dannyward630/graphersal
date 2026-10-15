@@ -219,6 +219,8 @@ impl ScriptGraphTraversalSource {
                 Step::AsDate(None) => graph.as_date(),
                 Step::AsDate(Some(target)) => graph.as_date_to(target.clone()),
                 Step::AsDuration => graph.as_duration(),
+                Step::AsVector => graph.as_vector(),
+                Step::Quantize(element) => graph.quantize(*element),
                 Step::DateAdd(unit, n, None) => graph.date_add(*unit, *n),
                 Step::DateAdd(unit, n, Some(zone)) => graph.date_add_in(*unit, *n, zone),
                 Step::DateAddDuration(duration, None) => graph.date_add_duration(*duration),

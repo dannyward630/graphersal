@@ -319,6 +319,10 @@ pub(crate) fn display_type_name(raw: &str) -> String {
         // A UUID literal is a value: its value type name.
         return "uuid".to_string();
     }
+    if raw == std::any::type_name::<crate::script::ScriptVector>() {
+        // A vector is a value: its value type name.
+        return "vector".to_string();
+    }
     let registered = SHARED
         .try_with(|shared| {
             shared
