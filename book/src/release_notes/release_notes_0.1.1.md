@@ -20,3 +20,10 @@ journals of 0.1.0 are read and written exactly as before.
   snapshot or journal stream of a newer file format version is refused the same way. The rule is
   in the [format specification, section 15](../persistence/format.md#15-versioning) and on
   [Format Versions](../persistence/store_versions.md).
+
+## Dependencies
+
+- `rustls` 0.23.46 in the lock file (RUSTSEC-2026-0346, -0347, -0348 and a ServerHello downgrade
+  advisory; used only by the CLI's AI Chat client, `--ai`).
+- `ruzstd` at least 0.9.1 (RUSTSEC-2026-0344, a decompression bomb; used only with the feature
+  `persist-zstd`, whose chunk sizes are bounded before decoding).
