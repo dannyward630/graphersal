@@ -1139,6 +1139,62 @@ fn out_out_large_lazy_barrier(bencher: divan::Bencher, _args: usize) {
     });
 }
 
+/// A deterministic pseudo-random embedding in -1..1.
+fn embedding(seed: u64, dimension: usize) -> Vec<f32> {
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    (0..dimension)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 40) as f64 / (1u64 << 24) as f64 * 2.0 - 1.0) as f32
+        })
+        .collect()
+}
+
+/// 10 000 vertices `doc` with a 384-dimensional random embedding `emb` stored as `element`.
+fn vector_docs(element: &str) -> graphersal::prelude::Graph {
+    use graphersal::prelude::*;
+    let kind = graphersal::vector::VectorElement::from_name(element).unwrap();
+    let mut graph = TraversalGraph::new();
+    for i in 0..10_000u64 {
+        let emb = Vector::from_f32(embedding(i, 384))
+            .unwrap()
+            .quantize(kind)
+            .unwrap();
+        let mut props = PropertyMap::default();
+        props.insert("emb", ElementProperty::Vector(emb));
+        graph.add_vertex(None, vec!["doc".into()], props).unwrap();
+    }
+    Graph::new(graph)
+}
+
+/// Exact `nearest(.., 10)` over 10k x 384 vectors of each element kind (cosine; hamming for bit;
+/// the query is the f32 embedding, quantized for bit). The book page "Vectors" quotes it.
+#[divan::bench(args = ["f32", "f16", "i8", "bit"])]
+fn nearest_10k_x_384(bencher: divan::Bencher, element: &str) {
+    use graphersal::prelude::*;
+    use graphersal::vector::{VectorElement, VectorMetric};
+    let graph = vector_docs(element);
+    let lock = graph.read();
+    let mut q = Vector::from_f32(embedding(1_000_000, 384)).unwrap();
+    let mut metric = None;
+    if element == "bit" {
+        q = q.quantize(VectorElement::Bit).unwrap();
+        metric = Some(VectorMetric::Hamming);
+    }
+    bencher.bench(|| {
+        let _ = lock
+            .traversal()
+            .v(None)
+            .has_label("doc")
+            .nearest("emb", &q, 10, metric)
+            .to_list();
+    });
+}
+
 /// See [`out_out_large_lazy_barrier`]: the same query with the rule disabled.
 #[divan::bench(args = [110_000])]
 fn out_out_large_no_lazy_barrier(bencher: divan::Bencher, _args: usize) {

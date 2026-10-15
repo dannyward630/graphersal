@@ -1,8 +1,10 @@
 //! Similarity and distance kernels over the raw component slices of two vectors (book page
 //! "Vectors", section "Similarity").
 //!
-//! Every kernel reads the stored components directly (f32 as is, f16 and i8 dequantized lane by
-//! lane, bits by popcount) and accumulates in f64, so a score never overflows and never is NaN
+//! Every kernel reads the stored components directly (f32 as is, f16 dequantized lane by lane,
+//! i8 as `code * scale` in f64 with the scale applied once per sum where it factors out, two i8
+//! vectors in exact integers, bits by popcount) and accumulates in f64, so a score never
+//! overflows and never is NaN
 //! (components are finite by construction). The loops keep eight independent accumulators per
 //! sum over fixed-size chunks: the order of the additions is fixed (the result is deterministic)
 //! and LLVM vectorizes the lanes without intrinsics.
@@ -18,17 +20,31 @@
 //! vector compares only with another bit vector (its components are `±1.0`, so the dot product,
 //! the cosine and the distance follow from the Hamming distance exactly).
 
-use super::half::f16_to_f32;
 use super::{Data, Vector, VectorElement, VectorError, VectorMetric};
 
 /// The number of independent accumulators per sum.
 const LANES: usize = 8;
 
-/// One side of a comparison: a slice of stored components and how to read one as an f64.
+/// One side of a comparison: a slice of stored components, how to read one as an f64, and the
+/// factor of the whole vector (the i8 scale; 1.0 otherwise) that the value is multiplied by.
+/// Cosine and dot apply the factor to the sums once, l2 to every value.
 trait Lanes: Copy {
     type Item: Copy;
     fn items(&self) -> &[Self::Item];
     fn value(&self, item: Self::Item) -> f64;
+    #[inline(always)]
+    fn scale(&self) -> f64 {
+        1.0
+    }
+}
+
+/// The f32 value of finite half bits, without branches (so the loop vectorizes): the exponent
+/// and mantissa shifted into an f32 and rescaled by 2^112, which is exact for normal and
+/// subnormal halves alike. A vector never holds a half infinity or NaN.
+#[inline(always)]
+fn finite_half(half: u16) -> f32 {
+    let magnitude = f32::from_bits(u32::from(half & 0x7fff) << 13) * f32::from_bits(0x7780_0000);
+    f32::from_bits(magnitude.to_bits() | (u32::from(half & 0x8000) << 16))
 }
 
 #[derive(Clone, Copy)]
@@ -57,10 +73,11 @@ impl Lanes for F16Lanes<'_> {
     }
     #[inline(always)]
     fn value(&self, item: u16) -> f64 {
-        f64::from(f16_to_f32(item))
+        f64::from(finite_half(item))
     }
 }
 
+/// The codes of an i8 vector with its scale: a value is `code * scale`, computed in f64.
 #[derive(Clone, Copy)]
 struct I8Lanes<'a>(&'a [i8], f32);
 
@@ -72,8 +89,11 @@ impl Lanes for I8Lanes<'_> {
     }
     #[inline(always)]
     fn value(&self, item: i8) -> f64 {
-        // The stored value is the f32 product (what `get()` returns), widened exactly.
-        f64::from(f32::from(item) * self.1)
+        f64::from(item)
+    }
+    #[inline(always)]
+    fn scale(&self) -> f64 {
+        f64::from(self.1)
     }
 }
 
@@ -110,27 +130,46 @@ fn dot_kernel<A: Lanes, B: Lanes>(a: A, b: B) -> f64 {
     sum
 }
 
-/// The dot product and both squared norms, in one pass.
+/// The squared norm of the values (without the scale). Its additions run in exactly the order
+/// [`cosine_kernel`] sums the first side's squares, so a norm computed once for a query equals
+/// the one a pass would compute.
+#[inline(always)]
+fn norm_kernel<A: Lanes>(a: A) -> f64 {
+    let (chunks, rest) = a.items().as_chunks::<LANES>();
+    let mut acc = [0.0f64; LANES];
+    for x in chunks {
+        for lane in 0..LANES {
+            let p = a.value(x[lane]);
+            acc[lane] += p * p;
+        }
+    }
+    let mut sum = reduce(acc);
+    for x in rest {
+        let p = a.value(*x);
+        sum += p * p;
+    }
+    sum
+}
+
+/// The dot product and the first side's squared norm, in one pass (values without the scale).
 #[inline(always)]
 fn cosine_kernel<A: Lanes, B: Lanes>(a: A, b: B) -> Sums {
     let (a_chunks, a_rest) = a.items().as_chunks::<LANES>();
     let (b_chunks, b_rest) = b.items().as_chunks::<LANES>();
     let mut dot = [0.0f64; LANES];
     let mut left = [0.0f64; LANES];
-    let mut right = [0.0f64; LANES];
     for (x, y) in a_chunks.iter().zip(b_chunks) {
         for lane in 0..LANES {
             let p = a.value(x[lane]);
             let q = b.value(y[lane]);
             dot[lane] += p * q;
             left[lane] += p * p;
-            right[lane] += q * q;
         }
     }
     let mut sums = Sums {
         dot: reduce(dot),
         left: reduce(left),
-        right: reduce(right),
+        right: 0.0,
         squared_distance: 0.0,
     };
     for (x, y) in a_rest.iter().zip(b_rest) {
@@ -138,7 +177,6 @@ fn cosine_kernel<A: Lanes, B: Lanes>(a: A, b: B) -> Sums {
         let q = b.value(*y);
         sums.dot += p * q;
         sums.left += p * p;
-        sums.right += q * q;
     }
     sums
 }
@@ -148,16 +186,17 @@ fn cosine_kernel<A: Lanes, B: Lanes>(a: A, b: B) -> Sums {
 fn l2_kernel<A: Lanes, B: Lanes>(a: A, b: B) -> f64 {
     let (a_chunks, a_rest) = a.items().as_chunks::<LANES>();
     let (b_chunks, b_rest) = b.items().as_chunks::<LANES>();
+    let (sa, sb) = (a.scale(), b.scale());
     let mut acc = [0.0f64; LANES];
     for (x, y) in a_chunks.iter().zip(b_chunks) {
         for lane in 0..LANES {
-            let d = a.value(x[lane]) - b.value(y[lane]);
+            let d = a.value(x[lane]) * sa - b.value(y[lane]) * sb;
             acc[lane] += d * d;
         }
     }
     let mut sum = reduce(acc);
     for (x, y) in a_rest.iter().zip(b_rest) {
-        let d = a.value(*x) - b.value(*y);
+        let d = a.value(*x) * sa - b.value(*y) * sb;
         sum += d * d;
     }
     sum
@@ -218,11 +257,17 @@ fn cosine_of(dot: f64, left: f64, right: f64) -> f64 {
 
 /// Runs the kernel of `metric` on two dequantizing sides.
 #[inline(always)]
-fn run<A: Lanes, B: Lanes>(metric: VectorMetric, a: A, b: B) -> f64 {
+fn run<A: Lanes, B: Lanes>(metric: VectorMetric, a: A, b: B, b_norm: Option<f64>) -> f64 {
+    let (sa, sb) = (a.scale(), b.scale());
     let sums = match metric {
-        VectorMetric::Cosine => cosine_kernel(a, b),
+        // The factors cancel out of the cosine, except a zero one (a zero vector).
+        VectorMetric::Cosine if sa == 0.0 || sb == 0.0 => Sums::default(),
+        VectorMetric::Cosine => Sums {
+            right: b_norm.unwrap_or_else(|| norm_kernel(b)),
+            ..cosine_kernel(a, b)
+        },
         VectorMetric::Dot => Sums {
-            dot: dot_kernel(a, b),
+            dot: dot_kernel(a, b) * sa * sb,
             ..Sums::default()
         },
         VectorMetric::L2 => Sums {
@@ -236,11 +281,11 @@ fn run<A: Lanes, B: Lanes>(metric: VectorMetric, a: A, b: B) -> f64 {
 
 /// Dispatches the second side for a fixed first side.
 #[inline(always)]
-fn with_right<A: Lanes>(metric: VectorMetric, a: A, right: &Data) -> f64 {
+fn with_right<A: Lanes>(metric: VectorMetric, a: A, right: &Data, norm: Option<f64>) -> f64 {
     match right {
-        Data::F32(values) => run(metric, a, F32Lanes(values)),
-        Data::F16(values) => run(metric, a, F16Lanes(values)),
-        Data::I8 { codes, scale } => run(metric, a, I8Lanes(codes, *scale)),
+        Data::F32(values) => run(metric, a, F32Lanes(values), norm),
+        Data::F16(values) => run(metric, a, F16Lanes(values), norm),
+        Data::I8 { codes, scale } => run(metric, a, I8Lanes(codes, *scale), norm),
         // Refused before: a bit vector compares only with a bit vector.
         Data::Bit { .. } => 0.0,
     }
@@ -281,6 +326,29 @@ impl Vector {
     /// assert_eq!(a.similarity(&b, VectorMetric::L2).unwrap(), 5f64.sqrt());
     /// ```
     pub fn similarity(&self, other: &Vector, metric: VectorMetric) -> Result<f64, VectorError> {
+        self.similarity_prepared(other, metric, None)
+    }
+
+    /// The squared norm of the stored values without the i8 scale, the part of a cosine a
+    /// search computes once for its query ([`similarity_prepared`](Self::similarity_prepared));
+    /// `None` for a bit vector.
+    pub(crate) fn raw_squared_norm(&self) -> Option<f64> {
+        match &*self.0 {
+            Data::F32(values) => Some(norm_kernel(F32Lanes(values))),
+            Data::F16(values) => Some(norm_kernel(F16Lanes(values))),
+            Data::I8 { codes, scale } => Some(norm_kernel(I8Lanes(codes, *scale))),
+            Data::Bit { .. } => None,
+        }
+    }
+
+    /// [`similarity`](Self::similarity) with the query's
+    /// [`raw_squared_norm`](Self::raw_squared_norm) computed before (the same value, bit for bit).
+    pub(crate) fn similarity_prepared(
+        &self,
+        other: &Vector,
+        metric: VectorMetric,
+        other_norm: Option<f64>,
+    ) -> Result<f64, VectorError> {
         let (left, right) = (self.dimension(), other.dimension());
         if left != right {
             return Err(VectorError::DimensionMismatch { left, right });
@@ -332,11 +400,14 @@ impl Vector {
                     _ => dot * f64::from(*sa) * f64::from(*sb),
                 })
             }
-            (Data::F32(a), right) => Ok(with_right(metric, F32Lanes(a), right)),
-            (Data::F16(a), right) => Ok(with_right(metric, F16Lanes(a), right)),
-            (Data::I8 { codes, scale }, right) => {
-                Ok(with_right(metric, I8Lanes(codes, *scale), right))
-            }
+            (Data::F32(a), right) => Ok(with_right(metric, F32Lanes(a), right, other_norm)),
+            (Data::F16(a), right) => Ok(with_right(metric, F16Lanes(a), right, other_norm)),
+            (Data::I8 { codes, scale }, right) => Ok(with_right(
+                metric,
+                I8Lanes(codes, *scale),
+                right,
+                other_norm,
+            )),
         }
     }
 }
@@ -394,5 +465,24 @@ impl MeanAccumulator {
         let count = self.count as f64;
         let mean: Vec<f32> = self.sums.iter().map(|sum| (sum / count) as f32).collect();
         Vector::from_f32(mean).map(Some)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::half::{f16_is_finite, f16_to_f32};
+    use super::finite_half;
+
+    #[test]
+    fn the_branch_free_half_conversion_is_exact_for_every_finite_half() {
+        for half in 0..=u16::MAX {
+            if f16_is_finite(half) {
+                assert_eq!(
+                    finite_half(half).to_bits(),
+                    f16_to_f32(half).to_bits(),
+                    "{half:#06x}"
+                );
+            }
+        }
     }
 }

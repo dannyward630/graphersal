@@ -209,8 +209,8 @@ fn reference(a: &Vector, b: &Vector, metric: VectorMetric) -> f64 {
 }
 
 fn close(left: f64, right: f64) -> bool {
-    // i8 x i8 runs on the integer codes (exact for code * scale), the reference on the f32
-    // products: they differ in the f32 rounding of the products.
+    // An i8 vector is read as code * scale in f64 (exact), the reference reads the f32
+    // products of `iter_f32()`: they differ in the f32 rounding of the products.
     (left - right).abs() <= 1e-6 * (1.0 + left.abs().max(right.abs()))
 }
 
@@ -234,7 +234,7 @@ fn kernels_match_the_naive_reference_for_every_kind_pair() {
                             "{ka} x {kb} {metric} d={dimension}: {got} vs {want}"
                         );
                         assert!(close(got, y.similarity(&x, metric).unwrap()), "symmetric");
-                        if ka != VectorElement::I8 || kb != VectorElement::I8 {
+                        if ka != VectorElement::I8 && kb != VectorElement::I8 {
                             // Dequantized lanes in f64: only the order of the additions
                             // differs from the reference.
                             assert!((got - want).abs() <= 1e-12 * (1.0 + want.abs()));
@@ -266,6 +266,31 @@ fn kernels_match_the_naive_reference_for_every_kind_pair() {
                 a.similarity(&x, VectorMetric::L2),
                 Err(VectorError::BitMismatch { .. })
             ));
+        }
+    }
+}
+
+#[test]
+fn a_prepared_query_norm_gives_the_same_score_bit_for_bit() {
+    for dimension in [1, 9, 384] {
+        let q = Vector::from_f32(pseudo_random(1, dimension)).unwrap();
+        for kind in [VectorElement::F32, VectorElement::F16, VectorElement::I8] {
+            let q = q.quantize(kind).unwrap();
+            let norm = q.raw_squared_norm();
+            for seed in 2..6 {
+                let v = Vector::from_f32(pseudo_random(seed, dimension)).unwrap();
+                for stored in [v.clone(), v.quantize(VectorElement::I8).unwrap()] {
+                    for metric in [VectorMetric::Cosine, VectorMetric::Dot, VectorMetric::L2] {
+                        assert_eq!(
+                            stored.similarity(&q, metric).unwrap().to_bits(),
+                            stored
+                                .similarity_prepared(&q, metric, norm)
+                                .unwrap()
+                                .to_bits()
+                        );
+                    }
+                }
+            }
         }
     }
 }

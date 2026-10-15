@@ -184,6 +184,8 @@ impl<'g, S: GraphStorage + 'g> GraphStepFlatBarrier<'g, S> for StepNearest<'g, S
         // The units (bulk) the heap holds: a merged traverser stands for `bulk` equal ones.
         let mut units: u64 = 0;
         let mut query: Option<Vector> = None;
+        // The query's squared norm, computed once for the cosine of every candidate.
+        let mut query_norm: Option<f64> = None;
         let mut cache = MetricCache {
             by_labels: Vec::new(),
             chosen: None,
@@ -202,7 +204,10 @@ impl<'g, S: GraphStorage + 'g> GraphStepFlatBarrier<'g, S> for StepNearest<'g, S
             };
             let this_query = self.query.evaluate("nearest", context, &traverser)?;
             let query = match &query {
-                None => query.insert(this_query),
+                None => {
+                    query_norm = this_query.raw_squared_norm();
+                    query.insert(this_query)
+                }
                 Some(first) => {
                     if !first.same_data(&this_query) && *first != this_query {
                         return Err(vector_error("nearest", VectorError::QueryNotConstant));
@@ -218,7 +223,7 @@ impl<'g, S: GraphStorage + 'g> GraphStepFlatBarrier<'g, S> for StepNearest<'g, S
             };
             context.tick_n(stored.dimension() / 1024)?;
             let score = stored
-                .similarity(query, metric)
+                .similarity_prepared(query, metric, query_norm)
                 .map_err(|error| vector_error("nearest", error))?;
             let rank = rank_of(score, metric);
             if units >= k
