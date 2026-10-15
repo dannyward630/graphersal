@@ -1354,10 +1354,18 @@ fn a_failed_reload_leaves_an_empty_graph_a_stopped_store_and_a_clear_error() {
 /// The open's check for critical unknown segment kinds (format spec 16) reads the newest
 /// snapshot's manifest again after the load: a read failing there fails the open with that
 /// read error, it is never taken as "nothing critical". Every other failing manifest read
-/// fails the open too.
+/// fails the open too. The forward-version guard's header reads (format spec 15) come first and
+/// leave an unreadable header to the operation's own checks, so they are not armed here.
 #[test]
 fn a_failed_manifest_read_after_the_load_fails_the_open() {
     let image = schema_history_image();
+    // How many manifest reads the forward-version guard makes before the open proper.
+    let guard = FailingReads::only(&image, snapshot_dir::MANIFEST_FILE);
+    files::refuse_other_version(&files::DirPath::root(
+        guard.clone() as Arc<dyn crate::persist::StoreDir>
+    ))
+    .unwrap();
+    let guard_reads = guard.seen.load(Ordering::Acquire);
     // How many manifest reads an open makes.
     let counting = FailingReads::only(&image, snapshot_dir::MANIFEST_FILE);
     let store = Store::open(
@@ -1371,7 +1379,8 @@ fn a_failed_manifest_read_after_the_load_fails_the_open() {
         reads >= 2,
         "the load and the critical check read it: {reads}"
     );
-    for n in 0..reads {
+    assert!(guard_reads < reads, "{guard_reads} of {reads}");
+    for n in guard_reads..reads {
         let dir = image.deep_copy();
         let failing = FailingReads::only(&dir, snapshot_dir::MANIFEST_FILE);
         failing.arm(n);
