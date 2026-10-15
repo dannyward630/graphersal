@@ -547,8 +547,17 @@ fn combine_sacks<S: GraphStorage>(
     right: SackRef,
 ) -> TraverserResult<SackRef> {
     let sacks = &mut context.sacks;
+    // Numbers (the common sack) are copied field by field instead of through the generic
+    // `ElementProperty::clone`, an out-of-line call over every variant.
+    let operands = match (sacks.get(left), sacks.get(right)) {
+        (ElementProperty::Number(a), ElementProperty::Number(b)) => (
+            ElementProperty::Number(a.clone()),
+            ElementProperty::Number(b.clone()),
+        ),
+        (a, b) => (a.clone(), b.clone()),
+    };
     let combined = operator
-        .apply_owned(sacks.get(left).clone(), sacks.get(right).clone())
+        .apply_owned(operands.0, operands.1)
         .map_err(|error| Box::new(TraverserError::from(error)))?;
     sacks.intern(combined)
 }
