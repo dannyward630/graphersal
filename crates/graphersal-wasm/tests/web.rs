@@ -202,16 +202,24 @@ fn graphson_save_and_load_keeps_types_and_reports_skips() {
         .unwrap(),
     );
     assert_eq!(typed["execution"]["results"][0], 1, "{typed}");
-    // A date is skipped and listed in the warnings; malformed text is an error, not a panic.
+    // A date/time type Graphersal cannot hold (a year) is skipped and listed in the warnings,
+    // one it holds (`g:Date`) is imported; malformed text is an error, not a panic.
     let info = json(
         &q.load_graphson(
-            r#"{"id":"v","properties":{"born":[{"value":{"@type":"g:Date","@value":1}}]}}"#,
+            r#"{"id":"v","properties":{"born":[{"value":{"@type":"gx:Year","@value":"2016"}}],"seen":[{"value":{"@type":"g:Date","@value":1}}]}}"#,
             "dates.json",
             None,
         )
         .unwrap(),
     );
-    assert_eq!(info["warnings"].as_array().unwrap().len(), 1, "{info}");
+    let warnings = info["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{info}");
+    assert!(warnings[0].as_str().unwrap().contains("gx:Year"), "{info}");
+    let seen = json(
+        &q.execute(r#"g.v().has("seen").count().next()"#, "{}")
+            .unwrap(),
+    );
+    assert_eq!(seen["execution"]["results"][0], 1, "{seen}");
     assert!(q.load_graphson("{bad", "bad.json", None).is_err());
     assert!(GraphSource::from_file("graph.json").is_err());
 }

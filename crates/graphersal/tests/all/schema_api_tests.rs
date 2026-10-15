@@ -415,10 +415,14 @@ fn dsl_errors_name_the_problem() {
     let err = run(
         &graph,
         r#"g.set_schema(`{"vertices": {"p": {"schema": {"type": "object",
-        "properties": {"d": {"type": "string", "format": "date-time"}}}}}}`)"#,
+        "properties": {"d": {"type": "string", "format": "email"}}}}}}`)"#,
     )
     .unwrap_err();
-    assert!(err.contains("0.2.0"), "{err}");
+    assert!(
+        err.contains("unsupported format 'email'")
+            && err.contains("The supported formats are uuid, date-time"),
+        "{err}"
+    );
 }
 
 /// A whole-script unit: the schema change rolls back with the script, and an execution

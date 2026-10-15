@@ -424,7 +424,7 @@ fn graphson_skips_are_noted_on_stderr() {
     let path = temp_path("dates.graphson");
     std::fs::write(
         &path,
-        r#"{"id":"v","label":"x","properties":{"born":[{"value":{"@type":"g:Date","@value":1}}],"name":[{"value":"n"}]}}"#,
+        r#"{"id":"v","label":"x","properties":{"born":[{"value":{"@type":"gx:Year","@value":"2016"}}],"seen":[{"value":{"@type":"g:Date","@value":1}}],"name":[{"value":"n"}]}}"#,
     )
     .unwrap();
     let path = path.to_string_lossy().to_string();
@@ -432,14 +432,25 @@ fn graphson_skips_are_noted_on_stderr() {
         &["--graph", &path, "-e", "g.v().values(\"name\").next()"],
         "",
     );
+    // A date/time value Graphersal holds is imported, not skipped.
+    let seen = run(
+        &["--graph", &path, "-e", "g.v().values(\"seen\").next()"],
+        "",
+    );
     let _ = std::fs::remove_file(&path);
     assert_eq!(res.code, 0, "stderr: {}", res.stderr);
     assert_eq!(res.stdout.trim(), "n");
     assert!(
         res.stderr
-            .contains("skipped date/time values (g:Date, no date type yet): 1"),
+            .contains("skipped date/time values (gx:Year, a type Graphersal cannot hold): 1"),
         "stderr: {}",
         res.stderr
+    );
+    assert!(!res.stderr.contains("g:Date"), "stderr: {}", res.stderr);
+    assert_eq!(seen.code, 0, "stderr: {}", seen.stderr);
+    assert_eq!(
+        seen.stdout.trim(),
+        r#"datetime("1970-01-01T00:00:00.001Z")"#
     );
 }
 

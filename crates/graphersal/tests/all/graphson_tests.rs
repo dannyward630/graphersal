@@ -464,21 +464,18 @@ fn every_type_mapping() {
 }
 
 #[test]
-fn dates_are_skipped_and_reported_never_converted() {
-    for tag in [
-        "g:Date",
-        "g:Timestamp",
-        "gx:OffsetDateTime",
-        "g:OffsetDateTime",
-        "gx:LocalDate",
-        "gx:Instant",
-        "gx:Duration",
+fn date_types_without_a_twin_are_skipped_and_reported_never_converted() {
+    // The `java.time` types Graphersal has no value for are skipped and reported, never
+    // converted into something else (a year into an integer, an offset time into a string).
+    for (tag, payload) in [
+        ("gx:Year", r#""2016""#),
+        ("gx:YearMonth", r#""2016-06""#),
+        ("gx:MonthDay", r#""--12-03""#),
+        ("gx:OffsetTime", r#""10:15:30+01:00""#),
+        ("gx:ZoneOffset", r#""+01:00""#),
+        ("g:Calendar", "1481750076295"),
+        ("g:TimeZone", r#""Europe/Paris""#),
     ] {
-        let payload = if tag.starts_with("g:D") || tag.starts_with("g:T") {
-            "1481750076295".to_string()
-        } else {
-            r#""2016-12-14T16:39:19.349Z""#.to_string()
-        };
         let (value, report) = one_value(&format!(r#"{{"@type":"{tag}","@value":{payload}}}"#));
         assert_eq!(value, None, "{tag}");
         assert_eq!(
@@ -497,11 +494,67 @@ fn dates_are_skipped_and_reported_never_converted() {
         );
         assert!(report.to_string().contains(tag), "{report}");
     }
-    // A date inside a container skips the whole value.
+    // The date/time types Graphersal holds are converted to its own values, nothing skipped.
+    let instant = |text: &str| -> ElementProperty {
+        ElementProperty::from(text.parse::<graphersal::temporal::DateTime>().unwrap())
+    };
+    for (tag, payload, expected) in [
+        (
+            "g:Date",
+            "1481750076295",
+            instant("2016-12-14T21:14:36.295Z"),
+        ),
+        (
+            "g:Timestamp",
+            "1481750076295",
+            instant("2016-12-14T21:14:36.295Z"),
+        ),
+        (
+            "gx:OffsetDateTime",
+            r#""2016-12-14T16:39:19.349Z""#,
+            instant("2016-12-14T16:39:19.349Z"),
+        ),
+        (
+            "g:OffsetDateTime",
+            r#""2016-12-14T16:39:19.349Z""#,
+            instant("2016-12-14T16:39:19.349Z"),
+        ),
+        (
+            "gx:Instant",
+            r#""2016-12-14T16:39:19.349Z""#,
+            instant("2016-12-14T16:39:19.349Z"),
+        ),
+        (
+            "gx:LocalDate",
+            r#""2016-12-14""#,
+            ElementProperty::from("2016-12-14".parse::<graphersal::temporal::Date>().unwrap()),
+        ),
+        (
+            "gx:Duration",
+            r#""PT120H""#,
+            ElementProperty::from("PT120H".parse::<graphersal::temporal::Duration>().unwrap()),
+        ),
+    ] {
+        let (value, report) = one_value(&format!(r#"{{"@type":"{tag}","@value":{payload}}}"#));
+        assert_eq!(value, Some(expected), "{tag}: {report}");
+        assert!(!report.has_skips(), "{tag}: {report}");
+    }
+    // A date/time value we cannot hold inside a container skips the whole value.
     let (value, report) =
-        one_value(r#"{"@type":"g:List","@value":["a",{"@type":"g:Date","@value":1}]}"#);
+        one_value(r#"{"@type":"g:List","@value":["a",{"@type":"gx:Year","@value":"2016"}]}"#);
     assert_eq!(value, None);
     assert_eq!(report.skipped(), 1);
+    // One we hold is converted inside it.
+    let (value, report) =
+        one_value(r#"{"@type":"g:List","@value":["a",{"@type":"g:Date","@value":1}]}"#);
+    assert_eq!(
+        value,
+        Some(ElementProperty::Array(vec![
+            "a".into(),
+            instant("1970-01-01T00:00:00.001Z")
+        ]))
+    );
+    assert_eq!(report.skipped(), 0);
 }
 
 #[test]
@@ -729,7 +782,7 @@ fn edges_may_point_at_vertices_already_in_the_target_graph() {
 
 #[test]
 fn malformed_property_entries_and_reserved_meta() {
-    let text = r#"{"id":"v","properties":{"a":[5,{"id":1},{"value":"ok"}],"b":"scalar","c":{"value":"single"},"d":[],"_meta":[{"value":"mine"}],"m":[{"value":1,"properties":{"since":{"@type":"g:Date","@value":1},"by":"x"}}]}}"#;
+    let text = r#"{"id":"v","properties":{"a":[5,{"id":1},{"value":"ok"}],"b":"scalar","c":{"value":"single"},"d":[],"_meta":[{"value":"mine"}],"m":[{"value":1,"properties":{"since":{"@type":"gx:Year","@value":"2016"},"at":{"@type":"g:Date","@value":1},"by":"x"}}]}}"#;
     let (graph, report) = load_str(text);
     let props = vertex_props(&graph, "v");
     assert_eq!(props.get("a"), Some(&"ok".into()));
@@ -739,7 +792,22 @@ fn malformed_property_entries_and_reserved_meta() {
     assert_eq!(props.get("m"), Some(&1i64.into()));
     assert_eq!(
         props.get("_meta"),
-        Some(&obj(&[("m", obj(&[("by", "x".into())]))]))
+        Some(&obj(&[(
+            "m",
+            obj(&[
+                // A date/time meta-property Graphersal holds is converted; `since` (a year,
+                // which it cannot hold) is skipped below.
+                (
+                    "at",
+                    ElementProperty::from(
+                        "1970-01-01T00:00:00.001Z"
+                            .parse::<graphersal::temporal::DateTime>()
+                            .unwrap()
+                    )
+                ),
+                ("by", "x".into())
+            ])
+        )]))
     );
     assert_eq!(
         note(&report, |k| *k == ImportNoteKind::SkippedMalformedEntry),
@@ -750,10 +818,10 @@ fn malformed_property_entries_and_reserved_meta() {
         Some(1)
     );
     assert!(
-        note(&report, |k| matches!(
-            k,
-            ImportNoteKind::SkippedDateTime { .. }
-        ))
+        note(&report, |k| *k
+            == ImportNoteKind::SkippedDateTime {
+                type_tag: "gx:Year".into()
+            })
         .is_some()
     );
     // Without meta-properties a `_meta` of the file is an ordinary property.

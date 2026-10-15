@@ -2059,7 +2059,7 @@ mod tests {
     #[test]
     fn graphson_load_lists_skipped_data_as_warnings() {
         let mut s = Session::new();
-        let text = r#"{"id":"v","label":"x","properties":{"born":[{"value":{"@type":"g:Date","@value":1}}]}}"#;
+        let text = r#"{"id":"v","label":"x","properties":{"born":[{"value":{"@type":"gx:Year","@value":"2016"}}],"seen":[{"value":{"@type":"g:Date","@value":1}}]}}"#;
         let info = s
             .load_graphson(text.as_bytes(), "dates.json", None)
             .unwrap();
@@ -2070,8 +2070,13 @@ mod tests {
             warnings[0]
                 .as_str()
                 .unwrap()
-                .contains("skipped date/time values (g:Date"),
+                .contains("skipped date/time values (gx:Year, a type Graphersal cannot hold): 1"),
             "{info}"
+        );
+        // A date/time value Graphersal holds is imported, not a warning.
+        assert_eq!(
+            run(&mut s, r#"g.v().has("seen").count().next()"#)["execution"]["results"][0],
+            1
         );
         let info = s.load_sample("modern").unwrap();
         assert_eq!(info["warnings"], json!([]));
