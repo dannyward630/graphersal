@@ -328,6 +328,7 @@ fn every_store_operation_refuses_a_newer_store_and_changes_nothing() {
                 err_of(Store::attic_fork_dir(d, &attic_id, new_dir.path())),
             ),
             ("backup_dir", err_of(Store::backup_dir(d, new_dir.path()))),
+            #[cfg(feature = "persist-zip")]
             (
                 "backup_zip_dir",
                 err_of(Store::backup_zip_dir(d, std::io::Cursor::new(Vec::new()))),
@@ -582,11 +583,14 @@ fn real_files_of_graphersal_0_2_are_refused_cleanly() {
     assert_eq!(tree(&file), before);
 
     // A ZIP backup: unpacked, refused, nothing left behind.
-    let target = TempDir::new("real-zip");
-    let zip = fs::read(preview("backup.zip")).unwrap();
-    let err = err_of(Store::restore_zip(&zip[..], target.path()));
-    assert_newer("restore_zip", "0.2 zip", err);
-    assert!(!target.path().exists(), "nothing of the ZIP is left behind");
+    #[cfg(feature = "persist-zip")]
+    {
+        let target = TempDir::new("real-zip");
+        let zip = fs::read(preview("backup.zip")).unwrap();
+        let err = err_of(Store::restore_zip(&zip[..], target.path()));
+        assert_newer("restore_zip", "0.2 zip", err);
+        assert!(!target.path().exists(), "nothing of the ZIP is left behind");
+    }
 
     // A packed snapshot.
     let packed = fs::read(preview("graph.gsnap")).unwrap();
