@@ -478,7 +478,7 @@ impl IndexKey {
                 Temporal::Time(time) => IndexKey::Time(time.micros_of_day()),
                 Temporal::Duration(duration) => IndexKey::Duration(duration),
             }),
-            // A vector is not an index key (vector-0.2 decision 2): `has(key, vector)` finds it
+            // A vector is not an index key (book `users_guide/vectors.md`): `has(key, vector)` finds it
             // by a scan, with value equality.
             ElementProperty::Vector(_)
             | ElementProperty::Object(_)
