@@ -326,7 +326,8 @@ impl VectorError {
                  codes: vector([0.1, -0.2], \"i8\")."
                     .to_string()
             }
-            VectorError::NotAVector { .. } => "quantize() converts a vector value. Build one \
+            VectorError::NotAVector { .. } => "quantize(), similarity(), nearest() and \
+                 vector_mean() take vector values. Build one \
                  from a list of numbers with vector([0.1, 0.2]) or the as_vector() step, or \
                  declare the property as a vector in the schema ({\"type\": \"array\", \
                  \"format\": \"vector\", \"element\": \"f32\"}) so a written list becomes one."

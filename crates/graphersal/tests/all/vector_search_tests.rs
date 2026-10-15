@@ -616,6 +616,36 @@ fn the_profile_names_the_search_and_keeps_the_label_pushdown() {
 }
 
 #[test]
+fn a_property_index_serves_the_filter_before_the_search() {
+    let graph = Arc::new(GraphSource::empty());
+    run_on(
+        graph.clone(),
+        r#"g.add_v("doc").property("lang", "en").property("emb", vector([1.0, 0.0])).iterate();
+           g.add_v("doc").property("lang", "de").property("emb", vector([1.0, 0.0])).iterate();
+           g.create_index(#{label: "doc", key: "lang"});
+           g.create_index(#{label: "doc", key: "emb"}); 1"#,
+    );
+    let profile = run_on(
+        graph.clone(),
+        r#"g.v().has_label("doc").has("lang", "en").nearest("emb", vector([1.0, 0.0]), 5).profile().to_string()"#,
+    )
+    .replace("\\\"", "\"");
+    assert!(profile.contains("[index: vertex doc.l"), "{profile}");
+    assert!(
+        profile.contains("property_index") && profile.contains("nearest(\"emb\""),
+        "{profile}"
+    );
+    // A vector operand is no index key: the has() scans, with the same result.
+    assert_eq!(
+        run_on(
+            graph,
+            r#"g.v().has_label("doc").has("emb", vector([1.0, 0.0])).nearest("emb", vector([1.0, 0.0]), 5).count().next()"#
+        ),
+        "2"
+    );
+}
+
+#[test]
 fn a_saved_query_searches_with_a_vector_parameter() {
     let graph = docs();
     run_on(
