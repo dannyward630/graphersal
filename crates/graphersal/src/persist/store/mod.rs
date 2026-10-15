@@ -63,8 +63,8 @@ pub use damage::{Damage, DamageKind, DamageReport, Diverged, Donor, IdRange, Rep
 pub use files::{BackupMarker, DamagePolicy, LineageEntry};
 pub use maintenance::{BackupReport, ChangesSince, PruneReport, VerifyProblem, VerifyReport};
 pub use rollback::{AtticEntry, ForkReport, RollbackMode, RollbackReport};
-pub(crate) use upgrade::OLDEST_UPGRADABLE_STORE_VERSION;
 pub use upgrade::UpgradeReport;
+pub(crate) use upgrade::upgradable_from;
 
 pub(crate) use files::STORE_VERSION;
 use files::{
@@ -581,6 +581,7 @@ impl Store {
     ) -> Result<(usize, u64), PersistError> {
         let from = DirPath::root(from.into_store_dir());
         let to = DirPath::root(to.into_store_dir());
+        files::refuse_other_version(&from)?;
         if !Self::is_store(from.store_dir()) {
             return Err(PersistError::NotAStore {
                 path: from.display(),
@@ -681,6 +682,7 @@ impl Store {
         name: Option<&str>,
     ) -> Result<CheckpointReport, PersistError> {
         let dir = DirPath::root(dir.into_store_dir());
+        files::refuse_other_version(&dir)?;
         if !Self::is_store(dir.store_dir()) {
             return Err(PersistError::NotAStore {
                 path: dir.display(),
@@ -767,6 +769,7 @@ impl Store {
     /// (works while a writer has it open): the position is the last complete commit in the WAL.
     pub fn inspect(dir: impl IntoStoreDir) -> Result<StoreInfo, PersistError> {
         let dir = &DirPath::root(dir.into_store_dir());
+        files::refuse_other_version(dir)?;
         let file = read_graph_file(dir)?.file;
         let mut info = info_of(dir, &file)?;
         let (commit_seq, time) = maintenance::last_commit_in_files(dir, &info.snapshots)?;
@@ -797,6 +800,7 @@ impl Store {
         policy: CompactionPolicy,
     ) -> Result<CompactionAdvice, PersistError> {
         let dir = DirPath::root(dir.into_store_dir());
+        files::refuse_other_version(&dir)?;
         let file = read_graph_file(&dir)?.file;
         let blocked = file.backup.map(|marker| {
             format!(
@@ -818,6 +822,7 @@ impl Store {
         up_to: u64,
     ) -> Result<PruneReport, PersistError> {
         let dir = DirPath::root(dir.into_store_dir());
+        files::refuse_other_version(&dir)?;
         read_graph_file(&dir)?;
         Ok(maintenance::prune_estimate(&dir, up_to)?.0)
     }
@@ -877,13 +882,16 @@ impl Store {
         let dir = DirPath::root(dir.into_store_dir());
         let existed = dir.exists();
         zip::restore(reader, &dir)?;
+        // A backup of a NEWER format (format spec 15): nothing of it is left behind.
+        if let Err(err) = files::refuse_newer_version(&dir) {
+            files::undo_new_dir(&dir, existed);
+            return Err(err);
+        }
         let mut file = match read_graph_file(&dir) {
             Ok(read) => read.file,
             // A backup of a released older store format is upgraded through the converter
             // (verified; format spec 15.1); a pre-release one leaves nothing behind.
-            Err(PersistError::OlderFormat { found, .. })
-                if found >= OLDEST_UPGRADABLE_STORE_VERSION =>
-            {
+            Err(PersistError::OlderFormat { found, .. }) if upgradable_from(found) => {
                 if let Err(err) = upgrade::upgrade_in_place(&dir) {
                     files::undo_new_dir(&dir, existed);
                     return Err(err);
@@ -1492,6 +1500,7 @@ impl StoreCore {
         maker: &dyn GraphMaker,
     ) -> Result<StoreCore, PersistError> {
         maker.check()?;
+        files::refuse_other_version(&dir)?;
         let graph_file = read_graph_file(&dir)?.file;
         guard_version(&dir, graph_file.version)?;
         let Some(marker) = graph_file.backup else {
@@ -1642,6 +1651,9 @@ impl StoreCore {
         maker: &dyn GraphMaker,
     ) -> Result<StoreCore, PersistError> {
         maker.check()?;
+        // A newer (or older) format is refused before the lock and before any file is read
+        // as this version's (format spec 15): never damage, never maintenance mode.
+        files::refuse_other_version(&dir)?;
         if !dir.join(files::GRAPH_FILE).exists() && !dir.join(files::GRAPH_COPY).exists() {
             return Err(PersistError::NotAStore {
                 path: dir.display(),
@@ -1942,6 +1954,8 @@ impl StoreCore {
     }
 
     fn repair_at(dir: &DirPath, new_dir: &DirPath) -> Result<RepairReport, PersistError> {
+        // Never a lossy repair of files a newer Graphersal wrote (format spec 15).
+        files::refuse_newer_version(dir)?;
         // A store of a released older format is read as upgraded (format spec 15.1): the
         // repaired store is of the current format.
         let older = upgrade::older_view(dir);
@@ -2030,6 +2044,7 @@ impl StoreCore {
         target: RecoveryTarget,
         read: &ReadOptions,
     ) -> Result<LoadPlan, PersistError> {
+        files::refuse_other_version(dir)?;
         let graph_file = read_graph_file(dir)?.file;
         guard_version(dir, graph_file.version)?;
         let not_reached = |reason: String| PersistError::TargetNotReached {
@@ -2217,6 +2232,7 @@ impl StoreCore {
         target: RecoveryTarget,
         new_dir: &DirPath,
     ) -> Result<ForkReport, PersistError> {
+        files::refuse_other_version(dir)?;
         let parent = read_graph_file(dir)?.file;
         let options = StoreOptions::new()
             .with_chunk_bytes(parent.chunk_bytes)
@@ -4021,9 +4037,15 @@ impl Store {
         list_marks(&dir)
     }
 
-    /// Whether `dir` holds a store (a `GRAPH` or `GRAPH.copy` file).
+    /// Whether `dir` holds a store (a `GRAPH` or `GRAPH.copy` file, or a single-file store of a
+    /// newer container version, which every operation then refuses as newer).
     pub fn is_store(dir: impl IntoStoreDir) -> bool {
         let dir = DirPath::root(dir.into_store_dir());
+        // A single-file store of a newer container version is a store, which this build does
+        // not read: the operation refuses it as newer (format spec 15), never "not a store".
+        if files::refuse_newer_container(&dir).is_err() {
+            return true;
+        }
         dir.is_dir()
             && (dir.join(files::GRAPH_FILE).is_file() || dir.join(files::GRAPH_COPY).is_file())
     }

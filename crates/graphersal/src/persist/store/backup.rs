@@ -84,6 +84,9 @@ pub(super) fn backup_into(
     target: &DirPath,
     mode: BackupMode,
 ) -> Result<BackupReport, PersistError> {
+    // The source and an existing backup are both version-checked before anything is read or
+    // written (format spec 15).
+    files::refuse_other_version(dir)?;
     if !files::has_entries(target) {
         return super::maintenance::backup_to_dir(dir, durable, target);
     }
@@ -100,6 +103,7 @@ pub(super) fn backup_into(
             target.display()
         )));
     }
+    files::refuse_other_version(target)?;
     increment(dir, durable, target)
 }
 
@@ -1074,6 +1078,7 @@ pub(super) fn undo_increment(target: &DirPath, intent: &Intent) -> Result<(), Pe
 /// Clears the backup marker of the backup in `dir` IN PLACE: it becomes the live store with
 /// the same lineage (an interrupted increment is rolled back first).
 pub(super) fn restore(dir: &DirPath) -> Result<BackupMarker, PersistError> {
+    files::refuse_other_version(dir)?;
     let _lock = DirLock::exclusive(dir)?;
     let mut file = read_graph_file(dir)?.file;
     if file.backup.is_none() {
@@ -1095,6 +1100,7 @@ pub(super) fn prune(
     dir: &DirPath,
     up_to: u64,
 ) -> Result<super::maintenance::PruneReport, PersistError> {
+    files::refuse_other_version(dir)?;
     let _lock = DirLock::exclusive(dir)?;
     if read_graph_file(dir)?.file.backup.is_none() {
         return Err(not_a_backup(dir, "prune the backup"));
@@ -1118,5 +1124,6 @@ fn not_a_backup(dir: &DirPath, operation: &'static str) -> PersistError {
 
 /// The marker of the backup in `dir` (`None`: a store, not a backup).
 pub(super) fn marker_of(dir: &DirPath) -> Result<Option<BackupMarker>, PersistError> {
+    files::refuse_other_version(dir)?;
     Ok(read_graph_file(dir)?.file.backup)
 }

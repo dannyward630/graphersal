@@ -21,9 +21,43 @@ single-file container has its own container version):
 | The store or file is | Then |
 |---|---|
 | the current version | read and written as usual |
-| **newer** than this build | refused with `PersistError::UnsupportedVersion` ("written by a newer format version"): never guessed at. Use a newer Graphersal |
+| **newer** than this build | refused with `PersistError::UnsupportedVersion` ("written by a newer Graphersal") by every operation (open, read-only open, `store info`, `verify`, backup, restore, fork, repair, conversion, upgrade, ...), before any lock, read of data or write: never guessed at, never reported as damage, never repaired. This holds for a newer `GRAPH` (either copy), for any snapshot manifest, snapshot segment or WAL segment of a newer file format version inside an otherwise current or older store (attic entries included), for a single-file container of a newer container version, and for a packed snapshot. Use a newer Graphersal |
 | a store of an **older** released store format version (2: Graphersal 0.1.x) | refused with `PersistError::OlderFormat` by every operation but the converter and `repair` (open, read-only open, `store info`, `verify`, backup, restoring a backup directory, fork, convert; a ZIP backup is upgraded as it is restored); nothing is changed, never reported as damage. Its help names the command that upgrades it |
 | a store of store format version 1 (never released) | refused with `PersistError::OlderFormat` everywhere; the migration is a packed snapshot exported by the build that wrote it (below) |
+
+Two rules bind every release ([format specification, section 15](format.md#15-versioning)):
+
+- **A version from the future is not damage, and a store holding one is never worked on.** A
+  file of a newer version (intact magic and header checksum, a version word above this
+  build's) MUST NOT be taken for damage, and a store, backup or single-file store that holds
+  even one such file MUST NOT be worked on in any way: no write, no lock, no repair, no
+  salvage, no maintenance mode, no upgrade, no checkpoint, no backup into or out of it. It is
+  refused as a whole, so this build can never corrupt what a newer one wrote.
+- **Format versions move only with a release that needs them.** A patch release (x.y.Z)
+  never changes any format version (store, file or container). A format version changes only
+  with a release whose new features need it; a release that changes no format reads and writes
+  the stores of the release before it as they are, with no upgrade.
+
+## The upgrade table
+
+Which older store format versions this build upgrades, and how, is one table in the code
+(`UPGRADES`, `persist/store/upgrade.rs`); this copy, and those in the
+[format specification 15.1](format.md#151-upgrading-a-store) and the
+[`store upgrade` command](store_cli.md#upgrade), are generated from it and checked by a test.
+An upgrade is done only as its row says: "version word" rows only rewrite `GRAPH` and
+`GRAPH.copy` and are safe in place; "into a copy only" rows refuse `--in-place`
+(`StoreFailure::UpgradeNeedsCopy`) before anything is written; an unsupported version (or one
+without a row) is refused with `PersistError::OlderFormat`, whose help is the migration through
+a packed snapshot (below). A bump of a format version fails that test until the table has a
+row for the previous version.
+
+<!-- upgrades:begin -->
+| From store format version | Written by | To | Upgrade |
+|---|---|---|---|
+| 1 | never released (no store id) | 3 | unsupported (packed snapshot) |
+| 2 | Graphersal 0.1.x | 3 | in place or into a copy (version word) |
+| 3 | Graphersal 0.2.x | 3 | nothing to do |
+<!-- upgrades:end -->
 
 ## Upgrading a store of an older version
 

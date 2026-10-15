@@ -608,7 +608,7 @@ fn read_chunk(
         ));
     }
     let version = match path.read_range(0, SEGMENT_HEADER_BYTES) {
-        Ok(head) => header_version(&head),
+        Ok(head) => header_version(&head).map_err(|err| err.at(&location, 0))?,
         Err(err) => return Err(io(err)),
     };
     Ok((stored, header, version))

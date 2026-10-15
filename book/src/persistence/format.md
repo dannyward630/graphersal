@@ -1332,6 +1332,26 @@ many small appends).
 - A file with a newer version than the reader knows MUST be refused (unsupported version),
   never guessed at. A reader of file format version 2 MUST accept versions 1 and 2 in every
   file header (manifest 6.1, segment 7.1, packed snapshot 8, WAL segment 9.1).
+- **A version from the future is not damage, and a store holding one MUST NOT be worked on.**
+  A file whose magic matches and whose header checksum is valid (the `GRAPH` fixed part, 5.1; a
+  manifest fixed-part copy, 6.1; a segment or WAL segment header, 7.1, 9.1) but whose version
+  word is above the reader's is "written by a newer version". The reader MUST refuse the whole
+  operation with an unsupported-version error and MUST NOT classify it as damage (13). A store,
+  backup or single-file store holding even one such file MUST NOT be worked on in any way: no
+  write, no lock, no maintenance mode, no salvage or repair, no upgrade (15.1), no checkpoint,
+  no backup into or out of it, so a reader can never corrupt what a newer writer wrote. A
+  single-file container (14.1, whose preamble has no checksum) is newer when its magic matches
+  and its container version is above the reader's. A header whose checksum fails stays damage.
+  Every operation on an existing store, backup or attic checks, before it takes a lock, reads
+  data or writes: the container version, then both `GRAPH` copies (either one newer refuses the
+  store, whatever the other holds), then the headers of every manifest, snapshot segment and WAL
+  segment of the tree (snapshots, holders, `tmp-*` directories and attic entries); a header it
+  cannot read is left to the operation's own checks. A restored ZIP backup that is refused this
+  way is removed again. (The reference implementation does so since 0.1.1.)
+- **Format versions move only with a release that needs them.** A patch release (x.y.Z) MUST
+  NOT change any format version (store, file or container). A format version changes only with
+  a release whose new features need it; a release that changes no format reads and writes the
+  stores of the release before it as they are, with no upgrade.
 - A `GRAPH` of an OLDER store format version (its magic and fixed-part checksum valid, the
   version word below the current one) MUST be classified by its version word before any field
   that version did not have is checked: it is neither damage (13) nor "not a store". Every
@@ -1351,6 +1371,23 @@ many small appends).
   preserves unknown bits it read).
 
 ### 15.1 Upgrading a store
+
+Which store format versions an implementation upgrades, and how, is an explicit table; an
+upgrade not in it is refused before anything is written. The reference implementation's table
+(generated from its code):
+
+<!-- upgrades:begin -->
+| From store format version | Written by | To | Upgrade |
+|---|---|---|---|
+| 1 | never released (no store id) | 3 | unsupported (packed snapshot) |
+| 2 | Graphersal 0.1.x | 3 | in place or into a copy (version word) |
+| 3 | Graphersal 0.2.x | 3 | nothing to do |
+<!-- upgrades:end -->
+
+"Version word" means only the version word of `GRAPH` and `GRAPH.copy` (and their checksums)
+changes, which is safe in place; "into a copy only" means the upgrade writes a new store and an
+in-place upgrade is refused; "unsupported" means the migration through a packed snapshot
+(below). A store holding a file of a newer version is never upgraded (15).
 
 An upgrade converts a store of store format version 2 (a store, a backup directory, either
 backend) to version 3. Version 3 has the layout of version 2 and every file of version 2 is a

@@ -53,6 +53,10 @@ const MAX_ENCODE_DEPTH: usize = 4096;
 pub(crate) struct DecodeError {
     pub(crate) offset: u64,
     pub(crate) reason: String,
+    /// The file format version found, when the failure is a version NEWER than
+    /// [`FORMAT_VERSION`] in an otherwise intact header (format spec 15): written by a newer
+    /// Graphersal, never damage.
+    pub(crate) newer_version: Option<u32>,
 }
 
 impl DecodeError {
@@ -60,12 +64,50 @@ impl DecodeError {
         Self {
             offset,
             reason: reason.into(),
+            newer_version: None,
         }
     }
 
+    /// A header whose checksum is valid but whose file format version `found` is newer than
+    /// [`FORMAT_VERSION`] (format spec 15); `what` names the kind of file.
+    pub(crate) fn newer(offset: u64, what: &str, found: u32) -> Self {
+        Self {
+            offset,
+            reason: format!(
+                "{what} format version {found}: written by a newer Graphersal (this build \
+                 reads up to version {FORMAT_VERSION})"
+            ),
+            newer_version: Some(found),
+        }
+    }
+
+    /// The version check of an intact header (magic and checksum valid) of `what`: a version
+    /// newer than [`FORMAT_VERSION`] is [`Self::newer`], one older than
+    /// [`MIN_FORMAT_VERSION`] (never written by a release) is damage.
+    pub(crate) fn check_version(offset: u64, what: &str, version: u32) -> DecodeResult<()> {
+        if version > FORMAT_VERSION {
+            return Err(Self::newer(offset, what, version));
+        }
+        if !readable_version(version) {
+            return Err(Self::new(
+                offset,
+                format!("{what} format version {version}"),
+            ));
+        }
+        Ok(())
+    }
+
     /// The error as a [`super::PersistError::Corrupt`] of `location`, the offset shifted by
-    /// `base` (the section's position in its file).
+    /// `base` (the section's position in its file); a newer file format version is
+    /// [`super::PersistError::UnsupportedVersion`] instead, never damage.
     pub(crate) fn at(self, location: impl Into<String>, base: u64) -> super::PersistError {
+        if let Some(found) = self.newer_version {
+            return super::PersistError::UnsupportedVersion {
+                location: location.into(),
+                found,
+                supported: FORMAT_VERSION,
+            };
+        }
         super::PersistError::corrupt(location, base.saturating_add(self.offset), self.reason)
     }
 }

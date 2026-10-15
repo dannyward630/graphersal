@@ -38,7 +38,7 @@ snapshot is lossless.
 | `The store ... is read-only: backup found damage on disk ... damage policy "maintenance"` / `DamageFound` | damage was found while the store is open, and its policy (fixed at creation) is `maintenance` | the data in memory is intact: back it up from memory, then repair the store; see [Damage found while the store is open](store_damage.md#damage-found-while-the-store-is-open) |
 | `--on-damage ... applies only to a store being created` | `--on-damage` for an existing store with another policy | the [damage policy](creation_parameters.md) never changes; drop the option |
 | `The store ... has the older format version N; this build reads and writes only version M` / `OlderFormat` | a store written by an older Graphersal (version 2: Graphersal 0.1.x; version 1: a pre-release before the store id) | version 2: upgrade it with this build, no older binary needed: `graphersal store upgrade <dir> <new_dir>` (or `--in-place`), see [Format Versions](store_versions.md#upgrading-a-store-of-an-older-version); version 1: migrate it through a packed snapshot, [the recipe](../users_guide/command_cheat_sheet.md#migrate-a-store-from-an-older-format). The error's help names the command |
-| `Unsupported format version N of the store ...` / `UnsupportedVersion` | a store written by a NEWER Graphersal | open it with that version; see [Format Versions](store_versions.md) |
+| `Unsupported format version N of the store ...: written by a newer Graphersal` / `UnsupportedVersion` | a store, backup, single-file store, packed snapshot or one of a store's snapshot or WAL files written by a NEWER Graphersal (a newer store format version in `GRAPH`, file format version, or container version) | open it with that version; this build refuses it in every operation (open, `info`, `verify`, backup, restore, repair, upgrade, ...) without changing anything, and never takes it for damage or offers a repair; see [Format Versions](store_versions.md) |
 | `The snapshot needs about N bytes in memory, more than the memory limit` | a memory budget (`--memory-limit`, `ReadOptions::with_memory_limit`) smaller than the graph | raise the budget, or load on a bigger machine |
 
 ### Refused store operations (`PersistError::Store`)
@@ -73,6 +73,7 @@ it with a `match`; `StoreFailure::name()` is the stable name, which the Python e
 | `Stopped` (`stopped`) | an earlier rollback or attic restore failed part-way, so the store writes nothing more (`Store::stopped_reason`) | close the store and open it again |
 | `AlreadyCurrent` (`already_current`) | `store upgrade <dir> <new>` of a store that already has the current format | open it as it is; for a copy use `store convert` or a backup |
 | `DamagedSource` (`damaged_source`) | the store to upgrade does not verify (the message lists the first problems); nothing was written | `graphersal store repair <dir> --to <new_dir>` reads the older store and writes a repaired one in the current format; or upgrade a backup instead |
+| `UpgradeNeedsCopy` (`upgrade_needs_copy`) | `store upgrade <dir> --in-place` of a store whose version the [upgrade table](store_versions.md#the-upgrade-table) upgrades only into a copy; nothing was written | `graphersal store upgrade <dir> <new_dir>` (the older store stays as it is) |
 
 ## Questions
 

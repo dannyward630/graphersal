@@ -82,12 +82,7 @@ impl WalHeader {
         }
         let mut r = Reader::new(&bytes[8..60]);
         let version = r.u32()?;
-        if !codec::readable_version(version) {
-            return Err(DecodeError::new(
-                8,
-                format!("journal format version {version}"),
-            ));
-        }
+        DecodeError::check_version(8, "journal", version)?;
         let header = WalHeader {
             graph_id: r.u128_be()?,
             first_commit_seq: r.u64()?,
