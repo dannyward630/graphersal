@@ -22,6 +22,9 @@ are not implemented yet in [TinkerPop Compliance](../for_developers/tinkerpop_co
   index only when one is declared with `g.create_index(..)` for the start step's label and the key
   ([Property Indexes](property_indexes.md)); nested values (jpath keys), `has()` without
   `has_label()` and `order()` scan.
+- **Vector search is exact, without an index.** `nearest()` scores every incoming element (about
+  13 ms per 100 000 vectors of 384 f32 components); there is no approximate (ANN, HNSW) vector
+  index yet. Filter before the search to score fewer ([Vectors](vectors.md#exact-search-nearest)).
 - **The graph lives in memory.** A [Store](../persistence/store.md) makes it durable, but the
   whole graph is loaded into memory when the store is opened.
 
