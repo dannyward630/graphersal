@@ -301,7 +301,7 @@ impl<'g, S: GraphStorage + 'g> GraphTraversalSource<'g, S> {
     /// let mut lock = graph.write();
     /// for (name, x) in [("a", 1.0), ("b", 0.0), ("c", -1.0)] {
     ///     let emb = Vector::from_f32(vec![x, 1.0]).unwrap();
-    ///     lock.traversal().add_v("doc").property("name", name).property("emb", emb)
+    ///     lock.traversal_mut().add_v("doc").property("name", name).property("emb", emb)
     ///         .iterate().unwrap();
     /// }
     /// let q = Vector::from_f32(vec![1.0, 0.0]).unwrap();

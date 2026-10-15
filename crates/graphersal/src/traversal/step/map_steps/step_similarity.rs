@@ -395,7 +395,7 @@ impl<'g, S: GraphStorage + 'g> GraphTraversalSource<'g, S> {
     ///
     /// let graph = GraphSource::empty();
     /// let mut lock = graph.write();
-    /// let g = lock.traversal();
+    /// let g = lock.traversal_mut();
     /// let emb = Vector::from_f32(vec![1.0, 0.0]).unwrap();
     /// g.add_v("doc").property("emb", emb).iterate().unwrap();
     /// let g = lock.traversal();

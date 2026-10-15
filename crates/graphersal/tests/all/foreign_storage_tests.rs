@@ -257,6 +257,15 @@ const CURATED: &[(Mode, &str)] = &[
         Mode::Plain,
         r#"g.define_compression(#{name: "names", label: "person", path: "name", min_bytes: 1}); [g.recompress("names"), g.compressions()[0].compressed_values, g.V().hasLabel("person").values("name").toList(), g.drop_compression("names")]"#,
     ),
+    // Vector search: nearest(), similarity(), vector_mean(), the schema's metric annotation.
+    (
+        Mode::Plain,
+        r#"g.V("1").property("emb", vector([1.0, 0.0])).iterate(); g.V("2").property("emb", vector([0.6, 0.8], "i8")).iterate(); g.V("4").property("emb", vector([0.0, 1.0])).iterate(); [g.V().nearest("emb", vector([1.0, 0.1]), 2).values("name").toList(), g.V().nearest("emb", [0.0, 1.0], 3, #{metric: "l2"}).id().toList(), g.V().similarity("emb", vector([1.0, 0.0])).toList(), g.V().values("emb").vectorMean().next()]"#,
+    ),
+    (
+        Mode::Plain,
+        r#"g.set_schema(#{mode: "none", vertices: #{person: #{schema: #{type: "object", properties: #{emb: #{type: "array", format: "vector", metric: "l2"}}}}}}); g.V("1").property("emb", vector([1.0, 0.0])).iterate(); g.V("2").property("emb", vector([0.0, 1.0])).iterate(); [g.V().hasLabel("person").nearest("emb", [0.9, 0.0], 1).values("name").next(), g.V("1").similarity("emb", [0.0, 0.0]).next()]"#,
+    ),
     // Marks: no journal on either storage.
     (Mode::Plain, r#"g.mark("m")"#),
     (Mode::Atomic, r#"g.addV("x").next(); g.mark("m")"#),

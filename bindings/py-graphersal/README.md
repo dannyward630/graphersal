@@ -385,6 +385,14 @@ back = np.array(v.tolist(), dtype=np.float32)
 - A schema property `{"type": "array", "format": "vector", "element": "i8", "dimension": 384}`
   turns a written list (or a vector of another element) into the declared vector in mode
   `open` or `closed`; saved queries (`call_query`) take a `Vector` argument the same way.
+- A parameter may also be a one-dimensional `float32`/`float64` numpy array: it arrives as an
+  f32 vector, so a query embedding goes straight into an exact search:
+
+```python
+q = model.encode("how do graph indexes work?")           # np.ndarray, float32
+g.query('g.v().has_label("doc").nearest("emb", q, 10).values("title").to_list()', params={"q": q})
+g.query('g.v().has_label("doc").similarity("emb", q).to_list()', params={"q": Vector(q)})
+```
 
 ## Error handling
 

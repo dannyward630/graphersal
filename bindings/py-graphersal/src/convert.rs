@@ -267,8 +267,12 @@ fn python_value_to_element_property(value: &Bound<'_, PyAny>) -> Result<ElementP
     if let Some(element) = crate::element::python_element_to_property(value) {
         return Ok(element);
     }
+    // A float32/float64 buffer (a numpy embedding) is an f32 vector, like Vector(array).
+    if let Some(vector) = crate::vector::python_buffer_vector(value)? {
+        return Ok(ElementProperty::Vector(vector));
+    }
     Err(format!(
-        "unsupported parameter type '{}'; only int, float, str, bool, None, uuid.UUID, datetime.datetime, datetime.date, datetime.time, datetime.timedelta, graphersal.Interval, graphersal.Vector, Vertex and Edge are accepted",
+        "unsupported parameter type '{}'; only int, float, str, bool, None, uuid.UUID, datetime.datetime, datetime.date, datetime.time, datetime.timedelta, graphersal.Interval, graphersal.Vector (or a float32/float64 numpy array), Vertex and Edge are accepted",
         value
             .get_type()
             .name()

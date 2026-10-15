@@ -84,6 +84,33 @@ fn buffer_values(values: &Bound<'_, PyAny>) -> PyResult<Option<Vec<f64>>> {
     }
 }
 
+/// A script parameter given as a float32/float64 buffer (a one-dimensional numpy array, an
+/// `array.array("f")`): the f32 vector of its values. `Ok(None)` for an object that is no such
+/// buffer (the caller reports the unsupported type); a 2-D array or a NaN is an error.
+pub(crate) fn python_buffer_vector(value: &Bound<'_, PyAny>) -> Result<Option<Vector>, String> {
+    let py = value.py();
+    let Ok(view) = py
+        .import("builtins")
+        .and_then(|builtins| builtins.getattr("memoryview"))
+        .and_then(|memoryview| memoryview.call1((value,)))
+    else {
+        return Ok(None);
+    };
+    let format: String = view
+        .getattr("format")
+        .and_then(|f| f.extract())
+        .unwrap_or_default();
+    if !matches!(format.trim_start_matches(['@', '=', '<']), "f" | "d") {
+        return Ok(None);
+    }
+    let numbers = buffer_values(value)
+        .map_err(|err| err.to_string())?
+        .unwrap_or_default();
+    Vector::from_f64(&numbers)
+        .map(Some)
+        .map_err(|err| format!("{err}. {}", err.help()))
+}
+
 /// The numbers of `values`: a list or tuple of `int`/`float`, else a float buffer.
 fn values_of(values: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
     if values.is_instance_of::<PyList>() || values.is_instance_of::<PyTuple>() {

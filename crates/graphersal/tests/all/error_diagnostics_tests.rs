@@ -6569,3 +6569,70 @@ fn error_locations_leave_out_the_display_limit() {
         "{location:?}"
     );
 }
+
+/// The vector search errors (book page "Vectors") are located at their step and carry the help of
+/// their cause.
+#[test]
+fn vector_search_errors_carry_their_help() {
+    use graphersal::vector::{VectorElement, VectorMetric};
+
+    let graph = GraphSource::empty();
+    {
+        let mut lock = graph.write();
+        lock.traversal_mut()
+            .add_v("doc")
+            .property("emb", Vector::from_f32(vec![1.0, 0.0]).unwrap())
+            .iterate()
+            .unwrap();
+    }
+    let lock = graph.read();
+    let q3 = Vector::from_f32(vec![1.0, 0.0, 0.0]).unwrap();
+    let err = lock
+        .traversal()
+        .v(None)
+        .nearest("emb", &q3, 5, None)
+        .to_list()
+        .expect_err("dimension mismatch");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("nearest(\"emb\", vector([1.0, 0.0, 0.0]), 5)"),
+        "{report}"
+    );
+    assert!(report.contains("vectors of dimensions 2 and 3"), "{report}");
+    assert!(report.contains("\"dimension\": 384"), "{report}");
+    assert_eq!(err.step_location().expect("located").step_id, "1");
+
+    let bits = Vector::from_f32(vec![1.0, -1.0])
+        .unwrap()
+        .quantize(VectorElement::Bit)
+        .unwrap();
+    let err = lock
+        .traversal()
+        .v(None)
+        .similarity("emb", bits, None)
+        .to_list()
+        .expect_err("bit against f32");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("a bit vector compares only with another bit vector"),
+        "{report}"
+    );
+    assert!(
+        report.contains("nearest(\"emb\", q.quantize(\"bit\"), 10)"),
+        "{report}"
+    );
+
+    let q2 = Vector::from_f32(vec![1.0, 0.0]).unwrap();
+    let err = lock
+        .traversal()
+        .v(None)
+        .similarity("emb", q2, Some(VectorMetric::Hamming))
+        .to_list()
+        .expect_err("hamming on f32");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("the hamming metric compares bit vectors"),
+        "{report}"
+    );
+    assert!(report.contains("quantize(\"bit\")"), "{report}");
+}
