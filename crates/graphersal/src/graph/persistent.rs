@@ -348,14 +348,14 @@ mod tests {
         )
         .unwrap();
         live.transaction(|g| {
-            let a = g.add_vertex(Some("a".into()), vec!["person".into()], PropertyMap::new())?;
-            let b = g.add_vertex(None, vec!["person".into()], PropertyMap::new())?;
-            let c = g.add_vertex(Some("c".into()), vec![], PropertyMap::new())?;
+            let a = g.insert_vertex(Some("a".into()), vec!["person".into()], PropertyMap::new())?;
+            let b = g.insert_vertex(None, vec!["person".into()], PropertyMap::new())?;
+            let c = g.insert_vertex(Some("c".into()), vec![], PropertyMap::new())?;
             g.set_vertex_property(a, "name".into(), "ann".into())?;
             g.add_vertex_label(c, "robot".into())?;
-            let e = g.add_edge(None, Some("knows".into()), a, b, PropertyMap::new())?;
+            let e = g.insert_edge(None, Some("knows".into()), a, b, PropertyMap::new())?;
             g.set_edge_property(e, "w".into(), 1.5.into())?;
-            g.add_edge(
+            g.insert_edge(
                 Some("e2".into()),
                 Some("likes".into()),
                 b,

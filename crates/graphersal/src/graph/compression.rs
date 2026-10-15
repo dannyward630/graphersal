@@ -1204,7 +1204,7 @@ mod tests {
         let mut props = PropertyMap::default();
         props.insert("bio", cv(1).into());
         let v = graph
-            .add_vertex(None, vec!["customer".into()], props)
+            .insert_vertex(None, vec!["customer".into()], props)
             .unwrap();
         graph
             .set_definition(Definition::compression("bio", rule("bio")))

@@ -17,7 +17,7 @@ use crate::value::{ElementProperty, JsonPath, PropertyMap};
 /// non-string key: [`GraphError::InvalidPropertyValue`] naming `key`.
 ///
 /// Graph elements are stream values, not property values, so this holds in every schema mode and
-/// runs before any schema validation: call it in `add_vertex`/`add_edge` (through
+/// runs before any schema validation: call it in `insert_vertex`/`insert_edge` (through
 /// [`check_properties`]), `set_*_property` and the path writes (with the path's property name).
 ///
 /// ```
@@ -41,7 +41,7 @@ pub fn check_properties(properties: &PropertyMap) -> Result<(), GraphError> {
 
 /// Rejects a vertex label containing the substring `"::"`, which the GraphSON and GraphML
 /// multi-label export reserves as the delimiter between labels: [`GraphError::InvalidLabel`].
-/// Run it in `add_vertex` (through [`normalize_vertex_labels`]) and `add_vertex_label`.
+/// Run it in `insert_vertex` (through [`normalize_vertex_labels`]) and `add_vertex_label`.
 pub fn check_label(label: &str) -> Result<(), GraphError> {
     if label.contains("::") {
         Err(GraphError::invalid_label(label))
@@ -50,8 +50,8 @@ pub fn check_label(label: &str) -> Result<(), GraphError> {
     }
 }
 
-/// The label set `add_vertex` stores for `labels`: duplicates removed (the first occurrence keeps
-/// its position, labels are a set) and every label checked with [`check_label`].
+/// The label set `insert_vertex` stores for `labels`: duplicates removed (the first occurrence
+/// keeps its position, labels are a set) and every label checked with [`check_label`].
 pub fn normalize_vertex_labels(
     labels: Vec<CompactString>,
 ) -> Result<Vec<CompactString>, GraphError> {

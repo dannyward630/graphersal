@@ -202,16 +202,16 @@ fn the_rust_api_creates_with_defaults() {
         .property("name", "bob")
         .to_list()
         .unwrap();
-    // The trait's create path too; the plain `add_vertex` stores exactly what it is given.
+    // The trait's create path too; the primitive `insert_vertex` stores exactly what it is given.
     let create = CreateContext::for_storage(&tg);
-    tg.create_vertex(
+    tg.add_vertex_with(
         Some("c".into()),
         vec!["person".into()],
         PropertyMap::default(),
         &create,
     )
     .unwrap();
-    tg.add_vertex(
+    tg.insert_vertex(
         Some("raw".into()),
         vec!["person".into()],
         PropertyMap::default(),
@@ -225,7 +225,7 @@ fn the_rust_api_creates_with_defaults() {
         .get_vertex_by_id("raw")
         .and_then(|v| g.read().vertex_properties(v).cloned())
         .unwrap();
-    assert!(raw.is_empty(), "add_vertex applies no default: {raw:?}");
+    assert!(raw.is_empty(), "insert_vertex applies no default: {raw:?}");
     for props in all.iter().filter(|p| !p.is_empty()) {
         assert_fixed_defaults(props);
     }
@@ -387,7 +387,7 @@ fn web_time_millis() -> u128 {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Storage-independent: the trait's default `create_vertex`/`create_edge`
+// Storage-independent: the trait's default `add_vertex_with`/`add_edge_with`
 // ---------------------------------------------------------------------------------------------
 
 #[test]
@@ -504,7 +504,7 @@ fn a_rolled_back_create_leaves_nothing() {
     tg.traversal_mut().set_schema(schema(SCHEMA)).unwrap();
     let result: Result<(), GraphError> = tg.transaction(|g| {
         let create = CreateContext::for_storage(&*g);
-        g.create_vertex(None, vec!["person".into()], PropertyMap::default(), &create)?;
+        g.add_vertex_with(None, vec!["person".into()], PropertyMap::default(), &create)?;
         Err(GraphError::unsupported("veto"))
     });
     assert!(result.is_err());

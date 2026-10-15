@@ -92,7 +92,7 @@ pub(super) fn random_change(graph: &mut TraversalGraph, rng: &mut Rng, round: us
                 for _ in 0..rng.below(4) {
                     properties.insert(format!("p{}", rng.below(8)), value(rng));
                 }
-                g.add_vertex(Some(id.into()), labels, properties)?;
+                g.insert_vertex(Some(id.into()), labels, properties)?;
             }
             2 => {
                 if let (Some(from), Some(to)) = (some_vertex(g, rng), some_vertex(g, rng)) {
@@ -102,7 +102,7 @@ pub(super) fn random_change(graph: &mut TraversalGraph, rng: &mut Rng, round: us
                         properties.insert("w", value(rng));
                     }
                     let id = format!("e{round}-{}", rng.next() % 1000);
-                    g.add_edge(Some(id.into()), label, from, to, properties)?;
+                    g.insert_edge(Some(id.into()), label, from, to, properties)?;
                 }
             }
             3 => {
@@ -379,7 +379,7 @@ fn untouched_segments_are_reused_by_reference() {
         .graph()
         .write()
         .transaction(|g| {
-            g.add_vertex(
+            g.insert_vertex(
                 Some("~last".into()),
                 vec!["person".into()],
                 PropertyMap::default(),
@@ -405,7 +405,7 @@ fn untouched_segments_are_reused_by_reference() {
         .graph()
         .write()
         .transaction(|g| {
-            g.add_vertex(Some("~more".into()), vec![], PropertyMap::default())
+            g.insert_vertex(Some("~more".into()), vec![], PropertyMap::default())
                 .map(|_| ())
         })
         .unwrap();
@@ -459,7 +459,7 @@ fn untouched_segments_are_reused_by_reference() {
         .graph()
         .write()
         .transaction(|g| {
-            g.add_vertex(Some("~most".into()), vec![], PropertyMap::default())
+            g.insert_vertex(Some("~most".into()), vec![], PropertyMap::default())
                 .map(|_| ())
         })
         .unwrap();
@@ -690,13 +690,13 @@ fn add_ids(graph: &mut TraversalGraph, ids: &[String]) {
         .transaction(|g| {
             let mut previous = None;
             for id in ids {
-                let v = g.add_vertex(
+                let v = g.insert_vertex(
                     Some(id.as_str().into()),
                     vec!["new".into()],
                     PropertyMap::default(),
                 )?;
                 if let Some(p) = previous {
-                    g.add_edge(
+                    g.insert_edge(
                         Some(format!("e-{id}").into()),
                         Some("next".into()),
                         p,
@@ -1272,7 +1272,7 @@ fn a_snapshot_without_donors_is_a_warning_and_the_next_checkpoint_heals_it() {
             .graph()
             .write()
             .transaction(|g| {
-                g.add_vertex(Some(id.into()), vec![], PropertyMap::default())
+                g.insert_vertex(Some(id.into()), vec![], PropertyMap::default())
                     .map(|_| ())
             })
             .unwrap();
@@ -1338,7 +1338,7 @@ fn a_damaged_segment_to_copy_stops_the_checkpoint() {
             .graph()
             .write()
             .transaction(|g| {
-                g.add_vertex(Some("~last".into()), vec![], PropertyMap::default())
+                g.insert_vertex(Some("~last".into()), vec![], PropertyMap::default())
                     .map(|_| ())
             })
             .unwrap();

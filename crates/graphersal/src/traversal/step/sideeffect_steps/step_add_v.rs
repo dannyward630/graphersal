@@ -134,7 +134,7 @@ impl<'g, S: GraphStorage + 'g> GraphStepSideEffectMut<'g, S> for StepAddV {
             .map(CompactString::from)
             .collect();
         let create = context.create_context_or(self.create_time);
-        let node_index = context.storage.create_vertex(
+        let node_index = context.storage.add_vertex_with(
             self.id.clone(),
             labels,
             self.properties.clone(),
@@ -313,7 +313,7 @@ impl<'g, S: GraphStorage + 'g> GraphStepSideEffectMut<'g, S> for StepAddVBy<'g, 
             }
         };
         let create = context.create_context_or(self.create_time);
-        let node_index = context.storage.create_vertex(
+        let node_index = context.storage.add_vertex_with(
             self.id.clone(),
             vec![label],
             self.properties.clone(),

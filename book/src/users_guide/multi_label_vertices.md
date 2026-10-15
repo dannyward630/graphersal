@@ -107,7 +107,7 @@ joining them into the *same* `labelV` attribute value with a `"::"` delimiter:
 
 A single-label vertex round-trips to an unqualified value with no delimiter, byte-for-byte
 identical to a graph with no multi-label vertices. Because `"::"` is the delimiter, a label
-containing the literal substring `"::"` is rejected at `add_vertex`/`add_vertex_label` time with a
+containing the literal substring `"::"` is rejected at `add_vertex`/`insert_vertex`/`add_vertex_label` time with a
 clear error, rather than silently corrupting a later export.
 
 This delimiter convention is vertex-only — edges keep exactly one label in both Gremlin and

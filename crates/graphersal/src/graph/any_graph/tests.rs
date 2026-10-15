@@ -289,13 +289,13 @@ impl GraphStorage for Foreign {
     fn edge_endpoints(&self, edge: EdgeHandle) -> Option<(VertexHandle, VertexHandle)> {
         self.0.edge_endpoints(edge)
     }
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         properties: PropertyMap,
     ) -> Result<VertexHandle, GraphError> {
-        self.0.add_vertex(id, labels, properties)
+        self.0.insert_vertex(id, labels, properties)
     }
     fn add_vertex_label(
         &mut self,
@@ -307,7 +307,7 @@ impl GraphStorage for Foreign {
     fn remove_vertex_label(&mut self, node: VertexHandle, label: &str) -> Result<bool, GraphError> {
         self.0.remove_vertex_label(node, label)
     }
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -315,7 +315,7 @@ impl GraphStorage for Foreign {
         to: VertexHandle,
         properties: PropertyMap,
     ) -> Result<EdgeHandle, GraphError> {
-        self.0.add_edge(id, label, from, to, properties)
+        self.0.insert_edge(id, label, from, to, properties)
     }
     fn set_vertex_property(
         &mut self,

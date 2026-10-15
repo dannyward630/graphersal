@@ -230,7 +230,7 @@ fn an_explicit_transaction_is_one_unit_with_one_time() {
             .map_err(|_| GraphError::unsupported("x"))?;
         // The trait's create path reads the same unit start.
         let create = CreateContext::for_storage(&*g);
-        g.create_vertex(None, vec!["event".into()], PropertyMap::default(), &create)?;
+        g.add_vertex_with(None, vec!["event".into()], PropertyMap::default(), &create)?;
         Ok(())
     })
     .unwrap();
@@ -265,7 +265,7 @@ fn a_pinned_clock_is_stored_exactly() {
     let mut tg = self::tg();
     let at = dt("2001-02-03T04:05:06Z");
     tg.transaction(|g| {
-        g.create_vertex(
+        g.add_vertex_with(
             None,
             vec!["event".into()],
             PropertyMap::default(),

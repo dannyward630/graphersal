@@ -672,9 +672,9 @@ fn logical(map: Option<&PropertyMap>) -> PropertyMap {
     .unwrap_or_default()
 }
 
-/// Copies `src` into a new `S` through the write API, outside any unit: the schema first (the
-/// data satisfies it), the catalog, the vertices and edges in `src`'s order, then the auto-id
-/// sequences.
+/// Copies `src` into a new `S` through the write API (`insert_vertex`/`insert_edge`: stored
+/// exactly, no schema defaults), outside any unit: the schema first (the data satisfies it),
+/// the catalog, the vertices and edges in `src`'s order, then the auto-id sequences.
 fn copy_plain<S: GraphStorage + Default>(src: &TraversalGraph) -> Result<S, GraphError> {
     let mut dst = S::default();
     if let Some(schema) = GraphStorage::get_schema(src) {
@@ -685,7 +685,7 @@ fn copy_plain<S: GraphStorage + Default>(src: &TraversalGraph) -> Result<S, Grap
     }
     for v in GraphStorage::vertices(src) {
         let id = GraphStorage::vertex_id(src, v).unwrap_or_default();
-        dst.add_vertex(
+        dst.insert_vertex(
             Some(id.into()),
             GraphStorage::vertex_labels(src, v).to_vec(),
             logical(GraphStorage::vertex_properties(src, v)),
@@ -701,7 +701,7 @@ fn copy_plain<S: GraphStorage + Default>(src: &TraversalGraph) -> Result<S, Grap
                 .ok_or_else(|| GraphError::unsupported("an edge whose endpoint was not copied"))
         };
         let (from, to) = (endpoint(from)?, endpoint(to)?);
-        dst.add_edge(
+        dst.insert_edge(
             GraphStorage::edge_id(src, e).map(Into::into),
             GraphStorage::edge_label(src, e).map(Into::into),
             from,

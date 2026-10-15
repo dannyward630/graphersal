@@ -652,7 +652,7 @@ impl GraphSource {
                             ElementProperty::String(format!("{}", level).into()),
                         );
                         let node_index = g
-                            .add_vertex(Some(id.clone().into()), vec![id.clone().into()], value)
+                            .insert_vertex(Some(id.clone().into()), vec![id.clone().into()], value)
                             .unwrap();
                         prev_vertex_ids.push(node_index);
                     }
@@ -671,9 +671,13 @@ impl GraphSource {
                                 ElementProperty::String(format!("{}", level).into()),
                             );
                             let node_index = g
-                                .add_vertex(Some(id.clone().into()), vec![id.clone().into()], value)
+                                .insert_vertex(
+                                    Some(id.clone().into()),
+                                    vec![id.clone().into()],
+                                    value,
+                                )
                                 .unwrap();
-                            g.add_edge(
+                            g.insert_edge(
                                 None::<CompactString>,
                                 None::<CompactString>,
                                 prev_node_index,

@@ -7,7 +7,7 @@ Rule name: `add_property_fold` (on by default, second in the pipeline).
 `addV("Person").property("name", "Ann").property("age", 30)` is written as three steps, but the
 graph should see **one** creation: the vertex with all its properties. The rule folds `addV()` /
 `addE()` and the run of constant `property(key, value)` steps right behind it into a single
-`add_vertex` / `add_edge` call. `.profile()` lists the folded keys:
+`add_vertex_with` / `add_edge_with` call (the create path that also fills the schema's defaults). `.profile()` lists the folded keys:
 `add_v("Person", properties: ["name", "age"])`.
 
 ## Why

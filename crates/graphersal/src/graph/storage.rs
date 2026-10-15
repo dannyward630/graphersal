@@ -138,9 +138,21 @@ pub(crate) fn stored_edge_label<S: GraphStorage>(
 ///
 /// # A guide for storage implementers
 ///
-/// Only the read methods, the element-creating and element-removing methods and the property
+/// Only the read methods, the element-inserting and element-removing methods and the property
 /// writes are required. Everything else has a default that is correct for a simple,
 /// non-transactional storage, so a new storage starts small and opts into more by overriding.
+///
+/// ## Inserting vs. adding
+///
+/// A storage implements the primitive [`Self::insert_vertex`] / [`Self::insert_edge`]: store
+/// exactly this element (coerced and validated against the stored schema, nothing added).
+/// Imports, change sets, replay and recovery, subgraph copies and loads call it, so they
+/// reproduce stored data and never generate a value. The provided [`Self::add_vertex`] /
+/// [`Self::add_edge`] (same arguments) create an element the way a query does, like SQL's
+/// `INSERT`: they fill the schema's create-time defaults (`default`, `defaultFunction`) first
+/// and then call the primitive; [`Self::add_vertex_with`] / [`Self::add_edge_with`] take an
+/// explicit [`CreateContext`] (the time `now`/`today` store) and are the one override point per
+/// kind (e.g. to borrow the schema instead of copying it through [`Self::get_schema`]).
 ///
 /// ## Handles
 ///
@@ -157,8 +169,8 @@ pub(crate) fn stored_edge_label<S: GraphStorage>(
 /// ## Write checks and errors
 ///
 /// Every write refuses a property value holding a vertex, an edge or a map with a non-string key
-/// ([`GraphError::InvalidPropertyValue`]), and `add_vertex`/`add_vertex_label` a label with
-/// `"::"` ([`GraphError::InvalidLabel`], duplicates in `add_vertex` collapse). The path writes
+/// ([`GraphError::InvalidPropertyValue`]), and `insert_vertex`/`add_vertex_label` a label with
+/// `"::"` ([`GraphError::InvalidLabel`], duplicates in `insert_vertex` collapse). The path writes
 /// follow the JSONPath write rules and fail with [`GraphError::InvalidPropertyPath`]. These are
 /// public helpers in [`crate::storage`] (`check_property_value`, `check_properties`,
 /// `check_label`, `normalize_vertex_labels`, `path_property_name`, `write_path`,
@@ -522,12 +534,19 @@ pub trait GraphStorage: Send + Sync {
     }
 
     // Mutation methods required for side-effect steps
-    /// Adds a new vertex. `labels` is the vertex's initial label set, in insertion order; an empty
+    /// Stores a new vertex exactly as given: the storage primitive every storage implements
+    /// (the heap level under SQL's `INSERT`). It applies no schema defaults; it coerces and
+    /// validates against the stored schema as every write does. Imports, change sets
+    /// ([`Self::apply_change_set`]), replay and recovery, subgraph copies and loads call it, so
+    /// they reproduce stored data and never generate a value. Creating an element the way a
+    /// query does (with the schema's `default`/`defaultFunction`) is [`Self::add_vertex`].
+    ///
+    /// `labels` is the vertex's initial label set, in insertion order; an empty
     /// vec means no labels. A duplicate label in `labels` is deduplicated, not an error — labels
     /// are a set, not a multiset. Rejects a label containing the literal substring `"::"` (D9):
     /// the GraphSON and GraphML vertex-side multi-label encoding joins labels with `"::"`, so such a label would
     /// be ambiguous with the delimiter on export.
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
@@ -579,8 +598,10 @@ pub trait GraphStorage: Send + Sync {
         })
     }
 
-    /// Adds a directed edge between two vertices.
-    fn add_edge(
+    /// Stores a new directed edge between two vertices exactly as given: the edge counterpart
+    /// of [`Self::insert_vertex`] (the required primitive; no schema defaults). Creating an edge
+    /// the way a query does is [`Self::add_edge`].
+    fn insert_edge(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -589,23 +610,58 @@ pub trait GraphStorage: Send + Sync {
         properties: PropertyMap,
     ) -> Result<Self::EdgeId, GraphError>;
 
-    /// Creates a vertex the way a query does (`add_v`, `mergeV` on create): first adds the
-    /// stored schema's create-time defaults (`default`/`defaultFunction` of every top-level
-    /// property the labels declare and `properties` lacks, in mode `open` and `closed`; see
-    /// [`Annotations`](crate::graph::schema::Annotations)), then calls [`Self::add_vertex`],
-    /// which coerces and validates as always. [`Self::add_vertex`] itself stores exactly what
+    /// Creates a vertex the way a query does (SQL's `INSERT`): the stored schema's create-time
+    /// defaults first, then [`Self::insert_vertex`]. The same as [`Self::add_vertex_with`] with
+    /// [`CreateContext::for_storage`] (`now`/`today` = the start of the outermost open unit,
+    /// else the system clock). Same arguments as [`Self::insert_vertex`]; on a graph whose
+    /// schema declares no defaults both store the same.
+    ///
+    /// Do not override it: a storage that wants its own create path overrides
+    /// [`Self::add_vertex_with`], which this calls.
+    fn add_vertex(
+        &mut self,
+        id: Option<CompactString>,
+        labels: Vec<CompactString>,
+        properties: PropertyMap,
+    ) -> Result<Self::VertexId, GraphError> {
+        let context = CreateContext::for_storage(self);
+        self.add_vertex_with(id, labels, properties, &context)
+    }
+
+    /// Creates an edge the way a query does: the edge counterpart of [`Self::add_vertex`]
+    /// ([`Self::add_edge_with`] with [`CreateContext::for_storage`]).
+    fn add_edge(
+        &mut self,
+        id: Option<CompactString>,
+        label: Option<CompactString>,
+        from: Self::VertexId,
+        to: Self::VertexId,
+        properties: PropertyMap,
+    ) -> Result<Self::EdgeId, GraphError> {
+        let context = CreateContext::for_storage(self);
+        self.add_edge_with(id, label, from, to, properties, &context)
+    }
+
+    /// Creates a vertex the way a query does (`add_v`, `mergeV` on create) at the time
+    /// `context` carries: first adds the stored schema's create-time defaults
+    /// (`default`/`defaultFunction` of every top-level property the labels declare and
+    /// `properties` lacks, in mode `open` and `closed`; see
+    /// [`Annotations`](crate::graph::schema::Annotations)), then calls [`Self::insert_vertex`],
+    /// which coerces and validates as always. [`Self::insert_vertex`] itself stores exactly what
     /// it is given: imports, change sets and replay use it, so they never apply defaults.
     ///
     /// `context` carries the time `defaultFunction` `now`/`today` store
     /// ([`CreateContext::now`]): a query passes one per execution (pinned by the script DSL's
     /// evaluation `now()` or [`GraphTraversalSource::with_now`](crate::GraphTraversalSource::with_now),
-    /// else the unit's start, [`Self::unit_started_at`]); other callers build one with
-    /// [`CreateContext::for_storage`]. The stored value is a plain value, recorded as such in
-    /// the change set and the journal, so replay is deterministic.
+    /// else the unit's start, [`Self::unit_started_at`]); [`Self::add_vertex`] builds one with
+    /// [`CreateContext::for_storage`], [`CreateContext::at`] pins a time. The stored value is a
+    /// plain value, recorded as such in the change set and the journal, so replay is
+    /// deterministic.
     ///
-    /// The default implementation reads the schema through [`Self::get_schema`]; a storage
-    /// that can borrow its schema overrides it to save that copy.
-    fn create_vertex(
+    /// This is the one override point of the create path for vertices: the default
+    /// implementation reads the schema through [`Self::get_schema`]; a storage that can borrow
+    /// its schema overrides it to save that copy (and still ends in [`Self::insert_vertex`]).
+    fn add_vertex_with(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
@@ -622,13 +678,13 @@ pub trait GraphStorage: Send + Sync {
                 context,
             );
         }
-        self.add_vertex(id, labels, properties)
+        self.insert_vertex(id, labels, properties)
     }
 
-    /// Creates an edge the way a query does (`add_e`, `mergeE` on create): the edge
-    /// counterpart of [`Self::create_vertex`] (the label's create-time defaults, then
-    /// [`Self::add_edge`]).
-    fn create_edge(
+    /// Creates an edge the way a query does (`add_e`, `mergeE` on create) at the time `context`
+    /// carries: the edge counterpart of [`Self::add_vertex_with`] (the label's create-time
+    /// defaults, then [`Self::insert_edge`]) and the one override point of the edge create path.
+    fn add_edge_with(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -646,7 +702,7 @@ pub trait GraphStorage: Send + Sync {
                 context,
             );
         }
-        self.add_edge(id, label, from, to, properties)
+        self.insert_edge(id, label, from, to, properties)
     }
 
     /// Sets (inserts or overwrites) one property on a vertex.
@@ -1305,7 +1361,7 @@ impl GraphStorage for TraversalGraph {
     }
 
     #[inline]
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
@@ -1348,7 +1404,7 @@ impl GraphStorage for TraversalGraph {
         }
     }
 
-    fn create_vertex(
+    fn add_vertex_with(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
@@ -1363,10 +1419,10 @@ impl GraphStorage for TraversalGraph {
             &mut properties,
             context,
         );
-        GraphStorage::add_vertex(self, id, labels, properties)
+        GraphStorage::insert_vertex(self, id, labels, properties)
     }
 
-    fn create_edge(
+    fn add_edge_with(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -1382,7 +1438,7 @@ impl GraphStorage for TraversalGraph {
             &mut properties,
             context,
         );
-        GraphStorage::add_edge(self, id, label, from, to, properties)
+        GraphStorage::insert_edge(self, id, label, from, to, properties)
     }
 
     #[inline]
@@ -1544,7 +1600,7 @@ impl GraphStorage for TraversalGraph {
     }
 
     #[inline]
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -2413,7 +2469,7 @@ impl<G: GraphStorage> GraphStorage for &G {
     }
 
     #[inline]
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         _id: Option<CompactString>,
         _labels: Vec<CompactString>,
@@ -2450,7 +2506,7 @@ impl<G: GraphStorage> GraphStorage for &G {
     }
 
     #[inline]
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         _id: Option<CompactString>,
         _label: Option<CompactString>,
@@ -2719,28 +2775,28 @@ impl<G: GraphStorage> GraphStorage for Box<G> {
     }
 
     #[inline]
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         properties: PropertyMap,
     ) -> Result<Self::VertexId, GraphError> {
-        (**self).add_vertex(id, labels, properties)
+        (**self).insert_vertex(id, labels, properties)
     }
 
     #[inline]
-    fn create_vertex(
+    fn add_vertex_with(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         properties: PropertyMap,
         context: &CreateContext,
     ) -> Result<Self::VertexId, GraphError> {
-        (**self).create_vertex(id, labels, properties, context)
+        (**self).add_vertex_with(id, labels, properties, context)
     }
 
     #[inline]
-    fn create_edge(
+    fn add_edge_with(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -2749,7 +2805,7 @@ impl<G: GraphStorage> GraphStorage for Box<G> {
         properties: PropertyMap,
         context: &CreateContext,
     ) -> Result<Self::EdgeId, GraphError> {
-        (**self).create_edge(id, label, from, to, properties, context)
+        (**self).add_edge_with(id, label, from, to, properties, context)
     }
 
     #[inline]
@@ -2780,7 +2836,7 @@ impl<G: GraphStorage> GraphStorage for Box<G> {
     }
 
     #[inline]
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -2788,7 +2844,7 @@ impl<G: GraphStorage> GraphStorage for Box<G> {
         to: Self::VertexId,
         properties: PropertyMap,
     ) -> Result<Self::EdgeId, GraphError> {
-        (**self).add_edge(id, label, from, to, properties)
+        (**self).insert_edge(id, label, from, to, properties)
     }
 
     #[inline]
@@ -3127,28 +3183,28 @@ impl<G: GraphStorage> GraphStorage for &mut G {
     }
 
     #[inline]
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         properties: PropertyMap,
     ) -> Result<Self::VertexId, GraphError> {
-        (**self).add_vertex(id, labels, properties)
+        (**self).insert_vertex(id, labels, properties)
     }
 
     #[inline]
-    fn create_vertex(
+    fn add_vertex_with(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         properties: PropertyMap,
         context: &CreateContext,
     ) -> Result<Self::VertexId, GraphError> {
-        (**self).create_vertex(id, labels, properties, context)
+        (**self).add_vertex_with(id, labels, properties, context)
     }
 
     #[inline]
-    fn create_edge(
+    fn add_edge_with(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -3157,7 +3213,7 @@ impl<G: GraphStorage> GraphStorage for &mut G {
         properties: PropertyMap,
         context: &CreateContext,
     ) -> Result<Self::EdgeId, GraphError> {
-        (**self).create_edge(id, label, from, to, properties, context)
+        (**self).add_edge_with(id, label, from, to, properties, context)
     }
 
     #[inline]
@@ -3188,7 +3244,7 @@ impl<G: GraphStorage> GraphStorage for &mut G {
     }
 
     #[inline]
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -3196,7 +3252,7 @@ impl<G: GraphStorage> GraphStorage for &mut G {
         to: Self::VertexId,
         properties: PropertyMap,
     ) -> Result<Self::EdgeId, GraphError> {
-        (**self).add_edge(id, label, from, to, properties)
+        (**self).insert_edge(id, label, from, to, properties)
     }
 
     #[inline]
@@ -3552,14 +3608,14 @@ impl GraphStorage for Arc<TraversalGraph> {
     }
 
     #[inline]
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         properties: PropertyMap,
     ) -> Result<VertexHandle, GraphError> {
         if let Some(graph) = Arc::get_mut(self) {
-            GraphStorage::add_vertex(graph, id, labels, properties)
+            GraphStorage::insert_vertex(graph, id, labels, properties)
         } else {
             Err(GraphError::InvalidElementState {
                 reason: "Cannot mutate shared Arc<TraversalGraph>".to_string(),
@@ -3568,7 +3624,7 @@ impl GraphStorage for Arc<TraversalGraph> {
     }
 
     #[inline]
-    fn create_vertex(
+    fn add_vertex_with(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
@@ -3576,7 +3632,7 @@ impl GraphStorage for Arc<TraversalGraph> {
         context: &CreateContext,
     ) -> Result<VertexHandle, GraphError> {
         if let Some(graph) = Arc::get_mut(self) {
-            GraphStorage::create_vertex(graph, id, labels, properties, context)
+            GraphStorage::add_vertex_with(graph, id, labels, properties, context)
         } else {
             Err(GraphError::InvalidElementState {
                 reason: "Cannot mutate shared Arc<TraversalGraph>".to_string(),
@@ -3626,7 +3682,7 @@ impl GraphStorage for Arc<TraversalGraph> {
     }
 
     #[inline]
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -3635,7 +3691,7 @@ impl GraphStorage for Arc<TraversalGraph> {
         properties: PropertyMap,
     ) -> Result<EdgeHandle, GraphError> {
         if let Some(graph) = Arc::get_mut(self) {
-            GraphStorage::add_edge(graph, id, label, from, to, properties)
+            GraphStorage::insert_edge(graph, id, label, from, to, properties)
         } else {
             Err(GraphError::InvalidElementState {
                 reason: "Cannot mutate shared Arc<TraversalGraph>".to_string(),
@@ -3644,7 +3700,7 @@ impl GraphStorage for Arc<TraversalGraph> {
     }
 
     #[inline]
-    fn create_edge(
+    fn add_edge_with(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -3654,7 +3710,7 @@ impl GraphStorage for Arc<TraversalGraph> {
         context: &CreateContext,
     ) -> Result<EdgeHandle, GraphError> {
         if let Some(graph) = Arc::get_mut(self) {
-            GraphStorage::create_edge(graph, id, label, from, to, properties, context)
+            GraphStorage::add_edge_with(graph, id, label, from, to, properties, context)
         } else {
             Err(GraphError::InvalidElementState {
                 reason: "Cannot mutate shared Arc<TraversalGraph>".to_string(),
@@ -4045,20 +4101,20 @@ mod tests {
     fn build_test_graph() -> TraversalGraph {
         let mut tg = TraversalGraph::new();
         let v1 = tg
-            .add_vertex(
+            .insert_vertex(
                 Some("v1".into()),
                 vec!["person".into()],
                 PropertyMap::default(),
             )
             .unwrap();
         let v2 = tg
-            .add_vertex(
+            .insert_vertex(
                 Some("v2".into()),
                 vec!["person".into()],
                 PropertyMap::default(),
             )
             .unwrap();
-        GraphStorage::add_edge(
+        GraphStorage::insert_edge(
             &mut tg,
             Some("e1".into()),
             Some("knows".into()),
@@ -4076,7 +4132,7 @@ mod tests {
         test_generic_storage(&graph);
 
         let v3 = graph
-            .add_vertex(
+            .insert_vertex(
                 Some("v3".into()),
                 vec!["software".into()],
                 PropertyMap::default(),
@@ -4105,21 +4161,21 @@ mod tests {
         let mut tg = TraversalGraph::new();
 
         let v1 = tg
-            .add_vertex(
+            .insert_vertex(
                 Some("v1".into()),
                 vec!["person".into()],
                 PropertyMap::default(),
             )
             .unwrap();
         let v2 = tg
-            .add_vertex(
+            .insert_vertex(
                 Some("v2".into()),
                 vec!["person".into()],
                 PropertyMap::default(),
             )
             .unwrap();
         let v3 = tg
-            .add_vertex(
+            .insert_vertex(
                 Some("v3".into()),
                 vec!["software".into()],
                 PropertyMap::default(),
@@ -4127,7 +4183,7 @@ mod tests {
             .unwrap();
 
         let e1 = tg
-            .add_edge(
+            .insert_edge(
                 Some("e1".into()),
                 Some("knows".into()),
                 v1,
@@ -4136,7 +4192,7 @@ mod tests {
             )
             .unwrap();
         let e2 = tg
-            .add_edge(
+            .insert_edge(
                 Some("e2".into()),
                 Some("created".into()),
                 v1,
@@ -4260,13 +4316,13 @@ mod tests {
         fn edge_endpoints(&self, edge: EdgeHandle) -> Option<(VertexHandle, VertexHandle)> {
             self.tg.edge_endpoints(edge)
         }
-        fn add_vertex(
+        fn insert_vertex(
             &mut self,
             id: Option<CompactString>,
             labels: Vec<CompactString>,
             properties: PropertyMap,
         ) -> Result<VertexHandle, GraphError> {
-            self.tg.add_vertex(id, labels, properties)
+            self.tg.insert_vertex(id, labels, properties)
         }
         fn add_vertex_label(
             &mut self,
@@ -4282,7 +4338,7 @@ mod tests {
         ) -> Result<bool, GraphError> {
             self.tg.remove_vertex_label(node, label)
         }
-        fn add_edge(
+        fn insert_edge(
             &mut self,
             id: Option<CompactString>,
             label: Option<CompactString>,
@@ -4290,7 +4346,7 @@ mod tests {
             to: VertexHandle,
             properties: PropertyMap,
         ) -> Result<EdgeHandle, GraphError> {
-            self.tg.add_edge(id, label, from, to, properties)
+            self.tg.insert_edge(id, label, from, to, properties)
         }
         fn set_vertex_property(
             &mut self,
@@ -4346,7 +4402,7 @@ mod tests {
             Err(GraphError::Unsupported { .. })
         ));
         let mark = mock.begin_unit();
-        mock.add_vertex(Some("m".into()), vec![], PropertyMap::default())
+        mock.insert_vertex(Some("m".into()), vec![], PropertyMap::default())
             .expect("add");
         mock.commit_unit(mark).expect("commit");
         assert_eq!(GraphStorage::last_commit_seq(&mock), 0);

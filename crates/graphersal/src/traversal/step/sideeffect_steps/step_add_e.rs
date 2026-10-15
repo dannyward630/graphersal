@@ -458,7 +458,7 @@ impl<'g, S: GraphStorage + 'g> GraphStepSideEffectMut<'g, S> for StepAddE<'g, S>
         let create = context.create_context_or(self.create_time);
         for index_from in &from_ids {
             for index_to in &to_ids {
-                let index = context.storage.create_edge(
+                let index = context.storage.add_edge_with(
                     self.id.clone(),
                     label.clone().map(Into::into),
                     *index_from,

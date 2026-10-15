@@ -136,13 +136,13 @@ impl GraphStorage for CustomIdStorage {
             .map(|(from, to)| (self.cv(from), self.cv(to)))
     }
 
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         id: Option<compact_str::CompactString>,
         labels: Vec<compact_str::CompactString>,
         properties: PropertyMap,
     ) -> Result<CustomVertexId, GraphError> {
-        let handle = self.inner.add_vertex(id, labels, properties)?;
+        let handle = self.inner.insert_vertex(id, labels, properties)?;
         let id = CustomVertexId(self.vertex_handles.len() as u64);
         self.vertex_handles.push(handle);
         self.vertex_ids.insert(handle, id);
@@ -165,7 +165,7 @@ impl GraphStorage for CustomIdStorage {
         self.inner.remove_vertex_label(self.vh(node), label)
     }
 
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         id: Option<compact_str::CompactString>,
         label: Option<compact_str::CompactString>,
@@ -174,7 +174,7 @@ impl GraphStorage for CustomIdStorage {
         properties: PropertyMap,
     ) -> Result<CustomEdgeId, GraphError> {
         let (from, to) = (self.vh(from), self.vh(to));
-        let handle = self.inner.add_edge(id, label, from, to, properties)?;
+        let handle = self.inner.insert_edge(id, label, from, to, properties)?;
         let id = CustomEdgeId(self.edge_handles.len() as u64);
         self.edge_handles.push(handle);
         self.edge_ids.insert(handle, id);

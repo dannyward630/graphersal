@@ -326,9 +326,10 @@ fn default_is_applied_on_create_only() {
         .to_list()
         .unwrap();
     assert_eq!(created, vec![ElementProperty::from(1)]);
-    // ... while the raw `add_vertex` stores exactly what it is given, so it is still required.
+    // ... while the primitive `insert_vertex` stores exactly what it is given, so it is still
+    // required.
     let err = fresh
-        .add_vertex(None, vec!["person".into()], props(&[("name", "A".into())]))
+        .insert_vertex(None, vec!["person".into()], props(&[("name", "A".into())]))
         .unwrap_err();
     assert!(matches!(
         err,

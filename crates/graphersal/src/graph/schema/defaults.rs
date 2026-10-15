@@ -4,9 +4,9 @@
 //!
 //! - [`fill_defaults`] adds the missing defaults to the properties of an element being created,
 //!   before the write path coerces and validates them. Only the create paths call it
-//!   ([`GraphStorage::create_vertex`](crate::graph::GraphStorage::create_vertex) /
-//!   [`create_edge`](crate::graph::GraphStorage::create_edge)); imports, change sets, replay
-//!   and loads store what they carry.
+//!   ([`GraphStorage::add_vertex`](crate::graph::GraphStorage::add_vertex) /
+//!   [`add_edge`](crate::graph::GraphStorage::add_edge) and their `_with` forms); imports, change
+//!   sets, replay and loads store what they carry (`insert_vertex`/`insert_edge`).
 //! - [`check_defaults`] is the check of a schema being set: every applied default must be valid
 //!   for its property, and `defaultFunction` may only sit on a top-level property.
 
@@ -23,7 +23,7 @@ use crate::value::json_path::JsonPathSegment;
 use crate::value::temporal::{Date, DateTime};
 
 /// What a create needs besides the element: the time `defaultFunction` `now` and `today` store
-/// (see [`GraphStorage::create_vertex`](crate::storage::GraphStorage::create_vertex)).
+/// (see [`GraphStorage::add_vertex_with`](crate::storage::GraphStorage::add_vertex_with)).
 ///
 /// A query takes it once per execution (every element one traversal creates gets the same time):
 /// a time the caller pinned

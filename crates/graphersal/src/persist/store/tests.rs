@@ -488,7 +488,7 @@ fn add_id(store: &Store, id: &str) {
         .transaction(|g| {
             let mut properties = crate::value::PropertyMap::default();
             properties.insert("name", crate::value::ElementProperty::from(id));
-            g.add_vertex(Some(id.into()), vec!["person".into()], properties)
+            g.insert_vertex(Some(id.into()), vec!["person".into()], properties)
                 .map(|_| ())
         })
         .unwrap();

@@ -1150,7 +1150,7 @@ mod tests {
         let mut props = PropertyMap::default();
         props.insert("age", int(29));
         let v = graph
-            .add_vertex(None, vec!["person".into()], props)
+            .insert_vertex(None, vec!["person".into()], props)
             .unwrap();
         graph
             .set_definition(Definition::property_index(

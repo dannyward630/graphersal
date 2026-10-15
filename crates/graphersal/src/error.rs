@@ -1901,12 +1901,12 @@ impl GraphError {
         GraphError::EdgeNotFound { id: id.into() }
     }
 
-    /// [`GraphError::VertexIdUniqueConstraint`]: `add_vertex` was given an id already in use.
+    /// [`GraphError::VertexIdUniqueConstraint`]: `insert_vertex` was given an id already in use.
     pub fn duplicate_vertex_id(id: impl Into<String>) -> Self {
         GraphError::VertexIdUniqueConstraint { id: id.into() }
     }
 
-    /// [`GraphError::EdgeIdUniqueConstraint`]: `add_edge` was given an id already in use.
+    /// [`GraphError::EdgeIdUniqueConstraint`]: `insert_edge` was given an id already in use.
     pub fn duplicate_edge_id(id: impl Into<String>) -> Self {
         GraphError::EdgeIdUniqueConstraint { id: id.into() }
     }

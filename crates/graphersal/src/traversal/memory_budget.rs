@@ -528,7 +528,7 @@ mod tests {
 
         // A failing unit rolls back: data, counts and commit position are as before.
         let failed: Result<(), GraphError> = graph.transaction(|g| {
-            g.add_vertex(Some("gone".into()), vec!["x".into()], Default::default())?;
+            g.insert_vertex(Some("gone".into()), vec!["x".into()], Default::default())?;
             Err(GraphError::Unsupported {
                 operation: "test rollback",
             })
@@ -540,7 +540,7 @@ mod tests {
         // Inside a unit with uncommitted changes every run walks and nothing is cached.
         let mark = graph.begin_unit();
         graph
-            .add_vertex(Some("open".into()), vec!["x".into()], Default::default())
+            .insert_vertex(Some("open".into()), vec!["x".into()], Default::default())
             .unwrap();
         let seq = graph.last_commit_seq();
         graph
@@ -569,7 +569,7 @@ mod tests {
 
         // A direct call outside any unit is not counted, but it changes the element counts.
         graph
-            .add_vertex(Some("direct".into()), vec!["x".into()], Default::default())
+            .insert_vertex(Some("direct".into()), vec!["x".into()], Default::default())
             .unwrap();
         read(&graph);
         assert_eq!(walks(&graph), 5, "changed element counts: walked again");
@@ -596,7 +596,7 @@ mod tests {
         let room = 1000 / per + 1;
         for i in 0..room {
             graph
-                .add_vertex(
+                .insert_vertex(
                     Some(format!("extra{i}").into()),
                     vec!["x".into()],
                     Default::default(),

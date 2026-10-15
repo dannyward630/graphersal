@@ -35,7 +35,8 @@
 //! # Optional parts of the contract
 //!
 //! - **Schemas.** The schema items (`schema_application_failure_leaves_graph_and_schema_unchanged`,
-//!   `schema_modes_enforce_declared_properties`, the schema write inside
+//!   `schema_modes_enforce_declared_properties`, `add_applies_schema_defaults_insert_does_not`,
+//!   the schema write inside
 //!   `extension::rollback_restores_everything`) check schema enforcement only when the storage
 //!   supports schemas: when `set_schema` returns `GraphError::Unsupported` (the trait default)
 //!   they return early and pass. Schema enforcement is not reusable outside `graphersal` yet, so
@@ -107,6 +108,7 @@ macro_rules! conformance {
             mutation_outside_unit_records_nothing
             schema_application_failure_leaves_graph_and_schema_unchanged
             schema_modes_enforce_declared_properties
+            add_applies_schema_defaults_insert_does_not
         ; extension:
             capabilities_are_consistent
             rollback_restores_everything

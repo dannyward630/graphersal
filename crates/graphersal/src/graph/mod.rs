@@ -449,7 +449,7 @@ impl TraversalGraph {
         let mut tg = TraversalGraph::new();
 
         let n_1 = tg
-            .add_vertex(Some("1".into()), vec!["person".into()], {
+            .insert_vertex(Some("1".into()), vec!["person".into()], {
                 let mut m = PropertyMap::default();
                 m.insert("name", "marko".into());
                 m.insert("age", ElementProperty::Number(29.into()));
@@ -457,7 +457,7 @@ impl TraversalGraph {
             })
             .unwrap();
         let n_2 = tg
-            .add_vertex(Some("2".into()), vec!["person".into()], {
+            .insert_vertex(Some("2".into()), vec!["person".into()], {
                 let mut m = PropertyMap::default();
                 m.insert("name", "vadas".into());
                 m.insert("age", ElementProperty::Number(27.into()));
@@ -465,7 +465,7 @@ impl TraversalGraph {
             })
             .unwrap();
         let n_3 = tg
-            .add_vertex(Some("3".into()), vec!["software".into()], {
+            .insert_vertex(Some("3".into()), vec!["software".into()], {
                 let mut m = PropertyMap::default();
                 m.insert("name", "lop".into());
                 m.insert("lang", "java".into());
@@ -473,7 +473,7 @@ impl TraversalGraph {
             })
             .unwrap();
         let n_4 = tg
-            .add_vertex(Some("4".into()), vec!["person".into()], {
+            .insert_vertex(Some("4".into()), vec!["person".into()], {
                 let mut m = PropertyMap::default();
                 m.insert("name", "josh".into());
                 m.insert("age", ElementProperty::Number(32.into()));
@@ -481,7 +481,7 @@ impl TraversalGraph {
             })
             .unwrap();
         let n_5 = tg
-            .add_vertex(Some("5".into()), vec!["software".into()], {
+            .insert_vertex(Some("5".into()), vec!["software".into()], {
                 let mut m = PropertyMap::default();
                 m.insert("name", "ripple".into());
                 m.insert("lang", "java".into());
@@ -489,7 +489,7 @@ impl TraversalGraph {
             })
             .unwrap();
         let n_6 = tg
-            .add_vertex(Some("6".into()), vec!["person".into()], {
+            .insert_vertex(Some("6".into()), vec!["person".into()], {
                 let mut m = PropertyMap::default();
                 m.insert("name", "peter".into());
                 m.insert("age", ElementProperty::Number(35.into()));
@@ -505,7 +505,7 @@ impl TraversalGraph {
                                weight: f64| {
             let mut m = PropertyMap::default();
             m.insert("weight", ElementProperty::Number(weight.into()));
-            tg.add_edge(Some(id.into()), Some(label.into()), from, to, m)
+            tg.insert_edge(Some(id.into()), Some(label.into()), from, to, m)
                 .unwrap();
         };
 
@@ -601,7 +601,7 @@ impl TraversalGraph {
             } else if id == "root/#42" {
                 props.insert("name", ElementProperty::Number(42i64.into()));
             }
-            match tg.add_vertex(Some(id.into()), vec![label.into()], props) {
+            match tg.insert_vertex(Some(id.into()), vec![label.into()], props) {
                 Ok(idx) => {
                     indices.insert(id, idx);
                 }
@@ -609,13 +609,13 @@ impl TraversalGraph {
             }
         }
 
-        let add_edge =
+        let insert_edge =
             |tg: &mut TraversalGraph, edge_id: String, label: &str, from: &str, to: &str| match (
                 indices.get(from),
                 indices.get(to),
             ) {
                 (Some(&f), Some(&t)) => {
-                    if let Err(err) = tg.add_edge(
+                    if let Err(err) = tg.insert_edge(
                         Some(edge_id.as_str().into()),
                         Some(label.into()),
                         f,
@@ -630,11 +630,11 @@ impl TraversalGraph {
 
         for &(id, _, _) in VERTICES {
             if let Some((parent, _)) = id.rsplit_once('/') {
-                add_edge(&mut tg, format!("contains:{id}"), "contains", parent, id);
+                insert_edge(&mut tg, format!("contains:{id}"), "contains", parent, id);
             }
         }
         for &(from, to) in POINTS_TO {
-            add_edge(&mut tg, format!("points_to:{from}"), "points_to", from, to);
+            insert_edge(&mut tg, format!("points_to:{from}"), "points_to", from, to);
         }
 
         tg
@@ -756,7 +756,8 @@ impl TraversalGraph {
         <Self as GraphStorage>::drop_edge_property(self, prop, edge_index)
     }
 
-    /// Adds a vertex with the given ID (or an auto-generated one), labels, and properties.
+    /// Creates a vertex with the given ID (or an auto-generated one), labels, and properties,
+    /// applying the schema's create-time defaults ([`GraphStorage::add_vertex`]).
     #[inline]
     pub fn add_vertex(
         &mut self,
@@ -767,7 +768,8 @@ impl TraversalGraph {
         <Self as GraphStorage>::add_vertex(self, id, labels, data)
     }
 
-    /// Adds a directed edge between two vertices identified by their handles.
+    /// Creates a directed edge between two vertices identified by their handles, applying the
+    /// schema's create-time defaults ([`GraphStorage::add_edge`]).
     #[inline]
     pub fn add_edge(
         &mut self,
@@ -780,7 +782,34 @@ impl TraversalGraph {
         <Self as GraphStorage>::add_edge(self, id, label, v_from, v_to, data)
     }
 
-    /// Adds a directed edge between two vertices identified by their string IDs.
+    /// Stores a vertex exactly as given, without schema defaults
+    /// ([`GraphStorage::insert_vertex`]).
+    #[inline]
+    pub fn insert_vertex(
+        &mut self,
+        id: Option<CompactString>,
+        labels: Vec<CompactString>,
+        data: PropertyMap,
+    ) -> Result<VertexHandle, GraphError> {
+        <Self as GraphStorage>::insert_vertex(self, id, labels, data)
+    }
+
+    /// Stores a directed edge exactly as given, without schema defaults
+    /// ([`GraphStorage::insert_edge`]).
+    #[inline]
+    pub fn insert_edge(
+        &mut self,
+        id: Option<CompactString>,
+        label: Option<CompactString>,
+        v_from: VertexHandle,
+        v_to: VertexHandle,
+        data: PropertyMap,
+    ) -> Result<EdgeHandle, GraphError> {
+        <Self as GraphStorage>::insert_edge(self, id, label, v_from, v_to, data)
+    }
+
+    /// Creates a directed edge between two vertices identified by their string IDs, applying
+    /// the schema's create-time defaults ([`GraphStorage::add_edge`]).
     pub fn add_edge_by_ids(
         &mut self,
         id: Option<CompactString>,
@@ -815,7 +844,7 @@ mod tests {
         for i in 0..1000 {
             let id = format!("v_{i}");
             let idx = tg
-                .add_vertex(
+                .insert_vertex(
                     Some(id.clone().into()),
                     vec!["node".into()],
                     PropertyMap::default(),
@@ -832,7 +861,7 @@ mod tests {
         assert_eq!(v.1.first().map(|l| l.as_str()), Some("node"));
 
         // Uniqueness constraint
-        let duplicate_res = tg.add_vertex(Some("v_500".into()), vec![], PropertyMap::default());
+        let duplicate_res = tg.insert_vertex(Some("v_500".into()), vec![], PropertyMap::default());
         assert!(duplicate_res.is_err());
     }
 
@@ -840,7 +869,7 @@ mod tests {
     fn test_vertex_deletion_and_readdition() {
         let mut tg = TraversalGraph::new();
         let idx = tg
-            .add_vertex(
+            .insert_vertex(
                 Some("v_test".into()),
                 vec!["person".into()],
                 PropertyMap::default(),
@@ -857,7 +886,7 @@ mod tests {
 
         // Re-adding same ID must succeed after deletion
         let readd_idx = tg
-            .add_vertex(
+            .insert_vertex(
                 Some("v_test".into()),
                 vec!["person".into()],
                 PropertyMap::default(),
@@ -870,14 +899,14 @@ mod tests {
     fn test_edge_indexing_add_lookup_drop() {
         let mut tg = TraversalGraph::new();
         let v1 = tg
-            .add_vertex(Some("v1".into()), vec![], PropertyMap::default())
+            .insert_vertex(Some("v1".into()), vec![], PropertyMap::default())
             .unwrap();
         let v2 = tg
-            .add_vertex(Some("v2".into()), vec![], PropertyMap::default())
+            .insert_vertex(Some("v2".into()), vec![], PropertyMap::default())
             .unwrap();
 
         let e_idx = tg
-            .add_edge(None, Some("knows".into()), v1, v2, PropertyMap::default())
+            .insert_edge(None, Some("knows".into()), v1, v2, PropertyMap::default())
             .expect("should add edge");
         let e_id = tg
             .index
@@ -901,12 +930,12 @@ mod tests {
     fn test_add_vertex_numeric_id_sequence_advancement() {
         let mut tg = TraversalGraph::new();
         let idx1 = tg
-            .add_vertex(Some("100".into()), vec![], PropertyMap::default())
+            .insert_vertex(Some("100".into()), vec![], PropertyMap::default())
             .expect("should add vertex 100");
         assert_eq!(tg.get_vertex_by_id("100").unwrap().0, idx1);
 
         let idx2 = tg
-            .add_vertex(None, vec![], PropertyMap::default())
+            .insert_vertex(None, vec![], PropertyMap::default())
             .expect("should add vertex auto id");
         let (found_idx, v) = tg.get_vertex_by_id("101").expect("auto id should be 101");
         assert_eq!(found_idx, idx2);
@@ -918,14 +947,14 @@ mod tests {
         use crate::graph::storage::GraphStorage;
         let mut tg = TraversalGraph::new();
         let v1 = tg
-            .add_vertex(Some("1".into()), vec![], PropertyMap::default())
+            .insert_vertex(Some("1".into()), vec![], PropertyMap::default())
             .unwrap();
         let v2 = tg
-            .add_vertex(Some("2".into()), vec![], PropertyMap::default())
+            .insert_vertex(Some("2".into()), vec![], PropertyMap::default())
             .unwrap();
 
         // Add edge with explicit numeric ID via GraphStorage
-        let e1 = GraphStorage::add_edge(
+        let e1 = GraphStorage::insert_edge(
             &mut tg,
             Some("50".into()),
             Some("knows".into()),
@@ -937,7 +966,7 @@ mod tests {
         assert_eq!(tg.get_edge_by_id("50").unwrap().0, e1);
 
         // Next auto-generated edge should be 51
-        let e2 = GraphStorage::add_edge(
+        let e2 = GraphStorage::insert_edge(
             &mut tg,
             None,
             Some("knows".into()),
@@ -949,7 +978,7 @@ mod tests {
         assert_eq!(tg.get_edge_by_id("51").unwrap().0, e2);
 
         // Explicit collision should fail
-        let duplicate_res = GraphStorage::add_edge(
+        let duplicate_res = GraphStorage::insert_edge(
             &mut tg,
             Some("51".into()),
             None,
@@ -965,7 +994,7 @@ mod tests {
         use crate::graph::storage::GraphStorage;
         let mut tg = TraversalGraph::new();
         for i in 0..50 {
-            let v = GraphStorage::add_vertex(
+            let v = GraphStorage::insert_vertex(
                 &mut tg,
                 Some(format!("v_{}", i).into()),
                 vec!["person".into()],
@@ -974,7 +1003,7 @@ mod tests {
             .unwrap();
             if i > 0 {
                 let prev = tg.get_vertex_by_id(&format!("v_{}", i - 1)).unwrap().0;
-                GraphStorage::add_edge(
+                GraphStorage::insert_edge(
                     &mut tg,
                     Some(format!("e_{}", i).into()),
                     Some("knows".into()),

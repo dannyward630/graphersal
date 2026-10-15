@@ -247,15 +247,16 @@ impl Constraints {
 ///
 /// [`default`](Self::default) has SQL `DEFAULT` semantics on a label's top-level properties:
 /// when a vertex or edge is *created* (`add_v`/`add_e`, `mergeV`/`mergeE` on create,
-/// [`GraphStorage::create_vertex`](crate::storage::GraphStorage::create_vertex)) in mode `open`
-/// or `closed` without a property whose schema declares a `default`, the default is stored
-/// before the element is coerced and validated (so it satisfies `required`). It is never
-/// substituted on read, never re-applied when the schema changes, and a new or changed default
-/// fills no existing element (no backfill). `default: null` is never stored (a pasted Pydantic
-/// schema writes it on every optional field); an explicitly written `null` stays `null`.
-/// Imports, change sets, replay and the plain
-/// [`GraphStorage::add_vertex`](crate::storage::GraphStorage::add_vertex) store exactly what
-/// they are given. A `default` below the top level (inside an object value) stays an annotation.
+/// [`GraphStorage::add_vertex`](crate::storage::GraphStorage::add_vertex) and its `_with` form)
+/// in mode `open` or `closed` without a property whose schema declares a `default`, the default
+/// is stored before the element is coerced and validated (so it satisfies `required`). It is
+/// never substituted on read, never re-applied when the schema changes, and a new or changed
+/// default fills no existing element (no backfill). `default: null` is never stored (a pasted
+/// Pydantic schema writes it on every optional field); an explicitly written `null` stays
+/// `null`. Imports, change sets, replay and the storage primitive
+/// [`GraphStorage::insert_vertex`](crate::storage::GraphStorage::insert_vertex) store exactly
+/// what they are given. A `default` below the top level (inside an object value) stays an
+/// annotation.
 ///
 /// [`default_function`](Self::default_function) (`defaultFunction`) computes the value instead:
 /// a new one for every created element (`uuidv4`, `uuidv7`), or the unit's start time, one

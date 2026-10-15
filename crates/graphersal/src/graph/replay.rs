@@ -56,7 +56,7 @@ pub(crate) fn apply_mutation<S: GraphStorage + ?Sized>(
             properties,
         } => {
             let labels = labels.iter().map(CompactString::from).collect();
-            storage.add_vertex(Some(id.into()), labels, properties.clone())?;
+            storage.insert_vertex(Some(id.into()), labels, properties.clone())?;
         }
         Mutation::DropVertex { id, .. } => {
             let vertex = vertex_of(storage, id)?;
@@ -71,7 +71,7 @@ pub(crate) fn apply_mutation<S: GraphStorage + ?Sized>(
         } => {
             let from = vertex_of(storage, out_id)?;
             let to = vertex_of(storage, in_id)?;
-            storage.add_edge(
+            storage.insert_edge(
                 Some(id.into()),
                 label.as_deref().map(CompactString::from),
                 from,

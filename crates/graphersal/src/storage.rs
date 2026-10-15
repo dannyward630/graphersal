@@ -65,7 +65,7 @@
 //!     // The contract's write checks are public helpers (`check_properties`,
 //!     // `normalize_vertex_labels`, `write_path`, ...): run them first, so a bad value gets the
 //!     // error every storage gives (`InvalidPropertyValue`, `InvalidLabel`), then refuse more.
-//!     fn add_vertex(
+//!     fn insert_vertex(
 //!         &mut self,
 //!         _id: Option<CompactString>,
 //!         labels: Vec<CompactString>,
@@ -81,7 +81,7 @@
 //!     fn remove_vertex_label(&mut self, _node: u32, _label: &str) -> Result<bool, GraphError> {
 //!         Err(refused())
 //!     }
-//!     fn add_edge(
+//!     fn insert_edge(
 //!         &mut self,
 //!         _id: Option<CompactString>,
 //!         _label: Option<CompactString>,
@@ -158,7 +158,7 @@
 //! assert_eq!(g.v(None::<()>).count().next().unwrap(), Some(ElementProperty::from(0_i64)));
 //! assert!(GraphTraversalSource::new(Empty).add_v("person").next().is_err());
 //! assert!(matches!(
-//!     Empty.add_vertex(None, vec!["a::b".into()], PropertyMap::default()),
+//!     Empty.insert_vertex(None, vec!["a::b".into()], PropertyMap::default()),
 //!     Err(GraphError::InvalidLabel { .. })
 //! ));
 //! ```

@@ -5,7 +5,7 @@ use crate::traversal::step::GraphStep;
 
 /// Optimizer rule that folds the constant `property(key, value)` steps directly following an
 /// `add_v()`/`add_e()` into that step, so the element is created with all its properties in ONE
-/// storage call (`add_vertex`/`add_edge`).
+/// storage call (`add_vertex_with`/`add_edge_with`).
 ///
 /// This is what lets a schema with required properties accept `addV("Person").property("name", ..)`,
 /// and what makes a failing property leave no element behind: the storage validates the complete

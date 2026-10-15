@@ -550,8 +550,8 @@ mod tests {
                 .ok_or(GraphError::unsupported("lop"))?;
             g.set_vertex_property(marko, "age".into(), 30i64.into())?;
             g.add_vertex_label(marko, "friend".into())?;
-            let ann = g.add_vertex(None, vec!["person".into()], PropertyMap::default())?;
-            g.add_edge(None, Some("likes".into()), ann, lop, PropertyMap::default())?;
+            let ann = g.insert_vertex(None, vec!["person".into()], PropertyMap::default())?;
+            g.insert_edge(None, Some("likes".into()), ann, lop, PropertyMap::default())?;
             Ok::<_, GraphError>(())
         })
         .unwrap();

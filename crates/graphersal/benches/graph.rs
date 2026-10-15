@@ -632,7 +632,7 @@ fn test_graph_memory_usage(bencher: divan::Bencher, _args: usize) {
 /// bench's own fixture isn't `GraphSource::large_110k()` (that fixture gives every vertex its
 /// own unique per-vertex label, so it has no large shared label bucket to reproduce the defect
 /// against) — instead it builds a bucket at the same order of magnitude as the audit's
-/// audit dataset's "company" label (88,000 members) directly via `add_vertex`, which
+/// audit dataset's "company" label (88,000 members) directly via `insert_vertex`, which
 /// is the shape that actually exercises this bug. `with_inputs` builds a fresh graph per
 /// iteration (untimed) since `drop()` is a mutation — the timed closure only ever measures the
 /// drop itself. A future regression of this exact O(n²)-class shape should show up here as a
@@ -647,7 +647,7 @@ fn test_graph_drop_large_label_bucket(bencher: divan::Bencher, args: usize) {
             let mut graph = graphersal::TraversalGraph::new();
             for _ in 0..BUCKET_SIZE {
                 graph
-                    .add_vertex(
+                    .insert_vertex(
                         None,
                         vec!["bulk".into()],
                         graphersal::prelude::PropertyMap::default(),
@@ -844,7 +844,7 @@ fn glob_tree() -> &'static graphersal::TraversalGraph {
                     str::to_string,
                 );
                 graph
-                    .add_vertex(Some(id.into()), vec![label.into()], props)
+                    .insert_vertex(Some(id.into()), vec![label.into()], props)
                     .unwrap()
             };
         let root = vertex(&mut graph, Some("root"), "directory", "root");
@@ -856,7 +856,7 @@ fn glob_tree() -> &'static graphersal::TraversalGraph {
                     let name = format!("f{f}.{}", EXTENSIONS[f % EXTENSIONS.len()]);
                     let file = vertex(&mut graph, None, "file", &name);
                     graph
-                        .add_edge(
+                        .insert_edge(
                             None,
                             Some("contains".into()),
                             parent,
@@ -871,7 +871,7 @@ fn glob_tree() -> &'static graphersal::TraversalGraph {
                 for s in 0..TREE_FAN_OUT {
                     let dir = vertex(&mut graph, None, "directory", &format!("d{s}"));
                     graph
-                        .add_edge(
+                        .insert_edge(
                             None,
                             Some("contains".into()),
                             parent,

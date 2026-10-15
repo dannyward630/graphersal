@@ -28,7 +28,7 @@ materializes the results (for example returning a vertex the same traversal drop
 | Rhai through `eval_value_dry_run` (host option), Python `Graph.dry_run` | the whole script, always rolled back ([below](#dry-run-of-a-script-rhai)) |
 | Rust API: `Transactional::transaction(\|g\| ..)` (every storage) | the closure; every traversal inside is a savepoint ([below](#explicit-transactions-rust)) |
 | Rust API: `Transactional::dry_run(\|g\| ..)` (storages with change capture) | the closure, always rolled back ([below](#dry-run)) |
-| `GraphStorage` methods called directly (`add_vertex`, `set_vertex_property`, ...) | one call: it either succeeds or changes nothing; outside a unit it is not recorded, so no hook sees it (use it for loading, see [below](#loading-versus-importing)) |
+| `GraphStorage` methods called directly (`add_vertex`, `insert_vertex`, `set_vertex_property`, ...) | one call: it either succeeds or changes nothing; outside a unit it is not recorded, so no hook sees it (use it for loading, see [below](#loading-versus-importing)) |
 | `set_schema()` / `patch_schema()` outside a unit | one unit of its own |
 | a catalog change (`set_definition()`, `remove_definition()`, `define_query()`, `move_query()`, `describe_query()`) outside a unit | one unit of its own |
 | `import_graphml()` / `import_graphson()` into an existing graph | the whole import |

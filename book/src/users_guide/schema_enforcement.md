@@ -232,7 +232,7 @@ g.V().valueMap("name", "active").toList()   // [#{"active": [true], "name": ["al
 
 - **Only on create**: `addV()`/`addE()` (also with their folded `property()` steps),
   `mergeV()`/`mergeE()` when they create (never on a match), the playground's create dialog, and
-  `GraphStorage::create_vertex`/`create_edge` in Rust. The default is filled in **before** the
+  `GraphStorage::add_vertex`/`add_edge` in Rust (and their `_with` forms). The default is filled in **before** the
   new element is coerced and validated, so a `required` property with a default is satisfied, and
   a canonical string default of a `uuid` property is stored as a `uuid`.
 - **Only what is missing**: a value the create writes wins, also an explicit `null`
@@ -247,8 +247,9 @@ g.V().valueMap("name", "active").toList()   // [#{"active": [true], "name": ["al
   default is never re-applied. To fill existing elements, use the
   [backfill recipe](#making-a-key-required-backfill-first-in-one-transaction).
 - **Stored data is reproduced, not re-created**: GraphML/GraphSON imports, `apply_change_set`,
-  replay, recovery and snapshot loads store exactly what they carry, and the plain
-  `GraphStorage::add_vertex`/`add_edge` of the Rust API applies no default either.
+  replay, recovery and snapshot loads store exactly what they carry: they go through the storage
+  primitive `GraphStorage::insert_vertex`/`insert_edge`, which applies no default (call it
+  yourself to store an element exactly as given, like a load).
 - **Modes `open` and `closed` only**: mode `none` stores the schema without enforcing anything,
   and applies no default either.
 - **Top-level properties only**: a `default` inside an object value's schema (`address.city`)
@@ -287,8 +288,9 @@ the change set and the journal record it, so replay and recovery reproduce the s
 - **In Rust** it is the start of the storage's outermost open unit
   (`GraphStorage::unit_started_at`): the traversal's own unit, or the explicit
   `transaction(|g| ..)` around several traversals. `GraphTraversalSource::with_now(t)` pins it for
-  one traversal (deterministic tests); other create calls pass a `CreateContext`
-  (`CreateContext::for_storage(&g)` reads the unit's start, `CreateContext::at(t)` pins).
+  one traversal (deterministic tests). `GraphStorage::add_vertex`/`add_edge` take the unit's
+  start (`CreateContext::for_storage`); `add_vertex_with`/`add_edge_with` take a `CreateContext`
+  (`CreateContext::at(t)` pins).
 - A later unit never gets an earlier time than a previous one of the same graph (the system clock
   is raised to the previous unit's start and the last commit time).
 

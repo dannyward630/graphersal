@@ -211,7 +211,7 @@ mod tests {
         assert!(traverser_value_exceeds_depth(&wrapped, 3));
         let mut graph = TraversalGraph::default();
         let id = graph
-            .add_vertex(None, vec![], Default::default())
+            .insert_vertex(None, vec![], Default::default())
             .expect("a vertex");
         let vertex: V = TraverserValue::Vertex(id);
         assert!(!traverser_value_exceeds_depth(&vertex, 0));

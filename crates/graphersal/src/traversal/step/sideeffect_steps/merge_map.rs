@@ -635,7 +635,7 @@ pub(crate) fn create_edge<S: GraphStorage>(
         .iter()
         .map(|entry| (entry.key.clone(), entry.value.clone()))
         .collect();
-    Ok(storage.create_edge(
+    Ok(storage.add_edge_with(
         map.id.clone(),
         map.label.clone(),
         out_v,
@@ -673,7 +673,7 @@ pub(crate) fn create_vertex<S: GraphStorage>(
         .map(|entry| (entry.key.clone(), entry.value.clone()))
         .collect();
     let labels = map.label.iter().cloned().collect();
-    Ok(storage.create_vertex(map.id.clone(), labels, properties, create)?)
+    Ok(storage.add_vertex_with(map.id.clone(), labels, properties, create)?)
 }
 
 /// A merge argument or option as handed to the builder, before the step parses it for its

@@ -203,13 +203,13 @@ impl GraphStorage for Forwarding {
         Some(Box::new(found.map(ForwardEdgeId)))
     }
 
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         properties: PropertyMap,
     ) -> Result<ForwardVertexId, GraphError> {
-        GraphStorage::add_vertex(&mut self.0, id, labels, properties).map(ForwardVertexId)
+        GraphStorage::insert_vertex(&mut self.0, id, labels, properties).map(ForwardVertexId)
     }
     fn add_vertex_label(
         &mut self,
@@ -232,7 +232,7 @@ impl GraphStorage for Forwarding {
     ) -> Result<bool, GraphError> {
         GraphStorage::set_edge_label(&mut self.0, edge.0, label)
     }
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -240,7 +240,8 @@ impl GraphStorage for Forwarding {
         to: ForwardVertexId,
         properties: PropertyMap,
     ) -> Result<ForwardEdgeId, GraphError> {
-        GraphStorage::add_edge(&mut self.0, id, label, from.0, to.0, properties).map(ForwardEdgeId)
+        GraphStorage::insert_edge(&mut self.0, id, label, from.0, to.0, properties)
+            .map(ForwardEdgeId)
     }
     fn set_vertex_property(
         &mut self,

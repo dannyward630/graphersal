@@ -1197,7 +1197,7 @@ impl<S: GraphStorage> Importer<'_, S> {
         let had_id = id.is_some();
         let handle = self
             .g
-            .add_vertex(id, labels, data)
+            .insert_vertex(id, labels, data)
             .map_err(IOError::Graph)?;
         let vertex_id = match self.g.vertex_id(handle) {
             Some(text) => CompactString::from(text),
@@ -1510,7 +1510,7 @@ impl<S: GraphStorage> Importer<'_, S> {
                 }
                 continue;
             }
-            self.add_edge(edge, &mut seen)?;
+            self.insert_edge(edge, &mut seen)?;
         }
         let in_edges = std::mem::take(&mut self.in_edges);
         for edge in in_edges {
@@ -1534,12 +1534,12 @@ impl<S: GraphStorage> Importer<'_, S> {
                     }
                 }
             }
-            self.add_edge(edge, &mut seen)?;
+            self.insert_edge(edge, &mut seen)?;
         }
         Ok(())
     }
 
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         edge: PendingEdge,
         seen: &mut HashMap<CompactString, (CompactString, CompactString, CompactString)>,
@@ -1563,7 +1563,7 @@ impl<S: GraphStorage> Importer<'_, S> {
         }
         let label = (!edge.label.is_empty()).then_some(edge.label);
         self.g
-            .add_edge(edge.id, label, from, to, edge.properties)
+            .insert_edge(edge.id, label, from, to, edge.properties)
             .map_err(IOError::Graph)?;
         self.edge_count += 1;
         crate::traversal::memory_budget::tick(self.budget, &*self.g).map_err(IOError::Graph)

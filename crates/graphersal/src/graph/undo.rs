@@ -6,8 +6,8 @@
 //!
 //! | Mutation | Undo entry |
 //! |---|---|
-//! | `add_vertex` | [`UndoEntry::AddedVertex`]: remove it again (the auto-id sequence stays advanced) |
-//! | `add_edge` | [`UndoEntry::AddedEdge`]: remove it again (the auto-id sequence stays advanced) |
+//! | `insert_vertex` | [`UndoEntry::AddedVertex`]: remove it again (the auto-id sequence stays advanced) |
+//! | `insert_edge` | [`UndoEntry::AddedEdge`]: remove it again (the auto-id sequence stays advanced) |
 //! | `drop_vertex` | [`UndoEntry::DroppedVertex`]: image of the vertex and its cascaded edges |
 //! | `drop_edge` | [`UndoEntry::DroppedEdge`]: image of the edge |
 //! | `set_*_property`, `drop_*_property`, jpath writes and removals | [`UndoEntry::VertexProperty`] / [`UndoEntry::EdgeProperty`]: old value and position of the top-level key, or "absent" |
@@ -946,7 +946,7 @@ mod tests {
     fn nothing_is_recorded_outside_a_unit() {
         let mut graph = TraversalGraph::tinkerpop_modern();
         let v =
-            GraphStorage::add_vertex(&mut graph, None, vec!["x".into()], PropertyMap::default())
+            GraphStorage::insert_vertex(&mut graph, None, vec!["x".into()], PropertyMap::default())
                 .expect("add");
         GraphStorage::set_vertex_property(&mut graph, v, "k".into(), 1.into()).expect("set");
         assert_eq!(graph.undo.len(), 0);
@@ -956,9 +956,9 @@ mod tests {
     fn outermost_commit_clears_and_nested_commit_keeps() {
         let mut graph = TraversalGraph::new();
         let outer = graph.begin_unit();
-        GraphStorage::add_vertex(&mut graph, None, vec![], PropertyMap::default()).expect("add");
+        GraphStorage::insert_vertex(&mut graph, None, vec![], PropertyMap::default()).expect("add");
         let inner = graph.begin_unit();
-        GraphStorage::add_vertex(&mut graph, None, vec![], PropertyMap::default()).expect("add");
+        GraphStorage::insert_vertex(&mut graph, None, vec![], PropertyMap::default()).expect("add");
         graph.commit_unit(inner).expect("commit");
         assert_eq!(graph.undo.len(), 2);
         graph.commit_unit(outer).expect("commit");
