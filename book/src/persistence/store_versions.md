@@ -17,7 +17,7 @@ single-file container has its own container version):
 | The store or file is | Then |
 |---|---|
 | the current version | read and written as usual |
-| **newer** than this build | refused with `PersistError::UnsupportedVersion` ("written by a newer format version"): never guessed at. Use a newer Graphersal |
+| **newer** than this build | refused with `PersistError::UnsupportedVersion` ("written by a newer Graphersal") by every operation (open, read-only open, `store info`, `verify`, backup, restore, fork, repair, conversion, ...), before any lock, read of data or write: never guessed at, never reported as damage, never repaired. This holds for a newer `GRAPH` (either copy), for any snapshot manifest, snapshot segment or WAL segment of a newer file format version inside an otherwise current store (attic entries included), for a single-file container of a newer container version, and for a packed snapshot. Use a newer Graphersal (since 0.1.1; 0.1.0 took newer files below `GRAPH` for damage) |
 | a store of an **older** store format version | refused with `PersistError::OlderFormat` by every operation (open, read-only open, `store info`, `verify`, backup, restore, fork, repair, convert); nothing is changed, never reported as damage |
 
 **Migration.** A store of an older store format is moved through a packed snapshot: the build

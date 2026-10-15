@@ -314,4 +314,5 @@
 
 - [Releases and Versioning](for_developers/release_plan.md)
 - [Version Control and Contributions](for_developers/version_control.md)
+- [Release Notes 0.1.1](release_notes/release_notes_0.1.1.md)
 - [Release Notes 0.1.0](release_notes/release_notes_0.1.0.md)

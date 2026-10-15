@@ -1279,6 +1279,19 @@ many small appends).
 - A writer writes only the current version.
 - A file with a newer version than the reader knows MUST be refused (unsupported version),
   never guessed at.
+- **A newer version is never damage.** A file whose magic matches and whose header checksum is
+  valid (the `GRAPH` fixed part, 5.1; a manifest fixed-part copy, 6.1; a segment or WAL segment
+  header, 7.1, 9.1) but whose version word is above the reader's is "written by a newer
+  version": the reader MUST refuse the whole operation with an unsupported-version error and
+  MUST NOT classify it as damage (13), open the store in maintenance mode, salvage or repair it,
+  or write anything. A single-file container (14.1, whose preamble has no checksum) is newer when
+  its magic matches and its container version is above the reader's. A header whose checksum
+  fails stays damage. Every operation on an existing store, backup or attic checks, before it
+  takes a lock, reads data or writes: the container version, then both `GRAPH` copies (either
+  one newer refuses the store, whatever the other holds), then the headers of every manifest,
+  snapshot segment and WAL segment of the tree (snapshots, holders, `tmp-*` directories and
+  attic entries). A restored ZIP backup that is refused this way is removed again. (The
+  reference implementation does so since 0.1.1.)
 - A `GRAPH` of an OLDER store format version (its magic and fixed-part checksum valid, the
   version word below the current one) MUST be classified by its version word before any field
   that version did not have is checked: it is neither damage (13) nor "not a store". Before

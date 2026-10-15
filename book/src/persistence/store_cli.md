@@ -135,6 +135,18 @@ up to commit N, taken T` (a backup), `attic  N entr(y/ies)`, and for a single fi
 `file  single file, 23.0 KiB (23.0 KiB live, 0 B free space inside: ...)`. `state` is `open (in
 use, or not closed cleanly)` while a writer has it (or after a crash).
 
+A store written by a **newer** Graphersal (its `GRAPH`, a snapshot or WAL file, or the single
+file's container of a newer format version) is not read: `info`, like every `store` command and
+`--graph`, exits **1** with the refusal and changes nothing (no lock file either):
+
+```text
+$ graphersal store info data/
+Error: Unsupported format version 3 of the store data/ (store format version): written by a newer Graphersal (this build reads up to version 2)
+Help: The store or file was written by a newer Graphersal; open it with that version (or a later one). ...
+```
+
+See [Format Versions](store_versions.md).
+
 ### list
 
 ```text
@@ -199,7 +211,9 @@ graphersal store verify <DIR>
 
 Reads every checksum (snapshots, WAL, `GRAPH`, marks). Exit **0** with `ok: no damage found`;
 exit **1** with every problem and the damage report (the donor of each damaged item). See
-[Verify](store_verify.md).
+[Verify](store_verify.md). Files of a newer format version are never listed as damage: `verify`
+exits **1** with the "written by a newer Graphersal" refusal shown under [info](#info) (no
+`DAMAGE` lines, no repair advice), and `store repair` refuses such a store the same way.
 
 ### fork
 
