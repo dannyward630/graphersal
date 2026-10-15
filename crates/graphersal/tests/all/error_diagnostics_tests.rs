@@ -1374,7 +1374,7 @@ fn invalid_optimizer_rule_option_help_names_the_valid_rules() {
         err.to_string(),
         "Invalid value for option 'optimizer.disabled': unknown optimizer rule \"not_a_real_rule\"; \
          valid names are: where_unnest, add_property_fold, filter_reorder, has_id_pushdown, source_filter_pushdown, \
-         barrier_pushdown, group_count_pushdown, count_pushdown, lazy_barrier, all"
+         property_index, barrier_pushdown, group_count_pushdown, count_pushdown, lazy_barrier, all"
     );
     let help = err.help().expect("help");
     assert!(
@@ -1387,8 +1387,8 @@ fn invalid_optimizer_rule_option_help_names_the_valid_rules() {
     assert!(
         help.contains(
             "(where_unnest, add_property_fold, filter_reorder, has_id_pushdown, \
-             source_filter_pushdown, barrier_pushdown, group_count_pushdown, count_pushdown, \
-             lazy_barrier — see the book's Query Optimizer chapter"
+             source_filter_pushdown, property_index, barrier_pushdown, group_count_pushdown, \
+             count_pushdown, lazy_barrier — see the book's Query Optimizer chapter"
         ),
         "{help}"
     );

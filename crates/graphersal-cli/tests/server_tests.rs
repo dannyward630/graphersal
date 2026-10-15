@@ -2644,6 +2644,9 @@ fn mcp_on_a_store_offers_the_graph_tools_only() {
             "define_compression",
             "drop_compression",
             "recompress",
+            "list_indexes",
+            "create_index",
+            "drop_index",
             "get_schema",
             "infer_schema",
             "validate_schema",
@@ -2980,6 +2983,15 @@ fn api_bodies() -> Vec<(&'static str, Value)> {
         ),
         ("/api/compression/recompress", json!({"name": "fz"})),
         ("/api/compression/drop", json!({"name": "fz"})),
+        (
+            "/api/indexes/create",
+            json!({"label": "person", "key": "name", "name": "fz"}),
+        ),
+        (
+            "/api/indexes/create",
+            json!({"label": "", "key": "a\u{0}b", "name": "fz fz", "element": "nope"}),
+        ),
+        ("/api/indexes/drop", json!({"name": "fz"})),
     ]
 }
 
@@ -3014,6 +3026,7 @@ const API_GETS: &[&str] = &[
     "/api/queries?folder=a%2Fb",
     "/api/queries/get?name=%F0%9F%9A%80",
     "/api/catalog/export",
+    "/api/indexes",
     "/%FF%FE",
     "/%2",
     "/api/",
