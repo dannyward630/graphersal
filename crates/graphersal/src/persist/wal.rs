@@ -67,6 +67,9 @@ impl WalHeader {
         }
         let mut r = Reader::new(&bytes[8..60]);
         let version = r.u32()?;
+        if version > FORMAT_VERSION {
+            return Err(DecodeError::newer(8, "journal", version));
+        }
         if version != FORMAT_VERSION {
             return Err(DecodeError::new(
                 8,

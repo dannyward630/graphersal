@@ -960,6 +960,31 @@ impl Header {
     }
 }
 
+/// The container version of the single-file store at `path` when it is NEWER than this build
+/// reads (format spec 14.1, 15): the preamble's magic matches and its version word is above
+/// [`CONTAINER_VERSION`]. `None` for everything else (another file, a directory, a current or
+/// unreadable preamble). Reads the 16-byte preamble only, never the container.
+pub(crate) fn newer_container_version(path: &Path) -> Option<u32> {
+    let file = File::open(path).ok()?;
+    preamble_newer(&file)
+}
+
+/// See [`newer_container_version`]: the newer version word of the preamble of `file`. Bytes
+/// 1..12 are read (byte 0 may be under the writer's mandatory lock on Windows, see
+/// [`SingleFileDir::is_single_file`]).
+fn preamble_newer(file: &File) -> Option<u32> {
+    let mut head = [0u8; 11];
+    read_at(file, &mut head, 1).ok()?;
+    if head[..7] != PREAMBLE_MAGIC[1..] {
+        return None;
+    }
+    let version = u32::from_le_bytes([head[7], head[8], head[9], head[10]]);
+    (version > CONTAINER_VERSION).then_some(version)
+}
+
+/// The container version this build reads and writes, for the version guard.
+pub(crate) const SUPPORTED_CONTAINER_VERSION: u32 = CONTAINER_VERSION;
+
 fn preamble() -> Vec<u8> {
     let mut out = Vec::with_capacity(16);
     out.extend_from_slice(PREAMBLE_MAGIC);
@@ -1012,6 +1037,13 @@ impl Open {
         if phys_len < DATA_START {
             return Err(invalid(format!(
                 "not a single-file store: {phys_len} bytes, shorter than its header"
+            )));
+        }
+        // A container of a newer version is never read as this one (format spec 15).
+        if let Some(found) = preamble_newer(&file) {
+            return Err(invalid(format!(
+                "a single-file store of container version {found}, written by a newer \
+                 Graphersal (this build reads up to version {CONTAINER_VERSION})"
             )));
         }
         let mut warnings = Vec::new();

@@ -3493,3 +3493,85 @@ fn store_commands_survive_closed_pipes() {
     assert_eq!(res.stdout.trim(), "6", "{}", res.stderr);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Copies a directory tree (fixtures are copied before use).
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+/// Files written by the 0.2 line (store format version 3, file format version 2; see the
+/// README there) are refused as "written by a newer Graphersal" by the `store` commands and by
+/// `--graph`: exit 1, never DAMAGE, never "Corrupt", no repair offered, nothing written.
+#[test]
+fn store_commands_refuse_files_of_a_newer_graphersal() {
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../graphersal/tests/data/v0.2-preview");
+    let dir = temp_path("newer-store");
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_dir(&fixtures.join("store"), &dir);
+    let file = temp_path("newer.gstore");
+    std::fs::copy(fixtures.join("graph.gstore"), &file).unwrap();
+    let snap = fixtures.join("graph.gsnap");
+    let zip = fixtures.join("backup.zip");
+    let target = temp_path("newer-target");
+    let _ = std::fs::remove_dir_all(&target);
+    let (d, f, t) = (
+        dir.to_str().unwrap(),
+        file.to_str().unwrap(),
+        target.to_str().unwrap(),
+    );
+    let (s, z) = (snap.to_str().unwrap(), zip.to_str().unwrap());
+    let store_bytes = std::fs::read(dir.join("GRAPH")).unwrap();
+    let file_bytes = std::fs::read(&file).unwrap();
+    let count = "g.v().count().next()";
+    let runs: Vec<(&str, Vec<&str>)> = vec![
+        ("info", vec!["store", "info", d]),
+        ("verify", vec!["store", "verify", d]),
+        ("list", vec!["store", "list", d]),
+        ("marks", vec!["store", "marks", d]),
+        ("repair", vec!["store", "repair", d, "--to", t]),
+        ("backup", vec!["store", "backup", d, t]),
+        ("checkpoint", vec!["store", "checkpoint", d]),
+        ("convert", vec!["store", "convert", d, t]),
+        ("--graph", vec!["--graph", d, "-e", count]),
+        ("info single file", vec!["store", "info", f]),
+        ("verify single file", vec!["store", "verify", f]),
+        ("--graph single file", vec!["--graph", f, "-e", count]),
+        ("--graph gsnap", vec!["--graph", s, "-e", count]),
+        (
+            "create --from gsnap",
+            vec!["store", "create", t, "--from", s],
+        ),
+        ("restore zip", vec!["store", "restore", z, t]),
+    ];
+    for (what, args) in runs {
+        let res = run(&args, "");
+        let all = format!("{}{}", res.stdout, res.stderr);
+        // A `--graph` FILE that cannot be loaded is an invalid invocation (2), as for any
+        // unreadable graph file; every store operation fails with 1.
+        let expected = if what == "--graph gsnap" { 2 } else { 1 };
+        assert_eq!(res.code, expected, "{what}: {all}");
+        assert!(
+            all.contains("written by a newer Graphersal"),
+            "{what}: {all}"
+        );
+        assert!(!all.contains("DAMAGE"), "{what}: {all}");
+        assert!(!all.contains("Corrupt"), "{what}: {all}");
+        assert!(!all.contains("store repair"), "{what}: {all}");
+        assert!(!target.exists(), "{what}: nothing created at the target");
+    }
+    assert_eq!(std::fs::read(dir.join("GRAPH")).unwrap(), store_bytes);
+    assert!(!dir.join("LOCK").exists(), "no LOCK file created");
+    assert_eq!(std::fs::read(&file).unwrap(), file_bytes);
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&file);
+}

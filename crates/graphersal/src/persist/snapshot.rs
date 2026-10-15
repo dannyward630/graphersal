@@ -928,6 +928,9 @@ fn frame_segment_stream(
     }
     let mut header = super::codec::Reader::new(&buf[8..60]);
     let version = header.u32()?;
+    if version > FORMAT_VERSION {
+        return Err(DecodeError::newer(8, "segment", version).into());
+    }
     if version != FORMAT_VERSION {
         return Err(DecodeError::new(8, format!("segment format version {version}")).into());
     }
