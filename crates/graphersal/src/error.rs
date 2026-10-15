@@ -6754,7 +6754,11 @@ mod tests {
             )
         );
         assert!(
-            req_help.contains("\"default\" is an annotation only"),
+            req_help.contains(
+                "or give it a \"default\" (or \"defaultFunction\") in the schema: it is stored \
+                 when an element is created without the property (mode open or closed), but never \
+                 filled into existing elements, and never by an import or a property removal."
+            ),
             "{req_help}"
         );
         assert!(req_help.contains("add_property_fold"), "{req_help}");

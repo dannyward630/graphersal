@@ -4427,7 +4427,11 @@ fn nested_schema_error_help_names_the_path_and_reads_it_with_jpath() {
         "{required}"
     );
     assert!(
-        required.contains("\"default\" is an annotation only"),
+        required.contains(
+            "A schema \"default\" below the top level is an annotation: it does not fill a \
+             missing nested key (only a label's top-level properties get their default when an \
+             element is created)."
+        ),
         "{required}"
     );
     assert!(
@@ -4725,7 +4729,13 @@ fn applying_a_schema_to_violating_data_help_says_how_to_proceed() {
     assert!(help.contains("g.infer_schema()"), "{help}");
     assert!(help.contains("g.validate_schema(schema)"), "{help}");
     assert!(help.contains("backfill first"), "{help}");
-    assert!(help.contains("annotation only"), "{help}");
+    assert!(
+        help.contains(
+            "A schema \"default\" fills only elements created after it is set, never existing \
+             ones (no backfill)."
+        ),
+        "{help}"
+    );
     assert_eq!(graph.get_schema(), None);
 }
 

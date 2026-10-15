@@ -68,7 +68,7 @@ fn meta_and_annotations_are_always_compatible() {
     );
     let annotated = label(
         "closed",
-        r#""a": {"type": "integer", "description": "x", "default": 3, "deprecated": true}"#,
+        r#""a": {"type": "integer", "description": "x", "deprecated": true}"#,
         "",
     );
     assert_eq!(
@@ -79,6 +79,41 @@ fn meta_and_annotations_are_always_compatible() {
             true
         )
     );
+    // A default is applied on create, so adding, changing or removing one is its own kind,
+    // compatible too: no existing data or valid write is affected.
+    let defaulted = label("closed", r#""a": {"type": "integer", "default": 3}"#, "");
+    let redefaulted = label("closed", r#""a": {"type": "integer", "default": 4}"#, "");
+    for (before, after) in [
+        (&base, &defaulted),
+        (&defaulted, &redefaulted),
+        (&defaulted, &base),
+    ] {
+        assert_eq!(
+            single(before, after),
+            (SchemaChangeKind::DefaultChanged, Some("$.a".into()), true)
+        );
+    }
+    let generated = label(
+        "closed",
+        r#""a": {"type": "string", "format": "uuid", "defaultFunction": "uuidv4"}"#,
+        "",
+    );
+    let plain_uuid = label("closed", r#""a": {"type": "string", "format": "uuid"}"#, "");
+    assert_eq!(
+        single(&plain_uuid, &generated),
+        (SchemaChangeKind::DefaultChanged, Some("$.a".into()), true)
+    );
+    // Both at once are two changes, still compatible.
+    let both = label(
+        "closed",
+        r#""a": {"type": "integer", "description": "x", "default": 3, "deprecated": true}"#,
+        "",
+    );
+    let diff = diff(&base, &both);
+    let mut kinds: Vec<&str> = diff.changes.iter().map(|c| c.kind.as_str()).collect();
+    kinds.sort_unstable();
+    assert_eq!(kinds, ["annotation_changed", "default_changed"]);
+    assert!(diff.compatible());
 }
 
 #[test]

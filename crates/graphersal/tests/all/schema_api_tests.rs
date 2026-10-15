@@ -239,41 +239,75 @@ fn backfill_then_require_in_one_transaction() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// default is an annotation only
+// default is applied on create only
 // ---------------------------------------------------------------------------------------------
 
-#[test]
-fn default_is_never_applied_on_write_or_read() {
-    let mut graph = TraversalGraph::new();
-    graph.set_schema(schema(PERSON)).unwrap();
-    graph
-        .traversal_mut()
-        .add_v("person")
-        .property("name", "Ann")
-        .to_list()
-        .unwrap();
-    // Not written ...
+/// The `age` values of the person vertices by name (`None` when the vertex has no `age`).
+fn ages(graph: &TraversalGraph) -> Vec<(String, Option<ElementProperty>)> {
     let stored = graph
         .traversal()
         .v(None)
         .value_map(None::<()>)
         .to_list()
         .unwrap();
-    let ElementProperty::Object(map) = &stored[0] else {
-        panic!("{stored:?}")
-    };
-    assert!(!map.contains_key("age"), "{map:?}");
-    // ... not substituted on read ...
-    assert!(
-        graph
-            .traversal()
-            .v(None)
-            .values("age")
-            .to_list()
-            .unwrap()
-            .is_empty()
+    let mut out: Vec<(String, Option<ElementProperty>)> = stored
+        .iter()
+        .map(|value| {
+            let ElementProperty::Object(map) = value else {
+                panic!("{stored:?}")
+            };
+            let first = |key: &str| match map.get(key) {
+                Some(ElementProperty::Array(items)) => items.first().cloned(),
+                other => other.cloned(),
+            };
+            (format!("{:?}", first("name")), first("age"))
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+#[test]
+fn default_is_applied_on_create_only() {
+    // A person created before the schema has a default for `age` ...
+    let mut graph = TraversalGraph::new();
+    let mut without_default = schema(PERSON);
+    without_default
+        .vertices
+        .get_mut("person")
+        .unwrap()
+        .schema
+        .properties["age"] = PropertySchema::of_types(&[JsonType::Integer, JsonType::Null])
+        .with_constraint(|c| c.minimum = Some(Number::from_i64(0)));
+    graph.set_schema(without_default).unwrap();
+    graph
+        .traversal_mut()
+        .add_v("person")
+        .property("name", "Bob")
+        .to_list()
+        .unwrap();
+    graph.set_schema(schema(PERSON)).unwrap();
+    // ... and one created after it.
+    graph
+        .traversal_mut()
+        .add_v("person")
+        .property("name", "Ann")
+        .to_list()
+        .unwrap();
+    // Written when the element is created, never filled into the existing one (no backfill),
+    // and never substituted on read.
+    let ann = format!("{:?}", Some(ElementProperty::from("Ann")));
+    let bob = format!("{:?}", Some(ElementProperty::from("Bob")));
+    assert_eq!(
+        ages(&graph),
+        vec![(ann.clone(), Some(18.into())), (bob.clone(), None)]
     );
-    // ... and a required key with a default is still required.
+    assert_eq!(
+        graph.traversal().v(None).values("age").to_list().unwrap(),
+        vec![ElementProperty::from(18)],
+        "only Ann's stored age is read"
+    );
+    // A required key with a default is satisfied by its default on create ...
     let mut with_default = schema(PERSON);
     with_default.vertices.get_mut("person").unwrap().schema = with_default.vertices["person"]
         .schema
@@ -284,6 +318,15 @@ fn default_is_never_applied_on_write_or_read() {
         );
     let mut fresh = TraversalGraph::new();
     fresh.set_schema(with_default).unwrap();
+    let created = fresh
+        .traversal_mut()
+        .add_v("person")
+        .property("name", "A")
+        .values("level")
+        .to_list()
+        .unwrap();
+    assert_eq!(created, vec![ElementProperty::from(1)]);
+    // ... while the raw `add_vertex` stores exactly what it is given, so it is still required.
     let err = fresh
         .add_vertex(None, vec!["person".into()], props(&[("name", "A".into())]))
         .unwrap_err();
@@ -303,18 +346,10 @@ fn default_is_never_applied_on_write_or_read() {
         .with_annotation(|a| a.default = Some(21.into()));
     let diff = graph.traversal().diff_schema(&changed).unwrap();
     assert_eq!(diff.changes.len(), 1);
-    assert_eq!(diff.changes[0].kind, SchemaChangeKind::AnnotationChanged);
+    assert_eq!(diff.changes[0].kind, SchemaChangeKind::DefaultChanged);
     assert!(diff.compatible());
     graph.set_schema(changed).unwrap();
-    assert!(
-        graph
-            .traversal()
-            .v(None)
-            .values("age")
-            .to_list()
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(ages(&graph), vec![(ann, Some(18.into())), (bob, None)]);
 }
 
 /// The diff is static: an optional key added to an open object is compatible, and existing data
