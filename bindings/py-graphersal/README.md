@@ -419,7 +419,7 @@ The failures a program handles on purpose have their own subclasses (all of them
 |---|---|
 | `PermissionDeniedError` | the script makes a request (an action on a resource) its `policy` does not allow, or uses a file outside the file root; the denied traversal did not run |
 | `ReturnedClosureError` | a script run as one unit (`atomic=True`, `dry_run`) returns a closure; everything it changed was rolled back |
-| `CommitRejectedError` | a commit hook vetoed the commit (hooks can only be registered from Rust in 0.1.0); everything was rolled back |
+| `CommitRejectedError` | a commit hook vetoed the commit (hooks can only be registered from Rust); everything was rolled back |
 
 ```python
 try:
@@ -505,7 +505,7 @@ JSON-compatible as it is (`json.dumps(changes)` works):
 A failing script raises like `execute` and returns no change set; a returned closure raises
 `ReturnedClosureError`. No commit hook runs. A traversal the script returns without a terminal
 runs inside the dry run, so its result reflects the previewed changes. The change set is data only:
-Python cannot register commit hooks (callbacks on every commit) in 0.1.0.
+Python cannot register commit hooks (callbacks on every commit) yet.
 
 ## Access policy
 

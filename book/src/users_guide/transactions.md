@@ -143,7 +143,7 @@ assert_eq!(graph.vertex_count(), 6); // untouched
 The default unit of a script is one traversal. A host that wants all-or-nothing for the whole
 script (a migration script, an import, a playground run) calls
 `graphersal::script::eval_value_atomic(graph, script, params, &limits, authorizer)` instead of
-`eval_value_with_limits`. The script cannot choose this itself (no `g.tx()` in 0.1.0).
+`eval_value_with_limits`. The script cannot choose this itself (there is no `g.tx()`).
 
 ```rhai,graph=modern
 g.addV("person").property("name", "ann").next();          // part of the unit
@@ -575,14 +575,14 @@ process ends, and the graph with it.
 - Commit hooks registered from Python (Python gets change sets only as data, through `dry_run`).
 - Removing a commit hook.
 - Isolation of concurrent readers during a write: readers wait for the writer. A layered storage
-  with snapshot reads is planned for 0.2.
+  with snapshot reads is planned.
 
 ## Deviations from TinkerPop
 
 - TinkerGraph without transactions keeps the changes a traversal made before it failed.
   Graphersal rolls them back: the graph is never left half-changed by one failing traversal.
 - TinkerPop opens an explicit transaction with `g.tx()` and ends it with `commit()` /
-  `rollback()`. Graphersal has no `tx()` (in 0.1.0); the Rust API uses the closure
+  `rollback()`. Graphersal has no `tx()`; the Rust API uses the closure
   `transaction(|g| ..)`, and a host can make a whole script one unit.
 - TinkerPop's `EventStrategy` reports each mutation to a `MutationListener` after it happened.
   Graphersal's commit hooks get one `ChangeSet` per committed unit, before it is final (with a

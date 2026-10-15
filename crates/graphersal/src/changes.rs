@@ -122,7 +122,7 @@
 //! - Hooks run synchronously, strictly in commit sequence order.
 //! - While at least one hook is registered, the storage builds a [`ChangeSet`] for every
 //!   committed unit (change capture). Without hooks nothing is captured and nothing is paid.
-//! - Hooks cannot be removed in 0.1.0 (a server registers them once, before it publishes the
+//! - Hooks cannot be removed (a server registers them once, before it publishes the
 //!   graph); removal may be added later.
 //!
 //! **Deviation from TinkerPop:** TinkerPop's `EventStrategy` calls a `MutationListener` for

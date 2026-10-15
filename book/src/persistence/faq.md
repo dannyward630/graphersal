@@ -134,6 +134,5 @@ treats records after the writer's durable end as possibly not final. In Rust,
 
 **Is the format stable?** Store format version 3 (with file format version 2) is specified on the
 [specification](format.md) page; a newer version is refused, never guessed at, and a store of an
-released older version is upgraded by `graphersal store upgrade` without the older build (every
+older released version is upgraded by `graphersal store upgrade` without the older build (every
 build keeps the readers of every released format; [Format Versions](store_versions.md)).
-Before Graphersal 0.1.0 the format may still change.

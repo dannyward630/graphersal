@@ -59,14 +59,21 @@ never leaves your browser.
   another MCP client can query the graph you are looking at. In the playground's AI Chat tab you ask
   about your graph in plain language, and the model of your choice writes and runs the queries
   (experimental).
+- **Values with real types.** Besides numbers, strings, UUIDs and nested JSON: five date and time
+  types modelled on PostgreSQL (time zones from the IANA database, calendar-correct arithmetic,
+  TinkerPop's date steps), and vectors for embeddings (`f32`, `f16`, `i8`, `bit`) with exact
+  similarity search (`nearest()`, cosine, dot, L2, Hamming) and quantization. A string that looks
+  like a date stays a string: types come from a schema or a typed value, never from guessing.
 - **Safe by construction.** Every traversal is atomic: it commits completely or leaves nothing
-  behind. Schemas (a subset of JSON Schema) are enforced on write. Limits, timeouts and permissions
-  make it safe to run queries you did not write.
+  behind. Schemas (a subset of JSON Schema) are enforced on write and fill create-time defaults
+  (`default`, `uuidv7`, `now`). Limits, timeouts and permissions make it safe to run queries you
+  did not write.
 - **Durable when you need it.** A graph lives in memory, and the Store keeps it on disk: every
   commit goes to a write-ahead log, and you can go back to any point in time, fork, roll back, back
   up and repair. The file format is a public specification.
-- **Fast and observable.** A rule-based optimizer rewrites each query; `profile()` shows the
-  optimized plan with timings, traverser counts and memory per step.
+- **Fast and observable.** A rule-based optimizer rewrites each query and answers `has()` filters
+  from declared property indexes (`g.create_index(..)`); `profile()` shows the optimized plan with
+  timings, traverser counts and memory per step.
 - **Open for integration.** Rust and Python APIs, saved (named, parameterized) queries stored in the
   graph, change capture with commit hooks, GraphSON 3.0 and GraphML files, and a storage trait to
   run the whole engine on a storage of your own.
@@ -97,7 +104,7 @@ and [Dev Server, MCP and AI Chat](https://graphersal.dev/getting_started/server_
 
 ```toml
 [dependencies]
-graphersal = { version = "0.1", features = ["script", "io", "display"] }
+graphersal = { version = "0.2", features = ["script", "io", "display"] }
 ```
 
 ```rust
@@ -142,10 +149,10 @@ See the [Python Quick Start](https://graphersal.dev/library/python.html).
 
 ## How mature is it
 
-Graphersal 0.1 is a first public release, built with the care of a database:
+Graphersal 0.2 is an early release line, built with the care of a database:
 
 - **TinkerPop conformance.** Apache TinkerPop's own Gherkin test suite (3.8.2) runs on every test
-  run. More than 95 % of the scenarios in scope pass, and no implemented step gives a wrong result.
+  run. More than 97 % of the scenarios in scope pass, and no implemented step gives a wrong result.
   The rest are steps that are not implemented yet or differ on purpose; each difference is
   documented ([compliance](https://graphersal.dev/for_developers/tinkerpop_compliance.html),
   [deviations](https://graphersal.dev/for_developers/tinkerpop_deviations.html)).
@@ -155,9 +162,9 @@ Graphersal 0.1 is a first public release, built with the care of a database:
 - **A public storage format.** Snapshots, the write-ahead log and the Store are described byte by
   byte in the [format specification](https://graphersal.dev/persistence/format.html); every
   decoder treats its input as hostile.
-- **Clear stability labels.** Within 0.1.x the public API of `graphersal` (outside the items
+- **Clear stability labels.** Within 0.2.x the public API of `graphersal` (outside the items
   marked experimental), the DSL and the schema format change only additively. The storage traits
-  (`GraphStorage`, `PersistentStorage`, `StoreDir`) are experimental in 0.1.x, and the dev
+  (`GraphStorage`, `PersistentStorage`, `StoreDir`) are experimental in 0.2.x, and the dev
   server's HTTP API is internal.
 
 Graphersal is **not a complete copy of TinkerPop.** Read

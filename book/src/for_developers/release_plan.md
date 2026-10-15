@@ -3,7 +3,7 @@
 ## Versioning
 
 Graphersal follows [Semantic Versioning](https://semver.org). Before 1.0 a minor version (0.1 to 0.2) may break
-the API; a patch version (0.1.0 to 0.1.1) does not.
+the API; a patch version (0.2.0 to 0.2.1) does not.
 
 Every crate of the workspace shares one version number (`[workspace.package]` in the root `Cargo.toml`), and the
 Python package and the web playground are released with the same number:
@@ -17,15 +17,21 @@ Python package and the web playground are released with the same number:
 | `graphersal` (Python) | wheels (abi3, Python 3.10+) | the PyO3 binding from `bindings/py-graphersal` |
 | web playground | static files | runs `graphersal-wasm` (not published; its JS API is internal to the playground) |
 
-## Stability in 0.1.x
+## Stability in 0.2.x
 
-- Stable within 0.1.x (additive changes only): the public API of `graphersal` outside the items marked
+The same rules hold for every minor line before 1.0 (they held for 0.1.x as well); a minor release
+(0.1 to 0.2) may break them, and its release notes list every break with the upgrade step
+([Release Notes 0.2.0](../release_notes/release_notes_0.2.0.md)).
+
+- Stable within 0.2.x (additive changes only): the public API of `graphersal` outside the items marked
   EXPERIMENTAL, the DSL and the schema format.
-- EXPERIMENTAL (may change in any 0.1.x release): the `GraphStorage` trait and its associated types,
-  `PersistentStorage`, `StoreDir`, and `graphersal-storage-tests`.
-- Internal: `graphersal-session`, the wasm crate's JS API, the dev server's HTTP API (`--server` is a development
-  tool, bound to the loopback interface).
-- The storage format has its own version number ([Format Versions and Upgrade](../persistence/store_versions.md)).
+- EXPERIMENTAL (may change in any 0.2.x release): the `GraphStorage` trait and its associated types,
+  `PersistentStorage`, `AnyGraph`, `StoreDir`, and `graphersal-storage-tests`; pin the exact version.
+- Internal: `graphersal-session`, the wasm crate's JS API, the dev server's HTTP API and its MCP tools
+  (`--server` is a development tool, bound to the loopback interface), the experimental AI Chat.
+- The storage format has its own version numbers ([Format Versions and Upgrade](../persistence/store_versions.md)):
+  a patch release never changes a format version, and every release reads the formats of every
+  release before it (an older store is upgraded with `graphersal store upgrade`, no older build needed).
 
 The API rules that keep a change additive (public enums and result structs `#[non_exhaustive]`, default methods
 for every new trait method) are checked with [`cargo-semver-checks`](https://github.com/obi1kenobi/cargo-semver-checks):
@@ -52,8 +58,8 @@ Before a version is tagged:
   each runs in every `cargo test`);
 - a benchmark run on a quiet machine shows no unexplained regression against the previous release;
 - `cargo publish --dry-run` succeeds for every published crate, `graphersal` first, then the crates that depend on it;
-- the version's release notes (`book/src/release_notes/`, for 0.1.0
-  [Release Notes 0.1.0](../release_notes/release_notes_0.1.0.md)) describe what changed; they are the project's
+- the version's release notes (`book/src/release_notes/`, for 0.2.0
+  [Release Notes 0.2.0](../release_notes/release_notes_0.2.0.md)) describe what changed; they are the project's
   record of changes (there is no separate `CHANGELOG.md`) and the text of the GitHub Release.
 
 The long fuzz budgets (release builds with overflow checks and debug assertions kept on):
@@ -86,11 +92,11 @@ machine and are compared with the previous release, not per change.
 
 ## Publishing
 
-1. Tag the release commit: `git tag -a v0.1.0 -m "Graphersal 0.1.0" && git push origin v0.1.0` (the tag equals the workspace `version`).
+1. Tag the release commit: `git tag -a v0.2.0 -m "Graphersal 0.2.0" && git push origin v0.2.0` (the tag equals the workspace `version`).
 2. The crates go to crates.io by hand, in dependency order: `cargo publish -p graphersal`, then
    `graphersal-storage-tests`, `graphersal-session` and `graphersal-cli`.
 3. The Python package goes to PyPI through the workflow `release.yml`, started on the tag:
-   `gh workflow run Release --ref v0.1.0`. It checks that the tag matches the version, builds the five-platform
+   `gh workflow run Release --ref v0.2.0`. It checks that the tag matches the version, builds the five-platform
    wheels and the sdist through `python.yml` (which also runs the binding's tests and installs each wheel it can
    run), and uploads them with PyPI Trusted Publishing from the environment `pypi` (no token is stored).
 4. The GitHub Release takes its text from the release notes.

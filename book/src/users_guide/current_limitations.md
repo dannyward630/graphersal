@@ -1,6 +1,6 @@
 # Current Limitations
 
-What Graphersal 0.1.0 does not do, in one place. Each item links to the page with the details;
+What Graphersal 0.2.0 does not do, in one place. Each item links to the page with the details;
 the deliberate differences from Apache TinkerPop are listed one by one in
 [TinkerPop Deviations](../for_developers/tinkerpop_deviations.md), and the steps and scenarios that
 are not implemented yet in [TinkerPop Compliance](../for_developers/tinkerpop_compliance.md).
@@ -45,7 +45,8 @@ are not implemented yet in [TinkerPop Compliance](../for_developers/tinkerpop_co
 ## Schema
 
 - No map type (`additionalProperties` with a schema), no `oneOf`/`allOf`/`not`, no tuples, and no
-  `format` other than `uuid` ([Schemas](schema_enforcement.md#what-is-an-error-and-why)).
+  `format` other than `uuid`, the date and time formats (`date-time`, `date`, `local-date-time`,
+  `time`, `duration`) and `vector` ([Schemas](schema_enforcement.md#what-is-an-error-and-why)).
 - `default`/`defaultFunction` fill only a label's top-level properties, only when an element is
   created, and only in mode `open`/`closed`; `defaultFunction` knows `uuidv4`, `uuidv7`, `now`
   and `today`; see
@@ -58,6 +59,16 @@ are not implemented yet in [TinkerPop Compliance](../for_developers/tinkerpop_co
 - The dev server (`graphersal --server`, also MCP and AI Chat) is a local development tool:
   unstable, bound to the loopback, without authentication
   ([Dev Server and MCP](../persistence/dev_server.md)).
+- **Not a Gremlin Server.** There is no network protocol for remote Gremlin drivers
+  (gremlin-python, the Java driver); Graphersal is embedded as a library, the CLI or the Python
+  package ([Graphersal and TinkerPop](../concepts/graphersal_and_tinkerpop.md)).
+
+## Concurrency and packaging
+
+- **Readers wait for the writer.** A graph has one writer at a time and reads wait while a unit
+  writes; a layered storage with snapshot reads is planned ([Transactions](transactions.md#not-covered-yet)).
+- **No npm package.** The WebAssembly engine runs the [web playground](web_playground.md); its
+  JavaScript API is internal to it, and a published npm package is planned.
 
 ## Other
 

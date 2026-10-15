@@ -8,7 +8,7 @@ homepage.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "WebAssembly build of the Graphersal engine for the browser playground (internal JS API)"
-# The JS API is internal to the playground in 0.1.0; npm publication is planned for 0.2.0.
+# The JS API is internal to the playground; npm publication is planned.
 publish = false
 
 [lib]

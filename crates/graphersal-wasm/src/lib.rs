@@ -1,9 +1,9 @@
 //! `graphersal-wasm`: the Graphersal engine compiled to WebAssembly for the browser playground.
 //!
-//! The JavaScript API ([`Playground`]) is **internal to the playground** in 0.1.0: it is shaped by
+//! The JavaScript API ([`Playground`]) is **internal to the playground**: it is shaped by
 //! the playground's engine boundary (`playground/js/engine/engine.js`) and runs inside a module
 //! Web Worker (`playground/js/engine/worker.js`). Publishing a designed, semver-stable JS API on
-//! npm is planned for 0.2.0. Every method takes and returns plain strings (JSON text for
+//! npm is planned. Every method takes and returns plain strings (JSON text for
 //! structured data), so the worker passes them on without conversion glue.
 //!
 //! Build: `playground/build.sh` (wasm-bindgen CLI, target `web`, output `playground/pkg/`).

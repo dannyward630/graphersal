@@ -27,11 +27,12 @@ $ graphersal -e 'g.v("1").element_map()'
 
 ## Values
 
-A property value is a string, a 64-bit integer, a 64-bit float, a boolean, `null`, a UUID, an
-array or an object (a nested map). Arrays and objects can be nested, and steps reach inside them
-with path keys such as `jpath("address.city")` ([Path Keys](../users_guide/jpath_keys.md)).
+A property value is a string, a 64-bit integer, a 64-bit float, a boolean, `null`, a UUID, a
+date or time ([Dates and Times](../dates/index.md)), a vector ([Vectors](../users_guide/vectors.md)),
+an array or an object (a nested map). Arrays and objects can be nested, and steps reach inside
+them with path keys such as `jpath("address.city")` ([Path Keys](../users_guide/jpath_keys.md)).
 Values keep their type: a string that looks like a number or a date stays a string unless a
-schema declares otherwise. Dates and times come in a later release.
+schema declares otherwise.
 
 ## Graphersal additions
 

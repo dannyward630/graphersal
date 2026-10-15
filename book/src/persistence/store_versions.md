@@ -16,7 +16,7 @@ single-file container has its own container version):
 | store 2 (0.1.0) | the store identity `store_id` in `GRAPH` (offset 100), which incremental backups check |
 | store 3 (0.2.0) | the same `GRAPH` layout; marks a store whose files are of file format version 2, so that 0.1.x refuses it as newer instead of taking its files for damage |
 | file 1 (0.1.x) | the first file format |
-| file 2 (0.2.0) | the value tags of the date and time types (`date`, `localdatetime`, `datetime`, `time`, `duration`); a version 1 file is read as it is |
+| file 2 (0.2.0) | the value tags of the date and time types (`date`, `localdatetime`, `datetime`, `time`, `duration`) and of vectors (`vector`); a version 1 file is read as it is |
 
 | The store or file is | Then |
 |---|---|

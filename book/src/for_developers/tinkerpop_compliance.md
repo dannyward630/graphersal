@@ -70,9 +70,10 @@ express (see [Classes](#classes)); the scenarios that ran but differed on purpos
 `API inventory (TinkerPop 3.8.2): 19 of 151 methods, 5 of 21 token classes, 37 of 131 members of registered token classes not registered`
 <!-- tinkerpop:end inventory -->
 
-The largest remaining blockers are the date/time steps and literals (`asDate`, `datetime`, planned for
-0.2.0), the set literals and `GType.SET`/`TREE`/`VPROPERTY` (no such value types), ranked
-with their scenario counts in the report and in the API inventory section of it.
+The largest remaining blockers are the `call()` step (its name is a Rhai built-in function), the
+set literals and `GType.SET`/`TREE`/`VPROPERTY` (no such value types), ranked with their scenario
+counts in the report and in the API inventory section of it. The date and time steps and literals
+(`asDate`, `datetime`, `dateAdd`, `dateDiff`) pass since 0.2.0.
 The full ranking is in the report. The open gaps are listed in
 [TinkerPop Deviations](tinkerpop_deviations.md#known-gaps-not-fixed-yet).
 
@@ -185,7 +186,7 @@ report to `target/tinkerpop-report-forwarding.md`.
 | Class | Meaning |
 |---|---|
 | `skipped` | `@GraphComputerOnly` (OLAP) or an upstream "unsupported test"; counted in the scope, not executed (the `crew` scenarios are not skipped: they are the [deliberate incompatibility](#deliberate-incompatibilities) `multi-meta-properties`, since Graphersal stores one value per key and its [GraphSON import](../users_guide/graphson.md) maps multi- and meta-properties to arrays and `_meta`) |
-| `translate` | the translator cannot express it, e.g. a literal type Graphersal lacks (BigDecimal, BigInteger, byte, short, datetime, set, a map with a non-string key) |
+| `translate` | the translator cannot express it, e.g. a literal type Graphersal lacks (BigDecimal, BigInteger, byte, short, set, a map with a non-string key) |
 | `missing` | Rhai "Function/Variable not found": a missing step, overload or token; the name is extracted |
 | `runtime` | an error while executing: the step exists but rejects this input |
 | `wrong_result` | executed, but the result differs from the expected one |

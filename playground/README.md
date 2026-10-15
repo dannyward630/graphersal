@@ -255,8 +255,8 @@ view.
 
 - **Only the seven schema methods.** The editor reaches the engine through `js/schema/api.js`
   (`get`, `set`, `patch`, `validate`, `validatePatch`, `infer`, `diff`, a thin adapter over the
-  engine's `getSchema`, ...), so in 0.2.0 the same UI can run against the server API by passing
-  another object with these methods. Nothing else of the engine is called by the editor; queries it
+  engine's `getSchema`, ...), so the same UI runs against the dev server's API
+  (`js/engine/http-engine.js`, which has these methods too). Nothing else of the engine is called by the editor; queries it
   opens (violations, backfill) run as ordinary query tabs through the store.
 - **Draft.** `js/schema/draft.js` (`SchemaDraft`) holds the stored schema, the inferred one (shown
   when nothing is stored), and the draft. Every edit first copies the working schema into the draft;
@@ -708,7 +708,7 @@ async; the engine answers from its Web Worker, so a long query never blocks the 
 | `stop()` | `{restored}`: restarts the engine, restores the graph |
 
 The worker calls the `Playground` class of `crates/graphersal-wasm` (its JS API is internal to the
-playground in 0.1.0; a designed npm package follows in 0.2.0). Structured results cross the
+playground; a designed npm package is planned). Structured results cross the
 boundary as JSON text and are parsed in the worker.
 
 `execute` runs a traversal left without a terminal through the engine's `execute(opts)` terminal,

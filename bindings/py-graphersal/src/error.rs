@@ -33,7 +33,7 @@ pyo3::create_exception!(
     CommitRejectedError,
     GraphersalError,
     "Raised when a commit hook of the graph vetoed the commit: everything the unit changed was\n\
-     rolled back. Python cannot register commit hooks in 0.1.0, so this is raised only for a\n\
+     rolled back. Python cannot register commit hooks, so this is raised only for a\n\
      graph whose hooks were registered on the Rust side."
 );
 
