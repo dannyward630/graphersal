@@ -3624,3 +3624,123 @@ fn store_upgrade_converts_a_store_of_graphersal_0_1() {
     assert!(res.stdout.contains("--in-place"), "{}", res.stdout);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// CRC-32C (Castagnoli), bitwise: the newer-version test recomputes header checksums.
+fn crc32c(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &b in bytes {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0x82F6_3B78
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+/// Files of a newer Graphersal (made by patching the version words of files this build wrote,
+/// checksums recomputed: a store of store format version 4, a single-file store of container
+/// version 2, a packed snapshot of file format version 3) are refused as "written by a newer
+/// Graphersal" by the `store` commands and by `--graph`: exit 1, never DAMAGE, never
+/// "Corrupt", no repair offered, nothing written.
+#[test]
+fn store_commands_refuse_files_of_a_newer_graphersal() {
+    let dir = temp_path("newer-store");
+    let file = temp_path("newer.gstore");
+    let snap = temp_path("newer.gsnap");
+    let target = temp_path("newer-target");
+    for path in [&dir, &target] {
+        let _ = std::fs::remove_dir_all(path);
+    }
+    let _ = std::fs::remove_file(&file);
+    let _ = std::fs::remove_file(&snap);
+    let (d, f, s, t) = (
+        dir.to_str().unwrap(),
+        file.to_str().unwrap(),
+        snap.to_str().unwrap(),
+        target.to_str().unwrap(),
+    );
+    for args in [
+        vec!["store", "create", d, "--from", "modern"],
+        vec!["store", "create", f, "--from", "modern"],
+        vec!["store", "export", d, s],
+    ] {
+        let res = run(&args, "");
+        assert_eq!(res.code, 0, "{args:?}: {}", res.stderr);
+    }
+    // GRAPH: store format version at 8, CRC of the 256-byte fixed part at 252.
+    for name in ["GRAPH", "GRAPH.copy"] {
+        let path = dir.join(name);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[8..12].copy_from_slice(&4u32.to_le_bytes());
+        let crc = crc32c(&bytes[..252]);
+        bytes[252..256].copy_from_slice(&crc.to_le_bytes());
+        std::fs::write(&path, bytes).unwrap();
+    }
+    let _ = std::fs::remove_file(dir.join("LOCK"));
+    // The single file's preamble: container version at 8 (no checksum).
+    let mut bytes = std::fs::read(&file).unwrap();
+    bytes[8..12].copy_from_slice(&2u32.to_le_bytes());
+    std::fs::write(&file, bytes).unwrap();
+    // The packed snapshot's header: file format version at 8.
+    let mut bytes = std::fs::read(&snap).unwrap();
+    bytes[8..12].copy_from_slice(&3u32.to_le_bytes());
+    std::fs::write(&snap, bytes).unwrap();
+
+    let store_bytes = std::fs::read(dir.join("GRAPH")).unwrap();
+    let file_bytes = std::fs::read(&file).unwrap();
+    let count = "g.v().count().next()";
+    let runs: Vec<(&str, Vec<&str>)> = vec![
+        ("info", vec!["store", "info", d]),
+        ("verify", vec!["store", "verify", d]),
+        ("list", vec!["store", "list", d]),
+        ("marks", vec!["store", "marks", d]),
+        ("repair", vec!["store", "repair", d, "--to", t]),
+        ("backup", vec!["store", "backup", d, t]),
+        ("checkpoint", vec!["store", "checkpoint", d]),
+        ("convert", vec!["store", "convert", d, t]),
+        ("upgrade", vec!["store", "upgrade", d, t]),
+        (
+            "upgrade in place",
+            vec!["store", "upgrade", d, "--in-place"],
+        ),
+        ("--graph", vec!["--graph", d, "-e", count]),
+        ("info single file", vec!["store", "info", f]),
+        ("verify single file", vec!["store", "verify", f]),
+        (
+            "upgrade single file",
+            vec!["store", "upgrade", f, "--in-place"],
+        ),
+        ("--graph single file", vec!["--graph", f, "-e", count]),
+        ("--graph gsnap", vec!["--graph", s, "-e", count]),
+        (
+            "create --from gsnap",
+            vec!["store", "create", t, "--from", s],
+        ),
+    ];
+    for (what, args) in runs {
+        let res = run(&args, "");
+        let all = format!("{}{}", res.stdout, res.stderr);
+        // A `--graph` FILE that cannot be loaded is an invalid invocation (2), as for any
+        // unreadable graph file; every store operation fails with 1.
+        let expected = if what == "--graph gsnap" { 2 } else { 1 };
+        assert_eq!(res.code, expected, "{what}: {all}");
+        assert!(
+            all.contains("written by a newer Graphersal"),
+            "{what}: {all}"
+        );
+        assert!(!all.contains("DAMAGE"), "{what}: {all}");
+        assert!(!all.contains("Corrupt"), "{what}: {all}");
+        assert!(!all.contains("store repair"), "{what}: {all}");
+        assert!(!target.exists(), "{what}: nothing created at the target");
+    }
+    assert_eq!(std::fs::read(dir.join("GRAPH")).unwrap(), store_bytes);
+    assert!(!dir.join("LOCK").exists(), "no LOCK file created");
+    assert_eq!(std::fs::read(&file).unwrap(), file_bytes);
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&file);
+    let _ = std::fs::remove_file(&snap);
+}

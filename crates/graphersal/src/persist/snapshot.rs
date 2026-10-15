@@ -928,9 +928,7 @@ fn frame_segment_stream(
     }
     let mut header = super::codec::Reader::new(&buf[8..60]);
     let version = header.u32()?;
-    if !super::codec::readable_version(version) {
-        return Err(DecodeError::new(8, format!("segment format version {version}")).into());
-    }
+    DecodeError::check_version(8, "segment", version)?;
     let found_kind = header.u8()?;
     if found_kind != entry.kind {
         return Err(DecodeError::new(

@@ -26,10 +26,106 @@ use super::maintenance::{self, VerifyReport};
 use super::{BackupMarker, Store};
 use crate::persist::StoreFailure;
 
-/// The oldest store format version this build upgrades: 2, the version of the first release
-/// (Graphersal 0.1.0). Version 1 was never released (it has no store id); such a store keeps
-/// the migration through a packed snapshot (its `OlderFormat` help).
-pub(crate) const OLDEST_UPGRADABLE_STORE_VERSION: u32 = 2;
+/// How a store of one store format version becomes one of the current version (format spec
+/// 15.1, the table [`UPGRADES`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UpgradeMethod {
+    /// The store already has the version: nothing to do (in place: `already_current`; a
+    /// copying upgrade is refused with [`StoreFailure::AlreadyCurrent`]).
+    Nothing,
+    /// Only the version word of `GRAPH` and `GRAPH.copy` (and their checksums) changes: every
+    /// other file is read by this build as it is. Safe in place (two atomic replacements, each
+    /// state readable) and into a copy.
+    InPlaceVersionWord,
+    /// The upgrade must write a NEW copy ([`Store::upgrade`]); [`Store::upgrade_in_place`]
+    /// refuses it with [`StoreFailure::UpgradeNeedsCopy`] before anything is written. No row
+    /// uses it yet: a row that does needs its conversion in `upgrade_copy` (today's copy
+    /// rewrites only the version word).
+    #[allow(dead_code)]
+    CopyOnly,
+    /// This build does not upgrade the version: refused with [`PersistError::OlderFormat`],
+    /// whose help is the migration through a packed snapshot exported by the build that wrote
+    /// the store. A version without a row is refused the same way.
+    Unsupported,
+}
+
+#[cfg(test)]
+impl UpgradeMethod {
+    /// The name the book's table uses (`store_versions.md`, format spec 15.1).
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            UpgradeMethod::Nothing => "nothing to do",
+            UpgradeMethod::InPlaceVersionWord => "in place or into a copy (version word)",
+            UpgradeMethod::CopyOnly => "into a copy only",
+            UpgradeMethod::Unsupported => "unsupported (packed snapshot)",
+        }
+    }
+}
+
+/// One row of the upgrade table: from store format version `from` to `to` by `method`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UpgradeRow {
+    pub(crate) from: u32,
+    pub(crate) to: u32,
+    pub(crate) method: UpgradeMethod,
+    /// Which Graphersal wrote stores of `from` (for the book).
+    pub(crate) written_by: &'static str,
+}
+
+/// THE upgrade compatibility table (format spec 15.1): one row per older store format version
+/// to the current one. An upgrade is done only as its row says; a version without a row is
+/// refused before anything is written. Bumping `STORE_VERSION` (or the file format version)
+/// fails the test `the_upgrade_table_covers_every_version` until the table is reviewed: every
+/// row's target moved, the previous version given its method, `UPGRADES_REVIEWED_FOR`
+/// updated, and the book's copies of the table (`store_versions.md`, `format.md` 15.1)
+/// changed with it (another test compares them).
+pub(crate) const UPGRADES: &[UpgradeRow] = &[
+    UpgradeRow {
+        from: 1,
+        to: 3,
+        method: UpgradeMethod::Unsupported,
+        written_by: "never released (no store id)",
+    },
+    UpgradeRow {
+        from: 2,
+        to: 3,
+        method: UpgradeMethod::InPlaceVersionWord,
+        written_by: "Graphersal 0.1.x",
+    },
+    UpgradeRow {
+        from: 3,
+        to: 3,
+        method: UpgradeMethod::Nothing,
+        written_by: "Graphersal 0.2.x",
+    },
+];
+
+/// The (store format, file format) versions [`UPGRADES`] was last reviewed for.
+#[cfg(test)]
+pub(crate) const UPGRADES_REVIEWED_FOR: (u32, u32) = (3, 2);
+
+/// The method [`UPGRADES`] gives for a store of store format version `from` (to the current
+/// version); [`UpgradeMethod::Unsupported`] without a row.
+pub(crate) fn upgrade_method(from: u32) -> UpgradeMethod {
+    method_in(UPGRADES, from)
+}
+
+fn method_in(table: &[UpgradeRow], from: u32) -> UpgradeMethod {
+    table
+        .iter()
+        .find(|row| row.from == from && row.to == STORE_VERSION)
+        .map_or(UpgradeMethod::Unsupported, |row| row.method)
+}
+
+/// Whether this build upgrades a store of the older store format version `found` (in place
+/// or into a copy): the `OlderFormat` help names the upgrade then, else the migration.
+pub(crate) fn upgradable_from(found: u32) -> bool {
+    found < STORE_VERSION
+        && matches!(
+            upgrade_method(found),
+            UpgradeMethod::InPlaceVersionWord | UpgradeMethod::CopyOnly
+        )
+}
 
 /// The name of the marker a copying upgrade writes into its target first and removes last: a
 /// target that still holds it is an interrupted upgrade (no `GRAPH` yet, or written but the
@@ -86,10 +182,11 @@ fn classify(dir: &DirPath, name: &str) -> (GraphCopy, Option<Vec<u8>>) {
 /// checksum); everything else of the file is kept. `None`: not an upgradable older `GRAPH`.
 fn patched(bytes: &[u8]) -> Option<Vec<u8>> {
     let version = GraphFile::older_version(bytes)?;
-    if version < OLDEST_UPGRADABLE_STORE_VERSION {
+    if !upgradable_from(version) {
         return None;
     }
-    // Versions 2 and 3 have the same layout (format spec 5.1, 15): only the version word moves.
+    // Every upgradable row converts by the version word (`UPGRADES`): the `GRAPH` layout of
+    // versions 2 and 3 is the same (format spec 5.1, 15).
     let mut out = bytes.to_vec();
     let fixed = files::GRAPH_FIXED_BYTES;
     out[8..12].copy_from_slice(&STORE_VERSION.to_le_bytes());
@@ -136,7 +233,7 @@ fn source_version(dir: &DirPath) -> Result<u32, PersistError> {
     let upgradable = [older(&main), older(&copy)]
         .into_iter()
         .flatten()
-        .filter(|version| *version >= OLDEST_UPGRADABLE_STORE_VERSION)
+        .filter(|version| upgradable_from(*version))
         .max();
     match upgradable {
         Some(version) => Ok(version),
@@ -180,8 +277,38 @@ fn verify_source(view: &DirPath, source: &DirPath) -> Result<VerifyReport, Persi
 
 /// [`Store::upgrade_in_place`].
 pub(super) fn upgrade_in_place(dir: &DirPath) -> Result<UpgradeReport, PersistError> {
+    upgrade_in_place_by(dir, UPGRADES)
+}
+
+/// The refusal of an older store whose row (`UPGRADES`) says it is not upgraded in place.
+fn needs_copy(dir: &DirPath, from_version: u32) -> PersistError {
+    PersistError::store(
+        "upgrade the store in place",
+        StoreFailure::UpgradeNeedsCopy,
+        format!(
+            "{} has store format version {from_version}, which this build upgrades to version \
+             {STORE_VERSION} only into a new copy",
+            dir.display()
+        ),
+    )
+}
+
+/// [`upgrade_in_place`] by the rows of `table` (a test table for the methods no row uses).
+fn upgrade_in_place_by(dir: &DirPath, table: &[UpgradeRow]) -> Result<UpgradeReport, PersistError> {
+    // A store with files of a NEWER version is never worked on (format spec 15): refused
+    // before the lock and before anything is written.
+    files::refuse_newer_version(dir)?;
     let _lock = DirLock::exclusive(dir)?;
     let from_version = source_version(dir)?;
+    if from_version != STORE_VERSION {
+        match method_in(table, from_version) {
+            UpgradeMethod::InPlaceVersionWord => {}
+            UpgradeMethod::CopyOnly => return Err(needs_copy(dir, from_version)),
+            UpgradeMethod::Nothing | UpgradeMethod::Unsupported => {
+                return Err(not_upgradable(dir, from_version));
+            }
+        }
+    }
     if from_version == STORE_VERSION {
         return Ok(UpgradeReport {
             from_version,
@@ -216,10 +343,41 @@ pub(super) fn upgrade_in_place(dir: &DirPath) -> Result<UpgradeReport, PersistEr
 
 /// [`Store::upgrade`].
 pub(super) fn upgrade_copy(from: &DirPath, to: &DirPath) -> Result<UpgradeReport, PersistError> {
+    upgrade_copy_by(from, to, UPGRADES)
+}
+
+/// The refusal of an older store version without a supported row: [`PersistError::OlderFormat`],
+/// whose help is the migration through a packed snapshot.
+fn not_upgradable(dir: &DirPath, found: u32) -> PersistError {
+    PersistError::OlderFormat {
+        path: dir.display(),
+        found,
+        supported: STORE_VERSION,
+    }
+}
+
+/// [`upgrade_copy`] by the rows of `table`.
+fn upgrade_copy_by(
+    from: &DirPath,
+    to: &DirPath,
+    table: &[UpgradeRow],
+) -> Result<UpgradeReport, PersistError> {
+    // A store with files of a NEWER version is never worked on (format spec 15).
+    files::refuse_newer_version(from)?;
     // The writer lock keeps a writer of the older version (or this one) out while the files
     // are copied; readers take no lock. Nothing of `from` is written.
     let _lock = DirLock::exclusive(from)?;
     let from_version = source_version(from)?;
+    if from_version != STORE_VERSION {
+        match method_in(table, from_version) {
+            // Every supported row converts by the version word today; a `CopyOnly` row needs
+            // its conversion here when one is added.
+            UpgradeMethod::InPlaceVersionWord | UpgradeMethod::CopyOnly => {}
+            UpgradeMethod::Nothing | UpgradeMethod::Unsupported => {
+                return Err(not_upgradable(from, from_version));
+            }
+        }
+    }
     if from_version == STORE_VERSION {
         return Err(PersistError::store(
             "upgrade the store",
@@ -491,5 +649,233 @@ impl StoreDir for UpgradeView {
 
     fn check(&self) -> super::super::dir::DirCheck {
         self.inner.check()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persist::{MemDir, StoreOptions};
+
+    /// The book pages that hold the generated copy of [`UPGRADES`], between
+    /// `<!-- upgrades:begin -->` and `<!-- upgrades:end -->`.
+    const BOOK_PAGES: [&str; 3] = [
+        "persistence/store_versions.md",
+        "persistence/format.md",
+        "persistence/store_cli.md",
+    ];
+
+    /// The table as the book shows it.
+    fn book_table() -> String {
+        let mut out = String::from(
+            "| From store format version | Written by | To | Upgrade |\n|---|---|---|---|\n",
+        );
+        for row in UPGRADES {
+            out.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                row.from,
+                row.written_by,
+                row.to,
+                row.method.label()
+            ));
+        }
+        out
+    }
+
+    #[test]
+    fn the_upgrade_table_covers_every_version() {
+        use crate::persist::codec::FORMAT_VERSION;
+        assert_eq!(
+            UPGRADES_REVIEWED_FOR,
+            (STORE_VERSION, FORMAT_VERSION),
+            "the store or file format version changed: review the upgrade table UPGRADES \
+             (upgrade.rs): give the previous released version its row to the new version (is \
+             the version word enough, InPlaceVersionWord, or does it need a copy, CopyOnly?), \
+             move every row's target, then update UPGRADES_REVIEWED_FOR and regenerate the \
+             book's copies (GRAPHERSAL_UPDATE_BOOK=1)"
+        );
+        for version in 1..=STORE_VERSION {
+            let rows: Vec<_> = UPGRADES.iter().filter(|row| row.from == version).collect();
+            assert_eq!(rows.len(), 1, "store format version {version}: {rows:?}");
+            assert_eq!(rows[0].to, STORE_VERSION, "{:?}", rows[0]);
+            assert_eq!(
+                rows[0].method == UpgradeMethod::Nothing,
+                version == STORE_VERSION,
+                "{:?}",
+                rows[0]
+            );
+        }
+        assert!(UPGRADES.iter().all(|row| row.from <= STORE_VERSION));
+        // A newer version has no row: it is never upgraded (format spec 15).
+        assert_eq!(
+            upgrade_method(STORE_VERSION + 1),
+            UpgradeMethod::Unsupported
+        );
+        assert!(!upgradable_from(STORE_VERSION + 1));
+    }
+
+    #[test]
+    fn the_book_shows_the_upgrade_table() {
+        let book = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../book/src");
+        let table = book_table();
+        let update = std::env::var_os("GRAPHERSAL_UPDATE_BOOK").is_some();
+        for page in BOOK_PAGES {
+            let path = book.join(page);
+            let text = std::fs::read_to_string(&path).unwrap();
+            let (begin, end) = ("<!-- upgrades:begin -->\n", "<!-- upgrades:end -->");
+            let start = text
+                .find(begin)
+                .unwrap_or_else(|| panic!("{page}: no {begin}"));
+            let stop = text.find(end).unwrap_or_else(|| panic!("{page}: no {end}"));
+            let found = &text[start + begin.len()..stop];
+            if found == table {
+                continue;
+            }
+            if update {
+                let new = format!("{}{table}{}", &text[..start + begin.len()], &text[stop..]);
+                std::fs::write(&path, new).unwrap();
+            } else {
+                panic!(
+                    "{page}: the upgrade table differs from UPGRADES (upgrade.rs); regenerate \
+                     with GRAPHERSAL_UPDATE_BOOK=1:\n{table}\nfound:\n{found}"
+                );
+            }
+        }
+    }
+
+    /// A closed store of the current version in memory, its `GRAPH` copies then set to store
+    /// format `version` (checksum recomputed).
+    fn store_of_version(version: u32) -> MemDir {
+        let dir = MemDir::new();
+        Store::create(&dir, StoreOptions::new())
+            .unwrap()
+            .close()
+            .unwrap();
+        for name in [GRAPH_FILE, GRAPH_COPY] {
+            let mut bytes = dir.read(name, 1 << 20).unwrap();
+            bytes[8..12].copy_from_slice(&version.to_le_bytes());
+            let fixed = files::GRAPH_FIXED_BYTES;
+            let sum = crc(&bytes[..fixed - 4]);
+            bytes[fixed - 4..fixed].copy_from_slice(&sum.to_le_bytes());
+            dir.write_atomic(name, &bytes).unwrap();
+        }
+        dir
+    }
+
+    fn graph_copies(dir: &MemDir) -> Vec<Vec<u8>> {
+        [GRAPH_FILE, GRAPH_COPY]
+            .iter()
+            .map(|name| dir.read(name, 1 << 20).unwrap())
+            .collect()
+    }
+
+    fn root(dir: &MemDir) -> DirPath {
+        DirPath::root(Arc::new(dir.clone()))
+    }
+
+    fn version_of(dir: &MemDir) -> u32 {
+        let bytes = dir.read(GRAPH_FILE, 1 << 20).unwrap();
+        u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]])
+    }
+
+    #[test]
+    fn row_1_to_3_is_refused_with_the_packed_snapshot_migration() {
+        assert_eq!(upgrade_method(1), UpgradeMethod::Unsupported);
+        let dir = store_of_version(1);
+        let before = graph_copies(&dir);
+        for result in [
+            upgrade_in_place(&root(&dir)),
+            upgrade_copy(&root(&dir), &root(&MemDir::new())),
+        ] {
+            match result {
+                Err(err @ PersistError::OlderFormat { found: 1, .. }) => {
+                    let text = crate::error::format_diagnostic(&err);
+                    assert!(text.contains("packed snapshot"), "{text}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(graph_copies(&dir), before);
+    }
+
+    #[test]
+    fn row_2_to_3_upgrades_in_place_and_into_a_copy() {
+        assert_eq!(upgrade_method(2), UpgradeMethod::InPlaceVersionWord);
+        assert!(upgradable_from(2));
+        let dir = store_of_version(2);
+        let target = MemDir::new();
+        let report = upgrade_copy(&root(&dir), &root(&target)).unwrap();
+        assert_eq!((report.from_version, report.to_version), (2, 3));
+        assert_eq!((version_of(&dir), version_of(&target)), (2, 3));
+        let report = upgrade_in_place(&root(&dir)).unwrap();
+        assert!(report.in_place && !report.already_current);
+        assert_eq!(version_of(&dir), 3);
+        Store::open(&dir, StoreOptions::new())
+            .unwrap()
+            .close()
+            .unwrap();
+    }
+
+    #[test]
+    fn row_3_to_3_has_nothing_to_do() {
+        assert_eq!(upgrade_method(STORE_VERSION), UpgradeMethod::Nothing);
+        let dir = store_of_version(STORE_VERSION);
+        let before = graph_copies(&dir);
+        assert!(upgrade_in_place(&root(&dir)).unwrap().already_current);
+        match upgrade_copy(&root(&dir), &root(&MemDir::new())) {
+            Err(PersistError::Store {
+                cause: StoreFailure::AlreadyCurrent,
+                ..
+            }) => {}
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(graph_copies(&dir), before);
+    }
+
+    /// A `CopyOnly` row (none today): in place is refused before anything is written, a copy
+    /// is made.
+    #[test]
+    fn a_copy_only_row_refuses_the_in_place_upgrade() {
+        let table = [
+            UpgradeRow {
+                from: 2,
+                to: STORE_VERSION,
+                method: UpgradeMethod::CopyOnly,
+                written_by: "test",
+            },
+            UpgradeRow {
+                from: STORE_VERSION,
+                to: STORE_VERSION,
+                method: UpgradeMethod::Nothing,
+                written_by: "test",
+            },
+        ];
+        let dir = store_of_version(2);
+        let before = graph_copies(&dir);
+        match upgrade_in_place_by(&root(&dir), &table) {
+            Err(
+                err @ PersistError::Store {
+                    cause: StoreFailure::UpgradeNeedsCopy,
+                    ..
+                },
+            ) => {
+                let text = crate::error::format_diagnostic(&err);
+                assert!(
+                    text.contains("graphersal store upgrade <dir> <new_dir>"),
+                    "{text}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(graph_copies(&dir), before);
+        let target = MemDir::new();
+        upgrade_copy_by(&root(&dir), &root(&target), &table).unwrap();
+        assert_eq!(version_of(&target), STORE_VERSION);
+        // A version without a row is refused like an unsupported one.
+        assert!(matches!(
+            upgrade_in_place_by(&root(&dir), &table[1..]),
+            Err(PersistError::OlderFormat { found: 2, .. })
+        ));
+        assert_eq!(graph_copies(&dir), before);
     }
 }

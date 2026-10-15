@@ -5,8 +5,8 @@
 use compact_str::CompactString;
 
 use super::codec::{
-    self as codec, DecodeError, DecodeResult, FORMAT_VERSION, FileVersion, Reader, crc, put_str,
-    put_u8, put_u16, put_u32, put_u64, put_uvar,
+    DecodeError, DecodeResult, FORMAT_VERSION, FileVersion, Reader, crc, put_str, put_u8, put_u16,
+    put_u32, put_u64, put_uvar,
 };
 use super::definitions::{self, DefinitionRecord};
 use super::segment::{ChunkIndexEntry, KIND_EDGE, KIND_VERTEX};
@@ -123,12 +123,7 @@ impl ManifestFixed {
             return Err(DecodeError::new(0, "not a manifest (bad magic)"));
         }
         let version = r.u32()?;
-        if !codec::readable_version(version) {
-            return Err(DecodeError::new(
-                8,
-                format!("unsupported manifest version {version}"),
-            ));
-        }
+        DecodeError::check_version(8, "manifest", version)?;
         let mut fixed = ManifestFixed {
             flags: r.u32()?,
             graph_id: r.u128_be()?,

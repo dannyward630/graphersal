@@ -207,6 +207,8 @@ fn increment<S: PersistentStorage + ?Sized>(
     write: &WriteOptions,
     target: &DirPath,
 ) -> Result<BackupReport, PersistError> {
+    // An existing backup of a newer (or older) format is never written to (format spec 15).
+    files::refuse_other_version(target)?;
     let _lock = DirLock::exclusive(target).map_err(|err| match err {
         PersistError::Locked { path } => refuse(format!(
             "the backup directory {path} is in use (another backup, a restore or a prune of it \

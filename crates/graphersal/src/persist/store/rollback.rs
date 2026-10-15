@@ -1250,6 +1250,7 @@ pub(super) fn attic_fork(
     id: &str,
     new_dir: &DirPath,
 ) -> Result<ForkReport, PersistError> {
+    super::files::refuse_other_version(dir)?;
     let options = super::StoreOptions::new();
     let (entry, old, graph) = attic_state(dir, id, &options.read)?;
     // The creation-time parameters of the store carry over (a fork is the same data under a

@@ -470,7 +470,7 @@ fn chunk_at<'b>(bytes: &'b [u8], row: &ChunkRow) -> Result<RawChunk<'b>, String>
         count: u32::from_le_bytes([head[9], head[10], head[11], head[12]]),
         crc: row.chunk.crc,
         stored,
-        version: segment::header_version(bytes),
+        version: segment::header_version(bytes).map_err(|err| err.reason)?,
     })
 }
 
@@ -1245,6 +1245,9 @@ pub(super) fn salvage(dir: &DirPath, read: &ReadOptions) -> Result<Salvage, Pers
     let max_depth = read.max_value_depth();
     let mut damage = Vec::new();
     let mut notes = Vec::new();
+    // Files of a newer (or older) format are never damage and never salvaged (format spec
+    // 15): refused before anything is scanned.
+    super::files::refuse_other_version(dir)?;
     // The backend's own records come first: what it lost is missing from every file below.
     let backend = dir.store_dir().check();
     for reason in backend.damage {

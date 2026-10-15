@@ -136,6 +136,19 @@ up to commit N, taken T` (a backup), `attic  N entr(y/ies)`, and for a single fi
 `file  single file, 23.0 KiB (23.0 KiB live, 0 B free space inside: ...)`. `state` is `open (in
 use, or not closed cleanly)` while a writer has it (or after a crash).
 
+A store written by a **newer** Graphersal (its `GRAPH`, a snapshot or WAL file, or the single
+file's container of a newer format version) is not read: `info`, like every `store` command
+(`upgrade` and `repair` included) and `--graph`, exits **1** with the refusal and changes nothing
+(no lock file either):
+
+```text
+$ graphersal store info data/
+Error: Unsupported format version 4 of the store data/ (store format version): written by a newer Graphersal (this build reads up to version 3)
+Help: The store or file was written by a newer Graphersal; open it with that version (or a later one). ...
+```
+
+See [Format Versions](store_versions.md).
+
 ### list
 
 ```text
@@ -200,7 +213,9 @@ graphersal store verify <DIR>
 
 Reads every checksum (snapshots, WAL, `GRAPH`, marks). Exit **0** with `ok: no damage found`;
 exit **1** with every problem and the damage report (the donor of each damaged item). See
-[Verify](store_verify.md).
+[Verify](store_verify.md). Files of a newer format version are never listed as damage: `verify`
+exits **1** with the "written by a newer Graphersal" refusal shown under [info](#info) (no
+`DAMAGE` lines, no repair advice), and `store repair` refuses such a store the same way.
 
 ### fork
 
@@ -444,6 +459,21 @@ upgrade in place of a current store prints `nothing to do` (exit 0). An interrup
 no store in `NEW` (run it again: it clears what was left), and in place leaves the store either
 older or upgraded (run it again). A ZIP backup of an older store is upgraded by
 `store restore FILE.zip DIR`. See [Format Versions](store_versions.md).
+
+Which versions are upgraded, and how, is decided by one table (the same in
+[Format Versions](store_versions.md#the-upgrade-table) and the
+[format specification 15.1](format.md#151-upgrading-a-store)); a version without a supported row is
+refused before anything is written, a row "into a copy only" refuses `--in-place`
+(`StoreFailure::UpgradeNeedsCopy`), and a store with any file of a newer version is refused like
+every other command does (below):
+
+<!-- upgrades:begin -->
+| From store format version | Written by | To | Upgrade |
+|---|---|---|---|
+| 1 | never released (no store id) | 3 | unsupported (packed snapshot) |
+| 2 | Graphersal 0.1.x | 3 | in place or into a copy (version word) |
+| 3 | Graphersal 0.2.x | 3 | nothing to do |
+<!-- upgrades:end -->
 
 ```text
 $ graphersal store upgrade old/ new/

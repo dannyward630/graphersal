@@ -330,7 +330,9 @@ pub(crate) struct SegmentFrame<'a> {
 /// chunk read through the manifest's chunk index without framing the whole segment (a merge
 /// checkpoint, a damage scan): the header's version when its checksum holds and this build
 /// reads it, else the current one (the chunk's own checksum was checked against the index).
-pub(crate) fn header_version(head: &[u8]) -> u32 {
+/// An intact header of a NEWER file format version is an error ([`DecodeError::newer`]): its
+/// chunks are never decoded as this version's (format spec 15).
+pub(crate) fn header_version(head: &[u8]) -> DecodeResult<u32> {
     match head.get(..SEGMENT_HEADER_BYTES) {
         Some(head)
             if head[..8] == SEGMENT_MAGIC[..]
@@ -338,13 +340,15 @@ pub(crate) fn header_version(head: &[u8]) -> u32 {
                     == u32::from_le_bytes([head[60], head[61], head[62], head[63]]) =>
         {
             let version = u32::from_le_bytes([head[8], head[9], head[10], head[11]]);
-            if codec::readable_version(version) {
-                version
+            if version > FORMAT_VERSION {
+                Err(DecodeError::newer(8, "segment", version))
+            } else if codec::readable_version(version) {
+                Ok(version)
             } else {
-                FORMAT_VERSION
+                Ok(FORMAT_VERSION)
             }
         }
-        _ => FORMAT_VERSION,
+        _ => Ok(FORMAT_VERSION),
     }
 }
 
@@ -366,12 +370,7 @@ pub(crate) fn frame_segment(
         return Err(DecodeError::new(60, "segment header checksum mismatch"));
     }
     let version = header.u32()?;
-    if !codec::readable_version(version) {
-        return Err(DecodeError::new(
-            8,
-            format!("segment format version {version}"),
-        ));
-    }
+    DecodeError::check_version(8, "segment", version)?;
     let found_kind = header.u8()?;
     if found_kind != kind {
         return Err(DecodeError::new(

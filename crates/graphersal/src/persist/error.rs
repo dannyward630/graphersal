@@ -34,9 +34,11 @@ pub enum PersistError {
         reason: String,
     },
 
-    /// The file was written by a newer format version than this build reads.
+    /// The store or file was written by a newer format version than this build reads (format
+    /// spec 15): never damage, nothing is changed.
     #[error(
-        "Unsupported format version {found} of the {location} (this build reads version {supported})"
+        "Unsupported format version {found} of the {location}: written by a newer Graphersal \
+         (this build reads up to version {supported})"
     )]
     #[non_exhaustive]
     UnsupportedVersion {
@@ -415,6 +417,10 @@ pub enum StoreFailure {
     /// [`Store::upgrade_in_place`](super::Store::upgrade_in_place)) does not verify: nothing
     /// was written; repair it into a new current store instead.
     DamagedSource,
+    /// The store format version of a store to upgrade in place
+    /// ([`Store::upgrade_in_place`](super::Store::upgrade_in_place)) is upgraded only into a NEW
+    /// copy (the upgrade table, format spec 15.1): nothing was written.
+    UpgradeNeedsCopy,
 }
 
 impl StoreFailure {
@@ -444,6 +450,7 @@ impl StoreFailure {
             StoreFailure::Stopped => "stopped",
             StoreFailure::AlreadyCurrent => "already_current",
             StoreFailure::DamagedSource => "damaged_source",
+            StoreFailure::UpgradeNeedsCopy => "upgrade_needs_copy",
         }
     }
 
@@ -575,6 +582,14 @@ impl StoreFailure {
                  repaired, lost and diverged; the damaged store is never changed). Or restore a \
                  backup and upgrade that (graphersal store upgrade <backup_dir> <new_dir>)."
             }
+            StoreFailure::UpgradeNeedsCopy => {
+                "Nothing was written: an upgrade from this store format version changes more \
+                 than the version word, so it is never done in place. Upgrade it into a NEW \
+                 store (the older one stays as it is): Store::upgrade (CLI: graphersal store \
+                 upgrade <dir> <new_dir>; Python graphersal.Store.upgrade(source, target)). The \
+                 supported upgrades are listed in the format versions table of the book \
+                 (persistence/store_versions.md)."
+            }
         }
     }
 }
@@ -635,8 +650,11 @@ impl DiagnosticError for PersistError {
                  on it. A Store with damage opens read-only in maintenance mode; build a repaired \
                  copy with Store::repair_to (CLI: graphersal store repair <dir> --to <new_dir>)."
                 .to_string(),
-            PersistError::UnsupportedVersion { .. } => "The file was written by a newer \
-                 Graphersal; load it with that version."
+            PersistError::UnsupportedVersion { .. } => "The store or file was written by a \
+                 newer Graphersal; open it with that version (or a later one). It is not \
+                 damaged: this build refuses it without reading further or changing anything, \
+                 and it is never opened in maintenance mode, repaired or upgraded here (a \
+                 repair by this build would lose what it cannot read)."
                 .to_string(),
             PersistError::MemoryBudget { .. } => "Raise the memory limit of the load \
                  (ReadOptions::with_memory_limit, Python memory_limit=...) or load the graph on \
@@ -689,7 +707,7 @@ impl DiagnosticError for PersistError {
                  holds, graphersal --graph {path} opens it)."
             ),
             PersistError::OlderFormat { path, found, .. }
-                if *found >= super::store::OLDEST_UPGRADABLE_STORE_VERSION =>
+                if super::store::upgradable_from(*found) =>
             {
                 format!(
                     "Upgrade it with this build; no older Graphersal is needed. Into a new store \
