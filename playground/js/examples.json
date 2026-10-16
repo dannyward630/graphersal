@@ -126,6 +126,42 @@
     "script": "g.v(\"root\").glob_path(\"**/*.rs\", #{prune: __.has(\"name\", \"author\")})\n  .by(\"name\").by([\"directory\", \"file\"]).order().by(T.id).id()"
   },
   {
+    "group": "Embeddings (vectors)",
+    "graph": "empty",
+    "title": "Nearest neighbours: nearest(key, q, k)",
+    "script": "// Toy embeddings with three axes: [animals, food, technology].\n// Re-runnable: first remove what an earlier run created.\ng.v().has_label(\"doc\").drop().iterate();\nfor d in [\n  [\"Cats and dogs\",        2024, [0.9, 0.1, 0.0]],\n  [\"Training a puppy\",     2026, [0.8, 0.1, 0.2]],\n  [\"Feeding your cat\",     2025, [0.6, 0.7, 0.0]],\n  [\"Pasta at home\",        2025, [0.0, 0.9, 0.1]],\n  [\"Robot chefs\",          2026, [0.1, 0.6, 0.8]],\n  [\"Rust for beginners\",   2024, [0.0, 0.0, 1.0]],\n  [\"GPS collars for dogs\", 2026, [0.7, 0.0, 0.6]],\n] {\n  g.add_v(\"doc\").property(\"title\", d[0]).property(\"year\", d[1])\n   .property(\"emb\", vector(d[2])).iterate();\n}\n\n// The 3 documents closest to \"animals\", best first (cosine similarity).\ng.v().has_label(\"doc\")\n .nearest(\"emb\", vector([1.0, 0.0, 0.0]), 3)\n .values(\"title\")"
+  },
+  {
+    "group": "Embeddings (vectors)",
+    "graph": "empty",
+    "title": "Similarity ranking table",
+    "script": "// Toy embeddings with three axes: [animals, food, technology].\n// Re-runnable: first remove what an earlier run created.\ng.v().has_label(\"doc\").drop().iterate();\nfor d in [\n  [\"Cats and dogs\",        2024, [0.9, 0.1, 0.0]],\n  [\"Training a puppy\",     2026, [0.8, 0.1, 0.2]],\n  [\"Feeding your cat\",     2025, [0.6, 0.7, 0.0]],\n  [\"Pasta at home\",        2025, [0.0, 0.9, 0.1]],\n  [\"Robot chefs\",          2026, [0.1, 0.6, 0.8]],\n  [\"Rust for beginners\",   2024, [0.0, 0.0, 1.0]],\n  [\"GPS collars for dogs\", 2026, [0.7, 0.0, 0.6]],\n] {\n  g.add_v(\"doc\").property(\"title\", d[0]).property(\"year\", d[1])\n   .property(\"emb\", vector(d[2])).iterate();\n}\n\n// Score every document against \"animals and technology\", best first.\nlet q = vector([0.5, 0.0, 0.5]);\ng.v().has_label(\"doc\")\n .project(\"title\", \"score\")\n   .by(\"title\")\n   .by(__.similarity(\"emb\", q))\n .order().by(__.select(\"score\"), Order.desc)"
+  },
+  {
+    "group": "Embeddings (vectors)",
+    "graph": "empty",
+    "title": "Filtered search: has() before nearest()",
+    "script": "// Toy embeddings with three axes: [animals, food, technology].\n// Re-runnable: first remove what an earlier run created.\ng.v().has_label(\"doc\").drop().iterate();\nfor d in [\n  [\"Cats and dogs\",        2024, [0.9, 0.1, 0.0]],\n  [\"Training a puppy\",     2026, [0.8, 0.1, 0.2]],\n  [\"Feeding your cat\",     2025, [0.6, 0.7, 0.0]],\n  [\"Pasta at home\",        2025, [0.0, 0.9, 0.1]],\n  [\"Robot chefs\",          2026, [0.1, 0.6, 0.8]],\n  [\"Rust for beginners\",   2024, [0.0, 0.0, 1.0]],\n  [\"GPS collars for dogs\", 2026, [0.7, 0.0, 0.6]],\n] {\n  g.add_v(\"doc\").property(\"title\", d[0]).property(\"year\", d[1])\n   .property(\"emb\", vector(d[2])).iterate();\n}\n\n// Only documents from 2025 on are ranked.\ng.v().has_label(\"doc\")\n .has(\"year\", P.gte(2025))\n .nearest(\"emb\", vector([1.0, 0.0, 0.0]), 3)\n .project(\"title\", \"year\").by(\"title\").by(\"year\")"
+  },
+  {
+    "group": "Embeddings (vectors)",
+    "graph": "empty",
+    "title": "GraphRAG: a vector hit, then its author and topic",
+    "script": "// Documents with toy embeddings [animals, food, technology],\n// their authors (wrote) and topics (about).\n// Re-runnable: first remove what an earlier run created.\ng.v().has_label(\"doc\", \"person\", \"topic\").drop().iterate();\nfor d in [\n  [\"Cats and dogs\",      \"Ada\",  \"pets\",        [0.9, 0.1, 0.0]],\n  [\"Feeding your cat\",   \"Ada\",  \"pets\",        [0.6, 0.7, 0.0]],\n  [\"Pasta at home\",      \"Ben\",  \"cooking\",     [0.0, 0.9, 0.1]],\n  [\"Robot chefs\",        \"Cleo\", \"cooking\",     [0.1, 0.6, 0.8]],\n  [\"Rust for beginners\", \"Cleo\", \"programming\", [0.0, 0.0, 1.0]],\n] {\n  g.merge_v(#{\"T.label\": \"person\", name: d[1]}).as(\"a\")\n   .merge_v(#{\"T.label\": \"topic\", name: d[2]}).as(\"t\")\n   .add_v(\"doc\").property(\"title\", d[0])\n   .property(\"emb\", vector(d[3])).as(\"d\")\n   .add_e(\"about\").to(\"t\")\n   .add_e(\"wrote\").from(\"a\").to(\"d\")\n   .iterate();\n}\n\n// \"What should I cook for my cat?\" ~ [0.5, 0.8, 0.0]:\n// the best hits, then the graph around them as context.\ng.v().has_label(\"doc\")\n .nearest(\"emb\", vector([0.5, 0.8, 0.0]), 2)\n .project(\"title\", \"author\", \"topic\", \"same_topic\")\n   .by(\"title\")\n   .by(__.in(\"wrote\").values(\"name\"))\n   .by(__.out(\"about\").values(\"name\"))\n   .by(__.as(\"hit\").out(\"about\").in(\"about\")\n          .where(P.neq(\"hit\")).values(\"title\").fold())"
+  },
+  {
+    "group": "Embeddings (vectors)",
+    "graph": "empty",
+    "title": "Quantized property: element \"i8\" in the schema",
+    "script": "// The schema declares note.emb as an i8 vector: a written list\n// (or an f32 vector) is quantized as it is stored, 1 byte per component.\n// Re-runnable: first remove what an earlier run created.\ng.v().has_label(\"note\").drop().iterate();\ng.patch_schema(#{mode: \"open\", vertices: #{note: #{schema: #{\n  type: \"object\",\n  properties: #{\n    emb: #{type: \"array\", format: \"vector\", element: \"i8\", dimension: 3}\n  }}}}});\nfor n in [\n  [\"Cats and dogs\",      [0.9, 0.1, 0.0]],\n  [\"Pasta at home\",      [0.0, 0.9, 0.1]],\n  [\"Rust for beginners\", [0.0, 0.0, 1.0]],\n] {\n  g.add_v(\"note\").property(\"title\", n[0]).property(\"emb\", n[1]).iterate();\n}\n\n// An f32 query searches the i8 vectors.\ng.v().has_label(\"note\")\n .project(\"title\", \"stored\", \"score\")\n   .by(\"title\")\n   .by(\"emb\")\n   .by(__.similarity(\"emb\", vector([1.0, 0.2, 0.0])))"
+  },
+  {
+    "group": "Embeddings (vectors)",
+    "graph": "empty",
+    "title": "Recommendations with vector_mean()",
+    "script": "// Toy embeddings with three axes: [animals, food, technology].\n// Re-runnable: first remove what an earlier run created.\ng.v().has_label(\"doc\").drop().iterate();\nfor d in [\n  [\"Cats and dogs\",        2024, [0.9, 0.1, 0.0]],\n  [\"Training a puppy\",     2026, [0.8, 0.1, 0.2]],\n  [\"Feeding your cat\",     2025, [0.6, 0.7, 0.0]],\n  [\"Pasta at home\",        2025, [0.0, 0.9, 0.1]],\n  [\"Robot chefs\",          2026, [0.1, 0.6, 0.8]],\n  [\"Rust for beginners\",   2024, [0.0, 0.0, 1.0]],\n  [\"GPS collars for dogs\", 2026, [0.7, 0.0, 0.6]],\n] {\n  g.add_v(\"doc\").property(\"title\", d[0]).property(\"year\", d[1])\n   .property(\"emb\", vector(d[2])).iterate();\n}\n\n// Sam liked two documents; the mean of their vectors is Sam's taste.\ng.v().has_label(\"user\").drop().iterate();\ng.add_v(\"user\").property(\"name\", \"sam\").iterate();\nfor title in [\"Cats and dogs\", \"Training a puppy\"] {\n  g.v().has(\"user\", \"name\", \"sam\").as(\"u\")\n   .v().has(\"doc\", \"title\", title).add_e(\"liked\").from(\"u\").iterate();\n}\n\n// Recommend what is closest to the taste among the unliked documents.\ng.v().has(\"name\", \"sam\").out(\"liked\").values(\"emb\")\n .vector_mean().as(\"taste\")\n .v().has_label(\"doc\")\n .where(__.in(\"liked\").has(\"name\", \"sam\").count().is(0))\n .nearest(\"emb\", __.select(\"taste\"), 2)\n .project(\"title\", \"score\")\n   .by(\"title\")\n   .by(__.similarity(\"emb\", __.select(\"taste\")))"
+  },
+  {
     "group": "Profiling and errors",
     "graph": "modern",
     "title": "Profile a pushed-down count",

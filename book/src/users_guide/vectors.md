@@ -1,5 +1,9 @@
 # Vectors
 
+> New to embeddings? [Embeddings and Vector Search](../getting_started/embeddings.md) is the
+> task-oriented tour: semantic search, filtered search, GraphRAG and recommendations, in the
+> playground with toy vectors and in Python with a real model. This page is the reference.
+
 A **vector** is a fixed-length list of numbers stored as one value: an embedding of a text, an
 image or a node, as a language or vision model computes it. A property holds a `vector`, not a
 list that happens to contain numbers, and the engine stores it compactly, converts it between
