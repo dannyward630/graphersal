@@ -1195,6 +1195,24 @@ fn nearest_10k_x_384(bencher: divan::Bencher, element: &str) {
     });
 }
 
+/// The built-in embedder `hash-ngram/1` over 1000 texts per call: a short title (5 words) or a
+/// long paragraph (about 1 KB). The book page "Vectors" quotes it.
+#[divan::bench(args = ["short", "long"])]
+fn embed_hash_ngram_1000(bencher: divan::Bencher, size: &str) {
+    use graphersal::vector::{EmbedContext, Embedder, HashNgram};
+    let sentence = "Graph databases store vertices and edges with their properties. ";
+    let texts: Vec<String> = (0..1000)
+        .map(|i| match size {
+            "short" => format!("feeding your cat number {i}"),
+            _ => format!("{} {i}", sentence.repeat(16)),
+        })
+        .collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let embedder = HashNgram::new();
+    let ctx = EmbedContext::new();
+    bencher.bench(|| embedder.embed(&refs, &ctx).map(|v| v.len()));
+}
+
 /// See [`out_out_large_lazy_barrier`]: the same query with the rule disabled.
 #[divan::bench(args = [110_000])]
 fn out_out_large_no_lazy_barrier(bencher: divan::Bencher, _args: usize) {

@@ -578,6 +578,12 @@ normalization (a precomposed "é" and "e" followed by a combining accent are dif
 lowercasing and the letter/digit classes follow the Unicode version of the Rust toolchain the
 binary was built with.
 
+Its time grows with the length of the text. Measured with the bench `embed_hash_ngram_1000`
+(`cargo bench -p graphersal --bench graph --features io,script,display,serde --
+embed_hash_ngram_1000`, 1000 texts per call, Apple M-series, source build): about 0.84 µs per
+short title (5 words) and about 18.5 µs per paragraph of about 1 KB, so embedding a property of
+100 000 short texts takes well under a second.
+
 ### Embedders for hosts
 
 A host plugs in its own embedder (a model loaded from a file, an HTTP client, a binding
