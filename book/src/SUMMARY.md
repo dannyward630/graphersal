@@ -7,6 +7,7 @@
 - [Try It in the Browser](getting_started/playground_tour.md)
 - [The Command Line](getting_started/cli.md)
 - [Dev Server, MCP and AI Chat](getting_started/server_mcp_ai.md)
+- [Embeddings and Vector Search](getting_started/embeddings.md)
 - [Installation](users_guide/installation.md)
 - [Command Cheat Sheet](users_guide/command_cheat_sheet.md)
 

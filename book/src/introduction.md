@@ -47,7 +47,8 @@ g.v().has("name", "marko").as("me")
 - **Values with real types.** Besides numbers, strings, UUIDs and nested JSON: five
   [date and time types](dates/index.md) modelled on PostgreSQL (time zones from the IANA
   database, calendar-correct arithmetic, TinkerPop's date steps), and
-  [vectors](users_guide/vectors.md) for embeddings with exact similarity search and quantization.
+  [vectors](users_guide/vectors.md) for embeddings with exact similarity search and quantization
+  ([Embeddings and Vector Search](getting_started/embeddings.md) is the hands-on tour).
 - **Safe by construction.** Every traversal is atomic: it commits completely or leaves nothing
   behind. Schemas (a subset of JSON Schema) are enforced on write and fill create-time defaults.
   Limits, timeouts and permissions make it safe to run queries you did not write.
@@ -68,6 +69,7 @@ g.v().has("name", "marko").as("me")
 | try it right now | [Try It in the Browser](getting_started/playground_tour.md) |
 | run queries from a terminal or a script | [The Command Line](getting_started/cli.md) |
 | let an AI agent work with your graph | [Dev Server, MCP and AI Chat](getting_started/server_mcp_ai.md) |
+| search by meaning with embeddings (semantic search, GraphRAG) | [Embeddings and Vector Search](getting_started/embeddings.md) |
 | understand graphs and Gremlin first | [Why a Graph?](concepts/why_graphs.md) |
 | use it from code | [Rust Quick Start](library/rust.md), [Python Quick Start](library/python.md) |
 | look up a step or a rule | [The Gremlin DSL](dsl/writing_queries.md), [Step Reference](traversal/step_reference.md) |
