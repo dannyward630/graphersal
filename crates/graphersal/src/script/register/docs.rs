@@ -230,6 +230,12 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
     "traversal" "vector_mean":
         "The component-wise mean of the incoming vectors (or lists of vectors).",
         "g.inject(vector([1.0, 0.0]), vector([0.0, 1.0])).vector_mean().next()" => "vector([0.5, 0.5])";
+    "traversal" "embed":
+        "Embeds the incoming string, or the string property key, as a vector; #{embedder: name} picks the embedder (default hash-ngram/1).",
+        "g.v().has(\"name\", \"marko\").embed(\"name\").next().dimension" => "256";
+    "traversal" "embedders":
+        "Lists the registered embedders (name, model, dimension, element, metric, ...), the default first.",
+        "g.embedders()[0].name" => "hash-ngram/1";
     "traversal" "date_add":
         "Adds n DT units or a duration, optionally in a zone (TinkerPop dateAdd()).",
         "g.inject(date(\"2024-01-31\")).date_add(DT.month, 1).next().day" => "29";
@@ -890,6 +896,9 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
     "global" "vector":
         "A vector value (an embedding) from a list of numbers: f32, or quantized to f16, i8 or bit.",
         "vector([0.5, -1.0], \"bit\").to_list()" => "[1.0, -1.0]";
+    "global" "embed":
+        "A vector for a text from an embedder (default hash-ngram/1), computed before any traversal runs.",
+        "embed(\"Marko\") == embed(\"marko\")" => "true";
     "Vector" "quantize":
         "The vector in another element kind (f32, f16, i8, bit).",
         "vector([0.5, -1.0]).quantize(\"i8\").dimension" => "2";

@@ -1503,3 +1503,129 @@ fn has_with_a_traversal_asks_for_what_its_child_does() {
     );
     assert_eq!(count(&graph), before);
 }
+
+/// Embedders (book page "Vectors"): the `embed` step and the function `embed(text)` ask
+/// `Execute` on the embedder, the built-in one included; `read_only()` allows it; a saved query
+/// may embed.
+mod embedders {
+    use super::*;
+
+    /// Denies `Execute` on every embedder, allows everything else.
+    struct NoEmbedders;
+
+    impl Authorizer for NoEmbedders {
+        fn authorize(&self, request: &AccessRequest<'_>) -> Result<(), Denied> {
+            match request.resource {
+                Resource::Embedder { name } => Err(Denied::new(format!("no embedder {name}"))),
+                _ => Ok(()),
+            }
+        }
+    }
+
+    #[test]
+    fn the_step_and_the_function_ask_execute_on_the_embedder() {
+        let graph = modern();
+        let recorder = Arc::new(Recorder::default());
+        let _ = run(
+            &graph,
+            r#"let q = embed("marko"); g.v().embed("name").embed("name").count().next()"#,
+            recorder.clone(),
+        )
+        .unwrap();
+        let asked: Vec<String> = recorder
+            .seen()
+            .into_iter()
+            .filter(|seen| seen.contains("Embedder"))
+            .collect();
+        // Once for the function, once for the traversal (two steps, one distinct request).
+        assert_eq!(
+            asked,
+            vec![
+                r#"Execute Embedder("hash-ngram/1")"#.to_string(),
+                r#"Execute Embedder("hash-ngram/1")"#.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_denied_embedder_stops_the_step_and_the_function() {
+        let graph = modern();
+        assert_denied(
+            run(&graph, r#"g.v().embed("name").to_list()"#, NoEmbedders),
+            "embed",
+            r#"Execute Embedder("hash-ngram/1")"#,
+        );
+        assert_denied(
+            run(&graph, r#"embed("marko")"#, NoEmbedders),
+            "embed",
+            r#"Execute Embedder("hash-ngram/1")"#,
+        );
+        // Inside a child traversal, before anything is written.
+        assert_denied(
+            run(
+                &graph,
+                r#"g.v().property("emb", __.embed("name")).iterate()"#,
+                NoEmbedders,
+            ),
+            "embed",
+            r#"Execute Embedder("hash-ngram/1")"#,
+        );
+        assert!(
+            run(&graph, r#"g.v().has("emb").count().next()"#, AllowAll)
+                .unwrap()
+                .as_int()
+                .unwrap()
+                == 0
+        );
+        // A policy denies the resource kind.
+        let policy = AccessPolicy::allow_all().deny(ActionKind::Execute, ResourceKind::Embedder);
+        assert_denied(
+            run(&graph, r#"embed("marko")"#, policy),
+            "embed",
+            "Execute Embedder",
+        );
+    }
+
+    #[test]
+    fn read_only_allows_embedding_and_a_saved_query_may_embed() {
+        let graph = modern();
+        assert!(AccessPolicy::read_only().allows(ActionKind::Execute, ResourceKind::Embedder));
+        assert!(AccessPolicy::allow_all().allows(ActionKind::Execute, ResourceKind::Embedder));
+        let n = run(
+            &graph,
+            r#"let q = embed("marko"); g.v().has_label("person").embed("name").count().next()"#,
+            AccessPolicy::read_only(),
+        )
+        .unwrap();
+        assert_eq!(n.as_int().unwrap(), 4);
+        let _ = run(
+            &graph,
+            r#"g.define_query(#{name: "similar", params: #{text: "string"},
+                 body: "fn similar(text) { g.v().has_label(\"person\").embed(\"name\").similarity(embed(text)) }"})"#,
+            AllowAll,
+        )
+        .unwrap();
+        let scores = run(
+            &graph,
+            r#"g.query("similar", #{text: "marko"}).to_list().len()"#,
+            AccessPolicy::read_only(),
+        )
+        .unwrap();
+        assert_eq!(scores.as_int().unwrap(), 4);
+    }
+
+    #[test]
+    fn an_owned_embedder_request_round_trips() {
+        let request = AccessRequest::new(
+            Action::Execute,
+            Resource::Embedder {
+                name: "acme/minilm",
+            },
+        );
+        let owned = request.to_owned_request();
+        assert_eq!(owned.as_request(), request);
+        assert_eq!(owned.to_string(), r#"Execute Embedder("acme/minilm")"#);
+        assert_eq!(request.resource.kind(), ResourceKind::Embedder);
+        assert_eq!(ResourceKind::Embedder.name(), "Embedder");
+    }
+}

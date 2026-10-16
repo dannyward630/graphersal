@@ -29,6 +29,7 @@ pub(super) fn register(registry: &mut Registry) {
         )
         // One word, so one spelling serves both conventions.
         .register_fn("statistics", ScriptGraphTraversalSource::statistics)
+        .register_fn("embedders", ScriptGraphTraversalSource::embedders)
         // One word, so one spelling serves both conventions.
         .register_fn("mark", ScriptGraphTraversalSource::mark)
         .register_fn_as(&["to_list", "toList"], ScriptGraphTraversalSource::to_list)

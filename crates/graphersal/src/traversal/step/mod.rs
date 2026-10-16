@@ -410,6 +410,14 @@ impl<'g, S: GraphStorage + 'g> GraphStep<'g, S> {
                 visit(read(vertex))
             }
             GraphStep::SideEffect("subgraph", _) => visit(read(vertex)),
+            // `embed` runs an embedder of the registry: `Execute` on it, for every embedder.
+            GraphStep::Map("embed", step) => match step.embedder_name() {
+                Some(name) => visit(AccessRequest::new(
+                    Action::Execute,
+                    Resource::Embedder { name },
+                )),
+                None => Ok(()),
+            },
             // `inject(v)` of a vertex or edge value reaches the stored element of its id.
             GraphStep::Append(_, step) => {
                 let (vertices, edges) = step.reads_elements();
@@ -1177,6 +1185,39 @@ pub(crate) trait GraphStepMap<'g, S: GraphStorage + 'g>: Send + Sync + fmt::Disp
     /// skips a map step only when it cannot.
     fn may_filter(&self) -> bool {
         false
+    }
+    /// How many traversers the executor hands to [`Self::process_batch`] at once; `1` (the
+    /// default): the executor calls [`Self::process_filter`] per traverser. A step that calls
+    /// an embedder returns the embedder's batch size, so one call covers many traversers.
+    fn batch_size(&self) -> usize {
+        1
+    }
+    /// Maps a batch of at most [`Self::batch_size`] traversers (each kept or dropped, in input
+    /// order). Only called when `batch_size() > 1`; the default maps one by one.
+    fn process_batch(
+        &self,
+        context: &mut TraverserContext<'_, S>,
+        sources: Vec<Traverser<S>>,
+    ) -> TraverserResult<Vec<Traverser<S>>> {
+        let mut out = Vec::with_capacity(sources.len());
+        for source in sources {
+            if let Some(mapped) = self.process_filter(context, source)? {
+                out.push(mapped);
+            }
+        }
+        Ok(out)
+    }
+    /// `Some(name)` for a step that calls an embedder: the name it asks for (`None` inside:
+    /// the registry's default). `run()` resolves it and calls [`Self::bind_embedder`] before the
+    /// permission check.
+    fn embedder_request(&self) -> Option<Option<compact_str::CompactString>> {
+        None
+    }
+    /// Binds the embedder `run()` resolved for [`Self::embedder_request`].
+    fn bind_embedder(&mut self, _embedder: std::sync::Arc<dyn crate::value::Embedder>) {}
+    /// The registry name of the bound embedder, for the permission request.
+    fn embedder_name(&self) -> Option<&str> {
+        None
     }
     /// Maps one traverser, or drops it; the executor calls this rather than `process`.
     fn process_filter(

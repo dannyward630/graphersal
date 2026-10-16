@@ -451,6 +451,42 @@ pub(crate) fn locate_pre_run_error<'g, S: GraphStorage + 'g>(
     }
 }
 
+/// Resolves the embedder of every `embed` step of `steps` (child traversals included) in
+/// `registry` and binds it to the step; an unknown name is [`TraverserError::Embed`] located at
+/// its step. Runs before the permission check, on the plan as written.
+fn bind_embedders<'g, S: GraphStorage + 'g>(
+    steps: &mut [GraphStep<'g, S>],
+    registry: &crate::value::Embedders,
+) -> TraverserResult<()> {
+    fn walk<'g, S: GraphStorage + 'g>(
+        steps: &mut [GraphStep<'g, S>],
+        registry: &crate::value::Embedders,
+    ) -> Result<(), crate::value::EmbedError> {
+        for step in steps.iter_mut() {
+            if let GraphStep::Map(_, map) = step
+                && let Some(requested) = map.embedder_request()
+            {
+                let embedder = registry.resolve(requested.as_deref())?.clone();
+                map.bind_embedder(embedder);
+            }
+            for child in step.child_traversals_mut() {
+                walk(&mut child.steps, registry)?;
+            }
+        }
+        Ok(())
+    }
+    walk(steps, registry).map_err(|err| {
+        let fault = |step: &GraphStep<'g, S>| match step {
+            GraphStep::Map(_, map) => map
+                .embedder_request()
+                .is_some_and(|requested| registry.resolve(requested.as_deref()).is_err()),
+            _ => false,
+        };
+        GraphStep::number_children(steps);
+        locate_pre_run_error(steps, None, Box::new(TraverserError::Embed(err)), &fault)
+    })
+}
+
 /// [`locate_pre_run_error`] for an error of the plan-time validation pass
 /// (`PathAnalysis::analyze_query`): an undeclared step label points at the step that reads it,
 /// any other error at the step whose plan check (`GraphStep::modulator_check`) raises the same
@@ -770,7 +806,41 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
             sack: None,
             restrictions: None,
             create_time: None,
+            embedders: None,
         }
+    }
+
+    /// Gives this traversal the embedders its `embed` steps call (book page "Vectors", section
+    /// "Embeddings"). Without it the traversal uses the default registry, which holds only the
+    /// built-in `hash-ngram/1`.
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use graphersal::prelude::*;
+    /// use graphersal::vector::{Embedders, HashNgram};
+    ///
+    /// let small = HashNgram::with_dimension("acme/small", 8).unwrap();
+    /// let embedders = Embedders::builder()
+    ///     .with(Arc::new(small))
+    ///     .unwrap()
+    ///     .default_name("acme/small")
+    ///     .unwrap()
+    ///     .build();
+    /// let graph = GraphSource::tinkerpop_modern();
+    /// let g = graph.read();
+    /// let vector = g
+    ///     .traversal()
+    ///     .with_embedders(Arc::new(embedders))
+    ///     .v(None::<()>)
+    ///     .embed("name", None)
+    ///     .next()
+    ///     .unwrap()
+    ///     .unwrap();
+    /// assert_eq!(vector.as_vector().map(|v| v.dimension()), Some(8));
+    /// ```
+    pub fn with_embedders(mut self, embedders: std::sync::Arc<crate::value::Embedders>) -> Self {
+        self.embedders = Some(embedders);
+        self
     }
 
     /// Pins the time `defaultFunction: "now"` stores (and `"today"` takes its UTC date from) for
@@ -2193,6 +2263,15 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
                 expansion: Expansion::UNBOUNDED,
             }
         };
+        // The `embed` steps resolve their embedder first, so the permission check asks for the
+        // embedder that runs and the profile names it.
+        let embedders = self
+            .embedders
+            .clone()
+            .unwrap_or_else(crate::value::Embedders::shared_default);
+        if let Err(err) = bind_embedders(&mut self.steps, &embedders) {
+            return failed_before_run(err, &self.options);
+        }
         if let Some(restrictions) = &self.restrictions
             && let Err(err) = restrictions.check(&mut self.steps, &self.options)
         {
@@ -3135,7 +3214,37 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
                     } else {
                         let extends = step.extends_path();
                         let mut result: Vec<Traverser<S>> = Vec::with_capacity(count_before);
-                        if step.may_filter() {
+                        let batch = step.batch_size();
+                        if batch > 1 {
+                            // One call per batch of at most `batch` traversers (an embedder's
+                            // `max_batch`), in input order; the buffer is bounded by `batch`.
+                            let mut pending = source.into_iter();
+                            loop {
+                                let chunk: Vec<Traverser<S>> =
+                                    pending.by_ref().take(batch).collect();
+                                if chunk.is_empty() {
+                                    break;
+                                }
+                                context.tick().with_step_frame(
+                                    || step.get_name(),
+                                    step_at,
+                                    || plan_frame(steps, level, logical_step_idx),
+                                )?;
+                                let mapped = step.process_batch(context, chunk).with_step_frame(
+                                    || step.get_name(),
+                                    step_at,
+                                    || plan_frame(steps, level, logical_step_idx),
+                                )?;
+                                for mut mapped in mapped {
+                                    if extends {
+                                        mapped.extend_path(&mut context.paths, mode)?;
+                                    } else {
+                                        mapped.keep_path(mode);
+                                    }
+                                    result.push(mapped);
+                                }
+                            }
+                        } else if step.may_filter() {
                             for src in source.into_iter() {
                                 context.tick().with_step_frame(
                                     || step.get_name(),

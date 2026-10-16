@@ -310,6 +310,8 @@ pub(super) enum Step {
     ),
     /// `vector_mean()`.
     VectorMean,
+    /// `embed([key][, #{embedder}])`: no key embeds the incoming string.
+    Embed(Option<PropKey>, Option<CompactString>),
     /// `date_add(DT, n[, zone])`.
     DateAdd(crate::value::dt::DT, i64, Option<CompactString>),
     /// `date_add(duration[, zone])`.

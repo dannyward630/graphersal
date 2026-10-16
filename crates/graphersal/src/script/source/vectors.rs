@@ -196,4 +196,181 @@ impl ScriptGraphTraversalSource {
     pub fn vector_mean(&mut self) -> Self {
         self.add_step(Step::VectorMean)
     }
+
+    /// The incoming string embedded by the registry's default embedder. Rhai binding of
+    /// `embed()`.
+    pub fn embed(&mut self) -> Self {
+        self.add_step(Step::Embed(None, None))
+    }
+
+    /// `embed(key)` (a string or `jpath(..)`: the element's property) or `embed(#{embedder})`
+    /// (the incoming string). Rhai binding of the one-argument overload.
+    pub fn embed_1(&mut self, arg: Dynamic) -> Result<Self, Box<rhai::EvalAltResult>> {
+        if let Some(options) = arg.read_lock::<rhai::Map>() {
+            let embedder = embed_options(&options)?;
+            return Ok(self.add_step(Step::Embed(None, embedder)));
+        }
+        if is_key(&arg) {
+            return Ok(self.add_step(Step::Embed(Some(dynamic_to_prop_key(arg)), None)));
+        }
+        Err(script_error_from_script(
+            crate::error::ScriptError::ArgumentMismatch {
+                step_name: "embed".to_string(),
+                expected: "a property key (a string or jpath(..)) or an option map \
+                           #{embedder: \"name\"}"
+                    .to_string(),
+                actual: type_name_of(&arg),
+            },
+        ))
+    }
+
+    /// The element's property `key` embedded by the embedder the options name. Rhai binding of
+    /// `embed(key, #{embedder})`.
+    pub fn embed_2(
+        &mut self,
+        key: Dynamic,
+        options: rhai::Map,
+    ) -> Result<Self, Box<rhai::EvalAltResult>> {
+        if !is_key(&key) {
+            return Err(script_error_from_script(
+                crate::error::ScriptError::ArgumentMismatch {
+                    step_name: "embed".to_string(),
+                    expected: "a property key (a string or jpath(..))".to_string(),
+                    actual: type_name_of(&key),
+                },
+            ));
+        }
+        let embedder = embed_options(&options)?;
+        Ok(self.add_step(Step::Embed(Some(dynamic_to_prop_key(key)), embedder)))
+    }
+
+    /// `g.embedders()`: the embedders of the session, one map each (`name`, `model`,
+    /// `dimension`, `element`, `metric`, `max_batch`, `deterministic`, `local`), the default
+    /// first. Asks nothing: it names what the host registered, it runs none of them.
+    pub fn embedders(&mut self) -> rhai::Array {
+        embedder_list(&self.access.embedders)
+    }
+}
+
+/// The embedders of `registry` as script maps, the default first.
+fn embedder_list(registry: &crate::value::Embedders) -> rhai::Array {
+    let default = registry.default_embedder().info().name.clone();
+    let mut infos: Vec<&crate::value::EmbedderInfo> = registry.infos().collect();
+    infos.sort_by_key(|info| info.name != default);
+    infos
+        .into_iter()
+        .map(|info| {
+            let mut map = rhai::Map::new();
+            map.insert("name".into(), Dynamic::from(info.name.to_string()));
+            map.insert("model".into(), Dynamic::from(info.model.to_string()));
+            map.insert(
+                "dimension".into(),
+                Dynamic::from_int(i64::try_from(info.dimension).unwrap_or(i64::MAX)),
+            );
+            map.insert(
+                "element".into(),
+                Dynamic::from(info.element.name().to_string()),
+            );
+            map.insert(
+                "metric".into(),
+                Dynamic::from(info.metric.name().to_string()),
+            );
+            map.insert(
+                "max_batch".into(),
+                Dynamic::from_int(i64::try_from(info.max_batch).unwrap_or(i64::MAX)),
+            );
+            map.insert(
+                "deterministic".into(),
+                Dynamic::from_bool(info.deterministic),
+            );
+            map.insert("local".into(), Dynamic::from_bool(info.local));
+            map.insert("default".into(), Dynamic::from_bool(info.name == default));
+            Dynamic::from_map(map)
+        })
+        .collect()
+}
+
+/// The embedder an option map of `embed` names (`#{embedder: "name"}`; `None`: the default);
+/// any other key, or a name that is not a string, fails.
+pub(crate) fn embed_options(
+    options: &rhai::Map,
+) -> Result<Option<CompactString>, Box<rhai::EvalAltResult>> {
+    let mut embedder = None;
+    for (name, value) in options {
+        match name.as_str() {
+            "embedder" => {
+                let Some(text) = value
+                    .read_lock::<rhai::ImmutableString>()
+                    .map(|s| CompactString::new(s.as_str()))
+                else {
+                    return Err(script_error_from_script(
+                        crate::error::ScriptError::ArgumentMismatch {
+                            step_name: "embed".to_string(),
+                            expected: "an embedder name (g.embedders() lists them)".to_string(),
+                            actual: type_name_of(value),
+                        },
+                    ));
+                };
+                embedder = Some(text);
+            }
+            other => {
+                return Err(script_error_from_script(
+                    crate::error::ScriptError::ArgumentMismatch {
+                        step_name: "embed".to_string(),
+                        expected: "an option map with the key embedder".to_string(),
+                        actual: format!("the key {}", crate::value::literal::rhai_string(other)),
+                    },
+                ));
+            }
+        }
+    }
+    Ok(embedder)
+}
+
+/// The DSL function `embed(text[, #{embedder}])`: a vector for a query, computed by Rhai before
+/// any traversal runs (no graph lock). Asks `Execute` on the embedder through the session's
+/// access, like the `embed` step.
+pub(crate) fn script_embed(
+    ctx: &NativeCallContext,
+    text: &str,
+    options: Option<&rhai::Map>,
+) -> Result<ScriptVector, Box<rhai::EvalAltResult>> {
+    let requested = match options {
+        Some(options) => embed_options(options)?,
+        None => None,
+    };
+    let access = crate::script::access::ScriptAccess::of_context(ctx);
+    let embedder = access
+        .embedders
+        .resolve(requested.as_deref())
+        .map_err(|err| script_error(Box::new(crate::TraverserError::Embed(err))))?
+        .clone();
+    access
+        .restrictions(false)
+        .authorize(
+            "embed",
+            &crate::graph::AccessRequest::new(
+                crate::graph::Action::Execute,
+                crate::graph::Resource::Embedder {
+                    name: embedder.info().name.as_str(),
+                },
+            ),
+        )
+        .map_err(script_error)?;
+    let context = crate::value::EmbedContext::of_current_thread();
+    let mut vectors = crate::value::vector::embed::checked_embed(&*embedder, &[text], &context)
+        .map_err(|err| {
+            script_error(Box::new(match err {
+                crate::value::EmbedError::Cancelled => {
+                    crate::TraverserError::Cancelled { elapsed_ms: 0 }
+                }
+                other => crate::TraverserError::Embed(other),
+            }))
+        })?;
+    match vectors.pop() {
+        Some(vector) => Ok(ScriptVector(vector)),
+        None => Err(script_error(Box::new(crate::TraverserError::Embed(
+            crate::value::EmbedError::bad_output("no vector for the text"),
+        )))),
+    }
 }

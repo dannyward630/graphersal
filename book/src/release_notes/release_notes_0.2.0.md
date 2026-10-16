@@ -62,10 +62,20 @@ What 0.2.0 does not do yet is on [Current Limitations](../users_guide/current_li
   search with `similarity()`, `nearest()` and `vector_mean()` over cosine, dot product, L2 and
   Hamming, combined freely with graph steps (filtered search, GraphRAG, recommendations). Vectors
   are values in Python (`graphersal.Vector`, also from a `numpy` array), the playground, GraphSON,
-  GraphML (through the schema) and the persistence format. Embeddings are computed outside the
-  engine; [Embeddings and Vector Search](../getting_started/embeddings.md) walks through it, in the
+  GraphML (through the schema) and the persistence format.
+  [Embeddings and Vector Search](../getting_started/embeddings.md) walks through it, in the
   playground without a model and from Python with one, and the playground's **Examples** have an
   *Embeddings (vectors)* group.
+- **Embedders** ([Vectors](../users_guide/vectors.md#embeddings)): the step `embed()` /
+  `embed(key)` and the function `embed(text)` turn text into vectors through the embedders the
+  host registered (`g.embedders()` lists them); the built-in `hash-ngram/1` (hashed words and
+  character n-grams: fuzzy, lexical similarity, no model file, the same bits on every target) is
+  always there, also in the browser playground. Hosts plug in their own `Embedder` (a Rust trait
+  with batching and cancellation) through `Embedders::builder()` and
+  `GraphTraversalSource::with_embedders`, the script entry points or the session; each embedder
+  carries a stable model identity besides its registry name. Running an embedder is
+  `Execute` on the new permission resource `Embedder`. A computed vector is stored as a plain
+  value: replay, recovery and loads never call an embedder.
 - **Playground**: the schema editor's tables edit `defaultFunction` and a vector's element,
   dimension and metric; the Graph and Mermaid drawings always show the schema the tables show
   (also a draft); the Mermaid diagram parses whatever labels and property names hold; the

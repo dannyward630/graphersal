@@ -289,6 +289,9 @@ pub(super) fn register(registry: &mut Registry) {
         .register_fn("similarity", ScriptGraphTraversalSource::similarity_3)
         .register_fn("nearest", ScriptGraphTraversalSource::nearest)
         .register_fn("nearest", ScriptGraphTraversalSource::nearest_with)
+        .register_fn("embed", ScriptGraphTraversalSource::embed)
+        .register_fn("embed", ScriptGraphTraversalSource::embed_1)
+        .register_fn("embed", ScriptGraphTraversalSource::embed_2)
         .register_fn_as(
             &["vector_mean", "vectorMean"],
             ScriptGraphTraversalSource::vector_mean,

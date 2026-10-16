@@ -6734,3 +6734,82 @@ fn property_index_transform_errors_carry_their_help() {
         assert!(unknown.contains(part), "{part}\n{unknown}");
     }
 }
+
+/// The embedding errors a query can trigger (book page "Vectors", section "Embeddings") are
+/// located at the `embed` step and carry the help of their cause.
+#[test]
+fn embed_errors_carry_their_help() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+
+    // An unknown embedder: found before the run, located at its step.
+    let err = lock
+        .traversal()
+        .v(None)
+        .embed("name", Some("acme/missing"))
+        .to_list()
+        .expect_err("unknown embedder");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("there is no embedder \"acme/missing\""),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "g.embedders() lists the embedders this host registered (the built-in \
+             \"hash-ngram/1\" is always there)"
+        ),
+        "{report}"
+    );
+    assert_eq!(err.step_location().expect("located").step_id, "1");
+
+    // Not a string: no implicit conversion, as_string() named.
+    let err = lock
+        .traversal()
+        .v(None)
+        .values("age")
+        .embed_value(None)
+        .to_list()
+        .expect_err("an int64 is no text");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("embed() takes a string, not int64"),
+        "{report}"
+    );
+    assert!(
+        report.contains("g.v().values(\"age\").as_string().embed()"),
+        "{report}"
+    );
+    assert_eq!(err.step_location().expect("located").step_id, "2");
+
+    // Nothing to embed.
+    let err = lock
+        .traversal()
+        .inject(vec![ElementProperty::from("...")])
+        .embed_value(None)
+        .to_list()
+        .expect_err("no word");
+    let report = format_diagnostic(&err);
+    assert!(report.contains("has nothing to embed"), "{report}");
+    assert!(
+        report.contains("g.v().has(\"name\", P.neq(\"\")).embed(\"name\")"),
+        "{report}"
+    );
+    assert!(matches!(
+        err.root_cause(),
+        TraverserError::Embed(graphersal::vector::EmbedError::NoFeatures { index: 0, .. })
+    ));
+
+    // A text where a vector is needed: the help names embed().
+    let err = lock
+        .traversal()
+        .inject(vec![ElementProperty::from("graph")])
+        .similarity_value(Vector::from_f32(vec![1.0]).unwrap(), None)
+        .to_list()
+        .expect_err("a text is no vector");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("embed(\"graph indexes\") or g.v().embed(\"name\")"),
+        "{report}"
+    );
+}

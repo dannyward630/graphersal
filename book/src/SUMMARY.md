@@ -182,6 +182,8 @@
   - [e](traversal/steps/e.md)
   - [element](traversal/steps/element.md)
   - [element_map](traversal/steps/element_map.md)
+  - [embed](traversal/steps/embed.md)
+  - [embedders](traversal/steps/embedders.md)
   - [emit](traversal/steps/emit.md)
   - [execute](traversal/steps/execute.md)
   - [export_graphml](traversal/steps/export_graphml.md)

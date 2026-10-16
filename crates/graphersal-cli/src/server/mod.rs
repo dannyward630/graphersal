@@ -490,7 +490,8 @@ pub fn session_presets(cli: &Cli) -> SessionPresets {
     }
     let mut presets = SessionPresets::new()
         .with_limits(cli.script_limits())
-        .with_script_timeout_ms(cli.timeout_ms);
+        .with_script_timeout_ms(cli.timeout_ms)
+        .with_embedders(crate::cli::embedders());
     for (key, value) in budget.traversal_options() {
         presets = presets.with_option(key, value);
     }

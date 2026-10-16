@@ -10,10 +10,12 @@ list that happens to contain numbers, and the engine stores it compactly, conver
 element kinds and compares it as one value. Vectors are a Graphersal extension: TinkerPop has no
 vector type.
 
-**Embeddings are computed outside the engine.** A step that called an embedding model would make
-a query depend on a network service, could not be rolled back (a paid call stays paid) and would
-not run in the browser playground. The host computes them, in Python, in an MCP tool or in a
-server, and writes them as ordinary property values.
+**The engine never calls a model on its own.** A query that reached out to an embedding service
+by itself would depend on the network, could not be rolled back (a paid call stays paid) and would
+not run in the browser playground. The host either computes embeddings itself (in Python, in an
+MCP tool, in a server) and writes them as ordinary property values, or registers *embedders* that
+the `embed` step calls ([Embeddings](#embeddings) below); one small embedder, `hash-ngram/1`, is
+built in.
 
 ```rhai,graph=empty
 type_of(vector([0.12, -0.5, 0.33]))   // "Vector"
@@ -371,6 +373,131 @@ embeddings usually keep more:
 Bit vectors are a coarse, very fast prefilter: keep both properties and re-rank the prefilter's
 hits exactly, `nearest("emb_bit", q.quantize("bit"), 100, #{metric: "hamming"})` followed by
 `nearest("emb", q, 10)`.
+
+## Embeddings
+
+An **embedder** turns text into vectors. The step `embed()` embeds the incoming string,
+`embed(key)` the string property `key` (a name or a `jpath(..)`) of the incoming element, and the
+function `embed(text)` makes a query vector before any traversal runs. Each takes an option map
+naming the embedder, `#{embedder: "name"}`; without it the host's default runs. `g.embedders()`
+lists what is registered:
+
+```rhai,graph=modern
+g.embedders()[0].name   // "hash-ngram/1"
+embed("graph").dimension   // 256
+g.v().has_label("person").embed("name").count().next()   // 4
+g.v().embed("name", #{embedder: "hash-ngram/1"}).count().next()   // 6
+g.v().values("age").embed().next()   // error: embed() takes a string, not int64
+g.v().embed("name", #{embedder: "nope"}).next()   // error: there is no embedder "nope"
+```
+
+Rules of the step:
+
+- an element without the property is dropped (like `values(key)`); a value that is not a string
+  fails: nothing is converted implicitly, write `as_string()` first;
+- an empty text, or one with no word at all, fails (`has(key, P.neq(""))` leaves them out);
+- the step hands the embedder batches (up to the embedder's `max_batch` traversers per call),
+  each traverser once whatever its bulk, and keeps the order;
+- `.profile()` names the embedder that ran: `embed("name", embedder: "hash-ngram/1")`;
+- writing the vectors (`property("emb", __.embed("text"))`) happens inside the traversal's unit
+  under the graph's write lock, which suits a fast local embedder such as the built-in one;
+- a property declared `{"type": "array", "format": "vector", "dimension": 384}` refuses a vector
+  of another dimension or element kind, as for any write ([Vectors in a schema](#vectors-in-a-schema)).
+
+A fuzzy name search on the modern graph:
+
+```rhai,graph=modern,script
+g.v().has_label("person").property("name_emb", __.embed("name")).iterate();
+g.v().has_label("person").nearest("name_emb", embed("Markus"), 2).values("name").to_list()   // ["marko", "vadas"]
+```
+
+What `g.embedders()` returns for each embedder:
+
+| Key | |
+|---|---|
+| `name` | the registry name, what `#{embedder: ..}` takes |
+| `model` | the stable identity of what computes the vectors (`hash-ngram/1`, `acme/minilm@3f2a9c41b7de`), independent of the host's name for it and of any file path: two embedders of one model give comparable vectors |
+| `dimension`, `element` | the shape of every vector it returns |
+| `metric` | the metric it recommends for comparing them |
+| `max_batch` | the most texts per call |
+| `deterministic` | whether the same text always gives the same bits |
+| `local` | whether the texts stay in the process |
+| `default` | whether it runs without an `embedder` option |
+
+Running an embedder asks `Execute` on the resource `Embedder("name")`, for every embedder including
+the built-in one ([Permissions](permissions.md)); `AccessPolicy::read_only()` allows it, and a
+saved query may embed. A computed vector is stored as a plain value: replay, recovery, change sets
+and loads never call an embedder, so an embedder that is not deterministic is safe to use.
+
+### The built-in `hash-ngram/1`
+
+`hash-ngram/1` needs no model file and no dependency and gives the same bits on every target (the
+CLI, Python, the dev server, the browser playground). It lowercases the text, splits it into words
+(runs of letters and digits), and hashes each word and its character 3-, 4- and 5-grams (of the
+word framed as `<word>`) into 256 signed buckets, then scales the result to length 1 (f32
+components, metric cosine).
+
+It measures **lexical** similarity: typos, word forms and shared stems come out close, in any
+script ("Graph" and "grahp", "Москва" and "Москве"), meaning does not ("car" and "automobile"
+are unrelated). Uses: fuzzy lookup, entity matching, deduplication, and a baseline before a
+semantic model.
+
+The algorithm is frozen: the output of `hash-ngram/1` never changes (a different algorithm would
+be a new name, `hash-ngram/2`), and tests pin its bits. Two caveats: there is no Unicode
+normalization (a precomposed "é" and "e" followed by a combining accent are different words), and
+lowercasing and the letter/digit classes follow the Unicode version of the Rust toolchain the
+binary was built with.
+
+### Embedders for hosts
+
+A host plugs in its own embedder (a model loaded from a file, an HTTP client, a binding
+language's function) by implementing the Rust trait `graphersal::vector::Embedder`: `info()`
+returns its `EmbedderInfo` (name, model identity, dimension, element kind, metric, batch size,
+determinism, locality; built at runtime, so a dimension learnt from a model file is fine), and
+`embed(texts, ctx)` returns one vector per text, calling `ctx.check()` between pieces of work so a
+cancelled or timed-out query stops. A constructor that cannot load its model returns
+`EmbedError::unavailable(..)`. The host registers it in an `Embedders` registry and hands that to
+its traversals:
+
+```rust
+use std::sync::Arc;
+use graphersal::prelude::*;
+use graphersal::vector::{Embedders, HashNgram};
+
+// Any `Embedder`; here the built-in algorithm with 64 components under the host's own name.
+let small = HashNgram::with_dimension("acme/small", 64).unwrap();
+let embedders = Arc::new(
+    Embedders::builder()
+        .with(Arc::new(small))
+        .unwrap()
+        .default_name("acme/small")
+        .unwrap()
+        .build(),
+);
+// The Rust API.
+let graph = GraphSource::tinkerpop_modern();
+let n = graph
+    .read()
+    .traversal()
+    .with_embedders(embedders.clone())
+    .v(None::<()>)
+    .embed("name", None)
+    .count()
+    .next()
+    .unwrap();
+assert_eq!(n.and_then(|n| n.as_i64()), Some(6));
+// A script host: the engine (embed(text), GraphSource::x()) and the scope (g, _g, __).
+let mut engine = graphersal::script::engine();
+graphersal::script::set_engine_embedders(&mut engine, embedders.clone());
+let mut scope = graphersal::script::graph_scope(Arc::new(graph));
+graphersal::script::set_scope_embedders(&mut scope, embedders);
+```
+
+The registry always keeps `hash-ngram/1`; `hash-ngram` and every `hash-ngram/*` name are
+reserved, a name is unique and made of letters, digits and `. _ - / :` (such as
+`minishlab/potion-base-8M`), and `Embedders::by_model` finds an embedder by its model identity.
+`graphersal-session` takes the registry in `SessionPresets::with_embedders`, which the dev server
+(its MCP `query` tool and the AI Chat's tools included) and the WebAssembly playground run under.
 
 ## Storage and exchange
 
