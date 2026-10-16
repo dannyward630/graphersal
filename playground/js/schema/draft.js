@@ -51,7 +51,7 @@ export const CONSTRAINTS = Object.freeze({
   uuid: [],
   ...Object.fromEntries(TEMPORAL_BASES.map((b) => [b, FORMAT_BOUNDS])),
   array: ['minItems', 'maxItems'],
-  // `element`, `dimension` and `metric` are edited in the form's Vector block (not constraints).
+  // `element`, `dimension`, `metric` and `embedder` are edited in the form's Vector block (not constraints).
   vector: [],
   object: [],
   boolean: [],
@@ -102,7 +102,7 @@ const KIND_KEYWORDS = {
   minItems: 'array', maxItems: 'array', items: 'array',
   properties: 'object', required: 'object', additionalProperties: 'object',
   formatMinimum: 'temporal', formatMaximum: 'temporal', formatExclusiveMinimum: 'temporal', formatExclusiveMaximum: 'temporal',
-  element: 'vector', dimension: 'vector', metric: 'vector',
+  element: 'vector', dimension: 'vector', metric: 'vector', embedder: 'vector',
 };
 
 const KIND_OF_BASE = {

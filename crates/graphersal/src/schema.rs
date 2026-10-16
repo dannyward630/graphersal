@@ -42,6 +42,7 @@
 //! | `mode` | it gets less strict (`closed` → `open` → `none`); stricter is incompatible |
 //! | `meta`, annotations (`title`, `description`, ...) | always |
 //! | `default`, `defaultFunction` (added, changed, removed) | always: it changes only what a create stores for an absent top-level property, never existing data or a valid write; listed as `default_changed` |
+//! | a vector's `embedder` (the model that produced its vectors) | when it is declared where there was none; changing or removing it is incompatible (stored vectors and a text query embedded by another model are not comparable; a text query needs the model); listed as `embedder_changed` |
 //! | label added | the old mode was `closed` (no client could write it), or its schema requires no key and admits undeclared keys |
 //! | label removed | never |
 //! | connection added / removed | the edge label's connections still allow every old pair (the new list is empty, or contains every old pair), or the new mode is not `closed` (topology binds only there) |

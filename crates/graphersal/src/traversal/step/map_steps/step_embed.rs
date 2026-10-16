@@ -58,7 +58,7 @@ fn embed_step<'g, S: GraphStorage + 'g>(
 
 /// The traversal error of `error`; a cancelled embedding becomes the execution's own
 /// cancellation or timeout.
-fn embed_failure<S: GraphStorage>(
+pub(crate) fn embed_failure<S: GraphStorage>(
     context: &TraverserContext<'_, S>,
     error: EmbedError,
 ) -> Box<TraverserError> {

@@ -25,7 +25,7 @@ pub(crate) const MAX_SCHEMA_NODES: usize = 100_000;
 const NODE_KEYWORDS: &str = "type, format, items, properties, required, additionalProperties, \
      anyOf, enum, const, minimum, maximum, exclusiveMinimum, exclusiveMaximum, formatMinimum, \
      formatMaximum, formatExclusiveMinimum, formatExclusiveMaximum, element, dimension, \
-     metric (with format vector), minLength, \
+     metric, embedder (with format vector), minLength, \
      maxLength, pattern, minItems, maxItems, title, description, $comment, examples, \
      deprecated, default, defaultFunction, $ref (and $defs, $schema, $id at a label schema's root)";
 
@@ -35,7 +35,8 @@ pub(crate) const VECTOR_FORMAT: &str = "vector";
 /// The advice of a misplaced vector keyword.
 const VECTOR_HINT: &str = "A vector property is {\"type\": \"array\", \"format\": \"vector\", \
      \"element\": \"f32\", \"dimension\": 768} (element f32, f16, i8 or bit, default f32; \
-     dimension optional; metric an optional annotation: cosine, dot, l2, hamming).";
+     dimension optional; metric an optional annotation: cosine, dot, l2, hamming; embedder the \
+     model identity of the embedder that produced the vectors, e.g. \"hash-ngram/1\").";
 
 /// The general advice appended to every schema format error.
 pub(crate) const FORMAT_HELP: &str = "The schema format is an envelope ($schema, meta, mode, \
@@ -672,6 +673,7 @@ impl NodeParser<'_, '_> {
         let mut element = None;
         let mut dimension = None;
         let mut metric = None;
+        let mut embedder = None;
         for (key, field) in fields {
             let at = at.child(key.as_ref());
             let key = key.as_ref();
@@ -736,6 +738,21 @@ impl NodeParser<'_, '_> {
                     })?);
                     vector_keywords.push("metric");
                     uses.push(("metric", JsonType::Array));
+                }
+                "embedder" => {
+                    let model = string(field, &at, key)?;
+                    if let Err(reason) = crate::value::vector::embed::check_model_identity(model) {
+                        return Err(invalid(
+                            &at,
+                            reason,
+                            "embedder is the model identity of the embedder that produced the \
+                             vectors, as g.embedders() lists it under model: \
+                             \"embedder\": \"hash-ngram/1\".",
+                        ));
+                    }
+                    embedder = Some(model.to_string());
+                    vector_keywords.push("embedder");
+                    uses.push(("embedder", JsonType::Array));
                 }
                 "formatMinimum"
                 | "formatMaximum"
@@ -987,6 +1004,7 @@ impl NodeParser<'_, '_> {
                 element: element.unwrap_or(VectorElement::F32),
                 dimension,
                 metric,
+                embedder,
             });
         }
         for (keyword, text) in format_bounds {
@@ -1273,6 +1291,9 @@ impl PropertySchema {
             }
             if let Some(metric) = vector.metric {
                 map.insert("metric", ElementProperty::from(metric.name()));
+            }
+            if let Some(embedder) = &vector.embedder {
+                map.insert("embedder", ElementProperty::from(embedder.as_str()));
             }
         }
         if let Some(c) = self.constraints.as_deref() {

@@ -3,7 +3,7 @@
 
 `similarity` · category: [Vectors](../../traversal/step_reference.md#vectors)
 
-Score of a vector property (or the incoming vector) against q: cosine (default), dot, l2 or hamming.
+Score of a vector property (or the incoming vector) against q: cosine (default), dot, l2 or hamming; a text q is embedded by the model the schema declares for the property.
 
 ## Forms
 

@@ -41,6 +41,12 @@ pub enum SchemaChangeKind {
     /// `default` or `defaultFunction` changed (added, changed, removed): what a create stores
     /// for an absent property. Always compatible: no existing data or valid write is affected.
     DefaultChanged,
+    /// A vector's `embedder` (the model identity of the embedder that produced its vectors)
+    /// changed. Declaring it where there was none is compatible (no value or write is affected;
+    /// `embed_property` does it); changing it is not (the stored vectors and a text query
+    /// embedded by the new model are not comparable), and removing it is not either (a text
+    /// query on the property no longer finds its embedder).
+    EmbedderChanged,
 }
 
 impl SchemaChangeKind {
@@ -62,6 +68,7 @@ impl SchemaChangeKind {
             SchemaChangeKind::AdditionalPropertiesChanged => "additional_properties_changed",
             SchemaChangeKind::AnnotationChanged => "annotation_changed",
             SchemaChangeKind::DefaultChanged => "default_changed",
+            SchemaChangeKind::EmbedderChanged => "embedder_changed",
         }
     }
 }
@@ -410,6 +417,20 @@ impl Differ {
             }
         }
         self.constraints(&path, old, new);
+        // A vector's `embedder`: declaring one is compatible, changing or removing it is not.
+        let embedder =
+            |node: &PropertySchema| node.vector.as_ref().and_then(|v| v.embedder.clone());
+        let (a, b) = (embedder(old), embedder(new));
+        if a != b && old.vector.is_some() && new.vector.is_some() {
+            let ok = a.is_none();
+            self.push(
+                SchemaChangeKind::EmbedderChanged,
+                Some(path.clone()),
+                a,
+                b,
+                ok,
+            );
+        }
         // `default`/`defaultFunction` change what a create stores (compatible: no existing data
         // or valid write is affected), the other annotations change nothing.
         let empty = crate::graph::schema::Annotations::default();

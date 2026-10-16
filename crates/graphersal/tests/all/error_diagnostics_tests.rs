@@ -6813,3 +6813,151 @@ fn embed_errors_carry_their_help() {
         "{report}"
     );
 }
+
+/// The provenance errors of `embed_property` and of the text queries of `nearest` /
+/// `similarity` (book page "Vectors") carry the help of their cause; the text-query ones are
+/// located at their step.
+#[test]
+fn embed_property_and_text_query_errors_carry_their_help() {
+    use graphersal::exec::CancelToken;
+    use graphersal::vector::{EmbedJob, Embedders};
+
+    let embedders = Embedders::default();
+    let run_job = |graph: &Graph, job: &EmbedJob| {
+        let failed = graph
+            .embed_property(job, &embedders, &CancelToken::new(), &mut |_| {})
+            .expect_err("the job fails");
+        format_diagnostic(&*failed.error)
+    };
+    let text_query = |graph: &Graph| {
+        let lock = graph.read();
+        lock.traversal()
+            .v(None)
+            .nearest("emb", "graph indexes", 2, None)
+            .to_list()
+            .expect_err("the text query fails")
+    };
+
+    // No schema attached.
+    let graph = GraphSource::tinkerpop_modern();
+    let report = run_job(&graph, &EmbedJob::new("person", "name", "emb"));
+    assert!(
+        report.contains("embed_property needs a schema attached"),
+        "{report}"
+    );
+    assert!(
+        report.contains("g.set_schema(g.infer_schema(), SchemaMode.open)"),
+        "{report}"
+    );
+    let err = text_query(&graph);
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("nearest needs a schema attached"),
+        "{report}"
+    );
+    assert!(
+        report.contains("g.v().nearest(\"emb\", embed(\"graph indexes\"), 5)"),
+        "{report}"
+    );
+    assert_eq!(err.step_location().expect("located").step_id, "1");
+
+    // Attached, nothing declared.
+    {
+        let mut lock = graph.write();
+        let mut g = lock.traversal_mut();
+        let schema = g.infer_schema().unwrap().with_mode(SchemaMode::Open);
+        g.set_schema(schema).unwrap();
+    }
+    let report = format_diagnostic(&text_query(&graph));
+    assert!(report.contains("declares no embedder"), "{report}");
+    assert!(
+        report.contains("g.embed_property(#{label: \"doc\", from: \"text\", to: \"emb\"})"),
+        "{report}"
+    );
+
+    // Declared for one model per label: another embedder, a text query over both.
+    graph
+        .embed_property(
+            &EmbedJob::new("person", "name", "emb"),
+            &embedders,
+            &CancelToken::new(),
+            &mut |_| {},
+        )
+        .unwrap();
+    {
+        let mut lock = graph.write();
+        let mut schema = lock.get_schema().unwrap();
+        let mut other = schema.vertices["person"].schema.properties["emb"].clone();
+        if let Some(vector) = other.vector.as_mut() {
+            vector.embedder = Some("acme/other@2".to_string());
+        }
+        schema.vertices["software"]
+            .schema
+            .properties
+            .insert("emb".to_string(), other);
+        lock.traversal_mut().set_schema(schema).unwrap();
+    }
+    let report = run_job(&graph, &EmbedJob::new("software", "name", "emb"));
+    assert!(
+        report.contains("vectors of the model \"acme/other@2\""),
+        "{report}"
+    );
+    assert!(report.contains("Embed into another property"), "{report}");
+    {
+        let mut lock = graph.write();
+        lock.traversal_mut()
+            .v(None)
+            .has_label("software")
+            .property("emb", Vector::from_f32(vec![1.0; 256]).unwrap())
+            .iterate()
+            .unwrap();
+    }
+    {
+        let lock = graph.read();
+        let err = lock
+            .traversal()
+            .v(None)
+            .has_label("software")
+            .nearest("emb", "lop", 1, None)
+            .to_list()
+            .expect_err("no embedder of the model");
+        let report = format_diagnostic(&err);
+        assert!(
+            report.contains("no registered embedder has the model \"acme/other@2\""),
+            "{report}"
+        );
+        assert!(report.contains("--embedder NAME=REPO"), "{report}");
+        assert!(
+            report.contains("g.embedders() lists the registered ones"),
+            "{report}"
+        );
+    }
+    let report = format_diagnostic(&text_query(&graph));
+    assert!(
+        report.contains("one text query cannot search both"),
+        "{report}"
+    );
+    assert!(
+        report.contains("g.v().has_label(\"doc\").nearest(\"emb\", \"graph indexes\", 5)"),
+        "{report}"
+    );
+
+    // The value form names the key form.
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .values("emb")
+        .similarity_value("graph", None)
+        .to_list()
+        .expect_err("no key");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("needs a top-level property name"),
+        "{report}"
+    );
+    assert!(
+        report.contains("g.v().similarity(\"emb\", \"graph indexes\")"),
+        "{report}"
+    );
+}

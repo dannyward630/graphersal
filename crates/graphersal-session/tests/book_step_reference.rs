@@ -151,6 +151,7 @@ const CATEGORIES: &[(&str, &[&str])] = &[
             "vector_mean",
             "embed",
             "embedders",
+            "embed_property",
         ],
     ),
     (

@@ -222,10 +222,10 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "Converts a vector to the element kind f32, f16, i8 or bit; quantize(\"f32\") dequantizes.",
         "g.inject(vector([0.5, -1.0])).quantize(\"i8\").next().element" => "i8";
     "traversal" "similarity":
-        "Score of a vector property (or the incoming vector) against q: cosine (default), dot, l2 or hamming.",
+        "Score of a vector property (or the incoming vector) against q: cosine (default), dot, l2 or hamming; a text q is embedded by the model the schema declares for the property.",
         "g.inject(vector([3.0, 4.0])).similarity([0, 0], \"l2\").next()" => "5.0";
     "traversal" "nearest":
-        "Exact top-k: the k inputs whose vector property is closest to q, best first.",
+        "Exact top-k: the k inputs whose vector property is closest to q, best first; a text q is embedded by the model the schema declares for the property.",
         "g.inject(#{n: 1, emb: vector([1.0, 0.0])}, #{n: 2, emb: vector([0.0, 1.0])}).nearest(\"emb\", vector([0.0, 1.0]), 1).select(\"n\").next()" => "2";
     "traversal" "vector_mean":
         "The component-wise mean of the incoming vectors (or lists of vectors).",
@@ -236,6 +236,9 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
     "traversal" "embedders":
         "Lists the registered embedders (name, model, dimension, element, metric, ...), the default first.",
         "g.embedders()[0].name" => "hash-ngram/1";
+    "traversal" "embed_property":
+        "Embeds the property from of every element with label into the vector property to, page by page, and declares the model in the attached schema; returns the report.",
+        "{ g.set_schema(g.infer_schema(), SchemaMode.open); g.embed_property(#{label: \"person\", from: \"name\", to: \"emb\"}).embedded }" => "4";
     "traversal" "date_add":
         "Adds n DT units or a duration, optionally in a zone (TinkerPop dateAdd()).",
         "g.inject(date(\"2024-01-31\")).date_add(DT.month, 1).next().day" => "29";
