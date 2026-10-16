@@ -103,7 +103,11 @@ A [property index](property_indexes.md) never holds vectors: `has(key, vector)` 
 key reads the elements by a scan, with the same result.
 
 **Quantize an existing property** with one write per element, then declare the new element in the
-schema (`g.patch_schema(..)`, below):
+schema (`g.patch_schema(..)`, below). This works as shown while no schema declares the property;
+when the schema already declares it as `f32` (mode open or closed), a write is converted back to
+`f32` and the new element is refused while f32 data remains: the migration recipe for that case
+(mode `none` for the rewrite, one unit) is in
+[Embeddings and Vector Search](../getting_started/embeddings.md#quantization-smaller-vectors).
 
 ```rhai,graph=empty,script
 g.add_v("doc").property("emb", vector([0.5, -1.0, 0.25])).iterate();
