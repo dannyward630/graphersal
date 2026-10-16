@@ -86,6 +86,9 @@ pub trait SessionGraph: AnyGraph {
     /// [`crate::views::schema_view`] of the graph.
     fn schema_view(&self) -> Value;
 
+    /// [`crate::views::schema_view_of`]: the views of `schema` with the graph's label counts.
+    fn schema_view_of(&self, schema: GraphSchema) -> Value;
+
     /// [`crate::views::graph_view`] of the graph.
     fn graph_view(&self, max_nodes: usize, max_edges: usize) -> CompactGraph;
 
@@ -254,6 +257,10 @@ where
 
     fn schema_view(&self) -> Value {
         crate::views::schema_view(&*self.read())
+    }
+
+    fn schema_view_of(&self, schema: GraphSchema) -> Value {
+        crate::views::schema_view_of(&*self.read(), schema)
     }
 
     fn graph_view(&self, max_nodes: usize, max_edges: usize) -> CompactGraph {

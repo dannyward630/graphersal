@@ -803,6 +803,10 @@ fn route(context: &Arc<Context>, request: &mut Request) -> Result<Answer, HttpEr
             Ok(text_response(200, answer?))
         }
         (Method::Get, "schema") => value(context.call(|s| s.graph().schema_view())?),
+        (Method::Post, "schema/view") => {
+            let body = text_body(request)?;
+            value(context.call_fallible(move |s| s.schema_view_of(&body))?)
+        }
         (Method::Get, "schema/stored") => {
             Ok(text_response(200, context.call(|s| s.get_schema_text())?))
         }
@@ -1015,6 +1019,7 @@ fn route(context: &Arc<Context>, request: &mut Request) -> Result<Answer, HttpEr
             | "execute"
             | "schema"
             | "schema/stored"
+            | "schema/view"
             | "schema/infer"
             | "schema/set"
             | "schema/patch"

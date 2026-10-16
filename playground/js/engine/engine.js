@@ -354,6 +354,8 @@ export class Engine {
 
   /** @returns {Promise<SchemaView>} */
   async schema() { throw notImplemented('schema'); }
+  /** The schema views of `schema` (an object or JSON text: the editor's draft), with the graph's label counts. */
+  async schemaViewOf(schema) { throw notImplemented('schemaViewOf'); }
 
   /**
    * Elements to draw for the whole graph, at most `limits.maxNodes` vertices (the first ones)

@@ -256,6 +256,16 @@ impl Playground {
         to_text(&self.session.graph().schema_view())
     }
 
+    /// The schema views of the schema `json` (the editor's draft) with the graph's label
+    /// counts: the same structure as [`Self::schema`], `source: "given"`.
+    #[wasm_bindgen(js_name = schemaViewOf)]
+    pub fn schema_view_of(&self, json: &str) -> Result<String, JsError> {
+        self.session
+            .schema_view_of(json)
+            .map(|v| to_text(&v))
+            .map_err(|e| JsError::new(&e))
+    }
+
     /// The graph to draw as columns (`CompactGraph`: `{vertexIds, vertexLabel, vertexName,
     /// edgeIds, edgeSource, edgeTarget, edgeLabel, labels, truncated, totalNodes, totalEdges}`),
     /// without properties (see [`Self::element`]).

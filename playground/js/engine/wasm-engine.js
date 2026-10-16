@@ -339,6 +339,10 @@ export class WasmEngine extends Engine {
     return this.call('schema');
   }
 
+  async schemaViewOf(schema) {
+    return this.call('schemaViewOf', asJson(schema));
+  }
+
   async getSchema() {
     return JSON.parse(await this.call('getSchema')); // JSON text from the worker (worker.js RAW_METHODS)
   }

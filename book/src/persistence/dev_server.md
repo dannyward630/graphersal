@@ -597,6 +597,7 @@ For reference while it exists; it follows the playground's engine boundary
 | `POST /api/cancel` | `stop()`: `{cancelled}` |
 | `GET /api/schema` | `schema()` (the schema views) |
 | `GET /api/schema/stored`, `GET /api/schema/infer` | `getSchema()`, `inferSchema()` |
+| `POST /api/schema/view` (body: a schema) | `schemaViewOf(schema)`: the schema views of that schema (the editor's draft) with the graph's label counts, `source: "given"`; nothing stored |
 | `POST /api/schema/set`, `/patch`, `/validate`, `/validate-patch`, `/diff` | the schema methods (body: the schema or patch; `schema/set?mode=open\|closed\|none` replaces the schema's mode) |
 | `GET /api/graph-view?maxNodes=&maxEdges=` | `graphView()`: the drawing as columns (ids, label indices, captions, edge endpoints as indices), no properties |
 | `POST /api/neighbourhood` | `neighbourhood(request)`: the vertices within `hops` (the depth, 1-5) along `direction` (`both`, `out`, `in`) of the centre `ids`, plus the vertices `keep` (a drawing being expanded), and the edges between them, bounded by `maxNodes`/`maxEdges`: the drawing's columns plus `seeds`, `missing`, `hiddenEdges` and, when the limits cut it, `leftOut: {vertices, edges, complete}`; 422 for an unknown id or a depth above 5 |

@@ -473,6 +473,14 @@ impl Session {
         value_json(&validation.to_value())
     }
 
+    /// The schema views (`{mode, source, table, json, mermaid, graph, truncated,
+    /// total_labels}`, [`crate::views::schema_view_of`]) of the schema `json`, e.g. the
+    /// editor's draft, with the graph's label counts. Nothing is stored or checked against data.
+    pub fn schema_view_of(&self, json: &str) -> Result<Value, String> {
+        let schema = GraphSchema::from_json(json).map_err(|err| format_diagnostic(&err))?;
+        Ok(self.graph.schema_view_of(schema))
+    }
+
     /// `validate_schema_patch`: [`Self::validate_schema`] of the stored schema patched.
     pub fn validate_schema_patch(&self, patch: &str) -> Result<Value, String> {
         let patch = SchemaPatch::from_json(patch).map_err(|err| format_diagnostic(&err))?;

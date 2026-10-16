@@ -429,6 +429,10 @@ export class HttpEngine extends Engine {
     return this.request('GET', 'schema');
   }
 
+  async schemaViewOf(schema) {
+    return this.request('POST', 'schema/view', asJson(schema));
+  }
+
   async getSchema() {
     return this.request('GET', 'schema/stored');
   }

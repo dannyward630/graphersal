@@ -601,6 +601,36 @@ fn malformed_and_foreign_requests_are_4xx_json() {
     assert_eq!(execute(port, "1 + 1")["ok"], true);
 }
 
+/// The Schema panel draws what its editor shows: the views of a given schema (a draft), with
+/// the graph's label counts, whatever the graph stores.
+#[test]
+fn schema_view_of_a_given_schema_over_http() {
+    let ui = ui_dir("schema-view");
+    let server = start(&["--graph", "modern", "--ui-dir", ui.to_str().unwrap()]);
+    let port = server.port;
+    let draft = r#"{"mode": "none", "vertices": {"city": {"schema": {"type": "object",
+        "properties": {"name": {"type": "string"}}}}, "person": {"schema": {"type": "object"}}},
+        "edges": {"lives in": {"connections": [{"from": "person", "to": "city"}]}}}"#;
+    let view = post(port, "/api/schema/view", draft);
+    assert_eq!(view.status, 200, "{}", view.body);
+    let view = view.json();
+    assert_eq!(view["source"], "given");
+    assert_eq!(view["mode"], "none");
+    let mermaid = view["mermaid"].as_str().unwrap();
+    assert!(mermaid.contains("city {"), "{mermaid}");
+    assert!(
+        mermaid.contains(r#"person ||--o{ city : "lives in""#),
+        "{mermaid}"
+    );
+    let nodes = view["graph"]["nodes"].as_array().unwrap();
+    let person = nodes.iter().find(|n| n["label"] == "person").unwrap();
+    assert_eq!(person["count"], 4, "{person}");
+    // nothing stored
+    assert_eq!(get(port, "/api/schema/stored").body, "null");
+    let bad = post(port, "/api/schema/view", r#"{"vertices": 1}"#);
+    assert_eq!(bad.status, 422, "{}", bad.body);
+}
+
 #[test]
 fn schema_methods_over_http() {
     let ui = ui_dir("schema");

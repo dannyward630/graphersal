@@ -20,6 +20,7 @@ const JSON_METHODS = {
   info: () => playground.info(),
   execute: (script, options) => playground.execute(script, JSON.stringify(options || {})),
   schema: () => playground.schema(),
+  schemaViewOf: (json) => playground.schemaViewOf(json),
   graphView: (maxNodes, maxEdges) => playground.graphView(maxNodes, maxEdges),
   element: (kind, id) => playground.element(kind, id),
   elementForEdit: (kind, id) => playground.elementForEdit(kind, id),
