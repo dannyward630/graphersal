@@ -813,10 +813,13 @@ manager lists the queries by folder with Run, Edit, Delete and New; the **Compre
 lists the rules with their stats (values, plain → stored, ratio, saving, dictionary) with Edit,
 Recompress and Drop, and the rule form (name, element, label with the graph's labels from
 `statistics()` as a datalist, path, minimum size, dictionary) shows the engine's field errors in
-place; the **Property indexes** manager lists the indexes with their stats (entries, distinct
-values, elements per value, memory, "not served") with Drop (confirmed), and the create form
-(element, label with the same datalist, key, optional name with `defaultIndexName` as its
-placeholder) shows the engine's field errors in place (engine `listIndexes`/`createIndex`/
+place; the **Property indexes** manager lists the indexes with their type and stats (entries,
+distinct values, elements per value, memory, "not served" with the engine's `reason`,
+`indexNotServedReason`) with Drop (confirmed), and the create form (element, label with the same
+datalist, key, type from `INDEX_TYPES` with its description as the tooltip, optional name with
+`defaultIndexName` as its placeholder) shows the engine's field errors in place (an unknown type
+under Type, a key the schema declares as a vector, a list or a map under Key; engine
+`listIndexes`/`createIndex`/
 `dropIndex`). The Store menu shows the catalog per kind (`definitionsByKind`). The Statistics tab
 adds the compressed strings and dictionaries, and the property indexes' memory, to its memory
 part when there are any.
