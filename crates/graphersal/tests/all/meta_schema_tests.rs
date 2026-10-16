@@ -81,15 +81,18 @@ fn test_meta_schema_constant_validity() {
         "deprecated",
         "default",
         "defaultFunction",
+        "element",
+        "dimension",
+        "metric",
         "$ref",
     ] {
         assert!(node_keys.iter().any(|k| k == keyword), "{keyword} missing");
     }
-    assert_eq!(node_keys.len(), 30, "{node_keys:?}");
+    assert_eq!(node_keys.len(), 33, "{node_keys:?}");
     for rejected in ["oneOf", "allOf", "uniqueItems", "multipleOf", "nullable"] {
         assert!(!node_keys.iter().any(|k| k == rejected), "{rejected}");
     }
-    // The formats are uuid and the date/time types.
+    // The formats are uuid, the date/time types and vector.
     assert_eq!(
         parsed["$defs"]["node"]["properties"]["format"]["enum"],
         serde_json::json!([
@@ -98,7 +101,8 @@ fn test_meta_schema_constant_validity() {
             "date",
             "local-date-time",
             "time",
-            "duration"
+            "duration",
+            "vector"
         ])
     );
     // `default` is documented as applied on create only, never on read or to existing data.
