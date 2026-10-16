@@ -75,6 +75,13 @@ What 0.2.0 does not do yet is on [Current Limitations](../users_guide/current_li
   ([#6](https://github.com/graphersal/graphersal/issues/6)), as in 0.1.1; which older versions
   are upgraded, and how, is one table in the code, shown on
   [Format Versions and Upgrade](../persistence/store_versions.md#the-upgrade-table).
+- **Prebuilt binaries** ([Installation](../getting_started/installation.md)): every release has
+  archives of the `graphersal` command-line tool for Linux (x86_64, aarch64), macOS (Apple
+  silicon, Intel) and Windows (x86_64), with `SHA256SUMS` and GitHub build-provenance
+  attestations; `cargo binstall graphersal-cli` installs them. The Linux binaries are statically
+  linked with musl and run on any distribution, but are slower on allocation-heavy queries than a
+  source build
+  ([Performance of the prebuilt Linux binaries](../getting_started/installation.md#performance-of-the-prebuilt-linux-binaries)).
 
 ## TinkerPop conformance
 

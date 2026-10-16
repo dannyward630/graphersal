@@ -3,6 +3,9 @@
 The `graphersal` binary runs Gremlin queries from a terminal. It has three modes: a one-shot
 query runner for shell scripts, an interactive REPL, and a local server (next chapter).
 
+Install it from a prebuilt binary or with `cargo install graphersal-cli`
+([Installation](installation.md)), or build it in a clone of the repository:
+
 ```bash
 cargo build -p graphersal-cli --release      # target/release/graphersal
 ```

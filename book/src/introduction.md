@@ -67,6 +67,7 @@ g.v().has("name", "marko").as("me")
 | You want to ... | Read |
 |---|---|
 | try it right now | [Try It in the Browser](getting_started/playground_tour.md) |
+| install the command-line tool, the Python package or the crate | [Installation](getting_started/installation.md) |
 | run queries from a terminal or a script | [The Command Line](getting_started/cli.md) |
 | let an AI agent work with your graph | [Dev Server, MCP and AI Chat](getting_started/server_mcp_ai.md) |
 | search by meaning with embeddings (semantic search, GraphRAG) | [Embeddings and Vector Search](getting_started/embeddings.md) |

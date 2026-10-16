@@ -102,6 +102,17 @@ never leaves your browser.
   graph, change capture with commit hooks, GraphSON 3.0 and GraphML files, and a storage trait to
   run the whole engine on a storage of your own.
 
+## Install
+
+- **Prebuilt binaries** for Linux, macOS and Windows: the archives on the
+  [releases page](https://github.com/graphersal/graphersal/releases), or `cargo binstall graphersal-cli`.
+- **From source**: `cargo install graphersal-cli` (Rust 1.88 or newer); the binary is `graphersal`.
+- **Python**: `pip install graphersal`. **Rust**: `cargo add graphersal --features script,io,display`.
+
+The Linux binaries are statically linked with musl and run on any distribution, but are slower on
+allocation-heavy queries than a source build. Checksums, WSL and the macOS/Windows prompts:
+[Installation](https://graphersal.dev/getting_started/installation.html).
+
 ## Get started
 
 ### In the browser
@@ -112,8 +123,6 @@ Open **[play.graphersal.dev](https://play.graphersal.dev)**, pick a sample graph
 ### On the command line
 
 ```bash
-cargo install graphersal-cli          # the binary is `graphersal`
-
 graphersal -e 'g.v().has("name", "marko").out("knows").values("name")'
 graphersal --graph people.json -e 'g.v().has_label("person").count()'    # GraphSON or GraphML
 graphersal                                                               # interactive REPL

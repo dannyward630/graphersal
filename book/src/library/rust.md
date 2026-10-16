@@ -1,6 +1,6 @@
 # Rust Quick Start
 
-Add the crate with the features you need ([Installation](../users_guide/installation.md) lists
+Add the crate with the features you need ([Library Features](../users_guide/installation.md) lists
 them all):
 
 ```toml

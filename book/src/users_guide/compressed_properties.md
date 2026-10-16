@@ -145,3 +145,5 @@ from a 200-word vocabulary, company names, years and numbers), Apple M-series, `
 The compression figures include a round-trip check of every value (a compressed value is verified
 once when it is made, so reading it back cannot fail). A highly repetitive corpus (a dozen phrases
 recombined) compresses to 0.07 (0.05 with a dictionary).
+The figures come from a source build, not from the musl-linked prebuilt Linux binary
+([Performance of the prebuilt Linux binaries](../getting_started/installation.md#performance-of-the-prebuilt-linux-binaries)).

@@ -1,4 +1,7 @@
-# Installation
+# Library Features
+
+This page is about the Rust crate; the command-line tool and the Python package are on
+[Installation](../getting_started/installation.md).
 
 ## Library
 Graphersal is primarily provided as a library and can be easily incorporated into your Rust project by adding it as a dependency. 
@@ -23,16 +26,10 @@ Graphersal comes with the several key features.
 | persist-zstd | zstd-compressed snapshot chunks on top of `persist` (pure Rust). |
 | persist-zip | ZIP backup archives of a Store on top of `persist`. |
 
-## CLI Application
+## CLI Application and Python
 
-The command-line tool `graphersal` (crate `graphersal-cli`: the REPL, a one-shot query runner, the
-dev server and the `graphersal store` commands) is built from the repository:
-
-```
-cargo build -p graphersal-cli --release      # target/release/graphersal
-target/release/graphersal --help
-```
-
+The command-line tool `graphersal` (prebuilt binaries, `cargo binstall`, `cargo install
+graphersal-cli`) and the Python package are on [Installation](../getting_started/installation.md).
 Every command of the tool is on the [Command Cheat Sheet](command_cheat_sheet.md).
 
 ## WEB Playground

@@ -349,7 +349,9 @@ on an Apple M3:
 
 So about 13 ms per 100 000 f32 vectors of 384 components: enough for most in-memory graphs, and a
 filter before the search (above) scores fewer. There is no approximate (ANN) index yet (see
-[Current Limitations](current_limitations.md)).
+[Current Limitations](current_limitations.md)). These figures come from a source build, not from
+the musl-linked prebuilt Linux binary
+([Performance of the prebuilt Linux binaries](../getting_started/installation.md#performance-of-the-prebuilt-linux-binaries)).
 
 ### Quantization: memory against accuracy
 
