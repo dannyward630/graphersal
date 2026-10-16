@@ -2288,7 +2288,7 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
         let embedders = self
             .embedders
             .clone()
-            .unwrap_or_else(crate::value::Embedders::shared_default);
+            .unwrap_or_else(crate::value::Embedders::current);
         let storage = &self.storage;
         if let Err(err) = bind_embedders(&mut self.steps, &embedders, &|| storage.get_schema()) {
             return failed_before_run(err, &self.options);

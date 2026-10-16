@@ -623,6 +623,12 @@ let mut scope = graphersal::script::graph_scope(Arc::new(graph));
 graphersal::script::set_scope_embedders(&mut scope, embedders);
 ```
 
+The script entry points that build their own engine and scope (`eval_value_with_limits`,
+`eval_value_atomic`, `eval_value_dry_run`, ...) take the registry from `Embedders::scope`:
+`embedders.scope(|| eval_value_atomic(graph, script, params, &limits, authorizer))` gives every
+engine, scope and traversal created inside the closure on that thread the host's registry (an
+explicit `with_embedders`/`set_*_embedders` wins). The Python binding runs its scripts this way.
+
 The registry always keeps `hash-ngram/1`; `hash-ngram` and every `hash-ngram/*` name are
 reserved, a name is unique and made of letters, digits and `. _ - / :` (such as
 `minishlab/potion-base-8M`), and `Embedders::by_model` finds an embedder by its model identity.
@@ -658,8 +664,10 @@ let embedders = Embedders::builder().with(Arc::new(model))?.default_name("potion
   versions of `model2vec-rs` and `tokenizers` it was built with. Vectors are L2-normalized when the
   model's config says so (`with_normalize` overrides it).
 - **Model identity**: `model2vec/<repo>@<12 hex digits>`, where `<repo>` comes from the manifest
-  `graphersal-embed-model.json` that `graphersal embed-model download` writes, else
-  `model2vec@<12 hex digits>`. The digits start a SHA-256 over the three files
+  `graphersal-embed-model.json` that `graphersal embed-model download` writes or from
+  `Model2VecOptions::with_repo("minishlab/potion-base-8M")` for a directory the host downloaded
+  itself (the same identity as the download of the same files; a repository differing from the
+  manifest's refuses the load), else `model2vec@<12 hex digits>`. The digits start a SHA-256 over the three files
   (`Model2Vec::model_identity(dir)` computes it without loading the model); no path is part of it,
   so a copied or moved directory keeps its identity. A normalization other than the config's adds
   `?normalize=false`.
@@ -707,6 +715,13 @@ g.query('g.v().nearest("emb", q, 10).to_list()', params={"q": q})
 
 A one-dimensional `float32`/`float64` numpy array passed as a parameter arrives as an f32
 vector, like `Vector(array)`. See the Python binding's README for the details.
+
+Python registers its own embedders: `graphersal.Embedder(name, fn, dimension=..)` wraps any
+Python model (`fn(texts)` returns the rows, or one 2-D numpy array), `graphersal.Model2Vec(name,
+path, model="minishlab/potion-base-8M")` loads a Model2Vec model from a directory you downloaded
+(the same model identity as the command line's download), and `Graph(embedders=[..])`,
+`graph.register_embedder`, `graph.embed_property(label=.., source=.., target=..)` and text
+queries work as described above ([Python Quick Start: Embedders](../library/python.md#embedders)).
 
 ## In the playground and the CLI
 

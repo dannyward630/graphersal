@@ -33,7 +33,8 @@ pub(crate) struct ScriptAccess {
     /// by [`saved_query::MAX_QUERY_DEPTH`].
     pub(crate) query_depth: usize,
     /// The embedders the session's `embed` step and `embed(text)` call
-    /// ([`set_engine_embedders`], [`set_scope_embedders`]); the default registry otherwise.
+    /// ([`set_engine_embedders`], [`set_scope_embedders`]); the current `Embedders::scope`'s or
+    /// the default registry otherwise.
     pub(crate) embedders: Arc<crate::value::Embedders>,
 }
 
@@ -46,7 +47,7 @@ impl Default for ScriptAccess {
             max_value_depth: 0,
             read_only: false,
             query_depth: 0,
-            embedders: crate::value::Embedders::shared_default(),
+            embedders: crate::value::Embedders::current(),
         }
     }
 }
@@ -62,7 +63,7 @@ impl ScriptAccess {
             max_value_depth: 0,
             read_only: false,
             query_depth: 0,
-            embedders: crate::value::Embedders::shared_default(),
+            embedders: crate::value::Embedders::current(),
             presets: Arc::new(
                 options
                     .iter()
@@ -215,8 +216,10 @@ pub fn pin_now(engine: &mut Engine, now: Option<crate::value::temporal::DateTime
 /// Gives the engine built by [`engine_with_options`](crate::script::engine_with_options) (or a
 /// sibling) the `embedders` of the host: the DSL function `embed(text)` and the traversal sources
 /// the engine provides (`GraphSource::empty()`, ...) call them. Pass the same registry to
-/// [`set_scope_embedders`] for the session's `g`, `_g` and `__`. Without it both use the default
-/// registry, which holds only the built-in `hash-ngram/1`.
+/// [`set_scope_embedders`] for the session's `g`, `_g` and `__`. Without it both use the registry
+/// of the current [`Embedders::scope`](crate::vector::Embedders::scope) when the engine is built
+/// in one (the way to give the `eval_*` entry points, which build their own engine, a host's
+/// embedders), else the default registry, which holds only the built-in `hash-ngram/1`.
 ///
 /// ```rust
 /// use std::sync::Arc;

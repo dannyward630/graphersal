@@ -17,6 +17,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
+use crate::embedder::{PyEmbedder, RegistryCell, registry_of};
 use crate::error::map_diagnostic;
 use crate::graph::Graph;
 
@@ -24,6 +25,8 @@ use crate::graph::Graph;
 #[pyclass(module = "graphersal")]
 pub struct Store {
     inner: Arc<Mutex<Option<persist::Store>>>,
+    /// The embedders of `store.graph` (every `Graph` it hands out shares them).
+    embedders: RegistryCell,
 }
 
 fn store_error(py: Python<'_>, err: PersistError) -> PyErr {
@@ -131,9 +134,10 @@ impl Store {
         result.map_err(|(text, cause)| raise_with_cause(py, &text, cause))
     }
 
-    fn wrap(store: persist::Store) -> Self {
+    fn wrap(store: persist::Store, embedders: RegistryCell) -> Self {
         Store {
             inner: Arc::new(Mutex::new(Some(store))),
+            embedders,
         }
     }
 }
@@ -145,51 +149,79 @@ impl Store {
     /// fixed for its life: ``"maintenance"`` (damage found on disk while it is open makes it
     /// read-only) or ``"continue"`` (it keeps committing and reports the damage).
     #[staticmethod]
-    #[pyo3(signature = (path, *, on_damage="maintenance"))]
-    fn create(py: Python<'_>, path: &str, on_damage: &str) -> PyResult<Self> {
+    #[pyo3(signature = (path, *, on_damage="maintenance", embedders=None, default_embedder=None))]
+    fn create(
+        py: Python<'_>,
+        path: &str,
+        on_damage: &str,
+        embedders: Option<Vec<PyRef<'_, PyEmbedder>>>,
+        default_embedder: Option<&str>,
+    ) -> PyResult<Self> {
+        let registry = registry_of(embedders, default_embedder)?;
         let path = path.to_string();
         let options = create_options(on_damage)?;
         let store = py
             .detach(move || persist::Store::create(&path, options))
             .map_err(|err| store_error(py, err))?;
-        Ok(Store::wrap(store))
+        Ok(Store::wrap(store, registry))
     }
 
     /// ``Store.open(path)``: opens the store in ``path`` read-write and runs its recovery
     /// (interrupted operations completed, the WAL replayed, an interrupted last write cut).
     /// One writer per directory: a second open raises.
     #[staticmethod]
-    fn open(py: Python<'_>, path: &str) -> PyResult<Self> {
+    #[pyo3(signature = (path, *, embedders=None, default_embedder=None))]
+    fn open(
+        py: Python<'_>,
+        path: &str,
+        embedders: Option<Vec<PyRef<'_, PyEmbedder>>>,
+        default_embedder: Option<&str>,
+    ) -> PyResult<Self> {
+        let registry = registry_of(embedders, default_embedder)?;
         let path = path.to_string();
         let store = py
             .detach(move || persist::Store::open(&path, StoreOptions::new()))
             .map_err(|err| store_error(py, err))?;
-        Ok(Store::wrap(store))
+        Ok(Store::wrap(store, registry))
     }
 
     /// ``Store.create_file(path)``: creates a SINGLE-FILE store (the whole store in the one
     /// file ``path``, whatever its extension) for an empty graph and opens it. ``Store.create``
     /// of a path ending in ``.gstore`` makes one too.
     #[staticmethod]
-    #[pyo3(signature = (path, *, on_damage="maintenance"))]
-    fn create_file(py: Python<'_>, path: &str, on_damage: &str) -> PyResult<Self> {
+    #[pyo3(signature = (path, *, on_damage="maintenance", embedders=None, default_embedder=None))]
+    fn create_file(
+        py: Python<'_>,
+        path: &str,
+        on_damage: &str,
+        embedders: Option<Vec<PyRef<'_, PyEmbedder>>>,
+        default_embedder: Option<&str>,
+    ) -> PyResult<Self> {
+        let registry = registry_of(embedders, default_embedder)?;
         let path = path.to_string();
         let options = create_options(on_damage)?;
         let store = py
             .detach(move || persist::Store::create_file(&path, options))
             .map_err(|err| store_error(py, err))?;
-        Ok(Store::wrap(store))
+        Ok(Store::wrap(store, registry))
     }
 
     /// ``Store.open_file(path)``: opens the single-file store ``path`` read-write
     /// (``Store.open`` of an existing file does the same).
     #[staticmethod]
-    fn open_file(py: Python<'_>, path: &str) -> PyResult<Self> {
+    #[pyo3(signature = (path, *, embedders=None, default_embedder=None))]
+    fn open_file(
+        py: Python<'_>,
+        path: &str,
+        embedders: Option<Vec<PyRef<'_, PyEmbedder>>>,
+        default_embedder: Option<&str>,
+    ) -> PyResult<Self> {
+        let registry = registry_of(embedders, default_embedder)?;
         let path = path.to_string();
         let store = py
             .detach(move || persist::Store::open_file(&path, StoreOptions::new()))
             .map_err(|err| store_error(py, err))?;
-        Ok(Store::wrap(store))
+        Ok(Store::wrap(store, registry))
     }
 
     /// ``Store.convert(source, target, *, single_file=False)``: copies the closed store in
@@ -283,12 +315,19 @@ impl Store {
     /// ``Store.open_backup(path)``: opens the BACKUP in ``path`` read-only (no lock, nothing
     /// written): listing, verify, fork and backups of it work; every write raises.
     #[staticmethod]
-    fn open_backup(py: Python<'_>, path: &str) -> PyResult<Self> {
+    #[pyo3(signature = (path, *, embedders=None, default_embedder=None))]
+    fn open_backup(
+        py: Python<'_>,
+        path: &str,
+        embedders: Option<Vec<PyRef<'_, PyEmbedder>>>,
+        default_embedder: Option<&str>,
+    ) -> PyResult<Self> {
+        let registry = registry_of(embedders, default_embedder)?;
         let path = path.to_string();
         let store = py
             .detach(move || persist::Store::open_backup(&path, StoreOptions::new()))
             .map_err(|err| store_error(py, err))?;
-        Ok(Store::wrap(store))
+        Ok(Store::wrap(store, registry))
     }
 
     /// ``Store.restore_backup(path)``: makes the backup in ``path`` the LIVE store, in place
@@ -316,8 +355,9 @@ impl Store {
     /// ``store.graph``: the store's graph; every commit of it is durable before it returns.
     #[getter]
     fn graph(&self, py: Python<'_>) -> PyResult<Graph> {
+        let embedders = self.embedders.clone();
         self.with(py, |store| {
-            Ok(Graph::from_shared(Arc::clone(store.graph())))
+            Ok(Graph::from_shared(Arc::clone(store.graph()), embedders))
         })
     }
 

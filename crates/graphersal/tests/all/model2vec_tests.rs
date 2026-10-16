@@ -360,6 +360,54 @@ fn the_manifest_names_the_repository_in_the_identity() {
     }
 }
 
+/// A host that downloaded the files itself names the repository (`with_repo`): the identity is
+/// the one a CLI download of the same files gives (from its manifest). A manifest naming
+/// another repository refuses the load; the same name is fine; a bad name is refused.
+#[test]
+fn a_host_given_repository_gives_the_identity_of_a_download() {
+    let dir = tiny_model("with_repo");
+    let named = Model2Vec::options()
+        .with_repo("acme/tiny-model")
+        .load("tiny", &dir)
+        .unwrap();
+    let hash = Model2Vec::model_identity(&dir)
+        .unwrap()
+        .strip_prefix("model2vec@")
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        named.info().model,
+        format!("model2vec/acme/tiny-model@{hash}")
+    );
+
+    let downloaded = scratch("with_repo_download");
+    copy_dir(&dir, &downloaded);
+    std::fs::write(
+        downloaded.join(Model2Vec::MANIFEST_FILE),
+        r#"{"format": 1, "repo": "acme/tiny-model", "revision": "main", "files": []}"#,
+    )
+    .unwrap();
+    let from_manifest = Model2Vec::load("tiny", &downloaded).unwrap();
+    assert_eq!(from_manifest.info().model, named.info().model);
+    let same = Model2Vec::options()
+        .with_repo("acme/tiny-model")
+        .load("tiny", &downloaded)
+        .unwrap();
+    assert_eq!(same.info().model, named.info().model);
+
+    let other = unavailable_reason(
+        Model2Vec::options()
+            .with_repo("acme/other")
+            .load("tiny", &downloaded),
+    );
+    assert!(
+        other.contains("differs") && other.contains("acme/tiny-model"),
+        "{other}"
+    );
+    let bad = unavailable_reason(Model2Vec::options().with_repo("a b").load("tiny", &dir));
+    assert!(bad.contains("repository name"), "{bad}");
+}
+
 #[test]
 fn the_sentence_transformers_layouts_load() {
     let flat = scratch("st_flat");

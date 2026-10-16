@@ -10,8 +10,8 @@
 //! (`expect("tokenization failed")`), so every call into it runs under `catch_unwind` and a
 //! panic becomes [`EmbedError::Failed`].
 //!
-//! The model identity is `model2vec/<repo>@<12 hex>` (`<repo>` from the manifest) or
-//! `model2vec@<12 hex>` without one: the first 12 hex digits of a SHA-256 over the three model
+//! The model identity is `model2vec/<repo>@<12 hex>` (`<repo>` from the manifest, or given by
+//! the host with [`Model2VecOptions::with_repo`]) or `model2vec@<12 hex>` without one: the first 12 hex digits of a SHA-256 over the three model
 //! files (see [`Model2Vec::model_identity`]), never a path, so a copied or moved directory keeps
 //! its identity.
 
@@ -86,6 +86,7 @@ pub struct Model2VecOptions {
     max_tokens: usize,
     normalize: Option<bool>,
     max_batch: usize,
+    repo: Option<String>,
 }
 
 impl Default for Model2VecOptions {
@@ -94,6 +95,7 @@ impl Default for Model2VecOptions {
             max_tokens: Model2Vec::DEFAULT_MAX_TOKENS,
             normalize: None,
             max_batch: Model2Vec::DEFAULT_MAX_BATCH,
+            repo: None,
         }
     }
 }
@@ -122,6 +124,18 @@ impl Model2VecOptions {
         self
     }
 
+    /// The Hugging Face repository the model files come from (`name` or `owner/name`, e.g.
+    /// `minishlab/potion-base-8M`), for a directory the host downloaded itself (without the
+    /// [`Model2Vec::MANIFEST_FILE`] that `graphersal embed-model download` writes). The model
+    /// identity becomes `model2vec/<repo>@<12 hex>`, the same identity a download of the same
+    /// files by the command line gives, so vectors embedded by one front end find their model
+    /// in the other. A directory whose manifest names ANOTHER repository fails to load (one of
+    /// the two is wrong); the same one is fine.
+    pub fn with_repo(mut self, repo: impl Into<String>) -> Self {
+        self.repo = Some(repo.into());
+        self
+    }
+
     /// Loads the model in `dir` under the registry name `name` with these options.
     ///
     /// # Errors
@@ -129,8 +143,9 @@ impl Model2VecOptions {
     /// [`EmbedError::Unavailable`] when the directory holds no readable model (a missing file,
     /// an unknown layout, a config, tokenizer or safetensors file that does not parse, a
     /// vocabulary id outside the embedding matrix, a dimension above
-    /// [`MAX_VECTOR_DIMENSION`]); the reason names the file and how to get a model. The
-    /// registry checks the name when the embedder is registered.
+    /// [`MAX_VECTOR_DIMENSION`], a [`Self::with_repo`] that is no repository name or differs
+    /// from the manifest's); the reason names the file and how to get a model. The registry
+    /// checks the name when the embedder is registered.
     pub fn load(
         self,
         name: impl Into<CompactString>,
@@ -195,7 +210,7 @@ impl Model2Vec {
     /// [`EmbedError::Unavailable`] when a file is missing or unreadable, or the manifest is
     /// invalid.
     pub fn model_identity(dir: impl AsRef<Path>) -> Result<String, EmbedError> {
-        read_files(dir.as_ref()).map(|files| files.identity)
+        read_files(dir.as_ref(), None).map(|files| files.identity)
     }
 
     /// The most tokens of one text that are pooled.
@@ -213,7 +228,7 @@ impl Model2Vec {
         dir: &Path,
         options: &Model2VecOptions,
     ) -> Result<Self, EmbedError> {
-        let files = read_files(dir)?;
+        let files = read_files(dir, options.repo.as_deref())?;
         let config: Value = serde_json::from_slice(&files.config).map_err(|err| {
             unavailable(format!(
                 "the config of the model in '{}' is not JSON: {err}",
@@ -374,8 +389,18 @@ fn resolve(dir: &Path) -> Result<Layout, EmbedError> {
     )))
 }
 
-/// Reads the three files of the model in `dir` and computes its identity.
-fn read_files(dir: &Path) -> Result<ModelFiles, EmbedError> {
+/// Reads the three files of the model in `dir` and computes its identity, with the repository
+/// `repo` the host names (checked against the manifest's) or else the manifest's. The one place
+/// of the identity rule.
+fn read_files(dir: &Path, repo: Option<&str>) -> Result<ModelFiles, EmbedError> {
+    if let Some(repo) = repo
+        && !is_repo_name(repo)
+    {
+        return Err(unavailable(format!(
+            "the model name {repo:?} is not a Hugging Face repository name (name or owner/name, \
+             letters, digits, '.', '_' and '-')"
+        )));
+    }
     let layout = resolve(dir)?;
     let read = |path: &Path| {
         std::fs::read(path)
@@ -398,7 +423,18 @@ fn read_files(dir: &Path) -> Result<ModelFiles, EmbedError> {
     }
     let digest = hex(&hash.finish());
     let short = &digest[..12];
-    let identity = match manifest_repo(dir)? {
+    let repo = match (repo, manifest_repo(dir)?) {
+        (Some(given), Some(manifest)) if given != manifest => {
+            return Err(unavailable(format!(
+                "the model name {given:?} differs from the repository {manifest:?} the manifest \
+                 '{}' names; pass the manifest's name or none",
+                dir.join(Model2Vec::MANIFEST_FILE).display()
+            )));
+        }
+        (Some(given), _) => Some(given.to_string()),
+        (None, manifest) => manifest,
+    };
+    let identity = match repo {
         Some(repo) => format!("model2vec/{repo}@{short}"),
         None => format!("model2vec@{short}"),
     };
