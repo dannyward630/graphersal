@@ -3,7 +3,7 @@
 
 `create_index` · `createIndex` · category: [Property indexes](../../traversal/step_reference.md#property-indexes)
 
-Declares a property index #{label, key, element, name}: a v() or e() with that label and a has() on that key then reads the index instead of every element of the label (see the book page Property Indexes).
+Declares a property index #{label, key, element, name, type}: a v() or e() with that label and a has() on that key then reads the index instead of every element of the label; type defaults to "memory-ordered" (see the book page Property Indexes).
 
 ## Forms
 

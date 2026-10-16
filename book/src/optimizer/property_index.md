@@ -39,7 +39,9 @@ equals the scan's (only the order of the elements may differ).
 ## When it does not fire
 
 - No index is declared (the rule then costs nothing), or one of the folded labels has none on the
-  key.
+  key. Only indexes the storage serves count: an index of a
+  [type](../users_guide/property_indexes.md#index-types) this version does not know (written by
+  a newer version) is kept in the catalog but never read.
 - The start step has no folded label (`v().has("title", "CEO")`), has ids folded
   (`v("1").has_label(..)`: the ids are cheaper), or a fused `count()`/`group_count()`.
 - The condition is not served: `P.neq`, `P.without`, text predicates, composites, a list or map
