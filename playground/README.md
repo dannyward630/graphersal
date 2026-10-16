@@ -448,6 +448,13 @@ renderers and a fake engine, `tests/tiers.test.mjs` the tier choice).
     a selection fades the rest (reducers), straight edges with arrow heads, edges clickable up to
     20 000 edges (sigma's edge picking is an extra render pass), sigma's y axis mirrored so both
     tiers show the same orientation.
+  - **Wheel zoom in Detailed** is our own (`js/graph/wheel-zoom.js`, a capturing listener that
+    stops Cytoscape's): Cytoscape takes a mouse wheel for an "inaccurate scroll device" and moved
+    about 1 % per notch (measured: 3 notches = +3.5 % with `wheelSensitivity: 0.25`). Now one step
+    of x1.3 per wheel event, at most one per direction every 50 ms (sigma's rule, so the Fast and
+    Detailed tiers feel alike; measured: 3 notches = x2.2), and a trackpad pinch (`ctrlKey`)
+    follows its delta. The renderer's `wheelZooming` flag is set as Cytoscape's own handler does,
+    so large drawings keep the cheap texture while zooming.
 - **View selector** (the panel's tabs; model `js/graph/selection.js`, engine side
   `crates/graphersal-session/src/selection.rs`, Node tests `tests/selection.test.mjs`). **Whole
   graph** draws the graph when it fits the vertex and edge limits; a larger graph shows the label
