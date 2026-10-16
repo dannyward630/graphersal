@@ -13,6 +13,7 @@ Python package and the web playground are released with the same number:
 | `graphersal` | crates.io | the library: engine, Rhai DSL, I/O, persistence (feature flags) |
 | `graphersal-session` | crates.io | the playground session logic, published because the CLI depends on it; internal, no stability guarantees |
 | `graphersal-cli` | crates.io | the `graphersal` binary: REPL, one-shot runner, `graphersal store`, the dev server |
+| `graphersal` (CLI binaries) | GitHub Release | prebuilt archives of the `graphersal` binary for five platforms, with `SHA256SUMS` and build provenance attestations |
 | `graphersal-storage-tests` | crates.io | the `GraphStorage` conformance suite, EXPERIMENTAL like the trait (pin the exact version) |
 | `graphersal` (Python) | wheels (abi3, Python 3.10+) | the PyO3 binding from `bindings/py-graphersal` |
 | web playground | static files | runs `graphersal-wasm` (not published; its JS API is internal to the playground) |
@@ -57,6 +58,8 @@ Before a version is tagged:
 - the long fuzz budgets pass: robustness, the merge checkpoint and the verified backups (below; a fast budget of
   each runs in every `cargo test`);
 - a benchmark run on a quiet machine shows no unexplained regression against the previous release;
+- a dry run of the CLI binaries (`gh workflow run "CLI binaries" --ref <release branch>`, see Publishing) is
+  green on all five platforms;
 - `cargo publish --dry-run` succeeds for every published crate, `graphersal` first, then the crates that depend on it;
 - the version's release notes (`book/src/release_notes/`, for 0.2.0
   [Release Notes 0.2.0](../release_notes/release_notes_0.2.0.md)) describe what changed; they are the project's
@@ -95,8 +98,32 @@ machine and are compared with the previous release, not per change.
 1. Tag the release commit: `git tag -a v0.2.0 -m "Graphersal 0.2.0" && git push origin v0.2.0` (the tag equals the workspace `version`).
 2. The crates go to crates.io by hand, in dependency order: `cargo publish -p graphersal`, then
    `graphersal-storage-tests`, `graphersal-session` and `graphersal-cli`.
-3. The Python package goes to PyPI through the workflow `release.yml`, started on the tag:
-   `gh workflow run Release --ref v0.2.0`. It checks that the tag matches the version, builds the five-platform
-   wheels and the sdist through `python.yml` (which also runs the binding's tests and installs each wheel it can
-   run), and uploads them with PyPI Trusted Publishing from the environment `pypi` (no token is stored).
-4. The GitHub Release takes its text from the release notes.
+3. The workflow `release.yml`, started on the tag: `gh workflow run Release --ref v0.2.0`. It checks that the
+   tag matches the version and that the version's release notes exist, then runs two independent parts:
+   - **PyPI.** It builds the five-platform wheels and the sdist through `python.yml` (which also runs the
+     binding's tests and installs each wheel it can run), and uploads them with PyPI Trusted Publishing from
+     the environment `pypi` (no token is stored).
+   - **CLI binaries and the draft GitHub Release.** It builds the `graphersal` binary through `binaries.yml`
+     with the `dist` profile (release + fat LTO + stripped symbols; never `panic = "abort"`, units roll back
+     on unwind), natively on each platform's runner: Linux x86_64 and aarch64 as static musl builds,
+     macOS arm64 and x86_64, Windows x86_64. Each build is smoke-tested on its runner (`--version`, a query,
+     the dev server's `/api/info`) and packed as `graphersal-v<version>-<platform>.tar.gz` (Windows `.zip`)
+     with `LICENSE-APACHE`, `NOTICE`, `README.md` and `THIRD-PARTY-LICENSES.html` (cargo-about, `about.toml`).
+     A final job writes `SHA256SUMS` and creates the GitHub build provenance attestations. The job
+     `github-release` then creates a **draft** GitHub Release for the tag, titled "Graphersal <version>",
+     with the five archives and `SHA256SUMS` attached; its text is the version's release notes
+     (`book/src/release_notes/release_notes_<version>.md`) with the book links made absolute on
+     graphersal.dev, the soft line breaks joined and a section about the prebuilt binaries added
+     (`.github/scripts/release_notes.py <version>` prints the same text locally).
+4. Check the draft on the repository's Releases page: five archives (`linux-x86_64`, `linux-aarch64`,
+   `macos-arm64`, `macos-x86_64`, `windows-x86_64`) plus `SHA256SUMS`; download one archive and check it
+   (`sha256sum -c SHA256SUMS --ignore-missing`, `gh attestation verify <archive> --repo graphersal/graphersal`,
+   unpack it and run `graphersal --version`); read the release text, its links included. Then publish the
+   draft ("Publish release", or `gh release edit v0.2.0 --draft=false`). Only a published release is visible
+   to users and to `cargo binstall graphersal-cli` (its metadata in `crates/graphersal-cli/Cargo.toml`
+   names the same archives).
+
+Before tagging, the binaries can be built as a dry run on any branch: `gh workflow run "CLI binaries" --ref
+<branch>` builds, smoke-tests and uploads the archives as workflow artifacts and publishes nothing (no
+attestations). `-f compare_musl=true` adds a job that times the same queries on the `large` graph with a glibc
+and a musl build of linux-x86_64 and writes the comparison into the run's summary.
