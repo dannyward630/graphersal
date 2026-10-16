@@ -167,7 +167,9 @@ pub use crate::error::GraphError;
 #[cfg(feature = "persist")]
 pub use crate::graph::PersistentStorage;
 pub use crate::graph::compression::CompressionStats;
-pub use crate::graph::property_index::{PropertyIndexInfo, PropertyIndexRange, PropertyIndexStats};
+pub use crate::graph::property_index::{
+    PropertyIndexInfo, PropertyIndexRange, PropertyIndexStats, PropertyIndexTransform,
+};
 pub use crate::graph::schema::defaults::CreateContext;
 pub use crate::graph::schema::{ElementKind, GraphSchema, PropertySchema, SchemaInferer};
 pub use crate::graph::write_checks::{

@@ -1845,3 +1845,639 @@ mod index_types {
         ok(graph, script);
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// The transform `to_lower`: case-insensitive search with has(key, __.to_lower().is(P))
+// ---------------------------------------------------------------------------------------------
+
+mod transforms {
+    use super::*;
+    use graphersal::catalog::PropertyIndexTransform;
+    use graphersal::schema::{GraphSchema, PropertySchema};
+
+    /// Strings whose lowering is not ASCII-only: dotted capital I (two code points lowered),
+    /// sharp s (lowered stays `ß`, not `ss`), final and medial sigma, a titlecase digraph.
+    const TEXTS: [&str; 20] = [
+        "Alice",
+        "alice",
+        "ALICE",
+        "bob",
+        "Bob",
+        "İstanbul",
+        "istanbul",
+        "ISTANBUL",
+        "straße",
+        "STRASSE",
+        "Straße",
+        "ΣΊΣΥΦΟΣ",
+        "σίσυφος",
+        "ΌΣΟΣ",
+        "ǅemal",
+        "Ǆemal",
+        "",
+        "a",
+        "Z",
+        "zz",
+    ];
+
+    /// Every text and its lowering (what to_lower() computes), as Rhai literals.
+    fn operands() -> Vec<String> {
+        let mut out: Vec<String> = TEXTS.iter().map(|t| quote(t)).collect();
+        out.extend(TEXTS.iter().map(|t| quote(&t.to_lowercase())));
+        out
+    }
+
+    /// A Rhai string literal of a text without quotes or backslashes (kept verbatim: Rust's
+    /// `{:?}` would escape the combining dot as `\u{307}`, which Rhai does not read).
+    fn quote(text: &str) -> String {
+        format!("\"{text}\"")
+    }
+
+    fn lower_index(name: &str, element: ElementKind, label: &str, key: &str) -> Definition {
+        Definition::property_index(
+            name,
+            PropertyIndexDefinition::new(element, label, key)
+                .with_transform(Some(PropertyIndexTransform::ToLower)),
+        )
+    }
+
+    /// A random graph of strings at `n`: vertices labelled from `a`, `b` (some both, some none,
+    /// some `c`), `n` missing or `null` now and then; edges `e1`/`e2` with `n`. With
+    /// `non_strings`, some values are numbers or lists (which `to_lower()` fails on).
+    fn string_graph(rng: &mut Rng, vertices: usize, non_strings: bool) -> TraversalGraph {
+        let mut graph = TraversalGraph::new();
+        let label_sets: [&[&str]; 6] = [&["a"], &["b"], &["a", "b"], &["b", "a"], &["c"], &[]];
+        let value = |rng: &mut Rng| -> Option<ElementProperty> {
+            match rng.below(12) {
+                0 => None,
+                1 => Some(ElementProperty::Null),
+                2 if non_strings => Some(7_i64.into()),
+                3 if non_strings => Some(ElementProperty::Array(vec!["Alice".into()])),
+                _ => Some((*rng.pick(&TEXTS)).into()),
+            }
+        };
+        let mut handles = Vec::new();
+        for _ in 0..vertices {
+            let labels: Vec<CompactString> = rng
+                .pick(&label_sets)
+                .iter()
+                .map(|l| CompactString::from(*l))
+                .collect();
+            let mut map = PropertyMap::default();
+            if let Some(v) = value(rng) {
+                map.insert("n", v);
+            }
+            handles.push(graph.add_vertex(None, labels, map).unwrap());
+        }
+        for _ in 0..vertices / 2 {
+            let from = *rng.pick(&handles);
+            let to = *rng.pick(&handles);
+            let mut map = PropertyMap::default();
+            if let Some(v) = value(rng) {
+                map.insert("n", v);
+            }
+            let label = if rng.below(2) == 0 { "e1" } else { "e2" };
+            graph
+                .add_edge(None, Some(label.into()), from, to, map)
+                .unwrap();
+        }
+        graph
+    }
+
+    fn declare(graph: &Graph) {
+        let mut g = graph.write();
+        for definition in [
+            lower_index("a_n", ElementKind::Vertex, "a", "n"),
+            lower_index("b_n", ElementKind::Vertex, "b", "n"),
+            lower_index("e1_n", ElementKind::Edge, "e1", "n"),
+        ] {
+            g.set_definition(definition).unwrap();
+        }
+    }
+
+    /// A random served shape: `has("n", __.to_lower().is(P))`, P an equality, within or range.
+    fn random_lower_condition(rng: &mut Rng, ops: &[String]) -> String {
+        let a = rng.pick(ops).clone();
+        let b = rng.pick(ops).clone();
+        let c = rng.pick(ops).clone();
+        let p = match rng.below(10) {
+            0 | 1 => a,
+            2 => format!("P.eq({a})"),
+            3 => format!("P.within({a}, {b}, {c})"),
+            4 => format!("P.gt({a})"),
+            5 => format!("P.gte({a})"),
+            6 => format!("P.lt({a})"),
+            7 => format!("P.lte({a})"),
+            8 => format!("P.between({a}, {b})"),
+            _ => format!("P.outside({a}, {b})"),
+        };
+        format!("has(\"n\", __.to_lower().is({p}))")
+    }
+
+    fn lower_queries(graph: &Arc<Graph>, rng: &mut Rng, queries: usize) -> usize {
+        let ops = operands();
+        let mut served = 0;
+        for _ in 0..queries {
+            let condition = random_lower_condition(rng, &ops);
+            let query = match rng.below(4) {
+                0 => format!("v().has_label(\"a\").{condition}"),
+                1 => format!("v().has_label(\"a\", \"b\").{condition}"),
+                2 => format!("e().has_label(\"e1\").{condition}"),
+                _ => format!("v().has_label(\"b\").{condition}.has_not(\"x\")"),
+            };
+            let (with, without) = both(graph, &query);
+            assert_eq!(with, without, "{query}");
+            if uses_index(graph, &query) {
+                served += 1;
+            }
+        }
+        served
+    }
+
+    #[test]
+    fn random_case_insensitive_queries_return_the_scan_s_answer() {
+        for seed in [3_u64, 11, 29] {
+            let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+            let graph = Arc::new(Graph::new(string_graph(&mut rng, 150, false)));
+            declare(&graph);
+            check(&graph);
+            let served = lower_queries(&graph, &mut rng, 300);
+            assert!(served > 200, "served only {served} of 300");
+        }
+    }
+
+    #[test]
+    fn the_index_keys_are_exactly_what_to_lower_computes() {
+        let graph = Arc::new(Graph::new(TraversalGraph::new()));
+        for text in TEXTS {
+            ok(
+                &graph,
+                &format!("g.add_v(\"a\").property(\"n\", {}).iterate()", quote(text)),
+            );
+        }
+        graph
+            .write()
+            .set_definition(lower_index("a_n", ElementKind::Vertex, "a", "n"))
+            .unwrap();
+        check(&graph);
+        for text in TEXTS {
+            // The step's own lowering, from the DSL, is the lookup key.
+            let lowered = run(
+                &graph,
+                &format!("g.inject({}).to_lower().next()", quote(text)),
+            )
+            .unwrap()
+            .to_string();
+            assert_eq!(lowered, text.to_lowercase(), "{text}");
+            let query = format!(
+                "v().has_label(\"a\").has(\"n\", __.to_lower().is({}))",
+                quote(&lowered)
+            );
+            assert!(uses_index(&graph, &query), "{query}");
+            let (with, without) = both(&graph, &query);
+            assert_eq!(with, without, "{query}");
+            let expected = TEXTS
+                .iter()
+                .filter(|other| other.to_lowercase() == lowered)
+                .count();
+            assert_eq!(with.unwrap().len(), expected, "{query}");
+        }
+        // 'İ' lowers to 'i' + U+0307, so "İstanbul" does not meet "istanbul"; 'ß' stays 'ß', so
+        // "STRASSE" does not meet "straße"; the final sigma of "ΣΊΣΥΦΟΣ" is lowered to 'ς'.
+        let count = |q: &str| both(&graph, q).0.unwrap().len();
+        assert_eq!(
+            count(r#"v().has_label("a").has("n", __.to_lower().is("istanbul"))"#),
+            2
+        );
+        assert_eq!(
+            count(r#"v().has_label("a").has("n", __.to_lower().is("straße"))"#),
+            2
+        );
+        assert_eq!(
+            count(r#"v().has_label("a").has("n", __.to_lower().is("strasse"))"#),
+            1
+        );
+        assert_eq!(
+            count(r#"v().has_label("a").has("n", __.to_lower().is("σίσυφος"))"#),
+            2
+        );
+        // The constant is compared as given: an upper-case constant matches nothing.
+        assert_eq!(
+            count(r#"v().has_label("a").has("n", __.to_lower().is("Alice"))"#),
+            0
+        );
+        assert_eq!(
+            count(r#"v().has_label("a").has("n", __.to_lower().is("alice"))"#),
+            3
+        );
+    }
+
+    #[test]
+    fn non_string_values_keep_the_query_on_the_scan_and_its_error() {
+        let mut rng = Rng(0x5EED_0001);
+        let graph = Arc::new(Graph::new(string_graph(&mut rng, 80, true)));
+        declare(&graph);
+        check(&graph);
+        let infos = graph.read().property_indexes();
+        assert!(infos.iter().any(|info| info.stats.skipped > 0), "{infos:?}");
+        let query = r#"v().has_label("a").has("n", __.to_lower().is("alice"))"#;
+        // to_lower() fails on the number: with or without the rule, the same error.
+        let (with, without) = both(&graph, query);
+        // The same error (the script position differs: one script has the `with(..)`).
+        let cut = |err: String| err.split(" (line").next().unwrap_or_default().to_string();
+        assert!(with.is_err(), "{with:?}");
+        assert_eq!(with.map_err(cut), without.map_err(cut));
+        // Remove every non-string value: the index serves again.
+        ok(
+            &graph,
+            r#"g.v().has("n", 7).remove_property("n").iterate(); g.v().has("n", ["Alice"]).remove_property("n").iterate(); g.e().has("n", 7).remove_property("n").iterate(); g.e().has("n", ["Alice"]).remove_property("n").iterate()"#,
+        );
+        check(&graph);
+        assert!(
+            graph
+                .read()
+                .property_indexes()
+                .iter()
+                .all(|info| info.stats.skipped == 0)
+        );
+        assert!(uses_index(&graph, query));
+        let (with, without) = both(&graph, query);
+        assert_eq!(with, without);
+        assert!(with.is_ok());
+    }
+
+    #[test]
+    fn random_mutations_and_rollbacks_keep_the_lowered_index_exact() {
+        let mut rng = Rng(0xC0FF_EE00_1234_5677);
+        let graph = Arc::new(Graph::new(string_graph(&mut rng, 60, false)));
+        declare(&graph);
+        let ops = operands();
+        for round in 0..150 {
+            let id = rng.below(70);
+            let value = rng.pick(&ops).clone();
+            let mutation = match rng.below(11) {
+                0 | 1 => format!("g.v(\"{id}\").property(\"n\", {value}).iterate()"),
+                2 => format!("g.v(\"{id}\").remove_property(\"n\").iterate()"),
+                3 => format!("g.v(\"{id}\").add_label(\"a\").iterate()"),
+                4 => format!("g.v(\"{id}\").drop_label(\"a\").iterate()"),
+                5 => format!("g.v(\"{id}\").drop().iterate()"),
+                6 => format!("g.add_v(\"b\").property(\"n\", {value}).iterate()"),
+                7 => format!("g.e(\"{id}\").property(\"n\", {value}).iterate()"),
+                8 => format!("g.e(\"{id}\").set_label(\"e1\").iterate()"),
+                9 => format!("g.v(\"{id}\").property(\"n\", ()).iterate()"),
+                _ => format!("g.e(\"{id}\").drop().iterate()"),
+            };
+            if round % 3 == 0 {
+                let failing = format!("{mutation}; throw \"undo\";");
+                assert!(
+                    eval_value_atomic(
+                        graph.clone(),
+                        &failing,
+                        HashMap::new(),
+                        &ScriptLimits::default()
+                    )
+                    .is_err()
+                );
+            } else {
+                let _ = run(&graph, &mutation);
+            }
+            check(&graph);
+            lower_queries(&graph, &mut rng, 4);
+        }
+        // Dropping and recreating the definition rebuilds it; undoing a drop restores it.
+        let failing = r#"g.drop_index("a_n"); throw "undo";"#;
+        assert!(
+            eval_value_atomic(
+                graph.clone(),
+                failing,
+                HashMap::new(),
+                &ScriptLimits::default()
+            )
+            .is_err()
+        );
+        check(&graph);
+        assert_eq!(graph.read().property_indexes().len(), 3);
+    }
+
+    #[test]
+    fn compressed_strings_are_lowered_by_their_text() {
+        let graph = Arc::new(GraphSource::tinkerpop_modern());
+        let long = "Senior Engineer, led the Platform Team. ".repeat(20);
+        ok(
+            &graph,
+            r#"g.define_compression(#{name: "bio", label: "person", path: "bio", min_bytes: 16})"#,
+        );
+        ok(
+            &graph,
+            r#"g.create_index(#{label: "person", key: "bio", transform: "to_lower"})"#,
+        );
+        ok(
+            &graph,
+            &format!(r#"g.v("1").property("bio", "{long}").iterate()"#),
+        );
+        check(&graph);
+        assert!(graph.read().memory_usage().unwrap().compressed_values > 0);
+        let query = format!(
+            r#"v().has_label("person").has("bio", __.to_lower().is("{}"))"#,
+            long.to_lowercase()
+        );
+        assert!(uses_index(&graph, &query));
+        let (with, without) = both(&graph, &query);
+        assert_eq!(with, Ok(vec!["1".to_string()]));
+        assert_eq!(with, without);
+        ok(&graph, r#"g.drop_compression("bio")"#);
+        check(&graph);
+        assert_eq!(both(&graph, &query).0, Ok(vec!["1".to_string()]));
+    }
+
+    #[test]
+    fn the_profile_shows_the_lowered_index_and_only_the_exact_shape_is_served() {
+        let graph = Arc::new(GraphSource::tinkerpop_modern());
+        ok(
+            &graph,
+            r#"g.create_index(#{label: "person", key: "name", transform: "to_lower"})"#,
+        );
+        let steps = profile_steps(
+            &graph,
+            r#"v().has_label("person").has("name", __.to_lower().is("marko"))"#,
+        );
+        assert_eq!(
+            steps[0], r#"v(labels: ["person"]) [index: vertex person.name to_lower]"#,
+            "{steps:?}"
+        );
+        for served in [
+            r#"v().has_label("person").has("name", __.to_lower().is(P.within("marko", "josh")))"#,
+            r#"v().has_label("person").has("name", __.toLower().is(P.gte("m")))"#,
+            r#"v().has_label("person").has("age", P.gt(1)).has("name", __.to_lower().is("josh"))"#,
+            r#"v().has_label("person").has("name", __.to_lower().is(P.between("a", "n")))"#,
+        ] {
+            assert!(uses_index(&graph, served), "{served}");
+            let (with, without) = both(&graph, served);
+            assert_eq!(with, without, "{served}");
+        }
+        for scanned in [
+            // No to_lower(), another transform, the per-element form, more steps, an unserved
+            // predicate, a plain has() (only a plain index serves it), the transform elsewhere.
+            r#"v().has_label("person").has("name", __.is("marko"))"#,
+            r#"v().has_label("person").has("name", __.to_upper().is("MARKO"))"#,
+            r#"v().has_label("person").has("name", __.to_lower(Scope.local).is("marko"))"#,
+            r#"v().has_label("person").has("name", __.to_lower().is("marko").is("marko"))"#,
+            r#"v().has_label("person").has("name", __.to_lower().is(P.neq("marko")))"#,
+            r#"v().has_label("person").has("name", __.to_lower().is(TextP.startingWith("m")))"#,
+            r#"v().has_label("person").has("name", "marko")"#,
+            r#"v().has_label("person").where(__.values("name").to_lower().is("marko"))"#,
+            r#"v().has("name", __.to_lower().is("marko"))"#,
+            r#"v().has_label("software").has("name", __.to_lower().is("lop"))"#,
+        ] {
+            assert!(!uses_index(&graph, scanned), "{scanned}");
+            let (with, without) = both(&graph, scanned);
+            assert_eq!(with, without, "{scanned}");
+        }
+        // A has(key, traversal) the rule does not serve ends the run of pure filters: the plain
+        // index on age behind it is not read.
+        ok(&graph, r#"g.create_index(#{label: "person", key: "age"})"#);
+        assert!(uses_index(
+            &graph,
+            r#"v().has_label("person").has("name", __.to_lower().is("x")).has("age", 29)"#
+        ));
+        assert!(!uses_index(
+            &graph,
+            r#"v().has_label("person").has("name", __.aggregate("seen")).has("age", P.gt(30))"#
+        ));
+        let (with, without) = both(
+            &graph,
+            r#"v().has_label("person").has("name", __.aggregate("seen")).has("age", P.gt(30))"#,
+        );
+        assert_eq!(with, without);
+        // The rule can be turned off by its name.
+        assert!(!uses_index(
+            &graph,
+            r#"with("optimizer.disabled", ["property_index"]).v().has_label("person").has("name", __.to_lower().is("marko"))"#
+        ));
+    }
+
+    #[test]
+    fn a_plain_and_a_lowered_index_coexist_and_names_get_the_transform_suffix() {
+        let graph = Arc::new(GraphSource::tinkerpop_modern());
+        ok(&graph, r#"g.create_index(#{label: "person", key: "name"})"#);
+        ok(
+            &graph,
+            r#"g.create_index(#{label: "person", key: "name", transform: "to_lower"})"#,
+        );
+        ok(
+            &graph,
+            r#"g.create_index(#{element: "edge", label: "knows", key: "note", transform: "to_lower"})"#,
+        );
+        let names = run(&graph, "g.indexes().map(|i| i.name + \"/\" + i.transform)").unwrap();
+        assert_eq!(
+            sorted(names),
+            vec![
+                "knows_note_edge_to_lower/to_lower",
+                "person_name/",
+                "person_name_to_lower/to_lower"
+            ]
+        );
+        // Each index serves its own form.
+        let plain = profile_steps(&graph, r#"v().has_label("person").has("name", "marko")"#);
+        assert!(
+            plain[0].ends_with("[index: vertex person.name]"),
+            "{plain:?}"
+        );
+        let lowered = profile_steps(
+            &graph,
+            r#"v().has_label("person").has("name", __.to_lower().is("marko"))"#,
+        );
+        assert!(lowered[0].ends_with("person.name to_lower]"), "{lowered:?}");
+        // A second index of the same transform is a conflict that names it.
+        let err = run(
+            &graph,
+            r#"g.create_index(#{name: "again", label: "person", key: "name", transform: "to_lower"})"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("Conflicting property index 'again'"), "{err}");
+        assert!(err.contains("transform 'to_lower'"), "{err}");
+        // The Rust default name.
+        let index = PropertyIndexDefinition::new(ElementKind::Vertex, "person", "name")
+            .with_transform(Some(PropertyIndexTransform::ToLower));
+        assert_eq!(index.default_name(), "person_name_to_lower");
+        let edge = PropertyIndexDefinition::new(ElementKind::Edge, "knows", "note")
+            .with_transform(Some(PropertyIndexTransform::ToLower));
+        assert_eq!(edge.default_name(), "knows_note_edge_to_lower");
+    }
+
+    #[test]
+    fn the_schema_check_accepts_strings_and_refuses_other_types() {
+        let schema = GraphSchema::new().with_vertex(
+            "person",
+            PropertySchema::object()
+                .with_property("name", PropertySchema::string())
+                .with_property("age", PropertySchema::integer())
+                .with_property(
+                    "code",
+                    PropertySchema::any_of(vec![
+                        PropertySchema::integer(),
+                        PropertySchema::string(),
+                    ]),
+                ),
+        );
+        let lower = |key: &str| {
+            PropertyIndexDefinition::new(ElementKind::Vertex, "person", key)
+                .with_transform(Some(PropertyIndexTransform::ToLower))
+        };
+        assert!(lower("name").check_create("n", Some(&schema)).is_ok());
+        assert!(lower("code").check_create("c", Some(&schema)).is_ok());
+        assert!(lower("other").check_create("o", Some(&schema)).is_ok());
+        let err = lower("age").check_create("a", Some(&schema)).unwrap_err();
+        assert!(
+            err.to_string().contains("with the transform 'to_lower'"),
+            "{err}"
+        );
+        // A plain index on the same key is fine.
+        assert!(
+            PropertyIndexDefinition::new(ElementKind::Vertex, "person", "age")
+                .check_create("a", Some(&schema))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn an_unknown_transform_is_kept_byte_for_byte_never_built_and_never_created() {
+        let mut payload = PropertyMap::default();
+        payload.insert("element", "vertex".into());
+        payload.insert("label", "person".into());
+        payload.insert("key", "name".into());
+        payload.insert("type", "memory-ordered".into());
+        payload.insert("transform", "unaccent".into());
+        payload.insert("locale", "de".into());
+        let index = PropertyIndexDefinition::from_payload(&payload).unwrap();
+        assert_eq!(
+            index.transform(),
+            Some(&PropertyIndexTransform::Unknown("unaccent".into()))
+        );
+        let back = index.to_payload();
+        assert_eq!(
+            back.iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect::<Vec<_>>(),
+            payload
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            index
+                .unserved_reason()
+                .unwrap()
+                .contains("index transform 'unaccent' is not known")
+        );
+        // Stored (as a load or a replay would), it is listed but never built or served.
+        let graph = Arc::new(GraphSource::tinkerpop_modern());
+        graph
+            .write()
+            .set_definition(Definition::property_index("future", index.clone()))
+            .unwrap();
+        check(&graph);
+        assert!(graph.read().property_indexes().is_empty());
+        let listed = run(&graph, "g.indexes()[0]").unwrap().to_string();
+        assert!(listed.contains("\"served\": false"), "{listed}");
+        assert!(listed.contains("\"transform\": \"unaccent\""), "{listed}");
+        // The persisted payload is unchanged (format spec 6.3).
+        #[cfg(feature = "persist")]
+        {
+            let bytes = graphersal::catalog::encode_payload(&index.to_payload()).unwrap();
+            let decoded = graphersal::catalog::decode_payload(&bytes).unwrap();
+            let again = PropertyIndexDefinition::from_payload(&decoded)
+                .unwrap()
+                .to_payload();
+            assert_eq!(graphersal::catalog::encode_payload(&again).unwrap(), bytes);
+        }
+        // Creating one is refused with the field `transform`.
+        let err = index.check_create("future", None).unwrap_err();
+        assert!(err.to_string().contains("transform"), "{err}");
+        let err = run(
+            &graph,
+            r#"g.create_index(#{label: "person", key: "name", transform: "unaccent"})"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("not an index transform this version knows"),
+            "{err}"
+        );
+        // A known transform is written as the payload key `transform`, none without one.
+        let known = PropertyIndexDefinition::new(ElementKind::Vertex, "person", "name")
+            .with_transform(Some(PropertyIndexTransform::ToLower));
+        assert_eq!(
+            known.to_payload().get("transform"),
+            Some(&"to_lower".into())
+        );
+        assert_eq!(
+            PropertyIndexDefinition::from_payload(&known.to_payload()).unwrap(),
+            known
+        );
+        let plain = PropertyIndexDefinition::new(ElementKind::Vertex, "person", "name");
+        assert!(plain.to_payload().get("transform").is_none());
+        let json = Definition::property_index("x", known.clone()).to_json();
+        assert!(json.contains("\"transform\":\"to_lower\""), "{json}");
+        assert_eq!(
+            Definition::from_json(&json).unwrap().as_property_index(),
+            Some(&known)
+        );
+    }
+
+    #[cfg(all(feature = "persist", not(target_arch = "wasm32")))]
+    #[test]
+    fn a_store_reopen_rebuilds_the_lowered_index() {
+        use graphersal::persist::{MemDir, Store, StoreDir, StoreOptions};
+        let options = || {
+            StoreOptions::new()
+                .with_wal_segment_bytes(600)
+                .with_checkpoint_after_bytes(0)
+        };
+        let query = r#"v().has_label("person").has("name", __.to_lower().is("ada"))"#;
+        let main: Arc<dyn StoreDir> = Arc::new(MemDir::named("pindex-lower"));
+        let store = Store::create(&main, options()).unwrap();
+        ok(
+            store.graph(),
+            r#"g.add_v("person").property("name", "ADA").iterate()"#,
+        );
+        ok(
+            store.graph(),
+            r#"g.create_index(#{label: "person", key: "name", transform: "to_lower"})"#,
+        );
+        ok(
+            store.graph(),
+            r#"g.add_v("person").property("name", "Ada").iterate()"#,
+        );
+        store.close().unwrap();
+        // From the WAL.
+        let store = Store::open(&main, options()).unwrap();
+        check(store.graph());
+        assert!(uses_index(store.graph(), query));
+        assert_eq!(both(store.graph(), query).0.unwrap().len(), 2);
+        // From a checkpoint's manifest.
+        store.checkpoint(None).unwrap();
+        store.close().unwrap();
+        let store = Store::open(&main, options()).unwrap();
+        check(store.graph());
+        let infos = store.graph().read().property_indexes();
+        assert_eq!(infos[0].transform, Some(PropertyIndexTransform::ToLower));
+        assert_eq!(infos[0].stats.entries, 2);
+        assert!(uses_index(store.graph(), query));
+        // A packed snapshot.
+        let mut bytes = Vec::new();
+        graphersal::persist::write_snapshot(
+            &*store.graph().read(),
+            &mut bytes,
+            &graphersal::persist::WriteOptions::default(),
+        )
+        .unwrap();
+        let loaded = graphersal::persist::read_snapshot(
+            bytes.as_slice(),
+            &graphersal::persist::ReadOptions::default(),
+        )
+        .unwrap();
+        loaded.check_property_indexes().unwrap();
+        assert_eq!(loaded.property_indexes()[0].stats.entries, 2);
+        store.close().unwrap();
+    }
+}

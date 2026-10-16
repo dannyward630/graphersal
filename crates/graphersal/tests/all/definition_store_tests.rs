@@ -569,3 +569,101 @@ fn compression_rules_survive_every_store_path() {
         store.close().unwrap();
     }
 }
+
+#[test]
+fn a_property_index_with_a_transform_survives_every_store_path() {
+    use graphersal::catalog::{PropertyIndexDefinition, PropertyIndexTransform};
+    use graphersal::storage::ElementKind;
+
+    let definition = Definition::property_index(
+        "person_name_to_lower",
+        PropertyIndexDefinition::new(ElementKind::Vertex, "person", "name")
+            .with_transform(Some(PropertyIndexTransform::ToLower)),
+    );
+    // The definition is stored, and the index is rebuilt from the data with `entries` entries.
+    let check = |graph: &TraversalGraph, entries: u64, what: &str| {
+        assert_eq!(
+            graph.definition(DefinitionKind::PROPERTY_INDEX, "person_name_to_lower"),
+            Some(&definition),
+            "{what}"
+        );
+        graph
+            .check_property_indexes()
+            .unwrap_or_else(|reason| panic!("{what}: {reason}"));
+        let infos = graph.property_indexes();
+        assert_eq!(infos.len(), 1, "{what}");
+        assert_eq!(
+            infos[0].transform,
+            Some(PropertyIndexTransform::ToLower),
+            "{what}"
+        );
+        assert_eq!(infos[0].stats.entries, entries, "{what}");
+    };
+    let add = |store: &Store, name: &str| {
+        store
+            .graph()
+            .write()
+            .traversal_mut()
+            .add_v("person")
+            .property("name", name)
+            .to_list()
+            .unwrap();
+    };
+    for backend in BACKENDS {
+        let temp = Temp::new("lower-index");
+        let main = backend.make(&temp, "main");
+        let store = Store::create(&main, options()).unwrap();
+        add(&store, "ADA");
+        set(&store, definition.clone());
+        add(&store, "Grace");
+        check(&store.graph().read(), 2, "live");
+        let before_third = store.graph().read().last_commit_seq();
+        add(&store, "ALAN");
+        store.close().unwrap();
+
+        let store = Store::open(&main, options()).unwrap();
+        check(&store.graph().read(), 3, "wal replay");
+        store.checkpoint(None).unwrap();
+        store.close().unwrap();
+        let store = Store::open(&main, options()).unwrap();
+        check(&store.graph().read(), 3, "manifest");
+        assert!(store.verify().unwrap().is_ok(), "{backend:?}");
+
+        let fork = backend.make(&temp, "fork");
+        store.fork(RecoveryTarget::Latest, &fork).unwrap();
+        let forked = Store::open(&fork, options()).unwrap();
+        check(&forked.graph().read(), 3, "fork");
+        forked.close().unwrap();
+        let backup = backend.make(&temp, "backup");
+        store.backup(&backup).unwrap();
+        let opened = Store::open_backup(&backup, options()).unwrap();
+        check(&opened.graph().read(), 3, "backup");
+        drop(opened);
+        #[cfg(feature = "persist-zip")]
+        {
+            let mut zip = std::io::Cursor::new(Vec::new());
+            store.backup_zip(&mut zip).unwrap();
+            let restored = backend.make(&temp, "zip");
+            Store::restore_zip(zip.into_inner().as_slice(), &restored).unwrap();
+            let opened = Store::open(&restored, options()).unwrap();
+            check(&opened.graph().read(), 3, "zip");
+            opened.close().unwrap();
+        }
+        let repaired = backend.make(&temp, "repaired");
+        store.repair_to(&repaired).unwrap();
+        let opened = Store::open(&repaired, options()).unwrap();
+        check(&opened.graph().read(), 3, "repair");
+        opened.close().unwrap();
+        let read_only = Store::open_read_only(&main, RecoveryTarget::Latest).unwrap();
+        check(&read_only.graph, 3, "read-only open");
+
+        store
+            .rollback_to(RecoveryTarget::CommitSeq(before_third), RollbackMode::Move)
+            .unwrap();
+        check(&store.graph().read(), 2, "rollback");
+        let entry = store.attic_list().unwrap().remove(0);
+        store.attic_restore(&entry.id).unwrap();
+        check(&store.graph().read(), 3, "attic restore");
+        store.close().unwrap();
+    }
+}

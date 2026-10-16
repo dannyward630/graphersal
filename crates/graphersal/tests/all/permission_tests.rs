@@ -1478,3 +1478,28 @@ fn injecting_an_element_value_asks_read_data() {
     let _ = run(&graph, "g.inject(1, \"a\").toList()", recorder.clone()).unwrap();
     assert!(recorder.seen().is_empty(), "{:?}", recorder.seen());
 }
+
+#[test]
+fn has_with_a_traversal_asks_for_what_its_child_does() {
+    let graph = modern();
+    // A reading child is allowed read-only.
+    let found = run(
+        &graph,
+        r#"g.V().has("name", __.to_lower().is("marko")).count().next()"#,
+        AccessPolicy::read_only(),
+    )
+    .unwrap();
+    assert_eq!(found.as_int().unwrap(), 1);
+    // A writing child asks Create Data and is denied before anything runs.
+    let before = count(&graph);
+    assert_denied(
+        run(
+            &graph,
+            r#"g.V().has("name", __.addV("copy")).iterate()"#,
+            AccessPolicy::read_only(),
+        ),
+        "add_v",
+        "Create Data",
+    );
+    assert_eq!(count(&graph), before);
+}

@@ -34,6 +34,14 @@
 //! [`PropertyIndexDefinition::check_create`] (a known type, a key the schema does not declare
 //! as values the type cannot hold); storing a definition (`set_definition`, replay,
 //! `apply_change_set`, loads) never runs that check.
+//!
+//! An index may carry a TRANSFORM ([`PropertyIndexTransform`], payload key `transform`, absent
+//! = none): its keys are then the transformed values. This version knows `to_lower` (the
+//! lowered text of string values, exactly what the `to_lower()` step computes, through the one
+//! shared function `step_to_lower::lower_text`; every other value is not in the index). It
+//! serves `has(key, __.to_lower().is(P))` (case-insensitive search); the constants of `P` are
+//! compared AS GIVEN with the lowered values. An unknown transform is handled like an unknown
+//! type: kept byte for byte, never built or served, never created.
 
 use std::collections::{BTreeSet, HashMap};
 use std::ops::Bound;
@@ -173,6 +181,130 @@ impl std::fmt::Display for PropertyIndexType {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// The index transform
+// ---------------------------------------------------------------------------------------------
+
+/// The transform of a property index (payload key `transform`, absent = none; book page
+/// "Property Indexes", section "Case-insensitive search"): the index keys are the transformed
+/// values, and the index serves a condition that applies the same transform before its
+/// predicate.
+///
+/// This version knows one transform, [`Self::ToLower`], named after the step `to_lower()`. A
+/// transform name this version does not know (a definition written by a newer version) is
+/// [`Self::Unknown`]: the definition is kept and written back unchanged, but the index is never
+/// built or served, and creating one is refused ([`PropertyIndexDefinition::check_create`]).
+///
+/// ```
+/// use graphersal::catalog::PropertyIndexTransform;
+/// use graphersal::schema::ValueType;
+///
+/// let lower = PropertyIndexTransform::from_name("to_lower");
+/// assert_eq!(lower, PropertyIndexTransform::ToLower);
+/// assert_eq!(lower.as_str(), "to_lower");
+/// assert!(lower.accepts(&ValueType::String));
+/// assert!(!lower.accepts(&ValueType::Int64));
+/// let future = PropertyIndexTransform::from_name("unaccent");
+/// assert!(!future.is_known());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PropertyIndexTransform {
+    /// `"to_lower"`: the key is the lowered text of a STRING value (a compressed one by its
+    /// text), computed exactly as the step `to_lower()` computes it (Rust's `str::to_lowercase`:
+    /// Unicode, no locale); a value of any other type is not in the index. Serves
+    /// `has(key, __.to_lower().is(P))` with `P` an equality, `P.within` or a range.
+    ToLower,
+    /// A transform name this version does not know, as read: kept, never served, never created.
+    Unknown(String),
+}
+
+impl PropertyIndexTransform {
+    /// The name of [`Self::ToLower`].
+    pub const TO_LOWER: &'static str = "to_lower";
+
+    /// The names of every transform this version knows, in the order front ends offer them.
+    pub const KNOWN_NAMES: [&'static str; 1] = [Self::TO_LOWER];
+
+    /// The transform of a name: a known one, else [`Self::Unknown`] with the name (never fails).
+    pub fn from_name(name: &str) -> PropertyIndexTransform {
+        match name {
+            Self::TO_LOWER => PropertyIndexTransform::ToLower,
+            other => PropertyIndexTransform::Unknown(other.to_string()),
+        }
+    }
+
+    /// The transform name as stored (`"to_lower"`, or the unknown name as read).
+    pub fn as_str(&self) -> &str {
+        match self {
+            PropertyIndexTransform::ToLower => Self::TO_LOWER,
+            PropertyIndexTransform::Unknown(name) => name,
+        }
+    }
+
+    /// Whether this version knows the transform (and so can build and serve the index).
+    pub fn is_known(&self) -> bool {
+        match self {
+            PropertyIndexTransform::ToLower => true,
+            PropertyIndexTransform::Unknown(_) => false,
+        }
+    }
+
+    /// One sentence on what the transform does, for front ends; `None` for an unknown one.
+    pub fn description(&self) -> Option<&'static str> {
+        match self {
+            PropertyIndexTransform::ToLower => Some(
+                "Indexes the lowered text of string values (as to_lower() computes it) for \
+                 case-insensitive search: query it with has(key, __.to_lower().is(..)).",
+            ),
+            PropertyIndexTransform::Unknown(_) => None,
+        }
+    }
+
+    /// Whether the transform takes values of type `ty` (a union when one of its members is):
+    /// [`Self::ToLower`] takes strings only; an unknown transform takes nothing.
+    pub fn accepts(&self, ty: &ValueType) -> bool {
+        match ty {
+            ValueType::Union(members) => members.iter().any(|member| self.accepts(member)),
+            _ => match self {
+                PropertyIndexTransform::ToLower => *ty == ValueType::String,
+                PropertyIndexTransform::Unknown(_) => false,
+            },
+        }
+    }
+
+    /// The transformed value of a stored value, `None` when the transform does not take it
+    /// (the element is then not in the index).
+    pub(crate) fn apply(&self, value: &ElementProperty) -> Option<ElementProperty> {
+        match self {
+            PropertyIndexTransform::ToLower => value.text().map(|text| {
+                ElementProperty::String(
+                    crate::traversal::step::map_steps::step_to_lower::lower_text(&text).into(),
+                )
+            }),
+            PropertyIndexTransform::Unknown(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for PropertyIndexTransform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The index key of a stored value under an optional transform; `None` when the index does not
+/// hold the value.
+fn transformed_key(
+    transform: Option<&PropertyIndexTransform>,
+    value: &ElementProperty,
+) -> Option<IndexKey> {
+    match transform {
+        None => IndexKey::of(value),
+        Some(transform) => IndexKey::of(&transform.apply(value)?),
+    }
+}
+
 /// The value types a schema node declares (through `anyOf`), `None` when it declares no type
 /// restriction (no `type` and no `anyOf`, or an `anyOf` member without one).
 fn declared_value_types(node: &PropertySchema) -> Option<Vec<ValueType>> {
@@ -232,8 +364,9 @@ pub struct PropertyIndexDefinition {
     label: String,
     key: String,
     index_type: PropertyIndexType,
+    transform: Option<PropertyIndexTransform>,
     extra: PropertyMap,
-    /// The payload map exactly as read, kept for an UNKNOWN type only: written back unchanged
+    /// The payload map exactly as read, kept for an UNKNOWN type or transform only: written back unchanged
     /// (the key order and every key of a newer version), so the definition survives byte for
     /// byte.
     original: Option<PropertyMap>,
@@ -248,6 +381,7 @@ impl PropertyIndexDefinition {
             label: label.into(),
             key: key.into(),
             index_type: PropertyIndexType::MemoryOrdered,
+            transform: None,
             extra: PropertyMap::default(),
             original: None,
         }
@@ -275,22 +409,84 @@ impl PropertyIndexDefinition {
         &self.index_type
     }
 
+    /// The same index with the transform `transform` (`None`: no transform, the default). Only
+    /// a known transform can be created ([`Self::check_create`]).
+    ///
+    /// ```
+    /// use graphersal::catalog::{PropertyIndexDefinition, PropertyIndexTransform};
+    /// use graphersal::storage::ElementKind;
+    ///
+    /// let index = PropertyIndexDefinition::new(ElementKind::Vertex, "person", "name")
+    ///     .with_transform(Some(PropertyIndexTransform::ToLower));
+    /// assert_eq!(index.transform(), Some(&PropertyIndexTransform::ToLower));
+    /// assert_eq!(index.default_name(), "person_name_to_lower");
+    /// ```
+    pub fn with_transform(mut self, transform: Option<PropertyIndexTransform>) -> Self {
+        self.transform = transform;
+        self.original = None;
+        self
+    }
+
+    /// The transform of the index, `None` when it indexes the values themselves.
+    pub fn transform(&self) -> Option<&PropertyIndexTransform> {
+        self.transform.as_ref()
+    }
+
+    /// Whether the index holds values of type `ty`: its type holds them
+    /// ([`PropertyIndexType::holds`]) and its transform, if any, takes them
+    /// ([`PropertyIndexTransform::accepts`]: `to_lower` takes strings only); a union when one of
+    /// its members is held.
+    ///
+    /// ```
+    /// use graphersal::catalog::{PropertyIndexDefinition, PropertyIndexTransform};
+    /// use graphersal::schema::ValueType;
+    /// use graphersal::storage::ElementKind;
+    ///
+    /// let plain = PropertyIndexDefinition::new(ElementKind::Vertex, "person", "name");
+    /// let lower = plain.clone().with_transform(Some(PropertyIndexTransform::ToLower));
+    /// assert!(plain.holds(&ValueType::Int64));
+    /// assert!(!lower.holds(&ValueType::Int64));
+    /// assert!(lower.holds(&ValueType::Union(vec![ValueType::Int64, ValueType::String])));
+    /// ```
+    pub fn holds(&self, ty: &ValueType) -> bool {
+        match ty {
+            ValueType::Union(members) => members.iter().any(|member| self.holds(member)),
+            _ => {
+                self.index_type.holds(ty)
+                    && self
+                        .transform
+                        .as_ref()
+                        .is_none_or(|transform| transform.accepts(ty))
+            }
+        }
+    }
+
     /// Why a storage that serves property indexes does not serve this one, `None` when it can:
     /// an index of a type this version does not know (`"index type 'x' is not known to this
     /// version ..."`). Listings show it next to `served: false`.
     pub fn unserved_reason(&self) -> Option<String> {
-        match &self.index_type {
-            PropertyIndexType::MemoryOrdered => None,
-            PropertyIndexType::Unknown(name) => Some(format!(
+        if let PropertyIndexType::Unknown(name) = &self.index_type {
+            return Some(format!(
                 "index type '{name}' is not known to this version (a newer Graphersal wrote \
                  it); the definition is kept, queries scan"
+            ));
+        }
+        match &self.transform {
+            Some(PropertyIndexTransform::Unknown(name)) => Some(format!(
+                "index transform '{name}' is not known to this version (a newer Graphersal \
+                 wrote it); the definition is kept, queries scan"
             )),
+            Some(PropertyIndexTransform::ToLower) | None => None,
         }
     }
 
-    /// Whether this version builds and serves the index (its type is known).
+    /// Whether this version builds and serves the index (its type and transform are known).
     pub(crate) fn is_served_type(&self) -> bool {
         self.index_type.is_known()
+            && self
+                .transform
+                .as_ref()
+                .is_none_or(PropertyIndexTransform::is_known)
     }
 
     /// Checks that the index can be CREATED (named `name`, for the error) in a graph whose
@@ -300,11 +496,12 @@ impl PropertyIndexDefinition {
     /// `apply_change_set` or a load, which store what they carry.
     ///
     /// - The type must be known: an unknown one is [`DefinitionError::InvalidField`] with the
-    ///   field `type`.
+    ///   field `type`; so must the transform, if any (field `transform`).
     /// - When `schema` declares the key at the top level of the index's label (of its element
-    ///   kind) and none of the declared types except `null` can be held by the index type
-    ///   ([`PropertyIndexType::holds`]; a vector, an array, an object, or a union of only such),
-    ///   it is [`DefinitionError::IndexTypeMismatch`]. A declaration with at least one held
+    ///   kind) and none of the declared types except `null` can be held by the index
+    ///   ([`Self::holds`]: for the type a vector, an array, an object, or a union of only such;
+    ///   with `to_lower` every type but `string`), it is
+    ///   [`DefinitionError::IndexTypeMismatch`]. A declaration with at least one held
     ///   type, no declaration and no schema are fine (values the index cannot hold are
     ///   skipped). The schema's mode does not matter. A later schema change never drops an
     ///   index.
@@ -340,6 +537,16 @@ impl PropertyIndexDefinition {
                 ),
             });
         }
+        if let Some(PropertyIndexTransform::Unknown(transform)) = &self.transform {
+            return Err(DefinitionError::InvalidField {
+                name: name.to_string(),
+                field: "transform".to_string(),
+                reason: format!(
+                    "'{transform}' is not an index transform this version knows (known: {})",
+                    PropertyIndexTransform::KNOWN_NAMES.join(", ")
+                ),
+            });
+        }
         let Some(schema) = schema else {
             return Ok(());
         };
@@ -354,7 +561,7 @@ impl PropertyIndexDefinition {
             return Ok(());
         };
         let mut non_null = types.iter().filter(|ty| **ty != ValueType::Null).peekable();
-        if non_null.peek().is_none() || non_null.any(|ty| self.index_type.holds(ty)) {
+        if non_null.peek().is_none() || non_null.any(|ty| self.holds(ty)) {
             return Ok(());
         }
         Err(DefinitionError::IndexTypeMismatch {
@@ -362,7 +569,8 @@ impl PropertyIndexDefinition {
             label: self.label.clone(),
             key: self.key.clone(),
             declared: node.non_null_type_name(),
-            index_type: self.index_type.as_str().to_string(),
+            index_type: self.index_type.as_str().into(),
+            transform: self.transform.as_ref().map(|t| t.as_str().into()),
         })
     }
 
@@ -382,9 +590,10 @@ impl PropertyIndexDefinition {
     }
 
     /// The name an index gets when none is given (the DSL's `g.create_index` without `name`,
-    /// the playground's form): `<label>_<key>` (`<label>_<key>_edge` for an edge index), every
-    /// character that is not an ASCII letter, digit or `_` replaced by `_`, prefixed with
-    /// `index_` when it would not start with a letter.
+    /// the session, MCP, the playground's form): `<label>_<key>` (`<label>_<key>_edge` for an
+    /// edge index), then `_<transform>` for an index with a transform (`person_name_to_lower`,
+    /// `knows_note_edge_to_lower`), every character that is not an ASCII letter, digit or `_`
+    /// replaced by `_`, prefixed with `index_` when it would not start with a letter.
     ///
     /// ```
     /// use graphersal::catalog::PropertyIndexDefinition;
@@ -403,6 +612,15 @@ impl PropertyIndexDefinition {
         if self.element == ElementKind::Edge {
             name.push_str("_edge");
         }
+        if let Some(transform) = &self.transform {
+            name.push('_');
+            name.extend(
+                transform
+                    .as_str()
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }),
+            );
+        }
         if !name.starts_with(|c: char| c.is_ascii_alphabetic()) {
             name.insert_str(0, "index_");
         }
@@ -415,8 +633,9 @@ impl PropertyIndexDefinition {
     }
 
     /// The payload property map (format spec 6.3), in this key order: `element` (`"vertex"` or
-    /// `"edge"`), `label`, `key`, `type` (always written), then the unknown keys. A definition
-    /// of an unknown type read from a payload gives that payload back unchanged.
+    /// `"edge"`), `label`, `key`, `type` (always written), `transform` (only for an index with
+    /// a transform), then the unknown keys. A definition of an unknown type or transform read
+    /// from a payload gives that payload back unchanged.
     pub fn to_payload(&self) -> PropertyMap {
         if let Some(original) = &self.original {
             return original.clone();
@@ -426,6 +645,9 @@ impl PropertyIndexDefinition {
         map.insert("label", self.label.as_str().into());
         map.insert("key", self.key.as_str().into());
         map.insert("type", self.index_type.as_str().into());
+        if let Some(transform) = &self.transform {
+            map.insert("transform", transform.as_str().into());
+        }
         for (key, value) in &self.extra {
             map.0.entry(key.clone()).or_insert_with(|| value.clone());
         }
@@ -433,10 +655,11 @@ impl PropertyIndexDefinition {
     }
 
     /// Reads a payload map (the inverse of [`Self::to_payload`]). A missing `element` is
-    /// `"vertex"`, a missing `type` is `"memory-ordered"`; a known key of the wrong type is an
-    /// error; unknown keys are kept. A type this version does not know is
-    /// [`PropertyIndexType::Unknown`] (never an error), and the whole map is kept to be written
-    /// back unchanged. Not validated.
+    /// `"vertex"`, a missing `type` is `"memory-ordered"`, a missing `transform` is none; a
+    /// known key of the wrong type is an error; unknown keys are kept. A type or transform this
+    /// version does not know is [`PropertyIndexType::Unknown`] /
+    /// [`PropertyIndexTransform::Unknown`] (never an error), and the whole map is kept to be
+    /// written back unchanged. Not validated.
     pub fn from_payload(payload: &PropertyMap) -> Result<PropertyIndexDefinition, DefinitionError> {
         Self::read_fields(payload, &[])
     }
@@ -477,14 +700,17 @@ impl PropertyIndexDefinition {
             None => PropertyIndexType::MemoryOrdered,
             Some(name) => PropertyIndexType::from_name(&name),
         };
-        let mut index = PropertyIndexDefinition::new(element, label, key).with_type(index_type);
-        const KNOWN: [&str; 4] = ["element", "label", "key", "type"];
+        let transform = text("transform")?.map(|name| PropertyIndexTransform::from_name(&name));
+        let mut index = PropertyIndexDefinition::new(element, label, key)
+            .with_type(index_type)
+            .with_transform(transform);
+        const KNOWN: [&str; 5] = ["element", "label", "key", "type", "transform"];
         for (key, value) in map {
             if !KNOWN.contains(&key.as_str()) && !skip.contains(&key.as_str()) {
                 index.extra.insert(key.clone(), value.to_logical());
             }
         }
-        if !index.index_type.is_known() {
+        if !index.is_served_type() {
             let mut original = PropertyMap::default();
             for (key, value) in map {
                 if !skip.contains(&key.as_str()) {
@@ -576,8 +802,8 @@ impl Definition {
 }
 
 /// Checks a property index definition against the catalog it is about to join: no other index
-/// of the same `(element, label, key, type)` (indexes of different types on one key, such as
-/// one of a type a newer version added, may coexist).
+/// of the same `(element, label, key, type, transform)` (indexes of different types or
+/// transforms on one key, such as a plain one and a `to_lower` one, may coexist).
 pub(crate) fn check_conflict(
     graph: &TraversalGraph,
     definition: &Definition,
@@ -594,18 +820,23 @@ pub(crate) fn check_conflict(
             && existing.label() == index.label()
             && existing.key() == index.key()
             && existing.index_type() == index.index_type()
+            && existing.transform() == index.transform()
         {
             return Err(DefinitionError::Conflict {
                 kind: "property index".to_string(),
                 name: definition.name().to_string(),
                 existing: other.name().to_string(),
                 reason: format!(
-                    "the index '{}' already covers {} '{}' on '{}' (type '{}')",
+                    "the index '{}' already covers {} '{}' on '{}' (type '{}'{})",
                     other.name(),
                     index.element().as_str(),
                     index.label(),
                     index.key(),
-                    index.index_type()
+                    index.index_type(),
+                    match index.transform() {
+                        Some(transform) => format!(", transform '{transform}'"),
+                        None => String::new(),
+                    }
                 ),
             }
             .into());
@@ -629,16 +860,31 @@ pub struct PropertyIndexStats {
     pub distinct_values: u64,
     /// An estimate of the index's heap footprint, in bytes.
     pub bytes: u64,
+    /// Elements of the index's label whose value at the key is not `null` and not held by the
+    /// index (an array, an object or a vector; with `to_lower` every non-string value). The
+    /// optimizer serves a transformed index only while this is `0`: the transform's step fails
+    /// on such a value (`to_lower()` on a number), and a scan must report that error, so a
+    /// storage serving an index with a transform must count them.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub skipped: u64,
 }
 
 impl PropertyIndexStats {
-    /// Stats with these figures (for a storage outside this crate).
+    /// Stats with these figures (for a storage outside this crate), `skipped` 0 (see
+    /// [`Self::with_skipped`]).
     pub fn new(entries: u64, distinct_values: u64, bytes: u64) -> Self {
         PropertyIndexStats {
             entries,
             distinct_values,
             bytes,
+            skipped: 0,
         }
+    }
+
+    /// The same stats with `skipped` elements whose value the index does not hold.
+    pub fn with_skipped(mut self, skipped: u64) -> Self {
+        self.skipped = skipped;
+        self
     }
 }
 
@@ -659,6 +905,8 @@ pub struct PropertyIndexInfo {
     pub key: String,
     /// The type of the index (a storage offers only indexes of types it serves).
     pub index_type: PropertyIndexType,
+    /// The transform of the index (`None`: the values themselves).
+    pub transform: Option<PropertyIndexTransform>,
     /// What it holds right now.
     pub stats: PropertyIndexStats,
 }
@@ -679,6 +927,7 @@ impl PropertyIndexInfo {
             label: label.into(),
             key: key.into(),
             index_type: PropertyIndexType::MemoryOrdered,
+            transform: None,
             stats,
         }
     }
@@ -686,6 +935,12 @@ impl PropertyIndexInfo {
     /// The same entry with the type `index_type`.
     pub fn with_type(mut self, index_type: PropertyIndexType) -> Self {
         self.index_type = index_type;
+        self
+    }
+
+    /// The same entry with the transform `transform`.
+    pub fn with_transform(mut self, transform: Option<PropertyIndexTransform>) -> Self {
+        self.transform = transform;
         self
     }
 }
@@ -954,12 +1209,27 @@ struct IndexState {
     element: ElementKind,
     label: CompactString,
     key: CompactString,
+    transform: Option<PropertyIndexTransform>,
     entries: BTreeSet<(IndexKey, u64)>,
     distinct: u64,
     heap: u64,
+    /// Elements whose non-null value at the key the index does not hold.
+    skipped: u64,
 }
 
 impl IndexState {
+    /// Puts in (`insert`) or takes out the entry of a stored value of element `handle`: its key,
+    /// or the `skipped` count for a non-null value the index does not hold.
+    fn account(&mut self, insert: bool, value: &ElementProperty, handle: u64) {
+        match transformed_key(self.transform.as_ref(), value) {
+            Some(key) if insert => self.insert(key, handle),
+            Some(key) => self.remove(key, handle),
+            None if matches!(value, ElementProperty::Null) => {}
+            None if insert => self.skipped += 1,
+            None => self.skipped = self.skipped.saturating_sub(1),
+        }
+    }
+
     fn insert(&mut self, key: IndexKey, handle: u64) {
         let heap = key.heap_bytes();
         let fresh = !self.has_key(&key);
@@ -999,6 +1269,7 @@ impl IndexState {
             entries: self.entries.len() as u64,
             distinct_values: self.distinct,
             bytes: self.entries.len() as u64 * entry + self.heap,
+            skipped: self.skipped,
         }
     }
 }
@@ -1066,14 +1337,10 @@ impl PropertyIndexes {
                 if only_key.is_some_and(|key| key != index.key.as_str()) {
                     continue;
                 }
-                let Some(key) = properties.get(index.key.as_str()).and_then(IndexKey::of) else {
+                let Some(value) = properties.get(index.key.as_str()) else {
                     continue;
                 };
-                if insert {
-                    index.insert(key, handle);
-                } else {
-                    index.remove(key, handle);
-                }
+                index.account(insert, value, handle);
             }
         }
     }
@@ -1117,13 +1384,19 @@ impl PropertyIndexes {
         );
     }
 
-    /// The position of the index on `(element, label, key)`.
-    fn find(&self, element: ElementKind, label: &str, key: &str) -> Option<&IndexState> {
+    /// The index on `(element, label, key, transform)`.
+    fn find(
+        &self,
+        element: ElementKind,
+        label: &str,
+        key: &str,
+        transform: Option<&PropertyIndexTransform>,
+    ) -> Option<&IndexState> {
         self.by_label(element)
             .get(label)?
             .iter()
             .filter_map(|position| self.indexes.get(*position))
-            .find(|index| index.key == key)
+            .find(|index| index.key == key && index.transform.as_ref() == transform)
     }
 
     /// The estimated heap footprint of every index, in bytes.
@@ -1196,18 +1469,24 @@ impl TraversalGraph {
             element: definition.element(),
             label: CompactString::from(definition.label()),
             key: CompactString::from(definition.key()),
+            transform: definition.transform().cloned(),
             entries: BTreeSet::new(),
             distinct: 0,
             heap: 0,
+            skipped: 0,
         };
         match definition.element() {
             ElementKind::Vertex => {
                 if let Some(nodes) = self.index.get_nodes_by_label(definition.label()) {
                     for node in nodes {
                         if let Some(vertex) = self.vertex_weight(node)
-                            && let Some(key) = vertex.2.get(definition.key()).and_then(IndexKey::of)
+                            && let Some(value) = vertex.2.get(definition.key())
                         {
-                            state.insert(key, pack(node.index().index(), node.generation()));
+                            state.account(
+                                true,
+                                value,
+                                pack(node.index().index(), node.generation()),
+                            );
                         }
                     }
                 }
@@ -1216,13 +1495,16 @@ impl TraversalGraph {
                 if let Some(edges) = self.index.get_edges_by_label(definition.label()) {
                     for edge in edges {
                         if let Some(weight) = self.edge_weight(edge)
-                            && let Some(key) = weight
+                            && let Some(value) = weight
                                 .2
                                 .as_ref()
                                 .and_then(|properties| properties.get(definition.key()))
-                                .and_then(IndexKey::of)
                         {
-                            state.insert(key, pack(edge.index().index(), edge.generation()));
+                            state.account(
+                                true,
+                                value,
+                                pack(edge.index().index(), edge.generation()),
+                            );
                         }
                     }
                 }
@@ -1289,21 +1571,23 @@ impl TraversalGraph {
                 label: index.label.to_string(),
                 key: index.key.to_string(),
                 index_type: PropertyIndexType::MemoryOrdered,
+                transform: index.transform.clone(),
                 stats: index.stats(),
             })
             .collect()
     }
 
-    /// The entries of the index on `(element, label, key)` inside `range`, as packed handles;
-    /// `None` when there is no such index.
+    /// The entries of the index on `(element, label, key, transform)` inside `range`, as packed
+    /// handles; `None` when there is no such index.
     fn index_slice<'a>(
         &'a self,
         element: ElementKind,
         label: &str,
         key: &str,
+        transform: Option<&PropertyIndexTransform>,
         range: &PropertyIndexRange,
     ) -> Option<Box<dyn Iterator<Item = (usize, std::num::NonZeroU32)> + 'a>> {
-        let index = self.property_indexes.find(element, label, key)?;
+        let index = self.property_indexes.find(element, label, key, transform)?;
         Some(match set_bounds(range) {
             Some(bounds) => Box::new(
                 index
@@ -1315,15 +1599,17 @@ impl TraversalGraph {
         })
     }
 
-    /// The vertices labelled `label` whose `key` lies in `range` (a superset), from the index on
-    /// `(vertex, label, key)`; `None` without such an index.
+    /// The vertices labelled `label` whose `key` (transformed by `transform`) lies in `range` (a
+    /// superset), from the index on `(vertex, label, key, transform)`; `None` without such an
+    /// index.
     pub(crate) fn property_index_vertices<'a>(
         &'a self,
         label: &str,
         key: &str,
+        transform: Option<&PropertyIndexTransform>,
         range: &PropertyIndexRange,
     ) -> Option<Box<dyn Iterator<Item = VertexHandle> + 'a>> {
-        let slice = self.index_slice(ElementKind::Vertex, label, key, range)?;
+        let slice = self.index_slice(ElementKind::Vertex, label, key, transform, range)?;
         Some(Box::new(slice.map(|(slot, generation)| {
             VertexHandle::new(NodeIndex::new(slot), generation)
         })))
@@ -1334,9 +1620,10 @@ impl TraversalGraph {
         &'a self,
         label: &str,
         key: &str,
+        transform: Option<&PropertyIndexTransform>,
         range: &PropertyIndexRange,
     ) -> Option<Box<dyn Iterator<Item = EdgeHandle> + 'a>> {
-        let slice = self.index_slice(ElementKind::Edge, label, key, range)?;
+        let slice = self.index_slice(ElementKind::Edge, label, key, transform, range)?;
         Some(Box::new(slice.map(|(slot, generation)| {
             EdgeHandle::new(EdgeIndex::new(slot), generation)
         })))
@@ -1372,6 +1659,7 @@ impl TraversalGraph {
                 || state.element != fresh.element
                 || state.label != fresh.label
                 || state.key != fresh.key
+                || state.transform != fresh.transform
             {
                 return Err(format!("index '{name}': its definition differs"));
             }
@@ -1380,6 +1668,12 @@ impl TraversalGraph {
                     "index '{name}': {} entries maintained, {} after a rebuild (or other values)",
                     state.entries.len(),
                     fresh.entries.len()
+                ));
+            }
+            if state.skipped != fresh.skipped {
+                return Err(format!(
+                    "index '{name}': {} skipped values counted, {} after a rebuild",
+                    state.skipped, fresh.skipped
                 ));
             }
             if state.distinct != fresh.distinct {
@@ -1533,7 +1827,7 @@ mod tests {
             .unwrap();
         graph.check_property_indexes().unwrap();
         let found: Vec<_> = graph
-            .property_index_vertices("person", "age", &PropertyIndexRange::equal(int(29)))
+            .property_index_vertices("person", "age", None, &PropertyIndexRange::equal(int(29)))
             .unwrap()
             .collect();
         assert_eq!(found, vec![v]);

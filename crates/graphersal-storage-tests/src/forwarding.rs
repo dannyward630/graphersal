@@ -20,8 +20,8 @@ use graphersal::storage::{
     ChangeSet, CommitHook, CommitMetadata, CompactString, CompressionStats, Definition,
     DefinitionKind, EdgeHandle, ExecutionPolicy, GraphError, GraphNodeType, GraphSchema,
     GraphStatistics, GraphStorage, JsonPath, Mark, MemoryStats, PropertyIndexInfo,
-    PropertyIndexRange, PropertyMap, PropertySchema, RollbackReason, StorageCapabilities,
-    UnitChanges, UnitMark, VertexHandle,
+    PropertyIndexRange, PropertyIndexTransform, PropertyMap, PropertySchema, RollbackReason,
+    StorageCapabilities, UnitChanges, UnitMark, VertexHandle,
 };
 
 /// The vertex handle of [`Forwarding`]: a newtype around the wrapped graph's [`VertexHandle`],
@@ -200,6 +200,30 @@ impl GraphStorage for Forwarding {
         range: &PropertyIndexRange,
     ) -> Option<Box<dyn Iterator<Item = ForwardEdgeId> + 'a>> {
         let found = GraphStorage::edges_by_property_index(&self.0, label, key, range)?;
+        Some(Box::new(found.map(ForwardEdgeId)))
+    }
+    fn vertices_by_transformed_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        transform: &PropertyIndexTransform,
+        range: &PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = ForwardVertexId> + 'a>> {
+        let found = GraphStorage::vertices_by_transformed_property_index(
+            &self.0, label, key, transform, range,
+        )?;
+        Some(Box::new(found.map(ForwardVertexId)))
+    }
+    fn edges_by_transformed_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        transform: &PropertyIndexTransform,
+        range: &PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = ForwardEdgeId> + 'a>> {
+        let found = GraphStorage::edges_by_transformed_property_index(
+            &self.0, label, key, transform, range,
+        )?;
         Some(Box::new(found.map(ForwardEdgeId)))
     }
 

@@ -87,7 +87,7 @@ pub(crate) fn index_ranges<B: Into<PValue> + Clone>(
 
 /// Whether `predicate` resolves a string operand as a path label first (`eq` does, see
 /// `P::test`): an index can serve it only where the traversers carry no path label.
-fn reads_path_labels<B: Into<PValue> + Clone>(predicate: &P<B>) -> bool {
+pub(crate) fn reads_path_labels<B: Into<PValue> + Clone>(predicate: &P<B>) -> bool {
     matches!(predicate, P::Eq(value) if matches!(value.clone().into(), PValue::String(_)))
 }
 
@@ -159,6 +159,7 @@ impl<'g, S: GraphStorage + 'g, B: Into<PValue> + Debug + Clone + Send + Sync + '
     fn index_condition(&self) -> Option<crate::traversal::step::IndexCondition<'_>> {
         index_ranges(&self.predicate).map(|ranges| crate::traversal::step::IndexCondition {
             key: self.key.as_str(),
+            transform: None,
             ranges,
             reads_path_labels: reads_path_labels(&self.predicate),
         })

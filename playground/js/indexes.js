@@ -1,7 +1,8 @@
 // The model of the Catalog's Property indexes manager: what the engine's `listIndexes()`
-// returns (crates/graphersal-session `indexes.rs`: `[{name, element, label, key, type, served,
-// reason, stats: {entries, distinctValues, bytes} | null}]`) turned into rows to show, the
-// form's draft and its spec, the index types the form offers, and the Catalog dropdown's items
+// returns (crates/graphersal-session `indexes.rs`: `[{name, element, label, key, type, transform,
+// served, reason, stats: {entries, distinctValues, skipped, bytes} | null}]`) turned into rows to
+// show, the form's draft and its spec, the index types and transforms the form offers, and the
+// Catalog dropdown's items
 // with this kind added. Pure functions, no Vue, no DOM (tested under Node:
 // tests/indexes.test.mjs). Book page "Property Indexes".
 
@@ -35,13 +36,16 @@ export function catalogMenuItems(info) {
 
 /**
  * The name the engine gives an index without one (`PropertyIndexDefinition::default_name`):
- * `<label>_<key>` (`<label>_<key>_edge` for an edge index), every character that is not an
- * ASCII letter, digit or `_` replaced by `_`, prefixed with `index_` when it would not start
- * with a letter. The form shows it as the name's placeholder.
+ * `<label>_<key>` (`<label>_<key>_edge` for an edge index), then `_<transform>` for an index with
+ * a transform (`person_name_to_lower`), every character that is not an ASCII letter, digit or `_`
+ * replaced by `_`, prefixed with `index_` when it would not start with a letter. The form shows
+ * it as the name's placeholder, so it follows the Transform select while no name is typed.
  */
-export function defaultIndexName(element, label, key) {
+export function defaultIndexName(element, label, key, transform) {
   let name = `${label}_${key}`.replace(/[^A-Za-z0-9_]/gu, '_');
   if (element === 'edge') name += '_edge';
+  const t = typeof transform === 'string' ? transform.trim() : '';
+  if (t) name += `_${t.replace(/[^A-Za-z0-9_]/gu, '_')}`;
   if (!/^[A-Za-z]/.test(name)) name = `index_${name}`;
   return name;
 }
@@ -96,6 +100,31 @@ export const INDEX_TYPES = Object.freeze([
   }),
 ]);
 
+/**
+ * The index transforms the form's Transform select offers (`PropertyIndexTransform::KNOWN_NAMES`
+ * after "none"): the name sent as `transform` ('' sends none), the option's text and its hint.
+ */
+export const INDEX_TRANSFORMS = Object.freeze([
+  Object.freeze({
+    name: '',
+    label: 'none',
+    description: 'The index holds the values themselves.',
+  }),
+  Object.freeze({
+    name: 'to_lower',
+    label: 'to_lower',
+    description: 'Indexes the lowered text of string values (as to_lower() computes it) for a '
+      + 'case-insensitive search. Queries must be written has(key, __.to_lower().is(..)), with the '
+      + 'constant in lower case (it is compared as given); P.within and ranges are served too. '
+      + 'Other values are not indexed; while the key holds a non-string value queries scan.',
+  }),
+]);
+
+/** The transform of an entry of `listIndexes()`, '' for none. */
+export function indexTransformOf(index) {
+  return (index && typeof index.transform === 'string' && index.transform) || '';
+}
+
 /** The type of an entry of `listIndexes()` (an entry without one is the default type). */
 export function indexTypeOf(index) {
   return (index && typeof index.type === 'string' && index.type) || DEFAULT_INDEX_TYPE;
@@ -128,9 +157,14 @@ export function newTypedIndexDraft() {
   return { ...newIndexDraft(), type: DEFAULT_INDEX_TYPE };
 }
 
+/** A new index's draft with the Type select at the default type and the Transform at none. */
+export function newTransformIndexDraft() {
+  return { ...newTypedIndexDraft(), transform: '' };
+}
+
 /**
- * The spec `createIndex` takes (`{label, key, element, name?, type?}`; `type` only when the
- * draft has one), or the field errors the form shows without asking the engine (an empty label
+ * The spec `createIndex` takes (`{label, key, element, name?, type?, transform?}`; `type` and
+ * `transform` only when the draft has one), or the field errors the form shows without asking the engine (an empty label
  * or key, a key that looks like a jpath). Whether the type fits the schema's declaration of the
  * key is the engine's check (its error comes back for the field `key`).
  * @returns {{spec: object} | {errors: Array<{field:string, message:string}>}}
@@ -151,6 +185,8 @@ export function indexDraftToSpec(draft) {
   if (name) spec.name = name;
   const type = typeof draft.type === 'string' ? draft.type.trim() : '';
   if (type) spec.type = type;
+  const transform = typeof draft.transform === 'string' ? draft.transform.trim() : '';
+  if (transform) spec.transform = transform;
   return { spec };
 }
 

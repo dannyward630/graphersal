@@ -75,6 +75,14 @@ impl<'g, S: GraphStorage + 'g> AnonymousTraversal<'g, S> {
 impl<'g, S: GraphStorage + 'g, B: Into<PValue> + Debug + Clone + Send + Sync + 'static>
     GraphStepFilter<'g, S> for StepIs<B>
 {
+    fn value_index_ranges(&self) -> Option<(Vec<crate::graph::PropertyIndexRange>, bool)> {
+        let ranges = super::step_has_p::index_ranges(&self.predicate)?;
+        Some((
+            ranges,
+            super::step_has_p::reads_path_labels(&self.predicate),
+        ))
+    }
+
     #[inline]
     fn process(
         &self,

@@ -6687,3 +6687,50 @@ fn property_index_type_errors_carry_their_help() {
         assert!(unknown.contains(part), "{part}\n{unknown}");
     }
 }
+
+#[test]
+fn property_index_transform_errors_carry_their_help() {
+    use crate::script_host::eval_value;
+
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    let fail = |script: &str| -> String {
+        eval_value(graph.clone(), script)
+            .expect_err(script)
+            .to_string()
+    };
+    let _ = eval_value(
+        graph.clone(),
+        r#"g.set_schema(#{mode: "open", vertices: #{person: #{schema: #{type: "object", properties: #{
+             age: #{type: ["integer", "null"]}, name: #{type: "string"}}}}}})"#,
+    )
+    .unwrap();
+
+    let mismatch = fail(r#"g.create_index(#{label: "person", key: "age", transform: "to_lower"})"#);
+    for part in [
+        "Cannot create a property index on vertex 'person' key 'age': the schema declares 'age' \
+         as int64, and an index of type 'memory-ordered' with the transform 'to_lower' holds \
+         none of its values",
+        "Help: An index with the transform 'to_lower' holds the lowered text of string values \
+         only, for case-insensitive search with has(\"age\", __.to_lower().is(..))",
+        "g.create_index(#{label: \"person\", key: \"age\"})",
+        "a schema change made after an index exists never drops it",
+    ] {
+        assert!(mismatch.contains(part), "{part}\n{mismatch}");
+    }
+    // A string key is fine.
+    let _ = eval_value(
+        graph.clone(),
+        r#"g.create_index(#{label: "person", key: "name", transform: "to_lower"})"#,
+    )
+    .unwrap();
+    let unknown = fail(r#"g.createIndex(#{label: "person", key: "name", transform: "upper"})"#);
+    for part in [
+        "Invalid transform of 'person_name_upper': 'upper' is not an index transform this \
+         version knows (known: to_lower)",
+        "Help: The transform says what an index keys its values by. This version knows \
+         \"to_lower\"",
+        "g.v().has_label(\"person\").has(\"name\", __.to_lower().is(\"marko\"))",
+    ] {
+        assert!(unknown.contains(part), "{part}\n{unknown}");
+    }
+}

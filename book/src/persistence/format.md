@@ -471,14 +471,16 @@ speed-up. Its payload keys, in this order, followed by the unknown keys:
 | `label` | string: the label |
 | `key` | string: the top-level property name (not a jpath) |
 | `type` | string: the index type, `"memory-ordered"` (an ordered index in memory whose entries a load builds from the data) |
+| `transform` | string, optional: the transform of the index keys, `"to_lower"` (the lowered text of string values, as the step `to_lower()` computes it; other values are not in the index); absent for an index of the values themselves |
 
 `label` and `key` are required; `element` defaults to `"vertex"`, `type` to `"memory-ordered"`
-(a payload written before the key existed has none). A writer of this version always writes
-`type`. Two indexes with the same `element`, `label`, `key` and `type` are invalid (a writer
-refuses the second); indexes of different types may cover the same key. A `type` the reader does
-not know (a newer writer's) is NOT damage and needs no new format version (16 rule 1): the
-reader keeps the definition, writes its payload back exactly as read (every key, in the order
-read), builds no entries for it and serves no query from it. A store written before this kind
+(a payload written before the key existed has none), `transform` to none. A writer of this
+version always writes `type` and writes `transform` only for an index with a transform. Two
+indexes with the same `element`, `label`, `key`, `type` and `transform` are invalid (a writer
+refuses the second); indexes of different types or transforms may cover the same key. A `type`
+or a `transform` the reader does not know (a newer writer's) is NOT damage and needs no new
+format version (16 rule 1): the reader keeps the definition, writes its payload back exactly as
+read (every key, in the order read), builds no entries for it and serves no query from it. A store written before this kind
 was decoded never holds it (kind 2 was reserved), so no format version changes.
 
 ## 7. Segment files and chunks

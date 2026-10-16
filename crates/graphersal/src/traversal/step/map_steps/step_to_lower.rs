@@ -19,9 +19,17 @@ impl fmt::Display for StepToLower {
     }
 }
 
+/// The lower-casing of `to_lower()`: Rust's `str::to_lowercase` (Unicode, no locale). The ONE
+/// definition, shared with the `to_lower` transform of a property index
+/// ([`PropertyIndexTransform::ToLower`](crate::graph::property_index::PropertyIndexTransform)),
+/// so an index key is exactly what the step computes.
+pub(crate) fn lower_text(text: &str) -> String {
+    text.to_lowercase()
+}
+
 /// The per-string transformation, shared by the single-value and the per-element path.
 fn transform(text: &str) -> ElementProperty {
-    ElementProperty::String(text.to_lowercase().into())
+    ElementProperty::String(lower_text(text).into())
 }
 
 impl<'g, S: GraphStorage + 'g> GraphTraversalSource<'g, S> {
@@ -63,6 +71,11 @@ impl<'g, S: GraphStorage + 'g> AnonymousTraversal<'g, S> {
 }
 
 impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepToLower {
+    fn index_transform(&self) -> Option<crate::graph::PropertyIndexTransform> {
+        // Only the unscoped form: it maps one string to its lowered text, as the index does.
+        (self.scope == Scope::Global).then_some(crate::graph::PropertyIndexTransform::ToLower)
+    }
+
     #[inline]
     fn process(
         &self,

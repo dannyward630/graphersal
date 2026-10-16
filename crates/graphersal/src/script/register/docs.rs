@@ -309,7 +309,7 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "Counts the traversers (bulk included); with Scope.local counts the elements of each incoming collection.",
         "g.v().has_label(\"person\").count().next()" => "4";
     "traversal" "create_index":
-        "Declares a property index #{label, key, element, name, type}: a v() or e() with that label and a has() on that key then reads the index instead of every element of the label; type defaults to \"memory-ordered\" (see the book page Property Indexes).",
+        "Declares a property index #{label, key, element, name, type, transform}: a v() or e() with that label and a has() on that key then reads the index instead of every element of the label; type defaults to \"memory-ordered\", transform \"to_lower\" indexes lowered strings for has(key, __.to_lower().is(..)) (see the book page Property Indexes).",
         "{ g.create_index(#{label: \"person\", key: \"age\"}); g.v().has_label(\"person\").has(\"age\", P.gt(30)).values(\"name\").to_list() }" => "[\"josh\", \"peter\"]";
     "traversal" "cyclic_path":
         "Keeps only traversers whose path visits some element twice.",
@@ -414,8 +414,8 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "Counts the stream per key (the first by(), default the element) into a map; with a key it is a side effect.",
         "g.v().group_count().by(T.label).next()" => "#{\"person\": 4, \"software\": 2}";
     "traversal" "has":
-        "Keeps elements that have the property (and, with a value or predicate, whose value matches); the 3-argument form also tests the label.",
-        "g.v().has(\"person\", \"age\", P.gt(30)).values(\"name\").to_list()" => "[\"josh\", \"peter\"]";
+        "Keeps elements that have the property (and, with a value or predicate, whose value matches; with a traversal, for whose value the traversal yields a result, like filter(__.values(key)...)); the 3-argument form also tests the label.",
+        "{ [g.v().has(\"person\", \"age\", P.gt(30)).count().next(), g.v().has(\"name\", __.to_lower().is(\"josh\")).count().next()] }" => "[2, 1]";
     "traversal" "has_id":
         "Keeps elements whose id is one of the given ids (ids are strings, see the book page Id Arguments).",
         "g.v().has_id(1, 2).values(\"name\").to_list()" => "[\"marko\", \"vadas\"]";
@@ -465,7 +465,7 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "Pairs every element of the incoming list with its position ([value, index]).",
         "g.inject([\"a\", \"b\"]).index().next()" => "[[\"a\", 0], [\"b\", 1]]";
     "traversal" "indexes":
-        "Lists the property indexes as maps: name, element, label, key, type, served (with a reason when it is not) and the current entries, distinct_values and bytes.",
+        "Lists the property indexes as maps: name, element, label, key, type, transform, served (with a reason when it is not) and the current entries, distinct_values, skipped and bytes.",
         "{ g.create_index(#{label: \"person\", key: \"age\"}); g.indexes().map(|i| i.entries) }" => "[4]";
     "traversal" "infer_schema":
         "Infers a schema map from the data: on g from the whole graph, after steps from the elements the traversal yields.",

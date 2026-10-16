@@ -23,25 +23,33 @@ costs memory and a little time on every write of its key (below).
 
 | DSL | Rust (`GraphTraversalSource`) | Python (`Graph`) |
 |---|---|---|
-| `g.create_index(#{label, key, element?, name?, type?})` / `g.createIndex(..)` | `create_index(name, PropertyIndexDefinition::new(kind, label, key))`, `.with_type(PropertyIndexType::MemoryOrdered)` | `graph.create_index(label, key, element="vertex", name=None, type="memory-ordered")` |
+| `g.create_index(#{label, key, element?, name?, type?, transform?})` / `g.createIndex(..)` | `create_index(name, PropertyIndexDefinition::new(kind, label, key))`, `.with_type(PropertyIndexType::MemoryOrdered)`, `.with_transform(Some(PropertyIndexTransform::ToLower))` | `graph.create_index(label, key, element="vertex", name=None, type="memory-ordered", transform=None)` |
 | `g.indexes()` | `list_indexes()` | `graph.indexes()` |
 | `g.drop_index(name)` / `g.dropIndex(name)` | `drop_index(name)` | `graph.drop_index(name)` |
 
 - `element` is `"vertex"` (the default) or `"edge"`; `label` is one vertex or edge label (it need
   not exist yet); `key` is one **top-level** property name (a plain name, not a jpath: nested
   values are not indexed).
-- `name` defaults to `<label>_<key>` (`<label>_<key>_edge` for an edge index), with every
-  character that is not a letter, a digit or `_` replaced by `_`. It is an identifier like a
-  saved query's name.
+- `name` defaults to `<label>_<key>`, then `_edge` for an edge index, then `_to_lower` for an
+  index with the [transform](#case-insensitive-search) `to_lower` (`person_name_to_lower`,
+  `knows_note_edge_to_lower`), with every character that is not a letter, a digit or `_`
+  replaced by `_`, and `index_` in front when it would not start with a letter. It is an
+  identifier like a saved query's name. The DSL, the session, the dev server, MCP and Python use
+  this default; the playground's form shows it as the name's placeholder and follows the
+  **Transform** choice until a name is typed.
 - `type` is the [index type](#index-types), `"memory-ordered"` by default (the only type this
   version knows).
-- One index per `(element, label, key, type)`: a second one under another name fails with a
-  *Conflicting property index* error that names the first. Declaring the same name again replaces
-  the index.
-- `g.indexes()` lists each index with its `type`, `served` (whether it is served, with a
-  `reason` when it is not: see [unknown types](#an-index-type-from-a-newer-version) and
-  [other storages](#other-storages)) and its current `entries` (indexed elements),
-  `distinct_values` and `bytes` (an estimate of its memory).
+- `transform` is the [transform](#case-insensitive-search) of the index keys: absent (the
+  default) for the values themselves, `"to_lower"` for case-insensitive search.
+- One index per `(element, label, key, type, transform)`: a second one under another name fails
+  with a *Conflicting property index* error that names the first. A plain index and a `to_lower`
+  index on the same key coexist (their default names differ). Declaring the same name again
+  replaces the index.
+- `g.indexes()` lists each index with its `type`, its `transform` (`()` without one), `served`
+  (whether it is served, with a `reason` when it is not: see
+  [unknown types](#an-index-type-from-a-newer-version) and [other storages](#other-storages)) and
+  its current `entries` (indexed elements), `distinct_values`, `skipped` (elements whose non-null
+  value the index does not hold) and `bytes` (an estimate of its memory).
 
 ```rhai,graph=modern,script
 g.create_index(#{element: "edge", label: "knows", key: "weight"});
@@ -57,18 +65,19 @@ which conditions it serves. This version knows one type, and it is the default:
 |---|---|---|
 | `memory-ordered` | an ordered index kept in memory; its entries are derived from the data and rebuilt whenever the graph is loaded ([below](#persistence)) | equality, `P.within` and the ranges ([below](#what-is-served)) |
 
-Which value types an index type holds (Rust: `PropertyIndexType::holds`, the one place the engine
-and the front ends take it from):
+Which value types an index holds (Rust: `PropertyIndexType::holds` for the type,
+`PropertyIndexTransform::accepts` for the transform, both combined by
+`PropertyIndexDefinition::holds`, the one place the engine and the front ends take it from):
 
-| Value type | `memory-ordered` |
-|---|---|
-| `null`, `boolean` | yes |
-| `int64`, `float64` | yes (ranged by their value as `float64`) |
-| `string` (also a [compressed](compressed_properties.md) one, by its text) | yes |
-| `uuid` | yes |
-| `date`, `localdatetime`, `datetime`, `time`, `duration` | yes |
-| `array` (a list), `object` (a map) | no |
-| `vector` | no ([vectors](vectors.md) are searched with `nearest()` and `similarity()`) |
+| Value type | `memory-ordered` | `memory-ordered` with `to_lower` |
+|---|---|---|
+| `null`, `boolean` | yes | no |
+| `int64`, `float64` | yes (ranged by their value as `float64`) | no |
+| `string` (also a [compressed](compressed_properties.md) one, by its text) | yes | yes, by its lowered text |
+| `uuid` | yes | no |
+| `date`, `localdatetime`, `datetime`, `time`, `duration` | yes | no |
+| `array` (a list), `object` (a map) | no | no |
+| `vector` | no ([vectors](vectors.md) are searched with `nearest()` and `similarity()`) | no |
 
 A value the index does not hold is skipped: the element is not in the index, and a condition on
 such a value is answered by a scan, so results never change.
@@ -82,8 +91,9 @@ g.create_index(#{label: "person", key: "age", type: "hash"})   // refused: not a
 
 When the graph's stored [schema](schema_enforcement.md) declares the key at the top level of the
 index's label (a vertex label for a vertex index, an edge label for an edge index) and **none** of
-the declared types, `null` aside, can be held by the index type (a vector, a list, a map, or an
-`anyOf` of only such), creating the index is refused, with a message that names the label, the
+the declared types, `null` aside, can be held by the index (for the type a vector, a list, a map,
+or an `anyOf` of only such; with the transform `to_lower` every type but `string`), creating the
+index is refused, with a message that names the label, the
 key, the declared type and the index type:
 
 ```rhai,graph=empty
@@ -103,6 +113,8 @@ book page "Vectors"), for example g.v().has_label("doc").nearest("embedding", qu
 10 closest; a vector index type is planned. ...
 ```
 
+With `to_lower` the message says `an index of type 'memory-ordered' with the transform
+'to_lower' holds none of its values`, and the help suggests a plain index or a string property.
 For a list or a map the help suggests indexing a scalar top-level property instead (an index key
 is one top-level name; nested fields are not indexed). A declaration with at least one type the
 index holds (`anyOf` of a list and a string, `["string", "null"]`), a key the schema does not
@@ -126,7 +138,57 @@ optimizer never reads it, and `g.indexes()` (and the playground, the dev server 
 `list_indexes`) shows it with `served: false` and a `reason` such as *index type 'x' is not
 known to this version*. It can be dropped like any index. Creating or redefining an index of an
 unknown type is refused with an error whose help lists the known types. Indexes of different
-types may cover the same `(element, label, key)`.
+types may cover the same `(element, label, key)`. A **transform** this version does not know is
+handled the same way: kept byte for byte, built and served never, listed with the reason *index
+transform 'x' is not known to this version*, refused when created (the field `transform`).
+
+## Case-insensitive search
+
+An index can carry a **transform** (the key `transform`): its keys are then the transformed
+values, and it serves a condition that applies the same transform before comparing. This version
+knows one transform, `to_lower`, named after the step [`to_lower()`](../traversal/steps/to_lower.md):
+the index key is the lowered text of a **string** value, computed by exactly the function the
+step uses (Rust's `str::to_lowercase`: Unicode, no locale), so the index and the scan never
+disagree. The query form is TinkerPop's `has(key, traversal)`: `has("name", __.to_lower().is(x))`
+keeps the elements whose lowered `name` is `x`.
+
+```rhai,graph=modern,script
+g.v("1").property("name", "MARKO").iterate();
+g.create_index(#{label: "person", key: "name", transform: "to_lower"});   // person_name_to_lower
+
+// Served: the lowered value against the constants, equality, P.within and the ranges.
+g.v().has_label("person").has("name", __.to_lower().is("marko")).values("name").to_list();
+g.v().has_label("person").has("name", __.to_lower().is(P.within("josh", "vadas"))).count().next();
+g.v().has_label("person").has("name", __.to_lower().is(P.gte("p"))).values("name").to_list();
+
+// The constant is compared AS GIVEN with the lowered value: write it in lower case.
+g.v().has_label("person").has("name", __.to_lower().is("Marko")).count().next()   // 0
+```
+
+What is served and what is not:
+
+- Served: `v()`/`e()` with a folded `has_label(..)` (every label with a `to_lower` index on the
+  key), followed in the run of pure filters by `has(key, __.to_lower().is(P))` with `P` a value,
+  `P.eq`, `P.within` or a range (`P.gt/gte/lt/lte/between/inside/outside`). `.profile()` shows
+  `[index: vertex person.name to_lower]` on the start step; the `has` step stays in the plan and
+  re-checks every candidate.
+- Not served (a scan, the same result): any other child (`__.is("x")` without `to_lower()`,
+  `__.to_upper()`, `__.to_lower(Scope.local)`, more steps after `is(..)`, `P.neq`, text
+  predicates), `where(__.values("name").to_lower().is(..))`, a jpath key, a source without
+  `has_label`. The constant is never lowered for you: `is("Marko")` matches nothing.
+- Only strings are in the index; `null` and a missing key are not. Because `to_lower()` fails on
+  any other value (an `int64` name, a list), such a value must make the query fail as the scan
+  does: while the index has **skipped** a non-null, non-string value (`g.indexes()` shows
+  `skipped`), queries do not read it and scan, with the step's error. Remove or convert those
+  values and the index is served again.
+- A plain index and a `to_lower` index on the same key coexist: `has("name", "Marko")` reads the
+  plain one, `has("name", __.to_lower().is("marko"))` the lowered one. A `to_lower` index never
+  serves a plain `has("name", "marko")`.
+- Creating one on a key the schema declares as a non-string type only (an `integer`) is refused
+  with a message naming the transform; a union with `string` is fine
+  ([below](#checked-against-the-schema-when-created)).
+- An unknown transform (written by a newer version) is kept byte for byte and listed as not served
+  ([below](#an-index-type-from-a-newer-version)).
 
 ## What is served
 
@@ -226,23 +288,26 @@ graph has it. On a [custom storage](../for_developers/custom_storage.md) without
 `create_index` fails with *unsupported: property indexes*; an index definition can still be stored
 in its catalog (a catalog file loaded into it, say) and is listed with `served: false`, but no
 query reads it. A storage that serves indexes implements `GraphStorage::property_indexes` and the
-lookups `vertices_by_property_index`/`edges_by_property_index`.
+lookups `vertices_by_property_index`/`edges_by_property_index`, and for indexes with a transform
+`vertices_by_transformed_property_index`/`edges_by_transformed_property_index` (reporting
+`PropertyIndexStats::skipped`, which the optimizer reads before it uses such an index).
 
 ## In the playground, the dev server and MCP
 
 - **Playground** (WebAssembly and over the dev server): **Catalog ▾ ▸ Property indexes** lists the
-  indexes with their type, entries, distinct values, elements per value (what an equality reads)
-  and memory (an index that is not served says why), creates one from a form (element, label,
-  key, type, optional name; the default name is shown as you type; an engine refusal shows under
-  its field) and drops one after a confirmation. The **Statistics** tab of the Profile panel
+  indexes with their type, transform, entries, distinct values, elements per value (what an
+  equality reads) and memory (an index that is not served says why), creates one from a form
+  (element, label, key, type, transform: none or `to_lower` with a hint on the query form,
+  optional name; the default name is shown as you type and follows the transform; an engine
+  refusal shows under its field) and drops one after a confirmation. The **Statistics** tab of the Profile panel
   shows *Property indexes* with their memory when the graph has some. Indexes travel with the
   catalog file (**Catalog ▾ ▸ Save catalog**).
-- **Dev server**: `GET /api/indexes`, `POST /api/indexes/create` `{label, key, element?, name?, type?}`,
+- **Dev server**: `GET /api/indexes`, `POST /api/indexes/create` `{label, key, element?, name?, type?, transform?}`,
   `POST /api/indexes/drop` `{name}` (see [the dev server](../persistence/dev_server.md)); a
   create or drop is a commit recorded in the change feed, so open browsers reload. The start
   block on stderr names the index memory.
 - **MCP**: the tools `list_indexes` (also with `--mcp-read-only`), `create_index` (with an
-  optional `type`, an enum of the known types) and `drop_index` (not offered read-only, where
+  optional `type` and `transform`, enums of the known ones) and `drop_index` (not offered read-only, where
   `query` refuses `g.create_index` too).
 
 ## Limits
@@ -252,5 +317,7 @@ lookups `vertices_by_property_index`/`edges_by_property_index`.
   serve `v().has("title", ..)` without `has_label`).
 - One index type (`memory-ordered`): persisted, hash, vector (approximate nearest neighbour) and
   full-text types are planned and will be additional values of `type`.
+- One transform (`to_lower`); it serves only the exact child `__.to_lower().is(P)`. A `to_lower`
+  index does not serve a plain `has(key, value)`, and `TextP` predicates are not served.
 - No unique indexes (constraints) in this version.
 - `order().by(key)` does not read the index.

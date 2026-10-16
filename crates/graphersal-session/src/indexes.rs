@@ -9,26 +9,33 @@
 //!
 //! JSON forms:
 //!
-//! - an **entry** (`list_indexes`): `{name, element: "vertex"|"edge", label, key, type, served,
-//!   reason, stats: {entries, distinctValues, bytes}}`; `served` is false and `stats` `null`
-//!   when the index is not served, and `reason` (else `null`) says why: the storage does not
-//!   serve indexes (it keeps the definition in its catalog, no query reads it), or the index's
-//!   `type` is not known to this version (a newer one wrote it,
-//!   [`PropertyIndexDefinition::unserved_reason`]); `bytes` is the storage's estimate of the
-//!   index's memory;
-//! - a **spec** (`create_index`): `{label, key, element?, name?, type?}`; `element` defaults
-//!   to `"vertex"`, `name` to `<label>_<key>` (`<label>_<key>_edge` for an edge index,
+//! - an **entry** (`list_indexes`): `{name, element: "vertex"|"edge", label, key, type,
+//!   transform, served, reason, stats: {entries, distinctValues, skipped, bytes}}`;
+//!   `transform` is `null` for an index of the values themselves (else `"to_lower"`, or the
+//!   unknown name as read); `served` is false and `stats` `null` when the index is not served,
+//!   and `reason` (else `null`) says why: the storage does not serve indexes (it keeps the
+//!   definition in its catalog, no query reads it), or the index's `type` or `transform` is
+//!   not known to this version (a newer one wrote it,
+//!   [`PropertyIndexDefinition::unserved_reason`]); `skipped` counts elements whose non-null
+//!   value the index does not hold (a `to_lower` index is used by queries only while it is 0);
+//!   `bytes` is the storage's estimate of the index's memory;
+//! - a **spec** (`create_index`): `{label, key, element?, name?, type?, transform?}`;
+//!   `element` defaults to `"vertex"`, `name` to `<label>_<key>` (`<label>_<key>_edge` for an
+//!   edge index, then `_to_lower` with that transform,
 //!   [`PropertyIndexDefinition::default_name`]), `type` to `"memory-ordered"`
-//!   ([`index_types`] lists the known ones);
+//!   ([`index_types`] lists the known ones), `transform` to none ([`index_transforms`]);
 //! - **field errors** (a refused create): `[{field, message, help?}]` with `field` one of
-//!   `name`, `element`, `label`, `key`, `type` or `general`, the same shape as the other catalog
-//!   editors. An unknown `type` is an error of `type`; a key the graph's schema declares as
-//!   values the index type cannot hold (a vector, an array, an object;
+//!   `name`, `element`, `label`, `key`, `type`, `transform` or `general`, the same shape as the
+//!   other catalog editors. An unknown `type` is an error of `type`, an unknown `transform` of
+//!   `transform`; a key the graph's schema declares as values the index cannot hold (a vector,
+//!   an array, an object; with `to_lower` anything but a string;
 //!   [`PropertyIndexDefinition::check_create`]) an error of `key`. A storage without property
 //!   indexes refuses every create with its `Unsupported` diagnostic (field `general`), as
 //!   `recompress` does on a storage without compressed properties.
 
-use graphersal::catalog::{Definition, DefinitionKind, PropertyIndexDefinition, PropertyIndexType};
+use graphersal::catalog::{
+    Definition, DefinitionKind, PropertyIndexDefinition, PropertyIndexTransform, PropertyIndexType,
+};
 use graphersal::prelude::*;
 use graphersal::storage::{ElementKind, PropertyIndexInfo, PropertyIndexStats};
 use serde_json::{Value, json};
@@ -37,7 +44,7 @@ use crate::Session;
 use crate::queries::FieldError;
 
 /// The keys a spec may have.
-const KEYS: [&str; 5] = ["name", "element", "label", "key", "type"];
+const KEYS: [&str; 6] = ["name", "element", "label", "key", "type", "transform"];
 
 /// Why a storage that serves no property indexes at all does not serve one.
 const STORAGE_SERVES_NONE: &str =
@@ -57,6 +64,20 @@ pub fn index_types() -> Value {
     )
 }
 
+/// The index transforms this version knows, for a form's choice: `[{name, description}]`
+/// (no transform, the default, is not listed).
+pub fn index_transforms() -> Value {
+    Value::Array(
+        PropertyIndexTransform::KNOWN_NAMES
+            .iter()
+            .map(|name| {
+                let transform = PropertyIndexTransform::from_name(name);
+                json!({"name": name, "description": transform.description()})
+            })
+            .collect(),
+    )
+}
+
 /// The entry of one index (module docs).
 fn entry(name: &str, index: &PropertyIndexDefinition, stats: Option<PropertyIndexStats>) -> Value {
     let served = stats.is_some();
@@ -69,6 +90,7 @@ fn entry(name: &str, index: &PropertyIndexDefinition, stats: Option<PropertyInde
         json!({
             "entries": stats.entries,
             "distinctValues": stats.distinct_values,
+            "skipped": stats.skipped,
             "bytes": stats.bytes,
         })
     });
@@ -78,6 +100,7 @@ fn entry(name: &str, index: &PropertyIndexDefinition, stats: Option<PropertyInde
         "label": index.label(),
         "key": index.key(),
         "type": index.index_type().as_str(),
+        "transform": index.transform().map(PropertyIndexTransform::as_str),
         "served": served,
         "reason": reason,
         "stats": stats,
@@ -89,7 +112,7 @@ fn field_of(err: &DefinitionError) -> FieldError {
     let mut error = FieldError::of(err);
     match err {
         DefinitionError::InvalidField { field, .. }
-            if matches!(field.as_str(), "label" | "key" | "type") =>
+            if matches!(field.as_str(), "label" | "key" | "type" | "transform") =>
         {
             error.field = field.clone();
         }
@@ -148,7 +171,7 @@ pub(crate) fn index_definition(spec: &Value) -> Result<Definition, Vec<FieldErro
     let Some(object) = spec.as_object() else {
         return Err(vec![FieldError::new(
             "general",
-            "the index is a JSON object {label, key, element?, name?, type?}",
+            "the index is a JSON object {label, key, element?, name?, type?, transform?}",
         )]);
     };
     if let Some(unknown) = object.keys().find(|key| !KEYS.contains(&key.as_str())) {
@@ -172,6 +195,7 @@ pub(crate) fn index_definition(spec: &Value) -> Result<Definition, Vec<FieldErro
     let key = text("key").unwrap_or_default();
     let element = text("element");
     let index_type = text("type");
+    let transform = text("transform");
     if label.is_empty() {
         errors.push(FieldError::new(
             "label",
@@ -198,11 +222,12 @@ pub(crate) fn index_definition(spec: &Value) -> Result<Definition, Vec<FieldErro
     if !errors.is_empty() {
         return Err(errors);
     }
-    let index =
-        PropertyIndexDefinition::new(element, label, key).with_type(index_type.as_deref().map_or(
+    let index = PropertyIndexDefinition::new(element, label, key)
+        .with_type(index_type.as_deref().map_or(
             PropertyIndexType::MemoryOrdered,
             PropertyIndexType::from_name,
-        ));
+        ))
+        .with_transform(transform.as_deref().map(PropertyIndexTransform::from_name));
     let name = name.unwrap_or_else(|| index.default_name());
     // The name and the index each on their own, so both wrong fields are reported (the index
     // checked under its default name when the given one is wrong).
@@ -260,8 +285,8 @@ fn stats_of(served: &[PropertyIndexInfo], name: &str) -> Option<PropertyIndexSta
 /// Stores the checked property index `definition` in `g` in ONE commit (which builds it): the
 /// name must be free; a storage without property indexes refuses it (`Unsupported`, field
 /// `general`); [`PropertyIndexDefinition::check_create`] against `g`'s stored schema refuses
-/// an unknown type (field `type`) and a key declared as values the type cannot hold (field
-/// `key`).
+/// an unknown type (field `type`) or transform (field `transform`) and a key declared as
+/// values the index cannot hold (field `key`).
 pub(crate) fn store_index<S: GraphStorage>(
     g: &mut S,
     definition: Definition,
@@ -436,6 +461,53 @@ mod tests {
         // The known types for a form.
         assert_eq!(index_types()[0]["name"], "memory-ordered");
         assert!(index_types()[0]["description"].is_string());
+    }
+
+    #[test]
+    fn the_transform_is_stored_listed_named_and_checked() {
+        let mut s = modern();
+        let created =
+            s.create_index(&json!({"label": "person", "key": "name", "transform": "to_lower"}));
+        assert_eq!(created["ok"], true, "{created}");
+        assert_eq!(
+            created["index"]["name"], "person_name_to_lower",
+            "{created}"
+        );
+        assert_eq!(created["index"]["transform"], "to_lower", "{created}");
+        assert_eq!(created["index"]["stats"]["entries"], 4, "{created}");
+        assert_eq!(created["index"]["stats"]["skipped"], 0, "{created}");
+        // A plain index on the same key coexists; its transform is null.
+        let plain = s.create_index(&json!({"label": "person", "key": "name"}));
+        assert_eq!(plain["index"]["name"], "person_name", "{plain}");
+        assert_eq!(plain["index"]["transform"], Value::Null, "{plain}");
+        let edge = s.create_index(&json!({
+            "element": "edge", "label": "knows", "key": "note", "transform": "to_lower"
+        }));
+        assert_eq!(edge["index"]["name"], "knows_note_edge_to_lower", "{edge}");
+        // An unknown transform: an error of the field `transform`.
+        let refused =
+            s.create_index(&json!({"label": "person", "key": "name", "transform": "upper"}));
+        assert_eq!(refused["errors"][0]["field"], "transform", "{refused}");
+        let refused = s.create_index(&json!({"label": "person", "key": "name", "transform": 1}));
+        assert_eq!(refused["errors"][0]["field"], "transform", "{refused}");
+        // A key declared as an integer: an error of the field `key`.
+        s.execute(
+            r#"g.set_schema(#{mode: "open", vertices: #{item: #{schema: #{type: "object",
+                 properties: #{code: #{type: "integer"}}}}}})"#,
+            &crate::RunOptions::default(),
+        );
+        let refused =
+            s.create_index(&json!({"label": "item", "key": "code", "transform": "to_lower"}));
+        assert_eq!(refused["errors"][0]["field"], "key", "{refused}");
+        assert_eq!(s.index_count(), 3);
+        // The served query.
+        let out = s.execute(
+            r#"g.v().has_label("person").has("name", __.to_lower().is("josh")).values("name").to_list()"#,
+            &crate::RunOptions::default(),
+        );
+        assert!(out.contains("josh"), "{out}");
+        assert_eq!(index_transforms()[0]["name"], "to_lower");
+        assert!(index_transforms()[0]["description"].is_string());
     }
 
     #[test]

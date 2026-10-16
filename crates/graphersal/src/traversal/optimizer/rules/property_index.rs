@@ -1,5 +1,5 @@
 use crate::graph::schema::ElementKind;
-use crate::graph::{GraphStorage, PropertyIndexInfo, PropertyIndexRange};
+use crate::graph::{GraphStorage, PropertyIndexInfo, PropertyIndexRange, PropertyIndexTransform};
 use crate::traversal::optimizer::OptimizerContext;
 use crate::traversal::optimizer::plan::Plan;
 use crate::traversal::optimizer::rule::OptimizationRule;
@@ -27,6 +27,12 @@ const PURE_FILTERS: [&str; 7] = [
 /// - the `has(key, P)` steps in the run of pure filters right after it (`eq`, `within`, the
 ///   ranges; see `step_has_p::index_ranges`). A `P.eq` with a string operand only at the root,
 ///   where no traverser carries a path label it could name.
+/// - the `has(key, __.to_lower().is(P))` steps in that run (TinkerPop's `has(key, traversal)`
+///   with exactly that child, `P` as above), served by an index with the transform `to_lower`
+///   on the key, read with `P`'s constants as given (the child compares the lowered value with
+///   them). Only while that index skipped no value (`PropertyIndexStats::skipped` 0): the
+///   `to_lower()` of the child fails on a non-string value, and a scan must report it. Any
+///   other `has(key, traversal)` ends the run of pure filters.
 ///
 /// Among the conditions an index covers it picks the most selective by the indexes' stats
 /// (equality: entries / distinct values per label and value; a range: half the entries) and
@@ -108,23 +114,34 @@ impl<'g, S: GraphStorage + 'g> OptimizationRule<'g, S> for PropertyIndexRule {
             return clear(plan);
         }
         // The cost of serving `key` with `ranges`: `None` unless every label has an index on it.
-        let cost = |key: &str, ranges: &[PropertyIndexRange]| -> Option<u64> {
+        // A transformed index serves only while it skipped no value (see the rule's doc).
+        let cost = |key: &str,
+                    transform: Option<&PropertyIndexTransform>,
+                    ranges: &[PropertyIndexRange]|
+         -> Option<u64> {
             labels.iter().try_fold(0u64, |total, label| {
                 let info = context.indexes.iter().find(|info| {
-                    info.element == element && info.label == *label && info.key == key
+                    info.element == element
+                        && info.label == *label
+                        && info.key == key
+                        && info.transform.as_ref() == transform
+                        && (transform.is_none() || info.stats.skipped == 0)
                 })?;
                 Some(total.saturating_add(estimate(info, ranges)))
             })
         };
         let mut best: Option<(u64, IndexAccess)> = None;
-        let mut consider = |key: &str, ranges: Vec<PropertyIndexRange>| {
-            if let Some(cost) = cost(key, &ranges)
+        let mut consider = |key: &str,
+                            transform: Option<PropertyIndexTransform>,
+                            ranges: Vec<PropertyIndexRange>| {
+            if let Some(cost) = cost(key, transform.as_ref(), &ranges)
                 && best.as_ref().is_none_or(|(best, _)| cost < *best)
             {
                 best = Some((
                     cost,
                     IndexAccess {
                         key: key.to_string(),
+                        transform,
                         ranges,
                     },
                 ));
@@ -135,6 +152,7 @@ impl<'g, S: GraphStorage + 'g> OptimizationRule<'g, S> for PropertyIndexRule {
                 if crate::graph::property_index::is_indexable(&filter.value) {
                     consider(
                         &filter.key,
+                        None,
                         vec![PropertyIndexRange::equal(filter.value.clone())],
                     );
                 }
@@ -142,11 +160,15 @@ impl<'g, S: GraphStorage + 'g> OptimizationRule<'g, S> for PropertyIndexRule {
         }
         for index in 1..plan.len() {
             match &plan[index] {
-                GraphStep::Filter(name, filter) if PURE_FILTERS.contains(name) => {
+                // `has(key, traversal)` is pure only in the served shape (`index_condition`).
+                GraphStep::Filter(name, filter)
+                    if PURE_FILTERS.contains(name)
+                        || (*name == "has_traversal" && filter.index_condition().is_some()) =>
+                {
                     if let Some(condition) = filter.index_condition()
                         && (context.root || !condition.reads_path_labels)
                     {
-                        consider(condition.key, condition.ranges);
+                        consider(condition.key, condition.transform, condition.ranges);
                     }
                 }
                 _ => break,

@@ -15,6 +15,8 @@ v().has_label("person").has("age", P.gt(30))     →   v(labels: ["person"]) [in
                                                       has("age", P.gt(30))
 e().has_label("knows").has("weight", P.lt(0.5))  →   e(labels: ["knows"]) [index: edge knows.weight]
                                                       has("weight", P.lt(0.5))
+v().has_label("person")                          →   v(labels: ["person"]) [index: vertex person.name to_lower]
+   .has("name", __.to_lower().is("ada"))              has("name", __.to_lower().is(P.eq("ada")))
 ```
 
 It looks at
@@ -23,9 +25,17 @@ It looks at
   the start step (scalar values), and
 - the `has(key, P)` steps in the run of pure filters (`has`, `has_label`, `has_id`, `has_key`,
   `has_not`) right after it, with `P.eq`, `P.within`, `P.gt/gte/lt/lte`, `P.between`, `P.inside`
-  or `P.outside`.
+  or `P.outside`, and
+- the `has(key, __.to_lower().is(P))` steps in that run (TinkerPop's `has(key, traversal)` with
+  exactly that child, `P` as above), which only an index with the
+  [transform](../users_guide/property_indexes.md#case-insensitive-search) `to_lower` on the key
+  covers. Its slices are `P`'s constants as given (the child compares the lowered value with
+  them); it is covered only while that index has skipped no value (`skipped` 0), because the
+  child's `to_lower()` fails on a non-string value and the scan must report that error. Any
+  other `has(key, traversal)` ends the run of pure filters.
 
-A condition is covered when every label folded into the start step has an index on its key. Of the
+A condition is covered when every label folded into the start step has an index on its key (of
+the condition's transform: none for `has(key, ..)`, `to_lower` for the lowered form). Of the
 covered conditions the rule picks the most selective by the indexes' statistics (an equality: about
 `entries / distinct_values` elements per label and value; a range: half the entries).
 
@@ -46,7 +56,8 @@ equals the scan's (only the order of the elements may differ).
   (`v("1").has_label(..)`: the ids are cheaper), or a fused `count()`/`group_count()`.
 - The condition is not served: `P.neq`, `P.without`, text predicates, composites, a list or map
   value, a jpath key, `NaN`; a `P.eq` with a string operand inside a child traversal (a string first
-  names a path label there).
+  names a path label there); a `has(key, traversal)` whose child is not exactly
+  `to_lower().is(P)`; the lowered form while its index skipped a non-string value.
 
 `g.with("optimizer.disabled", ["property_index"])` turns it off for one query, for example to
 compare the plan with the label scan.

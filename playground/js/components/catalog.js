@@ -30,8 +30,8 @@ import {
 } from '../compression.js';
 import { queryTree, signatureText, errorsByField } from '../saved-queries.js';
 import {
-  catalogMenuItems, indexRow, indexTotals, newTypedIndexDraft, indexDraftToSpec, defaultIndexName,
-  INDEX_TYPES, indexTypeOf, indexNotServedReason,
+  catalogMenuItems, indexRow, indexTotals, newTransformIndexDraft, indexDraftToSpec, defaultIndexName,
+  INDEX_TYPES, INDEX_TRANSFORMS, indexTypeOf, indexTransformOf, indexNotServedReason,
 } from '../indexes.js';
 import { formatBytes } from '../statistics.js';
 import { DropMenu } from './drop-menu.js';
@@ -330,8 +330,13 @@ export const IndexesManager = {
       labels: { vertex: [], edge: [] },
     });
     const rows = computed(() => (state.indexes || []).map((index) => ({
-      index, row: indexRow(index), type: indexTypeOf(index), reason: indexNotServedReason(index),
+      index, row: indexRow(index), type: indexTypeOf(index), transform: indexTransformOf(index),
+      reason: indexNotServedReason(index),
     })));
+    const transformHint = computed(() => {
+      const t = d.draft && INDEX_TRANSFORMS.find((x) => x.name === (d.draft.transform || ''));
+      return t ? t.description : '';
+    });
     const typeHint = computed(() => {
       const t = d.draft && INDEX_TYPES.find((x) => x.name === d.draft.type);
       return t ? t.description : '';
@@ -340,7 +345,9 @@ export const IndexesManager = {
     const suggestions = computed(() => (d.draft ? d.labels[d.draft.element] || [] : []));
     const namePlaceholder = computed(() => {
       const x = d.draft;
-      return x && x.label.trim() && x.key.trim() ? defaultIndexName(x.element, x.label.trim(), x.key.trim()) : 'person_age';
+      return x && x.label.trim() && x.key.trim()
+        ? defaultIndexName(x.element, x.label.trim(), x.key.trim(), x.transform)
+        : defaultIndexName('vertex', 'person', 'age', x && x.transform);
     });
 
     async function loadLabels() {
@@ -360,7 +367,7 @@ export const IndexesManager = {
       if (dlg.value && dlg.value.open) dlg.value.close();
     }
     async function startNew() {
-      Object.assign(d, { draft: newTypedIndexDraft(), errors: {} });
+      Object.assign(d, { draft: newTransformIndexDraft(), errors: {} });
       await loadLabels();
       await nextTick();
     }
@@ -406,7 +413,8 @@ export const IndexesManager = {
     }
     expose({ open, close });
     return {
-      state, dlg, d, rows, sum, suggestions, namePlaceholder, typeHint, indexTypes: INDEX_TYPES, formatBytes, close,
+      state, dlg, d, rows, sum, suggestions, namePlaceholder, typeHint, transformHint,
+      indexTypes: INDEX_TYPES, indexTransforms: INDEX_TRANSFORMS, formatBytes, close,
       startNew, cancelForm, save, drop,
     };
   },
@@ -424,14 +432,15 @@ export const IndexesManager = {
         <div v-else class="catalog-table-wrap">
           <table class="data-table catalog-table">
             <thead><tr>
-              <th>Name</th><th>Applies to</th><th>Key</th><th>Type</th>
+              <th>Name</th><th>Applies to</th><th>Key</th><th>Type</th><th>Transform</th>
               <th class="num">Entries</th><th class="num">Distinct values</th><th class="num">Per value</th><th class="num">Memory</th><th></th>
             </tr></thead>
             <tbody>
-              <tr v-for="{ index, row, type, reason } in rows" :key="index.name">
+              <tr v-for="{ index, row, type, transform, reason } in rows" :key="index.name">
                 <td class="code">{{ row.name }} <span v-if="!row.served" class="badge" :title="reason">not served</span></td>
                 <td>{{ row.target }}</td><td class="code">{{ row.key }}</td>
                 <td class="code">{{ type }}<div v-if="!row.served && reason" class="muted" style="font-size: 12px">{{ reason }}</div></td>
+                <td class="code">{{ transform || '—' }}</td>
                 <td class="num">{{ row.entries }}</td><td class="num">{{ row.distinct }}</td>
                 <td class="num" title="Elements an equality reads on average">{{ row.perValue }}</td><td class="num">{{ row.bytes }}</td>
                 <td class="catalog-actions">
@@ -472,6 +481,12 @@ export const IndexesManager = {
           </select>
           <div v-for="m in d.errors.type || []" class="field-error sq-span">{{ m }}</div>
           <span class="hint">{{ typeHint }}</span>
+          <label for="ci-transform">Transform</label>
+          <select id="ci-transform" v-model="d.draft.transform" :class="{ invalid: d.errors.transform }" :title="transformHint" style="justify-self:start">
+            <option v-for="t in indexTransforms" :key="t.name" :value="t.name" :title="t.description">{{ t.label }}</option>
+          </select>
+          <div v-for="m in d.errors.transform || []" class="field-error sq-span">{{ m }}</div>
+          <span class="hint">{{ transformHint }}</span>
           <label for="ci-name">Name</label>
           <input id="ci-name" type="text" v-model="d.draft.name" :class="{ invalid: d.errors.name }" :placeholder="namePlaceholder" autocomplete="off" spellcheck="false">
           <div v-for="m in d.errors.name || []" class="field-error sq-span">{{ m }}</div>

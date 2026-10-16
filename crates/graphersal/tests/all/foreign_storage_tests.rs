@@ -266,6 +266,33 @@ const CURATED: &[(Mode, &str)] = &[
         Mode::Plain,
         r#"g.set_schema(#{mode: "none", vertices: #{person: #{schema: #{type: "object", properties: #{emb: #{type: "array", format: "vector", metric: "l2"}}}}}}); g.V("1").property("emb", vector([1.0, 0.0])).iterate(); g.V("2").property("emb", vector([0.0, 1.0])).iterate(); [g.V().hasLabel("person").nearest("emb", [0.9, 0.0], 1).values("name").next(), g.V("1").similarity("emb", [0.0, 0.0]).next()]"#,
     ),
+    // has(key, traversal): TinkerPop's filter(values(key).traversal), jpath keys, nested.
+    (
+        Mode::Plain,
+        r#"[g.V().has("name", __.toLower().is(P.within(["marko", "josh"]))).values("name").toList(), g.V().has("age", __.is(P.gt(30))).count().next(), g.V().has("nope", __.identity()).count().next(), g.V().has("person", "name", __.is("vadas")).id().toList(), g.V().where(__.out().has("lang", __.is("java"))).values("name").toList()]"#,
+    ),
+    (
+        Mode::Plain,
+        r#"g.V("1").property("meta", #{city: "Berlin"}).iterate(); [g.V().has(jpath("meta.city"), __.to_lower().is("berlin")).id().toList(), g.V().has("age", __.as_string().is("29")).id().toList()]"#,
+    ),
+    (
+        Mode::Atomic,
+        r#"g.V().has("name", __.addV("copy")).iterate(); g.V().hasLabel("copy").count().next()"#,
+    ),
+    // A property index with the transform to_lower: served on the reference, scanned or served
+    // on the forwarding storage, the same answers; the default name; a plain index beside it.
+    (
+        Mode::Plain,
+        r#"g.V("1").property("name", "MARKO").iterate(); g.create_index(#{label: "person", key: "name", transform: "to_lower"}); g.create_index(#{label: "person", key: "name"}); [g.indexes().map(|i| [i.name, i.transform, i.entries, i.skipped]), g.V().hasLabel("person").has("name", __.toLower().is("marko")).id().toList(), g.V().hasLabel("person").has("name", __.to_lower().is(P.gte("p"))).values("name").toList(), g.V().hasLabel("person").has("name", __.to_lower().is("MARKO")).count().next()]"#,
+    ),
+    (
+        Mode::Plain,
+        r#"g.create_index(#{label: "person", key: "age", transform: "to_lower"}); [g.indexes()[0].skipped, g.indexes()[0].entries]"#,
+    ),
+    (
+        Mode::Plain,
+        r#"g.create_index(#{label: "person", key: "age", transform: "to_lower"}); g.V().hasLabel("person").has("age", __.to_lower().is("x")).count().next()"#,
+    ),
     // Marks: no journal on either storage.
     (Mode::Plain, r#"g.mark("m")"#),
     (Mode::Atomic, r#"g.addV("x").next(); g.mark("m")"#),
