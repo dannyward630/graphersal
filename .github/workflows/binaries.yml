@@ -1,0 +1,268 @@
+name: CLI binaries
+
+# Builds the prebuilt `graphersal` command line binaries (crate graphersal-cli, default features)
+# for five platforms, each natively on its own runner (no cross compilation), with the `dist`
+# profile of the root Cargo.toml (release + fat LTO + stripped symbols). Linux is a static musl
+# build (runs on every distribution; musl's allocator is slower, see the Installation page).
+# Each build is smoke-tested on its runner (`--version`, a query, the dev server's /api/info) and
+# packed as `graphersal-v<version>-<platform>.tar.gz` (Windows: `.zip`) holding the binary,
+# LICENSE-APACHE, NOTICE, README.md and THIRD-PARTY-LICENSES.html (cargo-about, about.toml),
+# uploaded as the artifact `binaries-<platform>`; the `checksums` job adds `SHA256SUMS`
+# (artifact `binaries-checksums`) and, with `attest`, GitHub build provenance attestations.
+# No dependency cache: a release binary is built from a clean tree.
+# Manual only (Actions minutes are limited; two of the builds run on macOS):
+# `gh workflow run "CLI binaries" --ref <branch>` is a dry run on any branch: it builds, tests and
+# uploads the artifacts and publishes nothing. `-f compare_musl=true` adds a job that times the
+# same queries on the `large` graph with a glibc and a musl build of linux-x86_64 and writes the
+# comparison into the run's summary. release.yml calls this file (`workflow_call`, `attest: true`)
+# and attaches the archives to the draft GitHub Release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      compare_musl:
+        description: "Also time the linux-x86_64 glibc and musl builds on the large graph"
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      attest:
+        description: "Create build provenance attestations (needs id-token and attestations: write)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  licenses:
+    name: third-party licences
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - name: THIRD-PARTY-LICENSES.html of the graphersal-cli dependency tree
+        run: |
+          set -euo pipefail
+          cargo about generate --locked --config about.toml \
+            --manifest-path crates/graphersal-cli/Cargo.toml about.hbs > THIRD-PARTY-LICENSES.html
+          test -s THIRD-PARTY-LICENSES.html
+      - uses: actions/upload-artifact@v4
+        with:
+          name: third-party-licenses
+          path: THIRD-PARTY-LICENSES.html
+
+  build:
+    name: graphersal (${{ matrix.platform }})
+    needs: licenses
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { platform: linux-aarch64, os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+          - { platform: macos-arm64, os: macos-latest, target: aarch64-apple-darwin }
+          - { platform: macos-x86_64, os: macos-15-intel, target: x86_64-apple-darwin }
+          - { platform: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # `crates/graphersal-cli/ui` is a symbolic link to `../../playground`. On Windows git checks
+      # it out as a text file (core.symlinks is false there), and build.rs then reads the
+      # repository's playground/ directly, so the embedded UI is the same on every platform.
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: musl-gcc for ring's C code (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+      - name: Version
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build
+        run: cargo build --locked -p graphersal-cli --profile dist --target ${{ matrix.target }}
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          exe=""
+          [ "$RUNNER_OS" = Windows ] && exe=".exe"
+          bin="target/${{ matrix.target }}/dist/graphersal$exe"
+          version="${{ steps.version.outputs.version }}"
+          ls -l "$bin"
+          if [ "$RUNNER_OS" = Linux ]; then
+            file "$bin"
+            file "$bin" | grep -Eq 'statically linked|static-pie linked'
+          fi
+
+          "$bin" --version | tee version.txt
+          grep -qF "$version" version.txt
+
+          count="$("$bin" -e 'g.v().count().next()' | tr -d '\r')"
+          echo "count: $count"
+          test "$count" = 6
+
+          # The dev server on a free port (`--port 0`): its only stdout line names the address.
+          "$bin" --server --port 0 > server.out 2> server.err &
+          pid=$!
+          url=""
+          for _ in $(seq 1 60); do
+            url="$(grep -Eo 'http://127\.0\.0\.1:[0-9]+/' server.out || true)"
+            [ -n "$url" ] && break
+            sleep 0.5
+          done
+          if [ -z "$url" ]; then
+            cat server.out server.err
+            kill "$pid" || true
+            exit 1
+          fi
+          info="$(curl -fsS --retry 5 --retry-connrefused --retry-delay 1 "${url}api/info")"
+          kill "$pid" || true
+          echo "$info"
+          echo "$info" | grep -qF "\"version\":\"$version\"" \
+            || echo "$info" | grep -qF "\"version\": \"$version\""
+      - uses: actions/download-artifact@v4
+        with:
+          name: third-party-licenses
+          path: licenses
+      - name: Archive
+        run: |
+          set -euo pipefail
+          exe=""
+          [ "$RUNNER_OS" = Windows ] && exe=".exe"
+          name="graphersal-v${{ steps.version.outputs.version }}-${{ matrix.platform }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/dist/graphersal$exe" "dist/$name/"
+          cp LICENSE-APACHE NOTICE README.md licenses/THIRD-PARTY-LICENSES.html "dist/$name/"
+          cd dist
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z a -tzip -bso0 "$name.zip" "$name"
+          else
+            tar -czf "$name.tar.gz" "$name"
+          fi
+          rm -r "$name"
+          ls -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  checksums:
+    name: SHA256SUMS
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: dist
+          merge-multiple: true
+      - name: Five archives and their SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -l
+          test "$(find . -maxdepth 1 \( -name 'graphersal-v*-*.tar.gz' -o -name 'graphersal-v*-*.zip' \) | wc -l)" -eq 5
+          sha256sum graphersal-v* > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-checksums
+          path: dist/SHA256SUMS
+          if-no-files-found: error
+
+  # Only for a release (`attest: true` from release.yml, which grants the two permissions): a dry
+  # run never asks for more than `contents: read`.
+  attest:
+    name: build provenance attestations
+    if: inputs.attest
+    needs: checksums
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/graphersal-v*
+
+  compare-musl:
+    name: glibc vs musl timings (linux-x86_64)
+    if: inputs.compare_musl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: hyperfine
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+      - name: Build both
+        run: |
+          set -euo pipefail
+          for t in x86_64-unknown-linux-gnu x86_64-unknown-linux-musl; do
+            cargo build --locked -p graphersal-cli --profile dist --target "$t"
+          done
+      - name: Time the queries on the large graph
+        run: |
+          set -euo pipefail
+          gnu=target/x86_64-unknown-linux-gnu/dist/graphersal
+          musl=target/x86_64-unknown-linux-musl/dist/graphersal
+          # name|script: each runs on `--graph large` (about 110k elements), load time included.
+          queries=(
+            'load only|g.v().count().next()'
+            'four-hop traversal, no bulk merge|g.with("bulk.merge", false).v().both().both().both().both().count().next()'
+            'group by id|g.v().group().by(T.id).by(__.both().both().both().id().fold()).count(Scope.local).next()'
+            'repeat + simple path|g.v().repeat(__.both().simple_path()).times(3).path().count().next()'
+            'property filter + order|g.v().has("level", P.within("3", "4")).has(T.id, TextP.regex("V_[34]_.*[13579]$")).order().by(__.both().both().count(), Order.desc).by(T.id, Order.desc).element_map().fold().count(Scope.local).next()'
+            'mutation script|g.v().as("a").add_v("copy").property("of", __.select("a").id()).property("n", 1).add_e("copy_of").to("a").iterate(); g.v().property("seen", true).iterate(); g.e().has_label("copy_of").count().next()'
+          )
+          {
+            echo "## glibc vs musl: graphersal on --graph large"
+            echo
+            echo "Median of 7 runs (hyperfine, 1 warm-up), dist profile, $(nproc) CPUs ($(uname -m))."
+            echo
+            echo "| query | glibc (s) | musl (s) | musl / glibc |"
+            echo "|---|---:|---:|---:|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for entry in "${queries[@]}"; do
+            name="${entry%%|*}"
+            script="${entry#*|}"
+            # Both builds answer the same.
+            "$gnu" --graph large -e "$script" > gnu.out
+            "$musl" --graph large -e "$script" > musl.out
+            cmp gnu.out musl.out
+            hyperfine --warmup 1 --runs 7 --export-json t.json -N \
+              --command-name glibc "$gnu --graph large -e '$script'" \
+              --command-name musl "$musl --graph large -e '$script'" > /dev/null
+            python3 - "$name" >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          import json, sys
+          def median(x):  # hyperfine 1.x: `median`; 2.x: `summary.time_wall_clock.median`
+              return x["median"] if "median" in x else x["summary"]["time_wall_clock"]["median"]
+          r = {x.get("name") or x["command"]: median(x) for x in json.load(open("t.json"))["results"]}
+          print(f"| {sys.argv[1]} | {r['glibc']:.3f} | {r['musl']:.3f} | {r['musl'] / r['glibc']:.2f} |")
+          EOF
+          done
+          cat "$GITHUB_STEP_SUMMARY"

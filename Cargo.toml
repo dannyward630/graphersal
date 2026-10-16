@@ -26,6 +26,15 @@ rust-version = "1.88"
 codegen-units = 1
 #debug = true
 
+# The prebuilt `graphersal` CLI binaries attached to every GitHub Release (.github/workflows/
+# binaries.yml): release code, whole-program LTO, symbols stripped. Never `panic = "abort"` here:
+# a panic unwinding through a unit rolls it back first (`close_on_unwind`), and the CLI, the dev
+# server and the Store rely on that to leave no half-applied change behind.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+strip = true
+
 # The browser playground's WebAssembly module (crates/graphersal-wasm, playground/build.sh):
 # release code optimized for size ("z": 25% smaller gzipped than "s", ~30% slower), link-time optimized, panics abort (no unwinding tables).
 [profile.wasm-release]

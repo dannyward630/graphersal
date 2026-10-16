@@ -3,7 +3,12 @@ name: Release
 # Publishes the Python package `graphersal` to PyPI: the five-platform wheels and the sdist built
 # by python.yml (which also runs the binding's tests), uploaded through PyPI Trusted Publishing
 # (OIDC: no token in this repository; PyPI trusts this file, `release.yml`, in the environment
-# `pypi`). The crates go to crates.io by hand (`cargo publish`, graphersal first).
+# `pypi`). Builds the five-platform `graphersal` CLI archives through binaries.yml (smoke-tested,
+# SHA256SUMS, build provenance attestations) and creates a DRAFT GitHub Release for the tag with
+# them attached; its text is the version's release notes of the book
+# (`book/src/release_notes/release_notes_<version>.md`, links made absolute on graphersal.dev by
+# `.github/scripts/release_notes.py`). The maintainer checks the draft and publishes it by hand.
+# The crates go to crates.io by hand (`cargo publish`, graphersal first).
 #
 # Manual only, on a release tag:  gh workflow run Release --ref v0.1.0
 # The tag must equal the workspace version (`version` in the root Cargo.toml).
@@ -34,6 +39,8 @@ jobs:
             exit 1
           fi
           echo "Releasing $version"
+          notes="book/src/release_notes/release_notes_$version.md"
+          test -f "$notes" || { echo "::error::$notes (the release text) is missing"; exit 1; }
 
   build:
     needs: check
@@ -63,3 +70,45 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
+
+  binaries:
+    needs: check
+    uses: ./.github/workflows/binaries.yml
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    with:
+      attest: true
+
+  github-release:
+    name: draft GitHub Release
+    needs: binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: dist
+          merge-multiple: true
+      - name: Five archives and SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -l
+          test "$(find . -maxdepth 1 \( -name 'graphersal-v*-*.tar.gz' -o -name 'graphersal-v*-*.zip' \) | wc -l)" -eq 5
+          sha256sum -c SHA256SUMS
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          version="${tag#v}"
+          python3 .github/scripts/release_notes.py "$version" > "$RUNNER_TEMP/notes.md"
+          gh release create "$tag" --draft --verify-tag \
+            --title "Graphersal $version" --notes-file "$RUNNER_TEMP/notes.md" \
+            dist/graphersal-v* dist/SHA256SUMS
