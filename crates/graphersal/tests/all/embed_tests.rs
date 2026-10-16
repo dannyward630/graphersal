@@ -800,3 +800,73 @@ fn a_host_embedder_built_from_a_file_runs_through_the_step_and_the_function() {
     assert_eq!(builtin.as_int().unwrap(), 256);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Embedders::scope: the registry of the script entry points that build their own engine
+// ---------------------------------------------------------------------------------------------
+
+/// `Embedders::scope` gives `eval_value_with_limits`, `eval_value_atomic` and
+/// `eval_value_dry_run` (which build their own engine and scope) the host's registry, for the
+/// `embed` step, `embed(text)` and `g.embedders()`; outside the scope the default applies again,
+/// and an explicit `set_engine_embedders`/`set_scope_embedders` wins over the scope.
+#[test]
+fn the_scope_gives_the_script_entry_points_their_registry() {
+    use crate::script_host::{eval_value_atomic, eval_value_dry_run, eval_value_with_limits};
+    use graphersal::script::ScriptLimits;
+    let small = HashNgram::with_dimension("acme/small", 4).unwrap();
+    let embedders = Arc::new(
+        Embedders::builder()
+            .with(Arc::new(small))
+            .unwrap()
+            .default_name("acme/small")
+            .unwrap()
+            .build(),
+    );
+    let graph = Arc::new(GraphSource::tinkerpop_modern());
+    let limits = ScriptLimits::default();
+    let script = r#"[g.v().embed("name").next().dimension, embed("marko").dimension,
+                     g.embedders()[0].name]"#;
+    let triple = |value: Dynamic| {
+        let items = value.into_array().unwrap();
+        (
+            items[0].as_int().unwrap(),
+            items[1].as_int().unwrap(),
+            items[2].clone().into_string().unwrap(),
+        )
+    };
+    let expected = (4, 4, "acme/small".to_string());
+    embedders.scope(|| {
+        let plain = eval_value_with_limits(graph.clone(), script, Default::default(), &limits);
+        assert_eq!(triple(plain.unwrap()), expected);
+        let atomic = eval_value_atomic(graph.clone(), script, Default::default(), &limits);
+        assert_eq!(triple(atomic.unwrap()), expected);
+        let (dry, _) =
+            eval_value_dry_run(graph.clone(), script, Default::default(), &limits).unwrap();
+        assert_eq!(triple(dry), expected);
+        // A plain Rust source run in the scope uses it too.
+        let vectors = {
+            let lock = graph.read();
+            lock.traversal()
+                .v(None)
+                .embed("name", None)
+                .to_list()
+                .unwrap()
+        };
+        assert!(vectors[0].as_vector().is_some_and(|v| v.dimension() == 4));
+        // An explicit registry wins over the scope.
+        let explicit = run_ok(&graph, &Arc::new(Embedders::default()), script);
+        assert_eq!(triple(explicit).2, "hash-ngram/1");
+    });
+    let after = eval_value_with_limits(graph.clone(), script, Default::default(), &limits);
+    assert_eq!(triple(after.unwrap()).2, "hash-ngram/1");
+    // Scopes nest and restore, also through a panic.
+    let inner = Arc::new(Embedders::default());
+    embedders.scope(|| {
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            inner.scope(|| panic!("inside"))
+        }));
+        assert!(caught.is_err());
+        let value = eval_value_with_limits(graph.clone(), script, Default::default(), &limits);
+        assert_eq!(triple(value.unwrap()).2, "acme/small");
+    });
+}

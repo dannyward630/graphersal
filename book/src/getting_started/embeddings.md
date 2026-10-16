@@ -560,7 +560,10 @@ graph.call_query("semantic_search", {"q": graphersal.Vector(q), "k": 2})
 When the host registers its model as an embedder and the documents were embedded with
 `embed_property()`, the schema knows the model, and the parameter can be the question itself:
 `nearest("emb", question, k)` with `params: {"question": "string"}` embeds it with that model, so
-the agent needs no embedding tool at all.
+the agent needs no embedding tool at all. From Python that is
+`graphersal.Embedder("minilm", model.encode, dimension=384, model="sentence-transformers/all-MiniLM-L6-v2")`
+in `Graph(embedders=[..])`, then `graph.embed_property(label="chunk", source="text",
+target="emb")` ([Python Quick Start: Embedders](../library/python.md#embedders)).
 
 **Any model works.** OpenAI, Cohere, Ollama or a model of your own: an embedding is just a list
 of numbers. Keep the schema's `dimension` equal to the model's, embed documents and questions

@@ -22,12 +22,18 @@ pub use job::{EmbedJob, EmbedJobError, EmbedReport};
 #[cfg(all(feature = "model2vec", not(target_arch = "wasm32")))]
 pub use model2vec::{Model2Vec, Model2VecOptions};
 
+use std::cell::RefCell;
 use std::fmt;
 use std::sync::{Arc, OnceLock};
 
 use compact_str::CompactString;
 
 use super::{MAX_VECTOR_DIMENSION, Vector, VectorElement, VectorMetric};
+
+thread_local! {
+    /// The registry of the innermost [`Embedders::scope`] on this thread.
+    static CURRENT: RefCell<Option<Arc<Embedders>>> = const { RefCell::new(None) };
+}
 
 /// The longest embedder name, in bytes.
 pub const MAX_EMBEDDER_NAME_BYTES: usize = 128;
@@ -705,10 +711,79 @@ impl Embedders {
         }
     }
 
-    /// The process-wide default registry, built once: what a source without
-    /// [`GraphTraversalSource::with_embedders`](crate::GraphTraversalSource::with_embedders)
-    /// uses.
-    pub(crate) fn shared_default() -> Arc<Embedders> {
+    /// Runs `run` with this registry as the current thread's embedders: a script engine and
+    /// scope built by `run` on this thread, and a traversal source run by it, without a
+    /// registry of their own
+    /// ([`GraphTraversalSource::with_embedders`](crate::GraphTraversalSource::with_embedders),
+    /// `script::set_engine_embedders`, `script::set_scope_embedders`, which win) take this
+    /// one, so a host gives the script entry points that build their own engine
+    /// (`script::eval_value_with_limits`, `eval_value_atomic`, `eval_value_dry_run`, ...) its
+    /// embedders without new parameters. A script source keeps the registry it was built with,
+    /// also after the scope ends. Scopes nest; the innermost applies, and the previous one is
+    /// restored afterwards (also when `run` panics). Like
+    /// [`CancelToken::scope`](crate::exec::CancelToken::scope).
+    ///
+    /// ```rust
+    /// # #[cfg(feature = "script")] {
+    /// use std::sync::Arc;
+    /// use graphersal::prelude::*;
+    /// use graphersal::auth::AllowAll;
+    /// use graphersal::script::{ScriptLimits, eval_value_with_limits};
+    /// use graphersal::vector::{Embedders, HashNgram};
+    ///
+    /// let small = HashNgram::with_dimension("acme/small", 4).unwrap();
+    /// let embedders = Arc::new(
+    ///     Embedders::builder().with(Arc::new(small)).unwrap().default_name("acme/small").unwrap().build(),
+    /// );
+    /// let graph = Arc::new(GraphSource::tinkerpop_modern());
+    /// let dimension = embedders.scope(|| {
+    ///     eval_value_with_limits(
+    ///         graph,
+    ///         r#"g.v().embed("name").next().dimension"#,
+    ///         Default::default(),
+    ///         &ScriptLimits::default(),
+    ///         Arc::new(AllowAll),
+    ///     )
+    /// });
+    /// assert_eq!(dimension.unwrap().as_int().unwrap(), 4);
+    /// # }
+    /// ```
+    pub fn scope<R>(self: &Arc<Self>, run: impl FnOnce() -> R) -> R {
+        struct Restore(Option<Arc<Embedders>>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let previous = self.0.take();
+                // Never panics: `try_with` fails only while the thread is being torn down.
+                let _ = CURRENT.try_with(|current| {
+                    if let Ok(mut current) = current.try_borrow_mut() {
+                        *current = previous;
+                    }
+                });
+            }
+        }
+        let previous = CURRENT
+            .try_with(|current| {
+                current
+                    .try_borrow_mut()
+                    .ok()
+                    .and_then(|mut current| current.replace(Arc::clone(self)))
+            })
+            .ok()
+            .flatten();
+        let _restore = Restore(previous);
+        run()
+    }
+
+    /// The registry a source or engine without an explicit one uses: the innermost
+    /// [`Self::scope`] of this thread, else the process-wide default registry (built once).
+    pub(crate) fn current() -> Arc<Embedders> {
+        if let Some(scoped) = CURRENT
+            .try_with(|current| current.try_borrow().ok().and_then(|c| c.clone()))
+            .ok()
+            .flatten()
+        {
+            return scoped;
+        }
         static DEFAULT: OnceLock<Arc<Embedders>> = OnceLock::new();
         DEFAULT
             .get_or_init(|| Arc::new(Embedders::default()))

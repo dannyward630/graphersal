@@ -43,49 +43,66 @@ fn value_error(err: graphersal::vector::VectorError) -> PyErr {
     PyValueError::new_err(format!("{err}. {}", err.help()))
 }
 
-/// The f64 values of a buffer object (`memoryview(values)`): format `f` (float32) or `d`
-/// (float64), one dimension (or C-contiguous, read flat).
-fn buffer_values(values: &Bound<'_, PyAny>) -> PyResult<Option<Vec<f64>>> {
+/// `memoryview(values)`, or `None` for an object that exposes no buffer.
+fn memoryview_of<'py>(values: &Bound<'py, PyAny>) -> PyResult<Option<Bound<'py, PyAny>>> {
     let py = values.py();
-    let Ok(view) = py
+    Ok(py
         .import("builtins")?
         .getattr("memoryview")?
         .call1((values,))
-    else {
-        return Ok(None);
-    };
+        .ok())
+}
+
+/// The f64 values of a memoryview, flat in C order: format `f` (float32) or `d` (float64).
+fn view_floats(view: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
     let format: String = view.getattr("format")?.extract()?;
     let itemsize: usize = view.getattr("itemsize")?.extract()?;
+    let bytes: Vec<u8> = view.call_method0("tobytes")?.extract()?;
+    let format = format.trim_start_matches(['@', '=', '<']);
+    match (format, itemsize) {
+        ("f", 4) => Ok(bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f64::from(f32::from_ne_bytes(*c)))
+            .collect()),
+        ("d", 8) => Ok(bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| f64::from_ne_bytes(*c))
+            .collect()),
+        _ => Err(PyValueError::new_err(format!(
+            "a vector buffer holds float32 or float64 values, not the buffer format {format:?} \
+             (convert it: numpy_array.astype('float32'))"
+        ))),
+    }
+}
+
+/// The f64 values of a buffer object (`memoryview(values)`): format `f` (float32) or `d`
+/// (float64), one dimension (or C-contiguous, read flat).
+fn buffer_values(values: &Bound<'_, PyAny>) -> PyResult<Option<Vec<f64>>> {
+    let Some(view) = memoryview_of(values)? else {
+        return Ok(None);
+    };
     let ndim: usize = view.getattr("ndim")?.extract()?;
     if ndim > 1 {
         return Err(PyValueError::new_err(
             "a vector is one-dimensional: pass one row (array[i]) of a 2-D array",
         ));
     }
-    let bytes: Vec<u8> = view.call_method0("tobytes")?.extract()?;
-    let format = format.trim_start_matches(['@', '=', '<']);
-    match (format, itemsize) {
-        ("f", 4) => Ok(Some(
-            bytes
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|c| f64::from(f32::from_ne_bytes(*c)))
-                .collect(),
-        )),
-        ("d", 8) => Ok(Some(
-            bytes
-                .as_chunks::<8>()
-                .0
-                .iter()
-                .map(|c| f64::from_ne_bytes(*c))
-                .collect(),
-        )),
-        _ => Err(PyValueError::new_err(format!(
-            "a vector buffer holds float32 or float64 values, not the buffer format {format:?} \
-             (convert it: numpy_array.astype('float32'))"
-        ))),
-    }
+    view_floats(&view).map(Some)
+}
+
+/// A buffer object read as a matrix: its shape (`memoryview(values).shape`) and its float32 /
+/// float64 values flat in C order (a numpy array of shape `(N, D)` is N rows of D values).
+/// `Ok(None)` for an object that exposes no buffer; another format is an error.
+pub(crate) fn buffer_matrix(values: &Bound<'_, PyAny>) -> PyResult<Option<(Vec<usize>, Vec<f64>)>> {
+    let Some(view) = memoryview_of(values)? else {
+        return Ok(None);
+    };
+    let shape: Vec<usize> = view.getattr("shape")?.extract()?;
+    view_floats(&view).map(|values| Some((shape, values)))
 }
 
 /// A script parameter given as a float32/float64 buffer (a one-dimensional numpy array, an
@@ -116,7 +133,7 @@ pub(crate) fn python_buffer_vector(value: &Bound<'_, PyAny>) -> Result<Option<Ve
 }
 
 /// The numbers of `values`: a list or tuple of `int`/`float`, else a float buffer.
-fn values_of(values: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
+pub(crate) fn values_of(values: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
     if values.is_instance_of::<PyList>() || values.is_instance_of::<PyTuple>() {
         let mut out = Vec::new();
         for (index, item) in values.try_iter()?.enumerate() {

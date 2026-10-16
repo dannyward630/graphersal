@@ -95,6 +95,17 @@ What 0.2.0 does not do yet is on [Current Limitations](../users_guide/current_li
   Its model identity is `model2vec/<repo>@<hash of the files>`, never a path. In Rust it is
   `graphersal::vector::Model2Vec` behind the new feature `model2vec` (off by default, native only,
   loads from a local directory only); the CLI has it on by default.
+- **Embedders in Python** ([Python Quick Start: Embedders](../library/python.md#embedders)):
+  `graphersal.Embedder(name, fn, dimension=..)` makes any Python model an embedder (`fn(texts)`
+  returns the rows or one 2-D numpy array, read without a numpy dependency), and
+  `graphersal.Model2Vec(name, path, model="minishlab/potion-base-8M")` loads a Model2Vec model
+  from a directory the developer downloaded (the library never downloads; the identity equals the
+  command line's download of the same files). Every graph constructor, loader and `Store` opener
+  takes `embedders=[..]` and `default_embedder=`; `graph.register_embedder`, `graph.embedders()`
+  and `graph.embed_property(label=.., source=.., target=..)` (GIL released, Ctrl+C cancels between
+  pages, `EmbedPropertyError.report` on failure) complete it, and scripts and text queries use the
+  registry. Rust: `Embedders::scope` gives the script entry points that build their own engine a
+  host's registry, `Model2VecOptions::with_repo` names the repository of a host-downloaded model.
 - **Playground**: the schema editor's tables edit `defaultFunction` and a vector's element,
   dimension, metric and embedder; the Graph and Mermaid drawings always show the schema the tables show
   (also a draft); the Mermaid diagram parses whatever labels and property names hold; the
