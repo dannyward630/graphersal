@@ -410,14 +410,19 @@ one-shot query, the REPL, `--server` and its MCP tools, a Store. `--default-embe
 it the embedder `embed()` uses without `#{embedder: ..}`:
 
 ```bash
-graphersal --embedder potion=minishlab/potion-base-8M --default-embedder potion \
+graphersal --embedder potion=minishlab/potion-base-8M \
   -e 'g.add_v("doc").property("text", "a graph database stores vertices and edges")
         .add_v("doc").property("text", "banana bread recipe with walnuts")
         .add_v("doc").property("text", "traversal queries over a network of nodes").iterate();
-      g.v().has_label("doc").property("emb", __.embed("text")).iterate();
-      g.v().has_label("doc").nearest("emb", embed("how do I query connected data?"), 2)
+      g.set_schema(g.infer_schema(), SchemaMode.open);
+      g.embed_property(#{label: "doc", from: "text", to: "emb", embedder: "potion"});
+      g.v().has_label("doc").nearest("emb", "how do I query connected data?", 2)
         .values("text").to_list()'
 ```
+
+`embedder: "potion"` names the embedder registered by `--embedder potion=..`; without it the
+default runs (`--default-embedder NAME`, else `hash-ngram/1`). The text query needs no embedder:
+it uses the model the schema recorded for `doc.emb`.
 
 ```text
 "traversal queries over a network of nodes"
@@ -437,6 +442,11 @@ model is local: no text is sent anywhere.
 a manifest `model2vec@<12 hex digits>`). It names the model, never a path: a copied or moved
 model directory keeps it, a changed file gets another one. Vectors are comparable only between
 embedders of the same identity, so embed documents and questions with the same model.
+`embed_property()` writes the identity into the schema itself. To declare a vector property by
+hand, copy the full identity, hash included, from `graphersal embed-model list` or
+`g.embedders()`: a schema naming a model without its hash matches no embedder (the error shows
+the full identity of the one you tried), so a changed model file can never quietly mix its
+vectors with the old ones.
 
 **Licences.** A model's licence is the model's own, set by whoever published it (see its
 Hugging Face page); Graphersal downloads and runs it but does not license it. `potion-base-8M`

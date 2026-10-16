@@ -111,9 +111,16 @@ for any mode, `--default-embedder NAME` makes it the default:
 ```bash
 graphersal embed-model download minishlab/potion-base-8M     # into ~/.cache/graphersal/embed-models
 graphersal embed-model list                                  # repository, size, model identity
-graphersal --embedder potion=minishlab/potion-base-8M --default-embedder potion \
-  -e 'g.v().values("name").embed().to_list()'
+graphersal --embedder potion=minishlab/potion-base-8M \
+  -e 'g.set_schema(g.infer_schema(), SchemaMode.open);
+      g.embed_property(#{label: "person", from: "name", to: "emb", embedder: "potion"});
+      g.v().has_label("person").nearest("emb", "Marco", 2).values("name").to_list()'
 ```
+
+`embedder: "potion"` picks the embedder by the name given to `--embedder` (without it the default
+runs: `--default-embedder`, else `hash-ngram/1`); `g.embedders()` lists the names. The schema then
+records the model's full identity, `model2vec/minishlab/potion-base-8M@fac4fa854e68`, the one
+`embed-model list` shows: copy it from there when you declare a vector property by hand.
 
 The models directory is `$GRAPHERSAL_EMBED_MODELS` (or `--dir`), else the user cache. A model
 that does not load stops the command with exit code 2 and the reason. More:
