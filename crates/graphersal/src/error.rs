@@ -3124,6 +3124,27 @@ pub enum DefinitionError {
         /// What they share.
         reason: String,
     },
+    /// A property index cannot be created because the graph's schema declares its key as
+    /// values the index type does not hold (a vector, an array, an object, or a union of only
+    /// such; book page "Property Indexes", section "Index types").
+    #[error(
+        "Cannot create a property index on {element} '{label}' key '{key}': the schema \
+         declares '{key}' as {declared}, and an index of type '{index_type}' holds none of its \
+         values"
+    )]
+    #[non_exhaustive]
+    IndexTypeMismatch {
+        /// The element kind the index covers.
+        element: crate::graph::schema::ElementKind,
+        /// The label the index covers.
+        label: String,
+        /// The top-level property key.
+        key: String,
+        /// The declared type, without `null` (`vector<f32>`, `array<string>`, `object`).
+        declared: String,
+        /// The index type (`memory-ordered`).
+        index_type: String,
+    },
     /// The JSON (or value) form of a definition or a catalog is malformed.
     #[error("Malformed definition: {reason}")]
     #[non_exhaustive]
@@ -3196,6 +3217,19 @@ impl DiagnosticError for DefinitionError {
                      are not indexed).",
                     crate::graph::property_index::MAX_INDEX_KEY_BYTES
                 ),
+                "type" => format!(
+                    "The index type says how the index keeps its entries. This version knows \
+                     {}. \"memory-ordered\" (the default; leave type out for it) is an ordered \
+                     index kept in memory and rebuilt from the data when the graph is opened, \
+                     serving equality, P.within and ranges, for example \
+                     g.create_index(#{{label: \"person\", key: \"age\", type: \
+                     \"memory-ordered\"}}).",
+                    crate::graph::property_index::PropertyIndexType::KNOWN_NAMES
+                        .iter()
+                        .map(|name| format!("\"{name}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
                 "dialect" => format!(
                     "The dialect names the language of the source; this version writes \"{}\".",
                     d::QUERY_DIALECT
@@ -3237,6 +3271,39 @@ impl DiagnosticError for DefinitionError {
                  (define it again under its name '{existing}' with the new parameters), or drop \
                  it first with g.drop_compression(\"{existing}\")."
             ),
+            DefinitionError::IndexTypeMismatch {
+                label,
+                key,
+                declared,
+                index_type,
+                ..
+            } => {
+                let mut help = if declared.contains("vector<") {
+                    format!(
+                        "Vectors are not index keys: search them with nearest() or similarity() \
+                         (an exact search, book page \"Vectors\"), for example \
+                         g.v().has_label(\"{label}\").nearest(\"{key}\", query, 10) for the 10 \
+                         closest; a vector index type is planned."
+                    )
+                } else {
+                    format!(
+                        "An index of type '{index_type}' holds scalar values only (null, \
+                         boolean, int64, float64, string, uuid, date, localdatetime, datetime, \
+                         time, duration), never an array, an object or a vector. Index a scalar \
+                         top-level property instead: an index key is one top-level property \
+                         name, nested fields are not indexed, so keep the value you filter on \
+                         in its own top-level property (for example \
+                         g.v().has_label(\"{label}\").property(\"{key}_main\", ..)) and index \
+                         that."
+                    )
+                };
+                help.push_str(
+                    " If the schema's declaration is wrong, change it first (g.patch_schema(..)) \
+                     and create the index again; a schema change made after an index exists \
+                     never drops it.",
+                );
+                help
+            }
             DefinitionError::Malformed { .. } => {
                 "A definition in JSON is an object with \"kind\" (\"query\") and \"name\", plus \
                  for a query \"source\", \"params\" and optionally \"folder\", \
@@ -3244,7 +3311,7 @@ impl DiagnosticError for DefinitionError {
                  (\"kind\": \"compression\") has \"label\", \"path\" and optionally \"element\", \
                  \"codec\", \"min_bytes\" and \"dictionary\"; a property index \
                  (\"kind\": \"property_index\") has \"label\", \"key\" and optionally \
-                 \"element\"; a catalog is {\"definitions\": [..]}."
+                 \"element\" and \"type\"; a catalog is {\"definitions\": [..]}."
                     .to_string()
             }
         })

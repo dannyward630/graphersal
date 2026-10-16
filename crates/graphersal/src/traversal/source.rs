@@ -1406,11 +1406,15 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
     ///
     /// A [`set_definition`](Self::set_definition) of a [`Definition::property_index`] (a
     /// catalog entry of kind [`DefinitionKind::PROPERTY_INDEX`]); a second index on the same
-    /// `(element, label, key)` fails with
+    /// `(element, label, key, type)` fails with
     /// [`DefinitionError::Conflict`](crate::error::DefinitionError::Conflict). A storage
     /// without [`property_indexes`](crate::graph::StorageCapabilities::property_indexes)
     /// refuses it with [`GraphError::Unsupported`](crate::error::GraphError::Unsupported).
-    /// Asks an attached authorizer for `Create` on it (`Update` when it replaces one).
+    /// Asks an attached authorizer for `Create` on it (`Update` when it replaces one). The
+    /// index is first checked by
+    /// [`PropertyIndexDefinition::check_create`](crate::graph::PropertyIndexDefinition::check_create)
+    /// against the stored schema: an unknown index type, or a key the schema declares as values
+    /// the type cannot hold (a vector, an array, an object), is refused.
     ///
     /// ```
     /// use graphersal::prelude::*;
@@ -1437,6 +1441,24 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
         if !self.storage.capabilities().property_indexes {
             return Err(crate::error::GraphError::unsupported("property indexes").into());
         }
+        let action = if self
+            .storage
+            .definition(DefinitionKind::PROPERTY_INDEX, name)
+            .is_some()
+        {
+            crate::graph::Action::Update
+        } else {
+            crate::graph::Action::Create
+        };
+        self.authorize_definition(
+            "create_index",
+            action,
+            Some(DefinitionKind::PROPERTY_INDEX),
+            Some(name),
+        )?;
+        index
+            .check_create(name, self.storage.get_schema().as_ref())
+            .map_err(crate::error::GraphError::from)?;
         self.set_definition(Definition::property_index(name, index))
     }
 

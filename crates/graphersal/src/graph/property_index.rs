@@ -23,6 +23,17 @@
 //! elements (numbers are ranged by their `float64` value, both `int64` and `float64` entries
 //! included); the source re-checks every condition on each candidate, so a result never differs
 //! from the scan's.
+//!
+//! Every index has a TYPE ([`PropertyIndexType`], payload key `type`): what kind of index it is
+//! and which values it holds ([`PropertyIndexType::holds`], the one place of the matrix index
+//! type x value type). This version knows `memory-ordered` (the default, the index described
+//! above). A type written by a newer version is kept in the catalog and written back unchanged,
+//! never damage, but never served: no entries are built, [`TraversalGraph`] does not offer it
+//! in `property_indexes`, the optimizer never reads it, and listings say why
+//! ([`PropertyIndexDefinition::unserved_reason`]). Creating an index is checked by
+//! [`PropertyIndexDefinition::check_create`] (a known type, a key the schema does not declare
+//! as values the type cannot hold); storing a definition (`set_definition`, replay,
+//! `apply_change_set`, loads) never runs that check.
 
 use std::collections::{BTreeSet, HashMap};
 use std::ops::Bound;
@@ -31,7 +42,7 @@ use compact_str::CompactString;
 
 use crate::error::{DefinitionError, GraphError};
 use crate::graph::definition::{Definition, DefinitionBody, DefinitionFlags, DefinitionKind};
-use crate::graph::schema::ElementKind;
+use crate::graph::schema::{ElementKind, GraphSchema, JsonType, PropertySchema, ValueType};
 use crate::graph::{EdgeHandle, EdgeIndex, NodeIndex, TraversalGraph, VertexHandle};
 use crate::value::number::{N, canonicalize_f64};
 use crate::value::temporal::Duration;
@@ -43,26 +54,189 @@ pub const MAX_INDEX_LABEL_BYTES: usize = 1024;
 pub const MAX_INDEX_KEY_BYTES: usize = 1024;
 
 // ---------------------------------------------------------------------------------------------
+// The index type
+// ---------------------------------------------------------------------------------------------
+
+/// The type of a property index (payload key `type`, book page "Property Indexes", section
+/// "Index types"): how the index keeps its entries, which values it holds
+/// ([`Self::holds`]) and which conditions it serves.
+///
+/// This version knows one type, [`Self::MemoryOrdered`], the default when a definition names
+/// none. A type name this version does not know (a definition written by a newer version) is
+/// [`Self::Unknown`]: the definition is kept and written back unchanged, but the index is never
+/// served, and creating one is refused ([`PropertyIndexDefinition::check_create`]).
+///
+/// ```
+/// use graphersal::catalog::PropertyIndexType;
+/// use graphersal::schema::ValueType;
+///
+/// let ordered = PropertyIndexType::from_name("memory-ordered");
+/// assert_eq!(ordered, PropertyIndexType::MemoryOrdered);
+/// assert_eq!(ordered.as_str(), "memory-ordered");
+/// assert!(ordered.holds(&ValueType::Int64));
+/// assert!(!ordered.holds(&ValueType::Object));
+/// let future = PropertyIndexType::from_name("hash");
+/// assert!(!future.is_known());
+/// assert_eq!(future.as_str(), "hash");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum PropertyIndexType {
+    /// `"memory-ordered"`: an ordered index kept in memory, its entries derived from the data
+    /// (never stored, rebuilt when a graph is loaded); it serves equality, `P.within` and the
+    /// ranges. It holds the logical scalar values: `null`, `boolean`, `int64`, `float64`,
+    /// `string` (a compressed one by its text), `uuid`, `date`, `localdatetime`, `datetime`,
+    /// `time`, `duration`; never an array, an object or a vector.
+    #[default]
+    MemoryOrdered,
+    /// A type name this version does not know, as read (a definition written by a newer
+    /// version): kept, never served, never created.
+    Unknown(String),
+}
+
+impl PropertyIndexType {
+    /// The name of [`Self::MemoryOrdered`].
+    pub const MEMORY_ORDERED: &'static str = "memory-ordered";
+
+    /// The names of every type this version knows, in the order front ends offer them.
+    pub const KNOWN_NAMES: [&'static str; 1] = [Self::MEMORY_ORDERED];
+
+    /// The type of a name: a known one, else [`Self::Unknown`] with the name (never fails).
+    pub fn from_name(name: &str) -> PropertyIndexType {
+        match name {
+            Self::MEMORY_ORDERED => PropertyIndexType::MemoryOrdered,
+            other => PropertyIndexType::Unknown(other.to_string()),
+        }
+    }
+
+    /// The type name as stored (`"memory-ordered"`, or the unknown name as read).
+    pub fn as_str(&self) -> &str {
+        match self {
+            PropertyIndexType::MemoryOrdered => Self::MEMORY_ORDERED,
+            PropertyIndexType::Unknown(name) => name,
+        }
+    }
+
+    /// Whether this version knows the type (and so can build and serve the index).
+    pub fn is_known(&self) -> bool {
+        match self {
+            PropertyIndexType::MemoryOrdered => true,
+            PropertyIndexType::Unknown(_) => false,
+        }
+    }
+
+    /// One sentence on what the type is, for front ends (a form's tooltip); `None` for an
+    /// unknown type.
+    pub fn description(&self) -> Option<&'static str> {
+        match self {
+            PropertyIndexType::MemoryOrdered => Some(
+                "An ordered index kept in memory and rebuilt from the data when the graph is \
+                 opened; it serves equality, P.within and ranges on scalar values.",
+            ),
+            PropertyIndexType::Unknown(_) => None,
+        }
+    }
+
+    /// Whether an index of this type holds values of type `ty` (the matrix index type x value
+    /// type of the book page "Property Indexes"): [`Self::MemoryOrdered`] holds `null`,
+    /// `boolean`, `int64`, `float64`, `string`, `uuid` and the five temporal types, never an
+    /// array, an object or a vector; a union is held when one of its members is. An unknown
+    /// type holds nothing (it is not served).
+    ///
+    /// A value of a type the index does not hold is skipped (the element is simply not in the
+    /// index), and a condition on such a value is answered by a scan.
+    pub fn holds(&self, ty: &ValueType) -> bool {
+        match self {
+            PropertyIndexType::MemoryOrdered => match ty {
+                ValueType::Null
+                | ValueType::Boolean
+                | ValueType::Int64
+                | ValueType::Float64
+                | ValueType::String
+                | ValueType::Uuid
+                | ValueType::Date
+                | ValueType::LocalDateTime
+                | ValueType::DateTime
+                | ValueType::Time
+                | ValueType::Duration => true,
+                ValueType::Vector(_) | ValueType::Array(_) | ValueType::Object => false,
+                ValueType::Union(members) => members.iter().any(|member| self.holds(member)),
+            },
+            PropertyIndexType::Unknown(_) => false,
+        }
+    }
+}
+
+impl std::fmt::Display for PropertyIndexType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The value types a schema node declares (through `anyOf`), `None` when it declares no type
+/// restriction (no `type` and no `anyOf`, or an `anyOf` member without one).
+fn declared_value_types(node: &PropertySchema) -> Option<Vec<ValueType>> {
+    if let Some(types) = &node.types {
+        return Some(
+            types
+                .iter()
+                .map(|ty| match ty {
+                    JsonType::Null => ValueType::Null,
+                    JsonType::Boolean => ValueType::Boolean,
+                    JsonType::Integer => ValueType::Int64,
+                    JsonType::Number => ValueType::Float64,
+                    JsonType::String => match node.format {
+                        None => ValueType::String,
+                        Some(format) => match format.temporal_kind() {
+                            Some(kind) => ValueType::of_temporal(kind),
+                            None => ValueType::Uuid,
+                        },
+                    },
+                    JsonType::Array => match &node.vector {
+                        Some(vector) => ValueType::Vector(vector.element),
+                        None => ValueType::Array(Box::new(ValueType::Union(Vec::new()))),
+                    },
+                    JsonType::Object => ValueType::Object,
+                })
+                .collect(),
+        );
+    }
+    let members = node.any_of.as_ref()?;
+    let mut types = Vec::new();
+    for member in members {
+        types.extend(declared_value_types(member)?);
+    }
+    Some(types)
+}
+
+// ---------------------------------------------------------------------------------------------
 // The definition
 // ---------------------------------------------------------------------------------------------
 
 /// A property index (catalog kind [`DefinitionKind::PROPERTY_INDEX`]): the `element`s labelled
-/// `label`, ordered by the value of their top-level property `key`.
+/// `label`, ordered by the value of their top-level property `key`, in an index of type
+/// [`index_type`](Self::index_type) (default [`PropertyIndexType::MemoryOrdered`]).
 ///
 /// ```
-/// use graphersal::catalog::PropertyIndexDefinition;
+/// use graphersal::catalog::{PropertyIndexDefinition, PropertyIndexType};
 /// use graphersal::storage::ElementKind;
 ///
 /// let index = PropertyIndexDefinition::new(ElementKind::Vertex, "person", "title");
 /// assert_eq!(index.label(), "person");
 /// assert_eq!(index.key(), "title");
+/// assert_eq!(index.index_type(), &PropertyIndexType::MemoryOrdered);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct PropertyIndexDefinition {
     element: ElementKind,
     label: String,
     key: String,
+    index_type: PropertyIndexType,
     extra: PropertyMap,
+    /// The payload map exactly as read, kept for an UNKNOWN type only: written back unchanged
+    /// (the key order and every key of a newer version), so the definition survives byte for
+    /// byte.
+    original: Option<PropertyMap>,
 }
 
 impl PropertyIndexDefinition {
@@ -73,8 +247,123 @@ impl PropertyIndexDefinition {
             element,
             label: label.into(),
             key: key.into(),
+            index_type: PropertyIndexType::MemoryOrdered,
             extra: PropertyMap::default(),
+            original: None,
         }
+    }
+
+    /// The same index with the type `index_type`. Only a known type can be created
+    /// ([`Self::check_create`]).
+    ///
+    /// ```
+    /// use graphersal::catalog::{PropertyIndexDefinition, PropertyIndexType};
+    /// use graphersal::storage::ElementKind;
+    ///
+    /// let index = PropertyIndexDefinition::new(ElementKind::Vertex, "person", "age")
+    ///     .with_type(PropertyIndexType::MemoryOrdered);
+    /// assert_eq!(index.index_type().as_str(), "memory-ordered");
+    /// ```
+    pub fn with_type(mut self, index_type: PropertyIndexType) -> Self {
+        self.index_type = index_type;
+        self.original = None;
+        self
+    }
+
+    /// The type of the index.
+    pub fn index_type(&self) -> &PropertyIndexType {
+        &self.index_type
+    }
+
+    /// Why a storage that serves property indexes does not serve this one, `None` when it can:
+    /// an index of a type this version does not know (`"index type 'x' is not known to this
+    /// version ..."`). Listings show it next to `served: false`.
+    pub fn unserved_reason(&self) -> Option<String> {
+        match &self.index_type {
+            PropertyIndexType::MemoryOrdered => None,
+            PropertyIndexType::Unknown(name) => Some(format!(
+                "index type '{name}' is not known to this version (a newer Graphersal wrote \
+                 it); the definition is kept, queries scan"
+            )),
+        }
+    }
+
+    /// Whether this version builds and serves the index (its type is known).
+    pub(crate) fn is_served_type(&self) -> bool {
+        self.index_type.is_known()
+    }
+
+    /// Checks that the index can be CREATED (named `name`, for the error) in a graph whose
+    /// stored schema is `schema`: run by every front end that creates an index
+    /// ([`GraphTraversalSource::create_index`](crate::GraphTraversalSource::create_index), the
+    /// DSL's `g.create_index`, the session), never by `set_definition`, replay,
+    /// `apply_change_set` or a load, which store what they carry.
+    ///
+    /// - The type must be known: an unknown one is [`DefinitionError::InvalidField`] with the
+    ///   field `type`.
+    /// - When `schema` declares the key at the top level of the index's label (of its element
+    ///   kind) and none of the declared types except `null` can be held by the index type
+    ///   ([`PropertyIndexType::holds`]; a vector, an array, an object, or a union of only such),
+    ///   it is [`DefinitionError::IndexTypeMismatch`]. A declaration with at least one held
+    ///   type, no declaration and no schema are fine (values the index cannot hold are
+    ///   skipped). The schema's mode does not matter. A later schema change never drops an
+    ///   index.
+    ///
+    /// ```
+    /// use graphersal::catalog::PropertyIndexDefinition;
+    /// use graphersal::schema::{GraphSchema, PropertySchema};
+    /// use graphersal::storage::ElementKind;
+    ///
+    /// let schema = GraphSchema::new().with_vertex(
+    ///     "person",
+    ///     PropertySchema::object()
+    ///         .with_property("tags", PropertySchema::array(PropertySchema::string())),
+    /// );
+    /// let tags = PropertyIndexDefinition::new(ElementKind::Vertex, "person", "tags");
+    /// assert!(tags.check_create("person_tags", Some(&schema)).is_err());
+    /// let age = PropertyIndexDefinition::new(ElementKind::Vertex, "person", "age");
+    /// assert!(age.check_create("person_age", Some(&schema)).is_ok());
+    /// assert!(tags.check_create("person_tags", None).is_ok());
+    /// ```
+    pub fn check_create(
+        &self,
+        name: &str,
+        schema: Option<&GraphSchema>,
+    ) -> Result<(), DefinitionError> {
+        if let PropertyIndexType::Unknown(type_name) = &self.index_type {
+            return Err(DefinitionError::InvalidField {
+                name: name.to_string(),
+                field: "type".to_string(),
+                reason: format!(
+                    "'{type_name}' is not an index type this version knows (known: {})",
+                    PropertyIndexType::KNOWN_NAMES.join(", ")
+                ),
+            });
+        }
+        let Some(schema) = schema else {
+            return Ok(());
+        };
+        let root = match self.element {
+            ElementKind::Vertex => schema.vertices.get(&self.label).map(|v| &v.schema),
+            ElementKind::Edge => schema.edges.get(&self.label).map(|e| &e.schema),
+        };
+        let Some(node) = root.and_then(|root| root.properties.get(&self.key)) else {
+            return Ok(());
+        };
+        let Some(types) = declared_value_types(node) else {
+            return Ok(());
+        };
+        let mut non_null = types.iter().filter(|ty| **ty != ValueType::Null).peekable();
+        if non_null.peek().is_none() || non_null.any(|ty| self.index_type.holds(ty)) {
+            return Ok(());
+        }
+        Err(DefinitionError::IndexTypeMismatch {
+            element: self.element,
+            label: self.label.clone(),
+            key: self.key.clone(),
+            declared: node.non_null_type_name(),
+            index_type: self.index_type.as_str().to_string(),
+        })
     }
 
     /// The element kind the index covers.
@@ -126,12 +415,17 @@ impl PropertyIndexDefinition {
     }
 
     /// The payload property map (format spec 6.3), in this key order: `element` (`"vertex"` or
-    /// `"edge"`), `label`, `key`, then the unknown keys.
+    /// `"edge"`), `label`, `key`, `type` (always written), then the unknown keys. A definition
+    /// of an unknown type read from a payload gives that payload back unchanged.
     pub fn to_payload(&self) -> PropertyMap {
+        if let Some(original) = &self.original {
+            return original.clone();
+        }
         let mut map = PropertyMap::default();
         map.insert("element", self.element.as_str().into());
         map.insert("label", self.label.as_str().into());
         map.insert("key", self.key.as_str().into());
+        map.insert("type", self.index_type.as_str().into());
         for (key, value) in &self.extra {
             map.0.entry(key.clone()).or_insert_with(|| value.clone());
         }
@@ -139,8 +433,10 @@ impl PropertyIndexDefinition {
     }
 
     /// Reads a payload map (the inverse of [`Self::to_payload`]). A missing `element` is
-    /// `"vertex"`; a known key of the wrong type is an error; unknown keys are kept. Not
-    /// validated.
+    /// `"vertex"`, a missing `type` is `"memory-ordered"`; a known key of the wrong type is an
+    /// error; unknown keys are kept. A type this version does not know is
+    /// [`PropertyIndexType::Unknown`] (never an error), and the whole map is kept to be written
+    /// back unchanged. Not validated.
     pub fn from_payload(payload: &PropertyMap) -> Result<PropertyIndexDefinition, DefinitionError> {
         Self::read_fields(payload, &[])
     }
@@ -177,12 +473,25 @@ impl PropertyIndexDefinition {
         let key = text("key")?.ok_or_else(|| DefinitionError::Malformed {
             reason: "'key' is missing".to_string(),
         })?;
-        let mut index = PropertyIndexDefinition::new(element, label, key);
-        const KNOWN: [&str; 3] = ["element", "label", "key"];
+        let index_type = match text("type")? {
+            None => PropertyIndexType::MemoryOrdered,
+            Some(name) => PropertyIndexType::from_name(&name),
+        };
+        let mut index = PropertyIndexDefinition::new(element, label, key).with_type(index_type);
+        const KNOWN: [&str; 4] = ["element", "label", "key", "type"];
         for (key, value) in map {
             if !KNOWN.contains(&key.as_str()) && !skip.contains(&key.as_str()) {
                 index.extra.insert(key.clone(), value.to_logical());
             }
+        }
+        if !index.index_type.is_known() {
+            let mut original = PropertyMap::default();
+            for (key, value) in map {
+                if !skip.contains(&key.as_str()) {
+                    original.insert(key.clone(), value.to_logical());
+                }
+            }
+            index.original = Some(original);
         }
         Ok(index)
     }
@@ -267,7 +576,8 @@ impl Definition {
 }
 
 /// Checks a property index definition against the catalog it is about to join: no other index
-/// of the same `(element, label, key)`.
+/// of the same `(element, label, key, type)` (indexes of different types on one key, such as
+/// one of a type a newer version added, may coexist).
 pub(crate) fn check_conflict(
     graph: &TraversalGraph,
     definition: &Definition,
@@ -283,17 +593,19 @@ pub(crate) fn check_conflict(
             && existing.element() == index.element()
             && existing.label() == index.label()
             && existing.key() == index.key()
+            && existing.index_type() == index.index_type()
         {
             return Err(DefinitionError::Conflict {
                 kind: "property index".to_string(),
                 name: definition.name().to_string(),
                 existing: other.name().to_string(),
                 reason: format!(
-                    "the index '{}' already covers {} '{}' on '{}'",
+                    "the index '{}' already covers {} '{}' on '{}' (type '{}')",
                     other.name(),
                     index.element().as_str(),
                     index.label(),
-                    index.key()
+                    index.key(),
+                    index.index_type()
                 ),
             }
             .into());
@@ -345,12 +657,15 @@ pub struct PropertyIndexInfo {
     pub label: String,
     /// The top-level property key it orders by.
     pub key: String,
+    /// The type of the index (a storage offers only indexes of types it serves).
+    pub index_type: PropertyIndexType,
     /// What it holds right now.
     pub stats: PropertyIndexStats,
 }
 
 impl PropertyIndexInfo {
-    /// An entry with these parts (for a storage outside this crate).
+    /// An entry with these parts (for a storage outside this crate), of type
+    /// [`PropertyIndexType::MemoryOrdered`] (see [`Self::with_type`]).
     pub fn new(
         name: impl Into<String>,
         element: ElementKind,
@@ -363,8 +678,15 @@ impl PropertyIndexInfo {
             element,
             label: label.into(),
             key: key.into(),
+            index_type: PropertyIndexType::MemoryOrdered,
             stats,
         }
+    }
+
+    /// The same entry with the type `index_type`.
+    pub fn with_type(mut self, index_type: PropertyIndexType) -> Self {
+        self.index_type = index_type;
+        self
     }
 }
 
@@ -514,8 +836,9 @@ impl IndexKey {
 }
 
 /// Whether a value can be an index key (a scalar: `null`, boolean, number, string, uuid, a date
-/// or time); a
-/// condition on any other value is never served by an index.
+/// or time; exactly the values whose type [`PropertyIndexType::MemoryOrdered`]
+/// [holds](PropertyIndexType::holds), checked by a unit test); a condition on any other value is
+/// never served by an index.
 pub(crate) fn is_indexable(value: &ElementProperty) -> bool {
     IndexKey::of(value).is_some()
 }
@@ -911,10 +1234,12 @@ impl TraversalGraph {
     /// After a catalog change of kind property index: rebuilds the index `name` from the data
     /// (or removes it when the catalog no longer holds it).
     pub(crate) fn property_index_after_change(&mut self, name: &str) {
+        // An index of a type this version does not know is kept in the catalog, never built.
         let definition = self
             .definitions
             .get(DefinitionKind::PROPERTY_INDEX, name)
-            .and_then(|definition| definition.as_property_index().cloned());
+            .and_then(|definition| definition.as_property_index().cloned())
+            .filter(PropertyIndexDefinition::is_served_type);
         let built = definition.map(|definition| self.build_index(name, &definition));
         let indexes = &mut self.property_indexes.indexes;
         match (indexes.iter().position(|index| index.name == name), built) {
@@ -938,6 +1263,7 @@ impl TraversalGraph {
             .filter_map(|definition| {
                 definition
                     .as_property_index()
+                    .filter(|index| index.is_served_type())
                     .map(|index| (definition.name().to_string(), index.clone()))
             })
             .collect();
@@ -962,6 +1288,7 @@ impl TraversalGraph {
                 element: index.element,
                 label: index.label.to_string(),
                 key: index.key.to_string(),
+                index_type: PropertyIndexType::MemoryOrdered,
                 stats: index.stats(),
             })
             .collect()
@@ -1025,6 +1352,7 @@ impl TraversalGraph {
             .filter_map(|definition| {
                 definition
                     .as_property_index()
+                    .filter(|index| index.is_served_type())
                     .map(|index| (definition.name().to_string(), index.clone()))
             })
             .collect();
@@ -1129,6 +1457,48 @@ mod tests {
                 _ => assert_eq!(key.kind(), KeyKind::Duration),
             }
         }
+    }
+
+    #[test]
+    fn index_keys_follow_the_type_matrix() {
+        use crate::graph::schema::type_of;
+        use crate::value::temporal::TemporalKind as K;
+        let temporal = |kind: K, text: &str| {
+            ElementProperty::Temporal(Temporal::parse_as(kind, text).unwrap())
+        };
+        let mut object = PropertyMap::default();
+        object.insert("a", int(1));
+        let values = [
+            ElementProperty::Null,
+            ElementProperty::Boolean(true),
+            int(1),
+            ElementProperty::from(1.5),
+            ElementProperty::from("text"),
+            ElementProperty::Uuid(7),
+            temporal(K::Date, "2024-01-02"),
+            temporal(K::LocalDateTime, "2024-01-02T03:04:05"),
+            temporal(K::DateTime, "2024-01-02T03:04:05Z"),
+            temporal(K::Time, "03:04:05"),
+            temporal(K::Duration, "P1D"),
+            ElementProperty::Array(vec![int(1)]),
+            ElementProperty::Object(Box::new(object)),
+            ElementProperty::Vector(crate::value::Vector::from_f32(vec![1.0, 2.0]).unwrap()),
+        ];
+        for value in &values {
+            let ty = type_of(value).unwrap();
+            assert_eq!(
+                is_indexable(value),
+                PropertyIndexType::MemoryOrdered.holds(&ty),
+                "{ty}"
+            );
+        }
+        assert!(!PropertyIndexType::from_name("x").holds(&ValueType::Int64));
+        assert!(
+            PropertyIndexType::MemoryOrdered.holds(&ValueType::Union(vec![
+                ValueType::Object,
+                ValueType::String
+            ]))
+        );
     }
 
     #[test]

@@ -30,7 +30,8 @@ import {
 } from '../compression.js';
 import { queryTree, signatureText, errorsByField } from '../saved-queries.js';
 import {
-  catalogMenuItems, indexRow, indexTotals, newIndexDraft, indexDraftToSpec, defaultIndexName,
+  catalogMenuItems, indexRow, indexTotals, newTypedIndexDraft, indexDraftToSpec, defaultIndexName,
+  INDEX_TYPES, indexTypeOf, indexNotServedReason,
 } from '../indexes.js';
 import { formatBytes } from '../statistics.js';
 import { DropMenu } from './drop-menu.js';
@@ -328,7 +329,13 @@ export const IndexesManager = {
       busy: false,
       labels: { vertex: [], edge: [] },
     });
-    const rows = computed(() => (state.indexes || []).map((index) => ({ index, row: indexRow(index) })));
+    const rows = computed(() => (state.indexes || []).map((index) => ({
+      index, row: indexRow(index), type: indexTypeOf(index), reason: indexNotServedReason(index),
+    })));
+    const typeHint = computed(() => {
+      const t = d.draft && INDEX_TYPES.find((x) => x.name === d.draft.type);
+      return t ? t.description : '';
+    });
     const sum = computed(() => indexTotals(state.indexes || []));
     const suggestions = computed(() => (d.draft ? d.labels[d.draft.element] || [] : []));
     const namePlaceholder = computed(() => {
@@ -353,7 +360,7 @@ export const IndexesManager = {
       if (dlg.value && dlg.value.open) dlg.value.close();
     }
     async function startNew() {
-      Object.assign(d, { draft: newIndexDraft(), errors: {} });
+      Object.assign(d, { draft: newTypedIndexDraft(), errors: {} });
       await loadLabels();
       await nextTick();
     }
@@ -399,7 +406,8 @@ export const IndexesManager = {
     }
     expose({ open, close });
     return {
-      state, dlg, d, rows, sum, suggestions, namePlaceholder, formatBytes, close, startNew, cancelForm, save, drop,
+      state, dlg, d, rows, sum, suggestions, namePlaceholder, typeHint, indexTypes: INDEX_TYPES, formatBytes, close,
+      startNew, cancelForm, save, drop,
     };
   },
   template: `
@@ -416,13 +424,14 @@ export const IndexesManager = {
         <div v-else class="catalog-table-wrap">
           <table class="data-table catalog-table">
             <thead><tr>
-              <th>Name</th><th>Applies to</th><th>Key</th>
+              <th>Name</th><th>Applies to</th><th>Key</th><th>Type</th>
               <th class="num">Entries</th><th class="num">Distinct values</th><th class="num">Per value</th><th class="num">Memory</th><th></th>
             </tr></thead>
             <tbody>
-              <tr v-for="{ index, row } in rows" :key="index.name">
-                <td class="code">{{ row.name }} <span v-if="!row.served" class="badge" title="This storage keeps the definition but serves no index: queries scan">not served</span></td>
+              <tr v-for="{ index, row, type, reason } in rows" :key="index.name">
+                <td class="code">{{ row.name }} <span v-if="!row.served" class="badge" :title="reason">not served</span></td>
                 <td>{{ row.target }}</td><td class="code">{{ row.key }}</td>
+                <td class="code">{{ type }}<div v-if="!row.served && reason" class="muted" style="font-size: 12px">{{ reason }}</div></td>
                 <td class="num">{{ row.entries }}</td><td class="num">{{ row.distinct }}</td>
                 <td class="num" title="Elements an equality reads on average">{{ row.perValue }}</td><td class="num">{{ row.bytes }}</td>
                 <td class="catalog-actions">
@@ -456,7 +465,13 @@ export const IndexesManager = {
           <label for="ci-key">Key</label>
           <input id="ci-key" type="text" v-model="d.draft.key" :class="{ invalid: d.errors.key }" placeholder="age" autocomplete="off" spellcheck="false">
           <div v-for="m in d.errors.key || []" class="field-error sq-span">{{ m }}</div>
-          <span class="hint">A top-level property name (not a jpath); lists and maps as values are not indexed.</span>
+          <span class="hint">A top-level property name (not a jpath); lists and maps as values are not indexed. A key the schema declares as a vector, a list or a map is refused.</span>
+          <label for="ci-type">Type</label>
+          <select id="ci-type" v-model="d.draft.type" :class="{ invalid: d.errors.type }" :title="typeHint" style="justify-self:start">
+            <option v-for="t in indexTypes" :key="t.name" :value="t.name" :title="t.description">{{ t.name }}</option>
+          </select>
+          <div v-for="m in d.errors.type || []" class="field-error sq-span">{{ m }}</div>
+          <span class="hint">{{ typeHint }}</span>
           <label for="ci-name">Name</label>
           <input id="ci-name" type="text" v-model="d.draft.name" :class="{ invalid: d.errors.name }" :placeholder="namePlaceholder" autocomplete="off" spellcheck="false">
           <div v-for="m in d.errors.name || []" class="field-error sq-span">{{ m }}</div>

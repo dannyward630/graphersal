@@ -1,8 +1,9 @@
 // The model of the Catalog's Property indexes manager: what the engine's `listIndexes()`
-// returns (crates/graphersal-session `indexes.rs`: `[{name, element, label, key, served, stats:
-// {entries, distinctValues, bytes} | null}]`) turned into rows to show, the form's draft and its
-// spec, and the Catalog dropdown's items with this kind added. Pure functions, no Vue, no DOM
-// (tested under Node: tests/indexes.test.mjs). Book page "Property Indexes".
+// returns (crates/graphersal-session `indexes.rs`: `[{name, element, label, key, type, served,
+// reason, stats: {entries, distinctValues, bytes} | null}]`) turned into rows to show, the
+// form's draft and its spec, the index types the form offers, and the Catalog dropdown's items
+// with this kind added. Pure functions, no Vue, no DOM (tested under Node:
+// tests/indexes.test.mjs). Book page "Property Indexes".
 
 import { formatBytes } from './statistics.js';
 import { catalogItems } from './compression.js';
@@ -79,14 +80,59 @@ export function indexTotals(indexes) {
   return t;
 }
 
+/** The index type the engine uses when a spec names none (`PropertyIndexType::MemoryOrdered`). */
+export const DEFAULT_INDEX_TYPE = 'memory-ordered';
+
+/**
+ * The index types this version knows (`PropertyIndexType::KNOWN_NAMES`), for the form's Type
+ * select: the name sent as `type` and the tooltip text.
+ */
+export const INDEX_TYPES = Object.freeze([
+  Object.freeze({
+    name: DEFAULT_INDEX_TYPE,
+    description: 'An ordered index kept in memory and rebuilt from the data when the graph is opened; '
+      + 'it serves =, P.within and ranges on scalar values (null, booleans, numbers, strings, uuids, '
+      + 'dates and times). Lists, maps and vectors are not indexed.',
+  }),
+]);
+
+/** The type of an entry of `listIndexes()` (an entry without one is the default type). */
+export function indexTypeOf(index) {
+  return (index && typeof index.type === 'string' && index.type) || DEFAULT_INDEX_TYPE;
+}
+
+/** Whether this version knows an index type name. */
+export function isKnownIndexType(name) {
+  return INDEX_TYPES.some((t) => t.name === name);
+}
+
+/**
+ * Why an index is not served, '' when it is: the engine's `reason` (a type a newer version
+ * wrote, a storage without indexes), else the storage text the table showed before.
+ */
+export function indexNotServedReason(index) {
+  if (!index) return '';
+  const served = index.served !== false && !!index.stats;
+  if (served) return '';
+  if (typeof index.reason === 'string' && index.reason) return index.reason;
+  return 'This storage keeps the definition but serves no index: queries scan';
+}
+
 /** A new index's draft (the form). */
 export function newIndexDraft() {
   return { name: '', element: 'vertex', label: '', key: '' };
 }
 
+/** A new index's draft with the Type select at the default type. */
+export function newTypedIndexDraft() {
+  return { ...newIndexDraft(), type: DEFAULT_INDEX_TYPE };
+}
+
 /**
- * The spec `createIndex` takes (`{label, key, element, name?}`), or the field errors the form
- * shows without asking the engine (an empty label or key, a key that looks like a jpath).
+ * The spec `createIndex` takes (`{label, key, element, name?, type?}`; `type` only when the
+ * draft has one), or the field errors the form shows without asking the engine (an empty label
+ * or key, a key that looks like a jpath). Whether the type fits the schema's declaration of the
+ * key is the engine's check (its error comes back for the field `key`).
  * @returns {{spec: object} | {errors: Array<{field:string, message:string}>}}
  */
 export function indexDraftToSpec(draft) {
@@ -103,6 +149,8 @@ export function indexDraftToSpec(draft) {
   if (errors.length) return { errors };
   const spec = { element: draft.element === 'edge' ? 'edge' : 'vertex', label, key };
   if (name) spec.name = name;
+  const type = typeof draft.type === 'string' ? draft.type.trim() : '';
+  if (type) spec.type = type;
   return { spec };
 }
 

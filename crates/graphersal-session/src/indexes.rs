@@ -9,20 +9,26 @@
 //!
 //! JSON forms:
 //!
-//! - an **entry** (`list_indexes`): `{name, element: "vertex"|"edge", label, key, served,
-//!   stats: {entries, distinctValues, bytes}}`; `served` is false and `stats` `null` when the
-//!   storage does not serve indexes (it keeps the definition in its catalog, no query reads it);
-//!   `bytes` is the storage's estimate of the index's memory;
-//! - a **spec** (`create_index`): `{label, key, element?, name?}`; `element` defaults to
-//!   `"vertex"`, `name` to `<label>_<key>` (`<label>_<key>_edge` for an edge index,
-//!   [`PropertyIndexDefinition::default_name`]);
+//! - an **entry** (`list_indexes`): `{name, element: "vertex"|"edge", label, key, type, served,
+//!   reason, stats: {entries, distinctValues, bytes}}`; `served` is false and `stats` `null`
+//!   when the index is not served, and `reason` (else `null`) says why: the storage does not
+//!   serve indexes (it keeps the definition in its catalog, no query reads it), or the index's
+//!   `type` is not known to this version (a newer one wrote it,
+//!   [`PropertyIndexDefinition::unserved_reason`]); `bytes` is the storage's estimate of the
+//!   index's memory;
+//! - a **spec** (`create_index`): `{label, key, element?, name?, type?}`; `element` defaults
+//!   to `"vertex"`, `name` to `<label>_<key>` (`<label>_<key>_edge` for an edge index,
+//!   [`PropertyIndexDefinition::default_name`]), `type` to `"memory-ordered"`
+//!   ([`index_types`] lists the known ones);
 //! - **field errors** (a refused create): `[{field, message, help?}]` with `field` one of
-//!   `name`, `element`, `label`, `key` or `general`, the same shape as the other catalog
-//!   editors. A storage without property indexes refuses every create with its `Unsupported`
-//!   diagnostic (field `general`), as `recompress` does on a storage without compressed
-//!   properties.
+//!   `name`, `element`, `label`, `key`, `type` or `general`, the same shape as the other catalog
+//!   editors. An unknown `type` is an error of `type`; a key the graph's schema declares as
+//!   values the index type cannot hold (a vector, an array, an object;
+//!   [`PropertyIndexDefinition::check_create`]) an error of `key`. A storage without property
+//!   indexes refuses every create with its `Unsupported` diagnostic (field `general`), as
+//!   `recompress` does on a storage without compressed properties.
 
-use graphersal::catalog::{Definition, DefinitionKind, PropertyIndexDefinition};
+use graphersal::catalog::{Definition, DefinitionKind, PropertyIndexDefinition, PropertyIndexType};
 use graphersal::prelude::*;
 use graphersal::storage::{ElementKind, PropertyIndexInfo, PropertyIndexStats};
 use serde_json::{Value, json};
@@ -31,11 +37,34 @@ use crate::Session;
 use crate::queries::FieldError;
 
 /// The keys a spec may have.
-const KEYS: [&str; 4] = ["name", "element", "label", "key"];
+const KEYS: [&str; 5] = ["name", "element", "label", "key", "type"];
+
+/// Why a storage that serves no property indexes at all does not serve one.
+const STORAGE_SERVES_NONE: &str =
+    "this storage keeps the definition but serves no property indexes; queries scan";
+
+/// The index types this version knows, for a form's choice: `[{name, description}]`, the
+/// default first.
+pub fn index_types() -> Value {
+    Value::Array(
+        PropertyIndexType::KNOWN_NAMES
+            .iter()
+            .map(|name| {
+                let ty = PropertyIndexType::from_name(name);
+                json!({"name": name, "description": ty.description()})
+            })
+            .collect(),
+    )
+}
 
 /// The entry of one index (module docs).
 fn entry(name: &str, index: &PropertyIndexDefinition, stats: Option<PropertyIndexStats>) -> Value {
     let served = stats.is_some();
+    let reason = (!served).then(|| {
+        index
+            .unserved_reason()
+            .unwrap_or_else(|| STORAGE_SERVES_NONE.to_string())
+    });
     let stats = stats.map(|stats| {
         json!({
             "entries": stats.entries,
@@ -48,7 +77,9 @@ fn entry(name: &str, index: &PropertyIndexDefinition, stats: Option<PropertyInde
         "element": index.element().as_str(),
         "label": index.label(),
         "key": index.key(),
+        "type": index.index_type().as_str(),
         "served": served,
+        "reason": reason,
         "stats": stats,
     })
 }
@@ -56,10 +87,14 @@ fn entry(name: &str, index: &PropertyIndexDefinition, stats: Option<PropertyInde
 /// The form field a catalog error of a property index belongs to.
 fn field_of(err: &DefinitionError) -> FieldError {
     let mut error = FieldError::of(err);
-    if let DefinitionError::InvalidField { field, .. } = err
-        && matches!(field.as_str(), "label" | "key")
-    {
-        error.field = field.clone();
+    match err {
+        DefinitionError::InvalidField { field, .. }
+            if matches!(field.as_str(), "label" | "key" | "type") =>
+        {
+            error.field = field.clone();
+        }
+        DefinitionError::IndexTypeMismatch { .. } => error.field = "key".to_string(),
+        _ => {}
     }
     error
 }
@@ -113,7 +148,7 @@ pub(crate) fn index_definition(spec: &Value) -> Result<Definition, Vec<FieldErro
     let Some(object) = spec.as_object() else {
         return Err(vec![FieldError::new(
             "general",
-            "the index is a JSON object {label, key, element?, name?}",
+            "the index is a JSON object {label, key, element?, name?, type?}",
         )]);
     };
     if let Some(unknown) = object.keys().find(|key| !KEYS.contains(&key.as_str())) {
@@ -136,6 +171,7 @@ pub(crate) fn index_definition(spec: &Value) -> Result<Definition, Vec<FieldErro
     let label = text("label").unwrap_or_default();
     let key = text("key").unwrap_or_default();
     let element = text("element");
+    let index_type = text("type");
     if label.is_empty() {
         errors.push(FieldError::new(
             "label",
@@ -162,7 +198,11 @@ pub(crate) fn index_definition(spec: &Value) -> Result<Definition, Vec<FieldErro
     if !errors.is_empty() {
         return Err(errors);
     }
-    let index = PropertyIndexDefinition::new(element, label, key);
+    let index =
+        PropertyIndexDefinition::new(element, label, key).with_type(index_type.as_deref().map_or(
+            PropertyIndexType::MemoryOrdered,
+            PropertyIndexType::from_name,
+        ));
     let name = name.unwrap_or_else(|| index.default_name());
     // The name and the index each on their own, so both wrong fields are reported (the index
     // checked under its default name when the given one is wrong).
@@ -219,7 +259,9 @@ fn stats_of(served: &[PropertyIndexInfo], name: &str) -> Option<PropertyIndexSta
 
 /// Stores the checked property index `definition` in `g` in ONE commit (which builds it): the
 /// name must be free; a storage without property indexes refuses it (`Unsupported`, field
-/// `general`).
+/// `general`); [`PropertyIndexDefinition::check_create`] against `g`'s stored schema refuses
+/// an unknown type (field `type`) and a key declared as values the type cannot hold (field
+/// `key`).
 pub(crate) fn store_index<S: GraphStorage>(
     g: &mut S,
     definition: Definition,
@@ -236,6 +278,11 @@ pub(crate) fn store_index<S: GraphStorage>(
             "name",
             format!("a property index named '{name}' exists already; choose another name"),
         )]);
+    }
+    if let Some(index) = definition.as_property_index()
+        && let Err(err) = index.check_create(&name, g.get_schema().as_ref())
+    {
+        return Err(vec![field_of(&err)]);
     }
     let stored = g.transaction(|unit| unit.set_definition(definition));
     match stored {

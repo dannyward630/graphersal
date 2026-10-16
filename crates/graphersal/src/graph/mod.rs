@@ -70,6 +70,7 @@ pub use memory::MemoryStats;
 pub use persistent::PersistentStorage;
 pub use property_index::{
     PropertyIndexDefinition, PropertyIndexInfo, PropertyIndexRange, PropertyIndexStats,
+    PropertyIndexType,
 };
 pub use schema::*;
 pub use shared::{Graph, GraphRead, GraphWrite};

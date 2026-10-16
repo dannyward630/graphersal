@@ -1012,13 +1012,16 @@ impl Graph {
         Ok(())
     }
 
-    /// ``graph.create_index(label, key, element="vertex", name=None, *, policy=None)``:
-    /// declares (or replaces) a property index, like the DSL's ``g.create_index(#{..})``: the
-    /// ``element``s labelled ``label``, ordered by their top-level property ``key``; a
-    /// ``has()`` on that key after ``has_label(label)`` then reads the index. ``name``
-    /// defaults to ``<label>_<key>`` (``<label>_<key>_edge`` for edges). The index is built at
-    /// once and rebuilt from the data whenever the graph is loaded.
-    #[pyo3(signature = (label, key, element="vertex", name=None, *, policy=None))]
+    /// ``graph.create_index(label, key, element="vertex", name=None, type="memory-ordered", *,
+    /// policy=None)``: declares (or replaces) a property index, like the DSL's
+    /// ``g.create_index(#{..})``: the ``element``s labelled ``label``, ordered by their
+    /// top-level property ``key``; a ``has()`` on that key after ``has_label(label)`` then reads
+    /// the index. ``name`` defaults to ``<label>_<key>`` (``<label>_<key>_edge`` for edges),
+    /// ``type`` to ``"memory-ordered"`` (the only index type this version knows). The index is
+    /// built at once and rebuilt from the data whenever the graph is loaded. An unknown type, or
+    /// a key the graph's schema declares as a vector, an array or an object, is refused.
+    #[pyo3(signature = (label, key, element="vertex", name=None, r#type="memory-ordered", *, policy=None))]
+    #[allow(clippy::too_many_arguments)]
     fn create_index(
         &self,
         py: Python<'_>,
@@ -1026,27 +1029,32 @@ impl Graph {
         key: &str,
         element: &str,
         name: Option<&str>,
+        r#type: &str,
         policy: Option<PyRef<'_, AccessPolicy>>,
     ) -> PyResult<()> {
         let params = PyDict::new(py);
         params.set_item("index_label", label)?;
         params.set_item("index_key", key)?;
         params.set_item("index_element", element)?;
+        params.set_item("index_type", r#type)?;
         let script = match name {
             Some(name) => {
                 params.set_item("index_name", name)?;
                 "g.create_index(#{label: index_label, key: index_key, element: index_element, \
-                 name: index_name})"
+                 name: index_name, type: index_type})"
             }
-            None => "g.create_index(#{label: index_label, key: index_key, element: index_element})",
+            None => {
+                "g.create_index(#{label: index_label, key: index_key, element: index_element, \
+                 type: index_type})"
+            }
         };
         self.run(py, script, Some(&params), false, policy.as_deref())?;
         Ok(())
     }
 
     /// ``graph.indexes(*, policy=None)``: the property indexes as a ``list`` of ``dict``
-    /// (``name``, ``element``, ``label``, ``key``, ``served`` and the current ``entries``,
-    /// ``distinct_values``, ``bytes``).
+    /// (``name``, ``element``, ``label``, ``key``, ``type``, ``served``, ``reason`` when it is
+    /// not served, and the current ``entries``, ``distinct_values``, ``bytes``).
     #[pyo3(signature = (*, policy=None))]
     fn indexes(
         &self,
