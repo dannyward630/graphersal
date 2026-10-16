@@ -55,10 +55,13 @@ if [[ "$PROFILE" != "dev" ]]; then
 fi
 
 # What the page shows next to the engine version in its header (js/build-info.js): the commit the
-# module was built from. A tree with uncommitted changes is marked dirty.
-commit=$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo "")
-describe=$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo "")
-printf '{"commit": "%s", "describe": "%s"}\n' "$commit" "$describe" > "$OUT/build-info.json"
+# module was built from, the release tag when the commit is exactly one, and whether the tree had
+# uncommitted changes.
+commit=$(git -C "$ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo "")
+tag=$(git -C "$ROOT" describe --tags --exact-match HEAD 2>/dev/null || echo "")
+dirty=false
+[[ -n "$(git -C "$ROOT" status --porcelain 2>/dev/null)" ]] && dirty=true
+printf '{"commit": "%s", "tag": "%s", "dirty": %s}\n' "$commit" "$tag" "$dirty" > "$OUT/build-info.json"
 
 raw=$(wc -c < "$wasm" | tr -d ' ')
 gz=$(gzip -9 -c "$wasm" | wc -c | tr -d ' ')

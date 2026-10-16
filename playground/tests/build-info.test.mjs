@@ -2,16 +2,22 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { versionLabel } from '../js/build-info.js';
 
-test('a release build shows the version alone', () => {
-  const label = versionLabel('0.2.0', { commit: 'abc123def456', describe: 'v0.2.0' });
+test('a clean build of the release tag shows the version alone', () => {
+  const label = versionLabel('0.2.0', { commit: 'abc123d', tag: 'v0.2.0', dirty: false });
   assert.equal(label.text, 'v0.2.0');
-  assert.equal(label.title, 'Engine 0.2.0, built from commit abc123def456');
+  assert.equal(label.title, 'Engine 0.2.0, the release build (commit abc123d)');
 });
 
-test('a build after the tag adds its describe text', () => {
-  const label = versionLabel('0.2.0', { commit: 'abc123def456', describe: 'v0.1.1-12-gabc123d-dirty' });
-  assert.equal(label.text, 'v0.2.0 · v0.1.1-12-gabc123d-dirty');
-  assert.match(label.title, /with uncommitted changes$/);
+test('a development build adds its commit', () => {
+  const label = versionLabel('0.2.0', { commit: 'abc123d', tag: '', dirty: false });
+  assert.equal(label.text, 'v0.2.0 · abc123d');
+  assert.match(label.title, /development build of commit abc123d, not a release$/);
+});
+
+test('uncommitted changes are marked, also on the release tag', () => {
+  const label = versionLabel('0.2.0', { commit: 'abc123d', tag: 'v0.2.0', dirty: true });
+  assert.equal(label.text, 'v0.2.0 · abc123d + changes');
+  assert.match(label.title, /with uncommitted changes/);
 });
 
 test('without a build file only the engine version is shown', () => {
