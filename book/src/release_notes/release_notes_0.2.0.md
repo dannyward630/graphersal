@@ -32,8 +32,11 @@ What 0.2.0 does not do yet is on [Current Limitations](../users_guide/current_li
   [`property_index`](../optimizer/property_index.md) answers `has()` equality, `P.within` and
   range filters from it (`.profile()` shows `[index: ..]`), with the same results as a scan. The
   declaration is stored in the catalog and travels with the graph; the entries are rebuilt at every
-  load. Python `Graph.create_index`, the playground's **Catalog ▸ Property indexes**, the dev
-  server's `/api/indexes` and MCP tools.
+  load. Every index has a type: `memory-ordered` is the one type of 0.2 (an index type a later
+  version adds is kept and listed as not served, never misread), and an index on a key the schema
+  declares as a vector, list or map is refused with a clear message
+  ([Index types](../users_guide/property_indexes.md#index-types)). Python `Graph.create_index`,
+  the playground's **Catalog ▸ Property indexes**, the dev server's `/api/indexes` and MCP tools.
 - **Schema defaults on create** ([#5](https://github.com/graphersal/graphersal/issues/5);
   [Defaults on create](../users_guide/schema_enforcement.md#defaults-on-create)): a schema's
   `default` now has SQL `DEFAULT` semantics on a label's top-level properties, and the new keyword
@@ -50,7 +53,14 @@ What 0.2.0 does not do yet is on [Current Limitations](../users_guide/current_li
   Hamming, combined freely with graph steps (filtered search, GraphRAG, recommendations). Vectors
   are values in Python (`graphersal.Vector`, also from a `numpy` array), the playground, GraphSON,
   GraphML (through the schema) and the persistence format. Embeddings are computed outside the
-  engine.
+  engine; [Embeddings and Vector Search](../getting_started/embeddings.md) walks through it, in the
+  playground without a model and from Python with one, and the playground's **Examples** have an
+  *Embeddings (vectors)* group.
+- **Playground**: the schema editor's tables edit `defaultFunction` and a vector's element,
+  dimension and metric; the Graph and Mermaid drawings always show the schema the tables show
+  (also a draft); the Mermaid diagram parses whatever labels and property names hold; the
+  Detailed drawing zooms by mouse wheel as fast as the Fast one; a click on a panel's title
+  collapses it; the header shows the engine version and the build.
 - **Properties named `id` or `label`** ([#1](https://github.com/graphersal/graphersal/issues/1);
   [Properties Named id or label](../users_guide/id_and_label_keys.md)) are read as properties,
   never as the element's id or label, and **vertices and edges returned by a terminal are values**
