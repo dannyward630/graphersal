@@ -494,6 +494,18 @@ stay); Ctrl+C cancels the job between pages and the `KeyboardInterrupt` carries 
 lock while it holds the GIL, so a sleeping embedder and other Python threads writing to the
 same graph never wait for each other forever.
 
+**Reference cycles.** A graph keeps its embedders (and so their Python functions) alive, and
+Python's garbage collector cannot see that reference, which is held by the engine. An embedder
+whose function captures its own graph (`Embedder("e", lambda t: use(graph, t), ..)`) therefore
+forms a cycle that is never collected: that graph and its data stay in memory until the process
+ends. Let the function capture the model only, not the graph; this matters only for a program
+that creates and drops many graphs.
+
+**Threads of Model2Vec.** The tokenizer (`tokenizers`, through `rayon`) starts a thread pool of
+one thread per CPU core on the first batch it encodes. `TOKENIZERS_PARALLELISM=false` in the
+environment (set before the first embedding) keeps it on the calling thread, for example in a
+program that forks worker processes after embedding or that limits its CPU use.
+
 ## Error handling
 
 Every script/engine failure — parse errors, a failed cast, a broken GraphML file — raises
