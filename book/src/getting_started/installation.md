@@ -18,8 +18,8 @@ archive per platform:
 | macOS on Intel | `graphersal-v<version>-macos-x86_64.tar.gz` |
 | Windows x86_64 | `graphersal-v<version>-windows-x86_64.zip` |
 
-Each archive holds the `graphersal` binary (`graphersal.exe` on Windows), the licence files and
-`README.md`. The Linux binaries are statically linked, so they run on every distribution; see
+Each archive holds one directory of its own name with the `graphersal` binary (`graphersal.exe`
+on Windows), the licence files, the third-party licences and `README.md`. The Linux binaries are statically linked, so they run on every distribution; see
 [Performance of the prebuilt Linux binaries](#performance-of-the-prebuilt-linux-binaries) before
 you benchmark with them.
 
@@ -27,10 +27,11 @@ On Linux and macOS (pick the archive of your platform):
 
 ```sh
 VERSION=0.2.0
-ARCHIVE=graphersal-v$VERSION-linux-x86_64.tar.gz
+NAME=graphersal-v$VERSION-linux-x86_64
+ARCHIVE=$NAME.tar.gz
 curl -LO https://github.com/graphersal/graphersal/releases/download/v$VERSION/$ARCHIVE
-tar -xzf $ARCHIVE
-mkdir -p ~/.local/bin && mv graphersal ~/.local/bin/    # or: sudo mv graphersal /usr/local/bin/
+tar -xzf $ARCHIVE                  # unpacks into the directory $NAME
+mkdir -p ~/.local/bin && mv $NAME/graphersal ~/.local/bin/    # or: sudo mv $NAME/graphersal /usr/local/bin/
 ```
 
 `~/.local/bin` must be on your `PATH`; if it is not, add
@@ -40,11 +41,14 @@ On Windows, in PowerShell:
 
 ```powershell
 $Version = "0.2.0"
-$Archive = "graphersal-v$Version-windows-x86_64.zip"
+$Name = "graphersal-v$Version-windows-x86_64"
+$Archive = "$Name.zip"
 Invoke-WebRequest "https://github.com/graphersal/graphersal/releases/download/v$Version/$Archive" -OutFile $Archive
+# the archive holds one directory $Name with graphersal.exe
 Expand-Archive $Archive -DestinationPath "$env:LOCALAPPDATA\graphersal"
+$Dir = "$env:LOCALAPPDATA\graphersal\$Name"
 # put the directory on the PATH of your user (takes effect in a new terminal)
-[Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";$env:LOCALAPPDATA\graphersal", "User")
+[Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";$Dir", "User")
 ```
 
 ### Check the download
@@ -96,8 +100,8 @@ The prebuilt Linux binaries are statically linked with musl, which makes them ru
 distribution, including Alpine and WSL2. musl's memory allocator is noticeably slower than glibc's
 on allocation-heavy queries (large `group()`, `path()` or `to_list()` results, imports):
 <!-- TODO musl figure --> For benchmarks and heavy workloads, build from source with
-`cargo install graphersal-cli`, which uses the system's glibc. The figures in this book are
-measured on such builds. The macOS and Windows binaries have no such penalty.
+`cargo install graphersal-cli`, which uses the system's glibc. The figures in this book come from
+source builds. The macOS and Windows binaries have no such penalty.
 
 ## Windows Subsystem for Linux
 
