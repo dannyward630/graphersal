@@ -10,9 +10,7 @@ name: CLI binaries
 # uploaded as the artifact `binaries-<platform>`; the `checksums` job adds `SHA256SUMS`
 # (artifact `binaries-checksums`) and, with `attest`, GitHub build provenance attestations.
 # No dependency cache: a release binary is built from a clean tree.
-# Manual (Actions minutes are limited; two of the builds run on macOS), plus a pull request that
-# changes a release file (this workflow, release.yml, the release notes script), so a release
-# workflow change is tried before it is merged (GitHub dispatches only workflows on main):
+# Manual only (Actions minutes are limited; two of the builds run on macOS):
 # `gh workflow run "CLI binaries" --ref <branch>` is a dry run on any branch: it builds, tests and
 # uploads the artifacts and publishes nothing. `-f compare_musl=true` adds a job that times the
 # same queries on the `large` graph with a glibc and a musl build of linux-x86_64 and writes the
@@ -20,11 +18,6 @@ name: CLI binaries
 # and attaches the archives to the draft GitHub Release.
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/binaries.yml
-      - .github/workflows/release.yml
-      - .github/scripts/release_notes.py
   workflow_dispatch:
     inputs:
       compare_musl:
@@ -215,7 +208,7 @@ jobs:
 
   compare-musl:
     name: glibc vs musl timings (linux-x86_64)
-    if: inputs.compare_musl || github.event_name == 'pull_request'
+    if: inputs.compare_musl
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
