@@ -10,7 +10,7 @@ import {
   BASE_TYPES, CONSTRAINTS, MODES, describe, getAt, typeText, constraintSummary, propertiesOf,
   nestedObjectPath, isRequired, setBaseType, setNullable, setRequired, setKeyword, addProperty,
   renameProperty, removeProperty, addLabel, renameLabel, removeLabel, addConnection, setConnection,
-  removeConnection, isPlainObject, backfillScript,
+  removeConnection, isPlainObject, backfillScript, DEFAULT_FUNCTIONS, isTopLevelProperty, defaultSummary,
 } from '../schema/draft.js';
 
 /** Runs an edit of the draft; a refused edit (a duplicate name) becomes a toast. */
@@ -89,6 +89,13 @@ export const SchemaNodeDetails = {
     function setText(keyword, text) {
       edit(props.flow, (doc) => setKeyword(doc, props.path, keyword, text === '' ? undefined : text));
     }
+    // `default` and `defaultFunction` exclude each other (the engine refuses both on one node).
+    function setDefaultFunction(name) {
+      edit(props.flow, (doc) => {
+        setKeyword(doc, props.path, 'defaultFunction', name === '' ? undefined : name);
+        if (name !== '') setKeyword(doc, props.path, 'default', undefined);
+      });
+    }
     function setDeprecated(on) {
       edit(props.flow, (doc) => setKeyword(doc, props.path, 'deprecated', on ? true : undefined));
     }
@@ -102,7 +109,9 @@ export const SchemaNodeDetails = {
     };
     return {
       bad, node, d, value, CONSTRAINTS, CONSTRAINT_LABELS, TEXT_KEYWORDS, BOUND_EXAMPLE, jsonFieldText, additional,
-      setConstraint, setJson, setText, setDeprecated, setAdditional,
+      setConstraint, setJson, setText, setDeprecated, setAdditional, setDefaultFunction,
+      functions: () => DEFAULT_FUNCTIONS[d().base] || [],
+      topLevel: () => isTopLevelProperty(props.path),
     };
   },
   template: `
@@ -138,9 +147,18 @@ export const SchemaNodeDetails = {
       <label class="wide"><span>description</span><textarea rows="2" :value="node().description ?? ''" @change="setText('description', $event.target.value)"></textarea></label>
       <label><span>default (JSON)</span>
         <input type="text" :class="{ invalid: bad.default }" :value="jsonFieldText(node().default)"
+               :disabled="!!node().defaultFunction" :title="node().defaultFunction ? 'Clear the default function to set a fixed default' : ''"
                @change="setJson('default', $event.target.value, false)"></label>
+      <label v-if="topLevel() && (functions().length || node().defaultFunction)"><span>default function</span>
+        <select :value="node().defaultFunction ?? ''" @change="setDefaultFunction($event.target.value)">
+          <option value="">none</option>
+          <option v-for="f in functions()" :key="f" :value="f">{{ f }}</option>
+          <option v-if="node().defaultFunction && !functions().includes(node().defaultFunction)" :value="node().defaultFunction">{{ node().defaultFunction }} (does not fit the type)</option>
+        </select></label>
       <p class="hint wide">On a top-level property in mode open or closed: stored when a vertex or edge is created without it
-        (also satisfies required). Never on read, never for existing data (the backfill script fills those); null is never stored.</p>
+        (also satisfies required). Never on read, never for existing data (the backfill script fills those); null is never stored.
+        A default function computes the value instead: <code>uuidv4</code>/<code>uuidv7</code> a new uuid per element,
+        <code>now</code> (datetime) and <code>today</code> (date) the start of the unit, the same for every element it creates.</p>
       <label><span>examples (JSON array)</span>
         <input type="text" :class="{ invalid: bad.examples }" :value="jsonFieldText(node().examples)"
                @change="setJson('examples', $event.target.value, false)"></label>
@@ -191,7 +209,11 @@ export const SchemaObjectTable = {
       info: (key) => describe(props_()[key]),
       type: (key) => typeText(props_()[key], { collapsed: true }),
       itemsBase: (key) => describe(getAt(doc(), [...propPath(key), ...describe(props_()[key]).value, 'items']) || {}).base,
-      summary: (key) => constraintSummary(props_()[key]),
+      summary: (key) => {
+        const n = props_()[key];
+        const dflt = isTopLevelProperty(propPath(key)) ? defaultSummary(n) : null;
+        return dflt ? [...constraintSummary(n), dflt] : constraintSummary(n);
+      },
       required: (key) => isRequired(doc(), props.path, key),
       fieldCount: (key) => Object.keys(propertiesOf(getAt(doc(), nested(key)) || {})).length,
       setType: (key, base) => edit(props.flow, (d) => setBaseType(d, propPath(key), base)),

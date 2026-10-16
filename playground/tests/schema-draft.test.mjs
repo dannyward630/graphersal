@@ -418,3 +418,20 @@ test('flow: an engine error of the check is shown, not thrown', async () => {
   assert.equal(flow.ed.draftOrigin, 'inferred');
   assert.deepEqual(getAt(flow.ed.draft, ['vertices', 'person']), {});
 });
+
+test('defaultSummary shows a fixed default and a default function of a property', async () => {
+  const { defaultSummary } = await import('../js/schema/draft.js');
+  assert.equal(defaultSummary({ type: 'string', format: 'date-time', defaultFunction: 'now' }), 'default now()');
+  assert.equal(defaultSummary({ type: 'integer', default: 5 }), 'default 5');
+  assert.equal(defaultSummary({ type: 'string' }), null);
+});
+
+test('default functions are offered by type and only on top-level properties', async () => {
+  const { DEFAULT_FUNCTIONS, isTopLevelProperty } = await import('../js/schema/draft.js');
+  assert.deepEqual([...DEFAULT_FUNCTIONS.uuid], ['uuidv4', 'uuidv7']);
+  assert.deepEqual([...DEFAULT_FUNCTIONS.datetime], ['now']);
+  assert.deepEqual([...DEFAULT_FUNCTIONS.date], ['today']);
+  assert.equal(DEFAULT_FUNCTIONS.string, undefined);
+  assert.equal(isTopLevelProperty(['vertices', 'event', 'schema', 'properties', 'created']), true);
+  assert.equal(isTopLevelProperty(['vertices', 'event', 'schema', 'properties', 'a', 'properties', 'b']), false);
+});

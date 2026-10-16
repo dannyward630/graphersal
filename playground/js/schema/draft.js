@@ -54,6 +54,35 @@ export const CONSTRAINTS = Object.freeze({
   union: [],
 });
 
+/**
+ * The `defaultFunction`s a base type admits (the engine's `check_defaults`): each produces a value
+ * of exactly that type, for a top-level property only.
+ */
+export const DEFAULT_FUNCTIONS = Object.freeze({
+  uuid: Object.freeze(['uuidv4', 'uuidv7']),
+  datetime: Object.freeze(['now']),
+  date: Object.freeze(['today']),
+});
+
+/**
+ * Whether `path` is a label's top-level property (`[vertices|edges, label, 'schema', 'properties',
+ * key]`): the only place where `default`/`defaultFunction` are applied on create.
+ */
+export function isTopLevelProperty(path) {
+  return path.length === 5 && path[2] === 'schema' && path[3] === 'properties';
+}
+
+/**
+ * The create-time default of a property node for the table: `default "x"`, `default now()`, or
+ * null without one. Read from the property node itself (annotations are not on the value node).
+ */
+export function defaultSummary(node) {
+  if (!isPlainObject(node)) return null;
+  if (typeof node.defaultFunction === 'string') return `default ${node.defaultFunction}()`;
+  if ('default' in node) return `default ${short(node.default)}`;
+  return null;
+}
+
 /** Keywords that constrain any kind of value. */
 export const VALUE_CONSTRAINTS = Object.freeze(['enum', 'const']);
 
