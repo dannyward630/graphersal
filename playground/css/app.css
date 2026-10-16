@@ -608,6 +608,7 @@ table.data-table.store-changes th, table.data-table.store-changes td { vertical-
   user-select: none;
 }
 .panel.collapsed .panel-header { border-bottom: 0; }
+.panel-title.toggles { cursor: pointer; user-select: none; }
 .panel-title {
   flex: 0 1 auto;
   min-width: 24px;
