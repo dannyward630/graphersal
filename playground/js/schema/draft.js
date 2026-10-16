@@ -20,6 +20,12 @@ export const BASE_TYPES = Object.freeze(['string', 'integer', 'number', 'boolean
 /** The element kinds of a vector node (`{"type": "array", "format": "vector", "element": ..}`). */
 export const VECTOR_ELEMENTS = Object.freeze(['f32', 'f16', 'i8', 'bit']);
 
+/** The metrics of a vector node's `metric` (the default metric of `similarity`/`nearest`). */
+export const VECTOR_METRICS = Object.freeze(['cosine', 'dot', 'l2', 'hamming']);
+
+/** The largest `dimension` of a vector node (the engine's `MAX_VECTOR_DIMENSION`). */
+export const MAX_VECTOR_DIMENSION = 65536;
+
 /** The `format` of a base type written as `{"type": "string", "format": ..}`. */
 export const FORMAT_OF_BASE = Object.freeze({
   uuid: 'uuid', datetime: 'date-time', localdatetime: 'local-date-time', date: 'date', time: 'time', duration: 'duration',
@@ -45,7 +51,7 @@ export const CONSTRAINTS = Object.freeze({
   uuid: [],
   ...Object.fromEntries(TEMPORAL_BASES.map((b) => [b, FORMAT_BOUNDS])),
   array: ['minItems', 'maxItems'],
-  // `element` and `dimension` are the vector's type (edited in the JSON tab), `metric` an annotation.
+  // `element`, `dimension` and `metric` are edited in the form's Vector block (not constraints).
   vector: [],
   object: [],
   boolean: [],

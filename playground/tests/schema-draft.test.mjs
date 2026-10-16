@@ -435,3 +435,19 @@ test('default functions are offered by type and only on top-level properties', a
   assert.equal(isTopLevelProperty(['vertices', 'event', 'schema', 'properties', 'created']), true);
   assert.equal(isTopLevelProperty(['vertices', 'event', 'schema', 'properties', 'a', 'properties', 'b']), false);
 });
+
+test('a vector property gets element f32 and keeps its vector keywords until the type changes', async () => {
+  const { setBaseType, setKeyword, typeText, VECTOR_METRICS } = await import('../js/schema/draft.js');
+  const doc = { vertices: { doc: { schema: { type: 'object', properties: { emb: { type: 'string' } } } } } };
+  const path = ['vertices', 'doc', 'schema', 'properties', 'emb'];
+  setBaseType(doc, path, 'vector');
+  setKeyword(doc, path, 'element', 'i8');
+  setKeyword(doc, path, 'dimension', 384);
+  setKeyword(doc, path, 'metric', 'dot');
+  const emb = doc.vertices.doc.schema.properties.emb;
+  assert.deepEqual(emb, { type: 'array', format: 'vector', element: 'i8', dimension: 384, metric: 'dot' });
+  assert.equal(typeText(emb), 'vector<i8, 384>');
+  setBaseType(doc, path, 'string');
+  assert.deepEqual(doc.vertices.doc.schema.properties.emb, { type: 'string' });
+  assert.deepEqual([...VECTOR_METRICS], ['cosine', 'dot', 'l2', 'hamming']);
+});

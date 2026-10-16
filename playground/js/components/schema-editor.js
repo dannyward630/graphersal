@@ -11,6 +11,7 @@ import {
   nestedObjectPath, isRequired, setBaseType, setNullable, setRequired, setKeyword, addProperty,
   renameProperty, removeProperty, addLabel, renameLabel, removeLabel, addConnection, setConnection,
   removeConnection, isPlainObject, backfillScript, DEFAULT_FUNCTIONS, isTopLevelProperty, defaultSummary,
+  VECTOR_ELEMENTS, VECTOR_METRICS, MAX_VECTOR_DIMENSION,
 } from '../schema/draft.js';
 
 /** Runs an edit of the draft; a refused edit (a duplicate name) becomes a toast. */
@@ -89,6 +90,20 @@ export const SchemaNodeDetails = {
     function setText(keyword, text) {
       edit(props.flow, (doc) => setKeyword(doc, props.path, keyword, text === '' ? undefined : text));
     }
+    // A vector's element kind, dimension and default metric (on the value node, like the type).
+    function setVector(keyword, text) {
+      let v = text === '' ? undefined : text;
+      if (keyword === 'dimension' && v !== undefined) {
+        v = Number(text);
+        if (!Number.isInteger(v) || v < 1 || v > MAX_VECTOR_DIMENSION) {
+          bad.dimension = true;
+          return;
+        }
+      }
+      if (keyword === 'element' && v === undefined) v = 'f32';
+      bad[keyword] = false;
+      edit(props.flow, (doc) => setKeyword(doc, valuePath(), keyword, v));
+    }
     // `default` and `defaultFunction` exclude each other (the engine refuses both on one node).
     function setDefaultFunction(name) {
       edit(props.flow, (doc) => {
@@ -109,13 +124,33 @@ export const SchemaNodeDetails = {
     };
     return {
       bad, node, d, value, CONSTRAINTS, CONSTRAINT_LABELS, TEXT_KEYWORDS, BOUND_EXAMPLE, jsonFieldText, additional,
-      setConstraint, setJson, setText, setDeprecated, setAdditional, setDefaultFunction,
+      setConstraint, setJson, setText, setDeprecated, setAdditional, setDefaultFunction, setVector,
+      VECTOR_ELEMENTS, VECTOR_METRICS, MAX_VECTOR_DIMENSION,
       functions: () => DEFAULT_FUNCTIONS[d().base] || [],
       topLevel: () => isTopLevelProperty(props.path),
     };
   },
   template: `
   <div class="schema-details">
+    <fieldset v-if="d().base === 'vector'">
+      <legend>Vector</legend>
+      <label><span>element</span>
+        <select :value="value().element ?? 'f32'" @change="setVector('element', $event.target.value)">
+          <option v-for="e in VECTOR_ELEMENTS" :key="e" :value="e">{{ e }}</option>
+        </select></label>
+      <label><span>dimension</span>
+        <input type="number" min="1" :max="MAX_VECTOR_DIMENSION" step="1" :class="{ invalid: bad.dimension }"
+               :value="value().dimension ?? ''" placeholder="any" @change="setVector('dimension', $event.target.value)"></label>
+      <label><span>metric</span>
+        <select :value="value().metric ?? ''" @change="setVector('metric', $event.target.value)">
+          <option value="">none (cosine)</option>
+          <option v-for="m in VECTOR_METRICS" :key="m" :value="m">{{ m }}</option>
+        </select></label>
+      <p class="hint wide">element: how components are stored: f32 exact, f16 half precision, i8 one byte per component plus a scale,
+        bit one bit per component (the sign). A list of numbers or a vector of another element written to the property is converted
+        to it (quantized). dimension: the number of components every value must have (empty: any). metric: the default of
+        <code>similarity</code> and <code>nearest</code> on this property; <code>hamming</code> needs bit vectors.</p>
+    </fieldset>
     <fieldset v-if="CONSTRAINTS[d().base] && CONSTRAINTS[d().base].length">
       <legend>Constraints</legend>
       <label v-for="k in CONSTRAINTS[d().base]" :key="k">
@@ -227,8 +262,8 @@ export const SchemaObjectTable = {
   <table class="schema-table">
     <thead><tr>
       <th>Property</th><th>Type</th>
-      <th title="The key must be present (JSON Schema required)">Req.</th>
-      <th title="null is admitted (the type includes null)">Null</th>
+      <th title="Required: every element of the label must have this key. Says nothing about its value: with Null checked as well the key must be there but its value may be null.">Req.</th>
+      <th title="Nullable: the value may be null (the type includes null). Says nothing about whether the key must be there: that is Req. An absent key and a null value are different: property(k, null) stores the key with null.">Null</th>
       <th>Constraints</th><th class="actions"><span class="sr-only">Actions</span></th>
     </tr></thead>
     <tbody>
