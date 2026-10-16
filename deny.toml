@@ -28,6 +28,12 @@ ignore = [
     # dependency of rhai (the `script` feature). It is an unmaintained-crate notice, not a
     # vulnerability. Revisit when rhai drops smartstring or when the next rhai release is adopted.
     "RUSTSEC-2026-0249",
+    # paste is unmaintained (archived upstream) and has no fixed release: it is a compile-time
+    # macro crate (no code of it runs in the binary) and a mandatory dependency of `tokenizers`,
+    # which only the optional `model2vec` feature (the Model2Vec embedder) pulls in. An
+    # unmaintained-crate notice, not a vulnerability. Revisit when a `tokenizers` release drops
+    # paste (upstream replaces it) and on every `tokenizers` upgrade.
+    "RUSTSEC-2024-0436",
 ]
 
 # ---------------------------------------------------------------------------------------------
@@ -77,6 +83,14 @@ exceptions = [
     # for HTTPS (through ureq/rustls); the licence covers that data.
     { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
 ]
+
+# model2vec-rs (the `model2vec` feature) declares its licence only as `license-file = "LICENSE"`,
+# no SPDX expression; that file is the MIT licence text (Copyright (c) 2025 The Minish Lab). The
+# hash pins the file: a changed licence text in a new release fails the check again.
+[[licenses.clarify]]
+crate = "model2vec-rs"
+expression = "MIT"
+license-files = [{ path = "LICENSE", hash = 0x1f86646e }]
 
 [licenses.private]
 # Workspace crates that are not published are checked like any other crate (they all declare

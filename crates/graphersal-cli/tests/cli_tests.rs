@@ -3759,3 +3759,715 @@ fn store_commands_refuse_files_of_a_newer_graphersal() {
     let _ = std::fs::remove_file(&file);
     let _ = std::fs::remove_file(&snap);
 }
+
+/// `--embedder`, `--default-embedder` and `graphersal embed-model download|list` on a TINY
+/// synthetic Model2Vec model written by the test; the download runs against a local mock of the
+/// Hugging Face endpoint (`GRAPHERSAL_HF_ENDPOINT`), never the network.
+#[cfg(feature = "model2vec")]
+mod embed_models {
+    use super::{Run, temp_path};
+    use std::collections::HashMap;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Stdio};
+    use std::sync::{Arc, Mutex};
+
+    const VOCAB: [&str; 6] = ["[UNK]", "graph", "vector", "marko", "lop", "ripple"];
+
+    fn config_json() -> Vec<u8> {
+        br#"{"model_type": "model2vec", "normalize": true}"#.to_vec()
+    }
+
+    fn tokenizer_json() -> Vec<u8> {
+        let entries: Vec<String> = VOCAB
+            .iter()
+            .enumerate()
+            .map(|(id, token)| format!("{token:?}: {id}"))
+            .collect();
+        format!(
+            r#"{{"version": "1.0", "truncation": null, "padding": null, "added_tokens": [],
+                "normalizer": {{"type": "Lowercase"}}, "pre_tokenizer": {{"type": "Whitespace"}},
+                "post_processor": null, "decoder": null,
+                "model": {{"type": "WordLevel", "vocab": {{{}}}, "unk_token": "[UNK]"}}}}"#,
+            entries.join(", ")
+        )
+        .into_bytes()
+    }
+
+    /// A safetensors file with one F32 `embeddings` tensor of 6 x 3.
+    fn model_safetensors() -> Vec<u8> {
+        let data: Vec<u8> = (0..18)
+            .map(|i| ((i % 7) as f32 + 0.5) * if i % 2 == 0 { 1.0 } else { -1.0 })
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let mut header = format!(
+            r#"{{"embeddings": {{"dtype": "F32", "shape": [6, 3], "data_offsets": [0, {}]}}}}"#,
+            data.len()
+        );
+        while header.len() % 8 != 0 {
+            header.push(' ');
+        }
+        let mut out = (header.len() as u64).to_le_bytes().to_vec();
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&data);
+        out
+    }
+
+    fn fresh_dir(name: &str) -> PathBuf {
+        let dir = temp_path(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_model(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("config.json"), config_json()).unwrap();
+        std::fs::write(dir.join("tokenizer.json"), tokenizer_json()).unwrap();
+        std::fs::write(dir.join("model.safetensors"), model_safetensors()).unwrap();
+    }
+
+    /// Runs the binary with `envs` set (and every variable the resolution reads cleared).
+    fn run_env(args: &[&str], envs: &[(&str, &str)]) -> Run {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_graphersal"));
+        command
+            .args(args)
+            .env_remove("GRAPHERSAL_EMBED_MODELS")
+            .env_remove("GRAPHERSAL_HF_ENDPOINT")
+            .env_remove("HF_TOKEN")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        let output = command.output().expect("graphersal runs");
+        Run {
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            code: output.status.code().unwrap_or(-1),
+        }
+    }
+
+    #[test]
+    fn embedder_from_a_directory_becomes_the_default() {
+        let dir = fresh_dir("m2v_path");
+        write_model(&dir);
+        let spec = format!("tiny={}", dir.display());
+        let res = run_env(
+            &[
+                "--embedder",
+                &spec,
+                "--default-embedder",
+                "tiny",
+                "-e",
+                r#"g.embedders().map(|e| e.name + " " + e.model + " " + e.dimension + " " + e.default)"#,
+                "-e",
+                r#"embed("graph vector").to_string()"#,
+            ],
+            &[],
+        );
+        assert_eq!(res.code, 0, "{}", res.stderr);
+        assert!(res.stdout.contains("tiny model2vec@"), "{}", res.stdout);
+        assert!(res.stdout.contains(" 3 true"), "{}", res.stdout);
+        assert!(
+            res.stdout.contains("hash-ngram/1 hash-ngram/1 256 false"),
+            "{}",
+            res.stdout
+        );
+        // The default embedder (3 components) answered embed(text).
+        let last = res.stdout.trim().lines().last().unwrap_or("").to_string();
+        assert!(last.contains("vector(["), "{last}");
+        assert_eq!(last.matches(',').count(), 2, "{last}");
+
+        // Without flags only the built-in is there, and it is the default.
+        let res = run_env(&["-e", r#"g.embedders().map(|e| e.name)"#], &[]);
+        assert_eq!(res.code, 0, "{}", res.stderr);
+        assert!(res.stdout.contains("hash-ngram/1"), "{}", res.stdout);
+        assert!(!res.stdout.contains("tiny"), "{}", res.stdout);
+
+        // The step on the model, in the explicit form.
+        let res = run_env(
+            &[
+                "--embedder",
+                &spec,
+                "-e",
+                r#"g.v().has_label("software").embed("name", #{embedder: "tiny"}).count().next()"#,
+            ],
+            &[],
+        );
+        assert_eq!(res.code, 0, "{}", res.stderr);
+        assert_eq!(res.stdout.trim(), "2");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn embedder_from_a_repository_in_the_models_dir() {
+        let models = fresh_dir("m2v_models");
+        let model = models.join("acme").join("tiny-model");
+        write_model(&model);
+        std::fs::write(
+            model.join("graphersal-embed-model.json"),
+            r#"{"format": 1, "repo": "acme/tiny-model", "revision": "main", "files": []}"#,
+        )
+        .unwrap();
+        let models_text = models.display().to_string();
+        let env = [("GRAPHERSAL_EMBED_MODELS", models_text.as_str())];
+        let res = run_env(
+            &[
+                "--embedder",
+                "t=acme/tiny-model",
+                "-e",
+                r#"g.embedders().filter(|e| e.name == "t")[0].model"#,
+            ],
+            &env,
+        );
+        assert_eq!(res.code, 0, "{}", res.stderr);
+        assert!(
+            res.stdout.contains("model2vec/acme/tiny-model@"),
+            "{}",
+            res.stdout
+        );
+
+        // A copy elsewhere (as a path) has the same identity.
+        let copy = fresh_dir("m2v_copy");
+        for file in [
+            "config.json",
+            "tokenizer.json",
+            "model.safetensors",
+            "graphersal-embed-model.json",
+        ] {
+            std::fs::copy(model.join(file), copy.join(file)).unwrap();
+        }
+        let spec = format!("t={}", copy.display());
+        let again = run_env(
+            &[
+                "--embedder",
+                &spec,
+                "-e",
+                r#"g.embedders().filter(|e| e.name == "t")[0].model"#,
+            ],
+            &[],
+        );
+        assert_eq!(again.stdout, res.stdout);
+
+        // list shows it with that identity.
+        let list = run_env(&["embed-model", "list"], &env);
+        assert_eq!(list.code, 0, "{}", list.stderr);
+        assert!(list.stdout.contains("acme/tiny-model"), "{}", list.stdout);
+        let identity = res.stdout.trim().trim_matches('"').to_string();
+        assert!(
+            list.stdout.contains(&identity),
+            "{} / {identity}",
+            list.stdout
+        );
+
+        // An unknown repository: exit 2 with the download hint.
+        let res = run_env(&["--embedder", "x=acme/missing", "-e", "1"], &env);
+        assert_eq!(res.code, 2, "{}", res.stderr);
+        assert!(
+            res.stderr
+                .contains("run `graphersal embed-model download acme/missing`"),
+            "{}",
+            res.stderr
+        );
+        assert!(res.stdout.is_empty());
+        let _ = std::fs::remove_dir_all(&models);
+        let _ = std::fs::remove_dir_all(&copy);
+    }
+
+    #[test]
+    fn embedder_flag_errors_are_usage_errors() {
+        let dir = fresh_dir("m2v_errors");
+        write_model(&dir);
+        let spec = format!("tiny={}", dir.display());
+        let empty = fresh_dir("m2v_errors_models");
+        let empty_text = empty.display().to_string();
+        let reserved = format!("hash-ngram/2={}", dir.display());
+        let no_model = format!("x={}", empty.display());
+        let cases: Vec<(Vec<&str>, &str)> = vec![
+            (vec!["--embedder", "tiny"], "Expected NAME=PATH"),
+            (vec!["--embedder", "=x"], "Expected NAME=PATH"),
+            (
+                vec!["--embedder", &spec, "--embedder", &spec],
+                "given twice",
+            ),
+            (vec!["--default-embedder", "nope"], "is not registered"),
+            (vec!["--embedder", "x=./no/such/dir/"], "no such directory"),
+            (
+                vec!["--embedder", "x=acme/missing"],
+                "neither a model directory",
+            ),
+            (vec!["--embedder", &reserved], "reserved"),
+            (vec!["--embedder", &no_model], "embed-model download"),
+        ];
+        for (mut args, needle) in cases {
+            args.extend(["-e", "1"]);
+            let res = run_env(&args, &[("GRAPHERSAL_EMBED_MODELS", empty_text.as_str())]);
+            assert_eq!(res.code, 2, "{args:?}: {}", res.stderr);
+            assert!(res.stderr.contains(needle), "{args:?}: {}", res.stderr);
+            assert!(res.stdout.is_empty(), "{args:?}: {}", res.stdout);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&empty);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // A mock Hugging Face endpoint
+    // -----------------------------------------------------------------------------------------
+
+    /// One answer of the mock: status, headers, body, and how many body bytes are really sent
+    /// (fewer than `Content-Length`: a broken-off download).
+    #[derive(Clone)]
+    struct Answer {
+        status: u16,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+        sent: Option<usize>,
+    }
+
+    impl Answer {
+        fn ok(body: Vec<u8>) -> Self {
+            Answer {
+                status: 200,
+                headers: Vec::new(),
+                body,
+                sent: None,
+            }
+        }
+
+        fn redirect(status: u16, location: &str) -> Self {
+            Answer {
+                status,
+                headers: vec![("Location".to_string(), location.to_string())],
+                body: Vec::new(),
+                sent: None,
+            }
+        }
+
+        fn header(mut self, name: &str, value: &str) -> Self {
+            self.headers.push((name.to_string(), value.to_string()));
+            self
+        }
+    }
+
+    type Routes = HashMap<String, Answer>;
+
+    /// The path and the Authorization header of every request the mock saw.
+    type Seen = Arc<Mutex<Vec<(String, Option<String>)>>>;
+
+    /// A minimal HTTP/1.1 server on 127.0.0.1 (one request per connection): answers by path
+    /// and records the path and the Authorization header of every request.
+    struct Mock {
+        port: u16,
+        seen: Seen,
+    }
+
+    impl Mock {
+        /// Serves the routes `make` builds from the mock's port.
+        fn start(make: impl FnOnce(u16) -> Routes) -> Mock {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let routes = make(port);
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let log = seen.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { continue };
+                    let Ok(clone) = stream.try_clone() else {
+                        continue;
+                    };
+                    let mut reader = BufReader::new(clone);
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).is_err() {
+                        continue;
+                    }
+                    let path = line.split_whitespace().nth(1).unwrap_or("");
+                    let path = path.split('?').next().unwrap_or("").to_string();
+                    let mut auth = None;
+                    loop {
+                        let mut header = String::new();
+                        if reader.read_line(&mut header).unwrap_or(0) == 0 || header == "\r\n" {
+                            break;
+                        }
+                        if let Some((name, value)) = header.split_once(':')
+                            && name.eq_ignore_ascii_case("authorization")
+                        {
+                            auth = Some(value.trim().to_string());
+                        }
+                    }
+                    log.lock().unwrap().push((path.clone(), auth));
+                    let answer = routes.get(&path).cloned().unwrap_or(Answer {
+                        status: 404,
+                        headers: Vec::new(),
+                        body: b"not found".to_vec(),
+                        sent: None,
+                    });
+                    let mut head = format!(
+                        "HTTP/1.1 {} X\r\nContent-Length: {}\r\nConnection: close\r\n",
+                        answer.status,
+                        answer.body.len()
+                    );
+                    for (name, value) in &answer.headers {
+                        head.push_str(&format!("{name}: {value}\r\n"));
+                    }
+                    head.push_str("\r\n");
+                    let sent = answer.sent.unwrap_or(answer.body.len());
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(&answer.body[..sent]);
+                    let _ = stream.flush();
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                }
+            });
+            Mock { port, seen }
+        }
+
+        fn endpoint(&self) -> String {
+            format!("http://127.0.0.1:{}", self.port)
+        }
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn sha256(bytes: &[u8]) -> String {
+        hex(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
+    }
+
+    fn git_blob_id(bytes: &[u8]) -> String {
+        let mut context = ring::digest::Context::new(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY);
+        context.update(format!("blob {}\0", bytes.len()).as_bytes());
+        context.update(bytes);
+        hex(context.finish().as_ref())
+    }
+
+    /// The routes of a repository `acme/tiny` at `main`, the Hugging Face way: config.json
+    /// directly (its git blob id as the ETag), tokenizer.json through a relative 307, the
+    /// safetensors file through a 302 to another host (`localhost` instead of `127.0.0.1`) with
+    /// the stated SHA-256 in X-Linked-Etag.
+    fn good_routes(port: u16, model: Vec<u8>, stated_sha: &str) -> Routes {
+        let config = config_json();
+        let tokenizer = tokenizer_json();
+        let base = "/acme/tiny/resolve/main";
+        let mut routes = HashMap::new();
+        routes.insert(
+            format!("{base}/config.json"),
+            Answer::ok(config.clone())
+                .header("ETag", &format!("\"{}\"", git_blob_id(&config)))
+                .header("X-Repo-Commit", "0123456789abcdef0123456789abcdef01234567"),
+        );
+        routes.insert(
+            format!("{base}/tokenizer.json"),
+            Answer::redirect(
+                307,
+                "/api/resolve-cache/acme/tiny/c0ffee/tokenizer.json?x=1",
+            )
+            .header("X-Linked-Etag", &format!("\"{}\"", git_blob_id(&tokenizer))),
+        );
+        routes.insert(
+            "/api/resolve-cache/acme/tiny/c0ffee/tokenizer.json".to_string(),
+            Answer::ok(tokenizer),
+        );
+        routes.insert(
+            format!("{base}/model.safetensors"),
+            Answer::redirect(
+                302,
+                &format!("http://localhost:{port}/cdn/model.safetensors?sig=abc"),
+            )
+            .header("X-Linked-Etag", &format!("\"{stated_sha}\""))
+            .header("X-Linked-Size", &model.len().to_string()),
+        );
+        routes.insert(
+            "/cdn/model.safetensors".to_string(),
+            Answer::ok(model).header("ETag", "\"cdn-etag\""),
+        );
+        routes
+    }
+
+    /// Staging directories and `.part` files anywhere under `models`.
+    fn leftovers(models: &Path) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut stack = vec![models.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with('.') || name.ends_with(".part") {
+                    found.push(entry.path().display().to_string());
+                }
+                if entry.path().is_dir() {
+                    stack.push(entry.path());
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn download_writes_the_model_and_its_manifest() {
+        let model = model_safetensors();
+        let sha = sha256(&model);
+        let mock = Mock::start(|port| good_routes(port, model.clone(), &sha));
+        let models = fresh_dir("m2v_download");
+        let models_text = models.display().to_string();
+        let endpoint = mock.endpoint();
+        let res = run_env(
+            &[
+                "embed-model",
+                "download",
+                "acme/tiny",
+                "--dir",
+                &models_text,
+            ],
+            &[
+                ("GRAPHERSAL_HF_ENDPOINT", endpoint.as_str()),
+                ("HF_TOKEN", "secret-token"),
+            ],
+        );
+        assert_eq!(res.code, 0, "stdout {} stderr {}", res.stdout, res.stderr);
+        assert!(res.stdout.contains("acme/tiny ->"), "{}", res.stdout);
+        assert!(
+            res.stdout.contains("identity model2vec/acme/tiny@"),
+            "{}",
+            res.stdout
+        );
+        assert!(res.stdout.contains("dimension 3"), "{}", res.stdout);
+        assert!(
+            res.stderr.contains("model.safetensors"),
+            "progress: {}",
+            res.stderr
+        );
+        assert!(
+            !res.stderr.contains("secret-token"),
+            "the token is never shown"
+        );
+        let dir = models.join("acme").join("tiny");
+        assert_eq!(std::fs::read(dir.join("model.safetensors")).unwrap(), model);
+        assert_eq!(
+            std::fs::read(dir.join("tokenizer.json")).unwrap(),
+            tokenizer_json()
+        );
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.join("graphersal-embed-model.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["repo"], "acme/tiny");
+        assert_eq!(manifest["revision"], "main");
+        assert_eq!(
+            manifest["commit"],
+            "0123456789abcdef0123456789abcdef01234567"
+        );
+        assert_eq!(manifest["files"][2]["name"], "model.safetensors");
+        assert_eq!(manifest["files"][2]["sha256"], sha.as_str());
+        assert_eq!(manifest["files"][2]["size"], model.len());
+        assert!(manifest["downloaded_at"].as_str().unwrap().ends_with('Z'));
+        assert!(leftovers(&models).is_empty(), "{:?}", leftovers(&models));
+
+        // The token went to the endpoint's host only, never to the redirect's other host.
+        let seen = mock.seen.lock().unwrap().clone();
+        assert!(seen.iter().any(|(path, _)| path.starts_with("/cdn/")));
+        for (path, auth) in &seen {
+            if path.starts_with("/cdn/") {
+                assert_eq!(auth, &None, "{path}");
+            } else {
+                assert_eq!(auth.as_deref(), Some("Bearer secret-token"), "{path}");
+            }
+        }
+
+        // list, and the model through --embedder REPO.
+        let env = [("GRAPHERSAL_EMBED_MODELS", models_text.as_str())];
+        let list = run_env(&["embed-model", "list"], &env);
+        assert_eq!(list.code, 0, "{}", list.stderr);
+        assert!(list.stdout.starts_with("REPO"), "{}", list.stdout);
+        assert!(
+            list.stdout.contains("model2vec/acme/tiny@"),
+            "{}",
+            list.stdout
+        );
+        let res = run_env(
+            &[
+                "--embedder",
+                "t=acme/tiny",
+                "-e",
+                r#"embed("graph", #{embedder: "t"}).to_string()"#,
+            ],
+            &env,
+        );
+        assert_eq!(res.code, 0, "{}", res.stderr);
+        assert!(res.stdout.contains("vector(["), "{}", res.stdout);
+
+        // A second download replaces the first one.
+        let again = run_env(
+            &[
+                "embed-model",
+                "download",
+                "acme/tiny",
+                "--dir",
+                &models_text,
+            ],
+            &[("GRAPHERSAL_HF_ENDPOINT", endpoint.as_str())],
+        );
+        assert_eq!(again.code, 0, "{}", again.stderr);
+        assert!(dir.join("model.safetensors").is_file());
+        assert!(leftovers(&models).is_empty(), "{:?}", leftovers(&models));
+        let _ = std::fs::remove_dir_all(&models);
+    }
+
+    #[test]
+    fn a_failed_download_leaves_no_model() {
+        let model = model_safetensors();
+        let good_sha = sha256(&model);
+        type Make = Box<dyn FnOnce(u16) -> Routes>;
+        let cases: Vec<(&str, Make, &str)> = vec![
+            (
+                "sha256 mismatch",
+                Box::new({
+                    let model = model.clone();
+                    move |port| good_routes(port, model, &"0".repeat(64))
+                }),
+                "nothing was kept",
+            ),
+            (
+                "git blob id mismatch",
+                Box::new({
+                    let (model, sha) = (model.clone(), good_sha.clone());
+                    move |port| {
+                        let mut routes = good_routes(port, model, &sha);
+                        routes.insert(
+                            "/acme/tiny/resolve/main/config.json".to_string(),
+                            Answer::ok(config_json())
+                                .header("ETag", &format!("\"{}\"", "1".repeat(40))),
+                        );
+                        routes
+                    }
+                }),
+                "git blob id",
+            ),
+            (
+                "broken off",
+                Box::new({
+                    let (model, sha) = (model.clone(), good_sha.clone());
+                    move |port| {
+                        let mut routes = good_routes(port, model.clone(), &sha);
+                        let mut cut = Answer::ok(model.clone());
+                        cut.sent = Some(model.len() / 2);
+                        routes.insert("/cdn/model.safetensors".to_string(), cut);
+                        routes
+                    }
+                }),
+                "broke off",
+            ),
+            (
+                "missing file",
+                Box::new({
+                    let (model, sha) = (model.clone(), good_sha.clone());
+                    move |port| {
+                        let mut routes = good_routes(port, model, &sha);
+                        routes.remove("/acme/tiny/resolve/main/model.safetensors");
+                        routes
+                    }
+                }),
+                "has no model.safetensors",
+            ),
+            (
+                "not a model",
+                Box::new(|port| {
+                    let garbage = b"not a safetensors file".to_vec();
+                    let sha = sha256(&garbage);
+                    good_routes(port, garbage, &sha)
+                }),
+                "does not load as a Model2Vec model",
+            ),
+            (
+                "refused",
+                Box::new(|_| {
+                    let mut refused = Answer::ok(b"no".to_vec());
+                    refused.status = 401;
+                    HashMap::from([("/acme/tiny/resolve/main/config.json".to_string(), refused)])
+                }),
+                "HF_TOKEN",
+            ),
+        ];
+        for (what, make, needle) in cases {
+            let mock = Mock::start(make);
+            let models = fresh_dir("m2v_failures");
+            let models_text = models.display().to_string();
+            let endpoint = mock.endpoint();
+            let res = run_env(
+                &[
+                    "embed-model",
+                    "download",
+                    "acme/tiny",
+                    "--dir",
+                    &models_text,
+                ],
+                &[("GRAPHERSAL_HF_ENDPOINT", endpoint.as_str())],
+            );
+            assert_eq!(res.code, 1, "{what}: {} {}", res.stdout, res.stderr);
+            assert!(res.stderr.contains(needle), "{what}: {}", res.stderr);
+            assert!(res.stdout.is_empty(), "{what}: {}", res.stdout);
+            assert!(
+                !models.join("acme").join("tiny").exists(),
+                "{what}: no model left"
+            );
+            assert!(
+                leftovers(&models).is_empty(),
+                "{what}: {:?}",
+                leftovers(&models)
+            );
+            let _ = std::fs::remove_dir_all(&models);
+        }
+    }
+
+    #[test]
+    fn embed_model_usage() {
+        let res = run_env(&["embed-model"], &[]);
+        assert_eq!(res.code, 2);
+        assert!(
+            res.stdout.contains("embed-model download"),
+            "{}",
+            res.stdout
+        );
+        let res = run_env(&["embed-model", "help"], &[]);
+        assert_eq!(res.code, 0);
+        assert!(res.stdout.contains("embed-model list"), "{}", res.stdout);
+        let res = run_env(&["embed-model", "download"], &[]);
+        assert_eq!(res.code, 2, "{}", res.stderr);
+        let res = run_env(&["embed-model", "download", "../../etc", "--dir", "x"], &[]);
+        assert_eq!(res.code, 2, "{}", res.stderr);
+        assert!(
+            res.stderr.contains("not a Hugging Face repository"),
+            "{}",
+            res.stderr
+        );
+        let res = run_env(
+            &[
+                "embed-model",
+                "download",
+                "a/b",
+                "--revision",
+                "../x",
+                "--dir",
+                "x",
+            ],
+            &[],
+        );
+        assert_eq!(res.code, 2, "{}", res.stderr);
+        let res = run_env(&["embed-model", "nope"], &[]);
+        assert_eq!(res.code, 2, "{}", res.stderr);
+        let res = run_env(&["embed-model", "list", "--bogus", "1"], &[]);
+        assert_eq!(res.code, 2, "{}", res.stderr);
+        let empty = fresh_dir("m2v_list_empty");
+        let empty_text = empty.display().to_string();
+        let res = run_env(&["embed-model", "list", "--dir", &empty_text], &[]);
+        assert_eq!(res.code, 0, "{}", res.stderr);
+        assert!(res.stdout.is_empty(), "{}", res.stdout);
+        assert!(
+            res.stderr.contains("No downloaded models"),
+            "{}",
+            res.stderr
+        );
+        let _ = std::fs::remove_dir_all(&empty);
+    }
+}

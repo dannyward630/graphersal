@@ -67,6 +67,10 @@ getrandom03 = { workspace = true }
 # The OS lock of the Store's `FsDir` (`persist`, native only: in the browser a Store lives in a `MemDir`).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 fd-lock = { workspace = true, optional = true }
+# The Model2Vec embedder (feature `model2vec`, native only; workspace manifest for the reasons).
+model2vec-rs = { workspace = true, optional = true }
+tokenizers = { workspace = true, optional = true }
+safetensors = { workspace = true, optional = true }
 
 # The free space of a single-file store's file system (`statvfs`; `persist`, Unix only).
 [target.'cfg(unix)'.dependencies]
@@ -98,6 +102,11 @@ persist-zip = ["persist"]
 # `#[global_allocator]` — a library crate cannot do this for a consumer (`graphersal` and
 # `graphersal-wasm` and `py-graphersal` all do, by default; see CLAUDE.md).
 alloc-tracking = []
+# The Model2Vec embedder `vector::Model2Vec` (book "Embeddings"): a static embedding model
+# loaded from a local directory (never the network) through `model2vec-rs` + `tokenizers`
+# (pure Rust, `fancy-regex`). Native only: it is never enabled for wasm32 (the playground keeps
+# `hash-ngram/1`).
+model2vec = ["dep:model2vec-rs", "dep:tokenizers", "dep:safetensors", "dep:serde_json"]
 
 [[example]]
 name = "quick_start"
