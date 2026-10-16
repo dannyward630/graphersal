@@ -99,5 +99,25 @@ graphersal --graph data -e 'g.add_v("person").property("name", "ann").iterate()'
 graphersal store info data
 ```
 
-More: [The graphersal store Command](../persistence/store_cli.md). Every option of the tool is in
+More: [The graphersal store Command](../persistence/store_cli.md).
+
+## Embedding models
+
+`embed()` computes vectors from text with an embedder; built in is `hash-ngram/1` (lexical only).
+`graphersal embed-model download <repo>` fetches a real Model2Vec model from Hugging Face once
+(the only network access of the tool), and `--embedder NAME=REPO` (or `NAME=<directory>`) loads it
+for any mode, `--default-embedder NAME` makes it the default:
+
+```bash
+graphersal embed-model download minishlab/potion-base-8M     # into ~/.cache/graphersal/embed-models
+graphersal embed-model list                                  # repository, size, model identity
+graphersal --embedder potion=minishlab/potion-base-8M --default-embedder potion \
+  -e 'g.v().values("name").embed().to_list()'
+```
+
+The models directory is `$GRAPHERSAL_EMBED_MODELS` (or `--dir`), else the user cache. A model
+that does not load stops the command with exit code 2 and the reason. More:
+[Embeddings and Vector Search](embeddings.md#real-models-model2vec).
+
+Every option of the tool is in
 `graphersal --help` and on the [Command Cheat Sheet](../users_guide/command_cheat_sheet.md).

@@ -94,6 +94,7 @@ mod merge_checkpoint_tests;
 mod merge_e_tests;
 mod merge_v_tests;
 mod meta_schema_tests;
+mod model2vec_tests;
 mod nested_profiling_tests;
 mod nested_source_tests;
 mod newer_format_tests;

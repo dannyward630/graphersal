@@ -13,7 +13,8 @@ a server, an MCP tool), which writes the result as an ordinary property value, o
 model as an *embedder* that the `embed` step calls. Built in is one small embedder,
 `hash-ngram/1`: no model, lexical similarity only (typos and word forms, not meaning), enough for
 fuzzy lookup and for trying the steps; the [reference page](../users_guide/vectors.md#embeddings)
-has the details and the reasoning.
+has the details and the reasoning. The `graphersal` command line registers a real semantic model
+for you: a downloaded [Model2Vec](#real-models-model2vec) model, run locally.
 
 This page is the practical tour. Every detail (element kinds, metrics, schema rules, formats) is
 on the reference page [Vectors](../users_guide/vectors.md).
@@ -372,6 +373,78 @@ g.v().has_label("doc").values("emb").to_list().map(|v| v.element)   // ["i8", "i
 
 The playground runs a whole script as one unit, so a failure on the way leaves the graph as it
 was; from Python pass `atomic=True` to `execute()` for the same.
+
+## Real models: Model2Vec
+
+The `graphersal` command line (and the dev server it starts) can run a real, semantic text model
+itself: a [Model2Vec](https://github.com/MinishLab/model2vec) *static* embedding model. Such a
+model keeps one vector per token and averages them for a text, so it needs no GPU and no neural
+network at run time: a small model like `minishlab/potion-base-8M` (256 dimensions, about 30 MB)
+embeds thousands of sentences per second on a laptop CPU, and it captures meaning, not only
+spelling ("car" and "automobile" come out close). It is less precise than a large transformer
+model, and much faster.
+
+**1. Download a model once.** This is the only step that uses the network:
+
+```bash
+graphersal embed-model download minishlab/potion-base-8M
+```
+
+It fetches `config.json`, `tokenizer.json` and `model.safetensors` from Hugging Face into the
+models directory (`$GRAPHERSAL_EMBED_MODELS`, else `~/.cache/graphersal/embed-models`, on
+Windows `%LOCALAPPDATA%\graphersal\embed-models`; `--dir` overrides it), checks the SHA-256
+Hugging Face states for the large file and the git blob id of the small ones, and writes a
+manifest `graphersal-embed-model.json` (repository, revision, the commit it resolved to, the
+files with their sizes and SHA-256). A failed or interrupted download leaves no model behind.
+`--revision <branch|tag|commit>` pins a version; `HF_TOKEN` is sent for gated or private
+repositories. `graphersal embed-model list` shows what is there:
+
+```text
+REPO                           SIZE  IDENTITY
+minishlab/potion-base-8M   29.5 MiB  model2vec/minishlab/potion-base-8M@fac4fa854e68
+```
+
+**2. Register it under a name.** `--embedder NAME=REPO` (a downloaded repository) or
+`--embedder NAME=PATH` (any directory holding a Model2Vec model) works with every mode: a
+one-shot query, the REPL, `--server` and its MCP tools, a Store. `--default-embedder NAME` makes
+it the embedder `embed()` uses without `#{embedder: ..}`:
+
+```bash
+graphersal --embedder potion=minishlab/potion-base-8M --default-embedder potion \
+  -e 'g.add_v("doc").property("text", "a graph database stores vertices and edges")
+        .add_v("doc").property("text", "banana bread recipe with walnuts")
+        .add_v("doc").property("text", "traversal queries over a network of nodes").iterate();
+      g.v().has_label("doc").property("emb", __.embed("text")).iterate();
+      g.v().has_label("doc").nearest("emb", embed("how do I query connected data?"), 2)
+        .values("text").to_list()'
+```
+
+```text
+"traversal queries over a network of nodes"
+"a graph database stores vertices and edges"
+```
+
+The model loads once when the command starts (a model that does not load stops it with exit
+code 2 and the reason); the built-in `hash-ngram/1` stays registered beside it. `g.embedders()`
+lists both, `GET /api/info` of the dev server too.
+
+**What leaves the machine.** Only the explicit `embed-model download`: it connects to
+`https://huggingface.co` (or the mirror in `$GRAPHERSAL_HF_ENDPOINT`). Loading and running a
+model is local: no text is sent anywhere.
+
+**Model identity.** Each embedder reports a model identity (`g.embedders()`, field `model`):
+`model2vec/<repo>@<12 hex digits>`, the start of a SHA-256 over the model's three files (without
+a manifest `model2vec@<12 hex digits>`). It names the model, never a path: a copied or moved
+model directory keeps it, a changed file gets another one. Vectors are comparable only between
+embedders of the same identity, so embed documents and questions with the same model.
+
+**Licences.** A model's licence is the model's own, set by whoever published it (see its
+Hugging Face page); Graphersal downloads and runs it but does not license it. `potion-base-8M`
+is MIT licensed.
+
+The Rust library has the same embedder as `graphersal::vector::Model2Vec` (feature
+`model2vec`, native targets; it loads from a local directory only), see
+[Vectors](../users_guide/vectors.md#embeddings).
 
 ## With real embeddings (Python)
 

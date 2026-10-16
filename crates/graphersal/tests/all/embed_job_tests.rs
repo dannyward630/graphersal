@@ -1131,3 +1131,146 @@ fn inference_never_invents_an_embedder() {
         .clone();
     assert_eq!(vector.and_then(|v| v.embedder), None);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Another element kind: the write quantizes, as any schema write does
+// ---------------------------------------------------------------------------------------------
+
+/// `docs(n)` with `emb` declared as vectors of `element` (no dimension, no embedder).
+fn docs_declared(n: usize, element: &str, dimension: Option<u32>) -> Arc<Graph> {
+    let graph = docs(n);
+    {
+        let mut lock = graph.write();
+        let mut schema = lock.get_schema().unwrap();
+        let dimension = dimension
+            .map(|d| format!(r#", "dimension": {d}"#))
+            .unwrap_or_default();
+        let node = schema_with(&format!(
+            r#"{{"type": "array", "format": "vector", "element": "{element}"{dimension}}}"#
+        ))
+        .unwrap()
+        .vertices["doc"]
+            .schema
+            .properties["emb"]
+            .clone();
+        schema.vertices["doc"]
+            .schema
+            .properties
+            .insert("emb".to_string(), node);
+        lock.traversal_mut().set_schema(schema).unwrap();
+    }
+    graph
+}
+
+fn stored_elements(graph: &Graph) -> Vec<String> {
+    let lock = graph.read();
+    lock.traversal()
+        .v(None)
+        .values("emb")
+        .to_list()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_vector().unwrap().element().name().to_string())
+        .collect()
+}
+
+#[test]
+fn an_f32_embedder_fills_an_i8_or_bit_property_quantized() {
+    for element in ["i8", "bit"] {
+        let graph = docs_declared(3, element, None);
+        let mock = Mock::new("mock", 2);
+        let report = run_job(
+            &graph,
+            &EmbedJob::new("doc", "text", "emb"),
+            &registry_with(&mock),
+        )
+        .unwrap();
+        assert_eq!(
+            (report.embedded, report.schema_changed),
+            (3, true),
+            "{element}"
+        );
+        assert_eq!(stored_elements(&graph), vec![element; 3]);
+        // The declaration keeps its element and gets the embedder's model.
+        let schema = graph.read().get_schema().unwrap();
+        let vector = schema.vertices["doc"].schema.properties["emb"]
+            .vector
+            .clone()
+            .unwrap();
+        assert_eq!(vector.element.name(), element);
+        assert_eq!(vector.embedder.as_deref(), Some("mock@1"));
+        // The same value as a plain write of the f32 vector (one quantizer).
+        let lock = graph.read();
+        let stored = lock
+            .traversal()
+            .v(None)
+            .has("text", "text 0")
+            .values("emb")
+            .next()
+            .unwrap()
+            .unwrap();
+        let expected = Mock::vector_of("text 0")
+            .quantize(VectorElement::from_name(element).unwrap())
+            .unwrap();
+        assert_eq!(stored.as_vector(), Some(&expected));
+    }
+    // Another dimension is still refused before the embedder runs.
+    let graph = docs_declared(2, "i8", Some(8));
+    let mock = Mock::new("mock", 2);
+    let err = run_job(
+        &graph,
+        &EmbedJob::new("doc", "text", "emb"),
+        &registry_with(&mock),
+    )
+    .unwrap_err();
+    assert!(err.contains("expected vector<i8, 8>"), "{err}");
+    assert_eq!(mock.calls(), 0);
+}
+
+#[test]
+fn a_text_query_works_on_i8_and_bit_properties() {
+    let embedders = Arc::new(Embedders::default());
+    for (element, query) in [
+        // i8: the f32 query compares with the stored i8 vectors, as a vector query does.
+        ("i8", r#"let q = embed("text 4");"#),
+        // bit: the query is quantized like a write, as a bit vector compares only with bits.
+        (
+            "bit",
+            r#"let q = g.inject(embed("text 4")).quantize("bit").next();"#,
+        ),
+    ] {
+        let graph = docs_declared(6, element, Some(256));
+        let _ = script(
+            &graph,
+            &embedders,
+            r#"g.embed_property(#{label: "doc", from: "text", to: "emb"})"#,
+        )
+        .unwrap();
+        assert_eq!(stored_elements(&graph), vec![element; 6]);
+        for (text, vector) in [
+            (
+                r#"g.v().nearest("emb", "text 4", 3).values("text").to_list()"#,
+                r#"g.v().nearest("emb", q, 3).values("text").to_list()"#,
+            ),
+            (
+                r#"g.v().similarity("emb", "text 4").to_list()"#,
+                r#"g.v().similarity("emb", q).to_list()"#,
+            ),
+        ] {
+            let a = script(&graph, &embedders, text).unwrap().to_string();
+            let b = script(&graph, &embedders, &format!("{query} {vector}"))
+                .unwrap()
+                .to_string();
+            assert_eq!(a, b, "{element}: {text}");
+        }
+        let best = script(
+            &graph,
+            &embedders,
+            r#"g.v().nearest("emb", "text 4", 1).values("text").next()"#,
+        )
+        .unwrap()
+        .into_string()
+        .unwrap();
+        assert_eq!(best, "text 4", "{element}");
+    }
+}

@@ -12,9 +12,15 @@ mod hash_ngram;
 mod job;
 pub(crate) mod provenance;
 
-pub use job::{EmbedJob, EmbedJobError, EmbedReport};
+#[cfg(all(feature = "model2vec", not(target_arch = "wasm32")))]
+mod model2vec;
+#[cfg(all(feature = "model2vec", not(target_arch = "wasm32")))]
+mod sha256;
 
 pub use hash_ngram::HashNgram;
+pub use job::{EmbedJob, EmbedJobError, EmbedReport};
+#[cfg(all(feature = "model2vec", not(target_arch = "wasm32")))]
+pub use model2vec::{Model2Vec, Model2VecOptions};
 
 use std::fmt;
 use std::sync::{Arc, OnceLock};

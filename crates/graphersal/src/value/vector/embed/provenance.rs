@@ -73,7 +73,7 @@ fn written_type(info: &EmbedderInfo) -> String {
 /// What `embed_property` writing `info`'s vectors into the top-level property `key` of the
 /// elements of (`kind`, `label`) needs from the stored `schema`: refused without an attached
 /// schema ([`EmbedError::SchemaNotAttached`]), for a declaration that is not a vector of the
-/// embedder's element and dimension (the schema's [`SchemaError::TypeMismatch`]) and for a
+/// embedder's dimension (another element kind is fine: the write quantizes to it) (the schema's [`SchemaError::TypeMismatch`]) and for a
 /// declaration of another model ([`EmbedError::EmbedderMismatch`]); otherwise nothing, or the
 /// schema with the declaration added (the whole vector node when the property is undeclared,
 /// the label too when it is; only `embedder` on a matching vector declaration without one).
@@ -116,10 +116,11 @@ pub(crate) fn plan(
     let Some(vector) = node.vector.as_ref() else {
         return Err(mismatch());
     };
-    if vector.element != info.element
-        || vector
-            .dimension
-            .is_some_and(|dimension| dimension as usize != info.dimension)
+    // Another element kind is fine: the write quantizes to the declared one (the schema's own
+    // coercion); another dimension is not.
+    if vector
+        .dimension
+        .is_some_and(|dimension| dimension as usize != info.dimension)
     {
         return Err(mismatch());
     }

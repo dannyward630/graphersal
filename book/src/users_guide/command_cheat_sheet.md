@@ -45,6 +45,17 @@ echo 'g.v().values("age").max().next()' | graphersal --in --graph modern   # the
 printf '/help has_label\n' | graphersal --repl                   # the REPL on a piped stdin (scripted sessions)
 ```
 
+Embedding models ([Model2Vec](../getting_started/embeddings.md#real-models-model2vec); the
+download is the only network access, a model runs locally):
+
+```bash
+graphersal embed-model download minishlab/potion-base-8M          # into $GRAPHERSAL_EMBED_MODELS or ~/.cache/graphersal/embed-models
+graphersal embed-model download minishlab/potion-base-8M --revision v1.0 --dir ./models   # a pinned revision, another directory
+graphersal embed-model list                                        # repository, size, model identity
+graphersal --embedder potion=minishlab/potion-base-8M --default-embedder potion -e 'embed("graph databases")'
+graphersal --embedder mine=./models/my-model -e 'g.v().embed("name", #{embedder: "mine"}).to_list()'   # a model directory
+```
+
 In the REPL a script runs when its input ends with `;`. Commands start with `/` (an input starting
 with `:` gets a pointer to its `/` form); Tab completes steps, token values (`P.`, `Order.`, `T.`,
 ...), commands and their arguments, in the session spelling. Completion and help read the same
@@ -144,6 +155,7 @@ graphersal --graph new/ --create-store --server          # create the store when
 graphersal --graph g.graphml --schema schema.json --server   # a graph file loaded against its schema
 graphersal --graph large --server --timeout 5000 --memory-limit auto   # limits apply to every query
 graphersal --graph modern --server --ui-dir ~/src/graphersal/playground # its files win over the embedded UI
+graphersal --graph modern --server --embedder potion=minishlab/potion-base-8M   # a Model2Vec model for every query
 ```
 
 Stop it with **Ctrl+C**: a running query is cancelled and an open store is closed cleanly. A

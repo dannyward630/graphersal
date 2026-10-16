@@ -64,10 +64,14 @@ pub struct TextQuery {
     /// Bound by `run()` before the permission check.
     candidates: Vec<TextCandidate>,
     /// The candidate chosen, the label that chose it and the embedded text (per execution).
-    resolved: parking_lot::Mutex<Option<(usize, CompactString, Vector)>>,
+    resolved: parking_lot::Mutex<Option<Resolved>>,
     /// Set when `bind` refused it, so the error is located at this step.
     bind_failed: bool,
 }
+
+/// A resolved text query: the candidate, the label that chose it, the embedded text and its
+/// bit quantization (made when a `bit` property needs it).
+type Resolved = (usize, CompactString, Vector, Option<Vector>);
 
 impl Clone for TextQuery {
     fn clone(&self) -> Self {
@@ -179,10 +183,12 @@ impl TextQuery {
             }
             _ => (None, CompactString::default()),
         };
-        let Some(model) = declared
-            .and_then(|node| node.vector)
-            .and_then(|vector| vector.embedder)
-        else {
+        let declared = declared.and_then(|node| node.vector);
+        // A bit property compares only with bit vectors: the query is quantized like a write.
+        let bit = declared
+            .as_ref()
+            .is_some_and(|vector| vector.element == crate::value::VectorElement::Bit);
+        let Some(model) = declared.and_then(|vector| vector.embedder) else {
             return Err(Box::new(TraverserError::Embed(
                 EmbedError::NoDeclaredEmbedder {
                     key: quoted(name),
@@ -203,9 +209,15 @@ impl TextQuery {
             )));
         };
         let mut resolved = self.resolved.lock();
-        if let Some((first, first_label, vector)) = resolved.as_ref() {
+        if let Some((first, first_label, vector, bits)) = resolved.as_mut() {
             if *first == index {
-                return Ok(vector.clone());
+                if !bit {
+                    return Ok(vector.clone());
+                }
+                if bits.is_none() {
+                    *bits = Some(Self::to_bits(vector)?);
+                }
+                return Ok(bits.clone().unwrap_or_else(|| vector.clone()));
             }
             return Err(Box::new(TraverserError::Embed(EmbedError::ModelConflict {
                 key: quoted(name),
@@ -234,8 +246,22 @@ impl TextQuery {
                     "no vector for the query text",
                 )))
             })?;
-        *resolved = Some((index, label, vector.clone()));
-        Ok(vector)
+        let bits = if bit {
+            Some(Self::to_bits(&vector)?)
+        } else {
+            None
+        };
+        let answer = bits.clone().unwrap_or_else(|| vector.clone());
+        *resolved = Some((index, label, vector, bits));
+        Ok(answer)
+    }
+
+    /// The query quantized to bits for a property declared `element: bit` (the quantizer a
+    /// schema write uses).
+    fn to_bits(vector: &Vector) -> TraverserResult<Vector> {
+        vector
+            .quantize(crate::value::VectorElement::Bit)
+            .map_err(|error| vector_error("nearest", error))
     }
 }
 

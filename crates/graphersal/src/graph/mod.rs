@@ -70,8 +70,11 @@ pub use memory::MemoryStats;
 pub use persistent::PersistentStorage;
 pub use property_index::{
     PropertyIndexDefinition, PropertyIndexInfo, PropertyIndexRange, PropertyIndexStats,
-    PropertyIndexTransform, PropertyIndexType,
+    PropertyIndexTransform,
 };
+// Only the script layer names it through the crate glob.
+#[cfg(feature = "script")]
+pub use property_index::PropertyIndexType;
 pub use schema::*;
 pub use shared::{Graph, GraphRead, GraphWrite};
 pub use statistics::GraphStatistics;

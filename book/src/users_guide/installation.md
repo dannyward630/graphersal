@@ -25,6 +25,7 @@ Graphersal comes with the several key features.
 | persist | Graphersal's own lossless binary format: packed snapshots (`.gsnap`), a write-ahead journal with recovery, and the Store (one directory or one `.gstore` file = one graph, durable commits, point in time, fork, rollback, backups, repair). See [Persistence](../persistence/overview.md). |
 | persist-zstd | zstd-compressed snapshot chunks on top of `persist` (pure Rust). |
 | persist-zip | ZIP backup archives of a Store on top of `persist`. |
+| model2vec | The embedder `vector::Model2Vec`: a [Model2Vec](../getting_started/embeddings.md#real-models-model2vec) static embedding model loaded from a local directory (never the network), through `model2vec-rs` and `tokenizers` (pure Rust). Native targets only; the `graphersal` CLI has it on by default. |
 
 ## CLI Application and Python
 

@@ -46,4 +46,8 @@ pub use crate::value::{
     EmbedContext, EmbedError, EmbedJob, EmbedJobError, EmbedReport, Embedder, EmbedderInfo,
     Embedders, EmbeddersBuilder, HashNgram,
 };
+/// Feature `model2vec` (native targets only): a Model2Vec static embedding model loaded from a
+/// local directory.
+#[cfg(all(feature = "model2vec", not(target_arch = "wasm32")))]
+pub use crate::value::{Model2Vec, Model2VecOptions};
 pub use crate::value::{Vector, VectorElement, VectorError, VectorMetric};

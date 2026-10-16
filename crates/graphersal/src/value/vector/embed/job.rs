@@ -359,8 +359,9 @@ fn embed_page(
     }
 }
 
-/// Whether the stored schema declares `to` for (`kind`, `label`) as vectors of `info`'s model,
-/// element and dimension (the cheap check of every page; otherwise the page plans again).
+/// Whether the stored schema declares `to` for (`kind`, `label`) as vectors of `info`'s model
+/// and dimension, any element kind (the write quantizes): the cheap check of every page;
+/// otherwise the page plans again.
 fn declared_for<S: GraphStorage>(
     storage: &S,
     kind: GraphNodeType,
@@ -373,7 +374,6 @@ fn declared_for<S: GraphStorage>(
         .and_then(|node| node.vector)
         .is_some_and(|vector| {
             vector.embedder.as_deref() == Some(info.model.as_str())
-                && vector.element == info.element
                 && vector
                     .dimension
                     .is_none_or(|dimension| dimension as usize == info.dimension)

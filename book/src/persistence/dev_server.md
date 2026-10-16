@@ -90,6 +90,20 @@ budget; Stop is the way to end a runaway query.
 graphersal --graph large --server --timeout 5000 --memory-limit auto
 ```
 
+## Embedding models
+
+`--embedder NAME=PATH|REPO` (repeatable) and `--default-embedder NAME` work with `--server` as
+with every other mode: the Model2Vec models are loaded once at start (a model that does not
+load stops the start with exit code 2), and every query of the server, the MCP `query` tool and
+the AI Chat's tools call the same registry (`embed()`, the `embed` step, `g.embedders()`).
+`GET /api/info` lists it as `embedders`. Running a model is local; only `graphersal embed-model
+download` connects to Hugging Face ([Embeddings](../getting_started/embeddings.md#real-models-model2vec)).
+
+```bash
+graphersal embed-model download minishlab/potion-base-8M
+graphersal --graph data/ --server --mcp --embedder potion=minishlab/potion-base-8M --default-embedder potion
+```
+
 ## What the UI does in this mode
 
 - A red **DEV SERVER · unstable** badge in the top bar. There is no start page and no graph choice:
@@ -584,7 +598,7 @@ For reference while it exists; it follows the playground's engine boundary
 
 | Endpoint | Engine method |
 |---|---|
-| `GET /api/info` | `info()` (`server: "graphersal-dev"`, `version`, `saveable`, `source`, `presets`: the limits in force, `mcp`: `{endpoint, readOnly, client}` or null, `ai`: `{provider, model, readOnly, sendsDataTo, maxToolCallsPerTurn}` or null (never the key; `sendsDataTo` is the provider's host, null for one on this machine), `damageFound`: `{text, frozen, foundBy, policy, problems}` or null) |
+| `GET /api/info` | `info()` (`server: "graphersal-dev"`, `version`, `saveable`, `source`, `presets`: the limits in force, `mcp`: `{endpoint, readOnly, client}` or null, `ai`: `{provider, model, readOnly, sendsDataTo, maxToolCallsPerTurn}` or null (never the key; `sendsDataTo` is the provider's host, null for one on this machine), `damageFound`: `{text, frozen, foundBy, policy, problems}` or null, `embedders`: `[{name, model, dimension, default}]`, the built-in `hash-ngram/1` and every `--embedder`) |
 | `GET /api/changes` | `changes()`: the change feed `{version, commitSeq, recent: [{version, by, commitSeq, detail?}], view, mcp, damageFound}`; `by` is the page's `X-Graphersal-Client` header (every request of the page sends it), `mcp`, or `ai` (an AI Chat conversation, its id in `detail`) |
 | `POST /mcp` | the MCP endpoint (with `--mcp`, [above](#mcp-an-ai-agent-on-the-same-graph)) |
 | `POST /api/ai/conversations` | with `--ai` (EXPERIMENTAL): a new AI Chat conversation `{id}` (random, 128 bits) owned by the page's `X-Graphersal-Client` (required); every other client gets `403` for it, an unknown id is `404`, and without `--ai` every `/api/ai/*` is `404` |
