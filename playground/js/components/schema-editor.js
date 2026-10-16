@@ -24,6 +24,9 @@ function edit(flow, fn) {
   }
 }
 
+/** The delete button's icon (a trash can): unlike "×" it does not read as "close". */
+const TRASH_ICON = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.8 6.5v5M9.2 6.5v5"/></svg>';
+
 const CONSTRAINT_LABELS = {
   minimum: 'minimum', maximum: 'maximum', exclusiveMinimum: 'exclusive min', exclusiveMaximum: 'exclusive max',
   minLength: 'min length', maxLength: 'max length', pattern: 'pattern', minItems: 'min items', maxItems: 'max items',
@@ -239,7 +242,7 @@ export const SchemaObjectTable = {
       }
     }
     return {
-      open, expanded, draftName, props_, propPath, nested, isExpanded, add, rename,
+      open, expanded, draftName, props_, propPath, nested, isExpanded, add, rename, TRASH_ICON,
       BASE_TYPES,
       info: (key) => describe(props_()[key]),
       type: (key) => typeText(props_()[key], { collapsed: true }),
@@ -255,7 +258,16 @@ export const SchemaObjectTable = {
       setItems: (key, base) => edit(props.flow, (d) => setBaseType(d, [...propPath(key), ...describe(getAt(d, propPath(key))).value, 'items'], base)),
       setNull: (key, on) => edit(props.flow, (d) => setNullable(d, propPath(key), on)),
       setReq: (key, on) => edit(props.flow, (d) => setRequired(d, props.path, key, on)),
-      remove: (key) => edit(props.flow, (d) => removeProperty(d, props.path, key)),
+      // A property's whole declaration goes with it (type, constraints, annotations, nested fields).
+      remove: (key) => {
+        if (!window.confirm(`Delete property "${key}" from the schema draft? Its type, constraints and annotations are removed with it.`)) return;
+        edit(props.flow, (d) => removeProperty(d, props.path, key));
+      },
+      // A click on the row outside its fields and buttons opens or closes the detail form.
+      rowClick: (key, event) => {
+        if (event.target.closest('input, select, textarea, button, a, label')) return;
+        open[key] = !open[key];
+      },
     };
   },
   template: `
@@ -268,7 +280,7 @@ export const SchemaObjectTable = {
     </tr></thead>
     <tbody>
       <template v-for="(node, key) in props_()" :key="key">
-        <tr :class="{ open: open[key] }">
+        <tr class="prop-row" :class="{ open: open[key] }" :title="open[key] ? 'Click to close the details' : ''" @click="rowClick(key, $event)">
           <td><input type="text" class="cell-input name" :value="key" :aria-label="'Name of property ' + key" spellcheck="false"
                      @change="rename(key, $event.target.value)" @keydown.enter="$event.target.blur()"></td>
           <td class="type">
@@ -292,14 +304,16 @@ export const SchemaObjectTable = {
               <template v-if="summary(key).length"><code v-for="c in summary(key)" :key="c" class="schema-chip">{{ c }}</code></template>
               <span v-else class="faint">add…</span>
               <span v-if="node && (node.description || node.default !== undefined)" class="faint" title="Has annotations"> ✎</span>
+              <span class="faint chevron" aria-hidden="true">{{ open[key] ? ' ▴' : ' ▾' }}</span>
             </button>
           </td>
           <td class="actions">
-            <button class="icon-btn" :title="'Remove property ' + key" :aria-label="'Remove property ' + key" @click="remove(key)">×</button>
+            <button class="icon-btn danger-hover" :title="'Delete property ' + key" :aria-label="'Delete property ' + key" @click="remove(key)" v-html="TRASH_ICON"></button>
           </td>
         </tr>
         <tr v-if="open[key]" class="details-row"><td colspan="6">
           <schema-node-details :flow="flow" :path="propPath(key)"></schema-node-details>
+          <div class="details-close"><button class="btn small" @click="open[key] = false">▴ Close</button></div>
         </td></tr>
         <tr v-if="nested(key)" class="nested-row"><td colspan="6">
           <button class="link-btn nested-toggle" :aria-expanded="String(isExpanded(key))" @click="expanded[key] = !isExpanded(key)">
@@ -344,7 +358,10 @@ const SchemaLabel = {
       entry, schemaPath, vertexLabels, labelOptions, additional,
       connections: () => (Array.isArray(entry().connections) ? entry().connections : []),
       rename: (to) => edit(props.flow, (d) => renameLabel(d, props.kind, props.name, to)),
-      remove: () => edit(props.flow, (d) => removeLabel(d, props.kind, props.name)),
+      remove: () => {
+        if (!window.confirm(`Delete ${props.kind} label "${props.name}" from the schema draft? Its properties${props.kind === 'edge' ? ' and connections' : ''} are removed with it.`)) return;
+        edit(props.flow, (d) => removeLabel(d, props.kind, props.name));
+      },
       setAdditional: (choice) => edit(props.flow, (d) => {
         const s = getAt(d, schemaPath());
         if (!isPlainObject(s)) d[section()][props.name].schema = { type: 'object', properties: {} };
@@ -353,6 +370,7 @@ const SchemaLabel = {
       addConn: () => edit(props.flow, (d) => addConnection(d, props.name)),
       setConn: (i, side, v) => edit(props.flow, (d) => setConnection(d, props.name, i, side, v)),
       removeConn: (i) => edit(props.flow, (d) => removeConnection(d, props.name, i)),
+      TRASH_ICON,
     };
   },
   template: `
@@ -369,7 +387,7 @@ const SchemaLabel = {
         </select>
       </label>
       <span class="spacer"></span>
-      <button class="icon-btn" :title="'Remove ' + kind + ' label ' + name" :aria-label="'Remove ' + kind + ' label ' + name" @click="remove">×</button>
+      <button class="icon-btn danger-hover" :title="'Delete ' + kind + ' label ' + name" :aria-label="'Delete ' + kind + ' label ' + name" @click="remove" v-html="TRASH_ICON"></button>
     </div>
     <div v-if="kind === 'edge'" class="schema-connections">
       <span class="faint">connections</span>
@@ -386,7 +404,7 @@ const SchemaLabel = {
           <option v-if="c.to !== '*' && !labelOptions().includes(c.to)" :value="c.to">{{ c.to }}{{ vertexLabels().includes(c.to) ? '' : ' (undeclared)' }}</option>
           <option v-for="l in labelOptions()" :key="l" :value="l">{{ l }}</option>
         </select>
-        <button class="icon-btn" :aria-label="'Remove connection ' + (i + 1)" title="Remove this connection" @click="removeConn(i)">×</button>
+        <button class="icon-btn danger-hover" :aria-label="'Delete connection ' + (i + 1)" title="Delete this connection" @click="removeConn(i)" v-html="TRASH_ICON"></button>
       </span>
       <button class="btn small" @click="addConn">+ connection</button>
     </div>

@@ -1169,6 +1169,10 @@ table.schema-table { border-collapse: collapse; width: 100%; font-size: 12.5px; 
 .schema-table td.constraints { white-space: normal; min-width: 120px; width: 100%; }
 .schema-table td.constraints .schema-chip { padding: 0 5px; border-radius: 4px; background: var(--surface-3); color: var(--text); }
 .schema-table tr.open > td { background: var(--accent-soft); }
+.schema-table tr.prop-row.open { cursor: pointer; }
+.schema-table .details-close { display: flex; justify-content: flex-end; padding: 4px 8px 0; }
+.icon-btn.danger-hover:hover { color: var(--danger); }
+.icon-btn svg { display: block; }
 .schema-table .nested-row > td, .schema-table .details-row > td { padding: 2px 0 6px 18px; border-bottom: 1px solid var(--border); }
 .schema-table .nested-row > td > .schema-table { border-left: 2px solid var(--border-strong); }
 .schema-table .nested-toggle { color: var(--text-muted); font-family: var(--font-mono); font-size: 12px; }
