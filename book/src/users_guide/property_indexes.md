@@ -23,7 +23,7 @@ costs memory and a little time on every write of its key (below).
 
 | DSL | Rust (`GraphTraversalSource`) | Python (`Graph`) |
 |---|---|---|
-| `g.create_index(#{label, key, element?, name?})` / `g.createIndex(..)` | `create_index(name, PropertyIndexDefinition::new(kind, label, key))` | `graph.create_index(label, key, element="vertex", name=None)` |
+| `g.create_index(#{label, key, element?, name?, type?})` / `g.createIndex(..)` | `create_index(name, PropertyIndexDefinition::new(kind, label, key))`, `.with_type(PropertyIndexType::MemoryOrdered)` | `graph.create_index(label, key, element="vertex", name=None, type="memory-ordered")` |
 | `g.indexes()` | `list_indexes()` | `graph.indexes()` |
 | `g.drop_index(name)` / `g.dropIndex(name)` | `drop_index(name)` | `graph.drop_index(name)` |
 
@@ -33,17 +33,100 @@ costs memory and a little time on every write of its key (below).
 - `name` defaults to `<label>_<key>` (`<label>_<key>_edge` for an edge index), with every
   character that is not a letter, a digit or `_` replaced by `_`. It is an identifier like a
   saved query's name.
-- One index per `(element, label, key)`: a second one under another name fails with a
+- `type` is the [index type](#index-types), `"memory-ordered"` by default (the only type this
+  version knows).
+- One index per `(element, label, key, type)`: a second one under another name fails with a
   *Conflicting property index* error that names the first. Declaring the same name again replaces
   the index.
-- `g.indexes()` lists each index with `served` (whether the storage serves it, see
-  [below](#other-storages)) and its current `entries` (indexed elements), `distinct_values` and
-  `bytes` (an estimate of its memory).
+- `g.indexes()` lists each index with its `type`, `served` (whether it is served, with a
+  `reason` when it is not: see [unknown types](#an-index-type-from-a-newer-version) and
+  [other storages](#other-storages)) and its current `entries` (indexed elements),
+  `distinct_values` and `bytes` (an estimate of its memory).
 
 ```rhai,graph=modern,script
 g.create_index(#{element: "edge", label: "knows", key: "weight"});
 g.e().has_label("knows").has("weight", P.gt(0.6)).count().next()
 ```
+
+## Index types
+
+Every index has a **type** (the key `type`): how it keeps its entries, which values it holds and
+which conditions it serves. This version knows one type, and it is the default:
+
+| Type | What it is | Serves |
+|---|---|---|
+| `memory-ordered` | an ordered index kept in memory; its entries are derived from the data and rebuilt whenever the graph is loaded ([below](#persistence)) | equality, `P.within` and the ranges ([below](#what-is-served)) |
+
+Which value types an index type holds (Rust: `PropertyIndexType::holds`, the one place the engine
+and the front ends take it from):
+
+| Value type | `memory-ordered` |
+|---|---|
+| `null`, `boolean` | yes |
+| `int64`, `float64` | yes (ranged by their value as `float64`) |
+| `string` (also a [compressed](compressed_properties.md) one, by its text) | yes |
+| `uuid` | yes |
+| `date`, `localdatetime`, `datetime`, `time`, `duration` | yes |
+| `array` (a list), `object` (a map) | no |
+| `vector` | no ([vectors](vectors.md) are searched with `nearest()` and `similarity()`) |
+
+A value the index does not hold is skipped: the element is not in the index, and a condition on
+such a value is answered by a scan, so results never change.
+
+```rhai,graph=modern
+g.create_index(#{label: "person", key: "age", type: "memory-ordered"})   // the default, spelled out
+g.create_index(#{label: "person", key: "age", type: "hash"})   // refused: not a type this version knows
+```
+
+### Checked against the schema when created
+
+When the graph's stored [schema](schema_enforcement.md) declares the key at the top level of the
+index's label (a vertex label for a vertex index, an edge label for an edge index) and **none** of
+the declared types, `null` aside, can be held by the index type (a vector, a list, a map, or an
+`anyOf` of only such), creating the index is refused, with a message that names the label, the
+key, the declared type and the index type:
+
+```rhai,graph=empty
+// refused: the schema declares `embedding` as a vector
+{
+  g.set_schema(#{mode: "open", vertices: #{doc: #{schema: #{type: "object", properties: #{
+    embedding: #{type: "array", format: "vector", element: "f32"}}}}}});
+  g.create_index(#{label: "doc", key: "embedding"})
+}
+```
+
+```text
+Error: Cannot create a property index on vertex 'doc' key 'embedding': the schema declares
+'embedding' as vector<f32>, and an index of type 'memory-ordered' holds none of its values
+Help: Vectors are not index keys: search them with nearest() or similarity() (an exact search,
+book page "Vectors"), for example g.v().has_label("doc").nearest("embedding", query, 10) for the
+10 closest; a vector index type is planned. ...
+```
+
+For a list or a map the help suggests indexing a scalar top-level property instead (an index key
+is one top-level name; nested fields are not indexed). A declaration with at least one type the
+index holds (`anyOf` of a list and a string, `["string", "null"]`), a key the schema does not
+declare, a label it does not declare, and a graph without a schema are all accepted. The schema's
+mode does not matter (a declaration in mode `none` counts too). The playground's form shows the
+refusal under its **Key** field.
+
+The check runs when an index is **created** (the DSL, `GraphTraversalSource::create_index`,
+Python, the playground, the dev server and MCP), never when a definition is stored as it is:
+`set_definition`, `apply_change_set`, a replay or recovery, a catalog file or a snapshot load
+keep what they carry. A **later schema change never drops an index**: an index whose key the
+schema later declares as a vector stays and simply holds nothing of it.
+
+### An index type from a newer version
+
+A store (or a catalog file, a change set) written by a newer Graphersal may hold an index of a
+type this version does not know. Such a definition is **never damage**: it is kept in the catalog
+exactly as read and written back unchanged (its payload byte for byte through the journal,
+checkpoints, backups, forks and snapshots), but it is **not served**: no entries are built, the
+optimizer never reads it, and `g.indexes()` (and the playground, the dev server and MCP's
+`list_indexes`) shows it with `served: false` and a `reason` such as *index type 'x' is not
+known to this version*. It can be dropped like any index. Creating or redefining an index of an
+unknown type is refused with an error whose help lists the known types. Indexes of different
+types may cover the same `(element, label, key)`.
 
 ## What is served
 
@@ -148,21 +231,26 @@ lookups `vertices_by_property_index`/`edges_by_property_index`.
 ## In the playground, the dev server and MCP
 
 - **Playground** (WebAssembly and over the dev server): **Catalog ▾ ▸ Property indexes** lists the
-  indexes with their entries, distinct values, elements per value (what an equality reads) and
-  memory, creates one from a form (element, label, key, optional name; the default name is shown
-  as you type) and drops one after a confirmation. The **Statistics** tab of the Profile panel
+  indexes with their type, entries, distinct values, elements per value (what an equality reads)
+  and memory (an index that is not served says why), creates one from a form (element, label,
+  key, type, optional name; the default name is shown as you type; an engine refusal shows under
+  its field) and drops one after a confirmation. The **Statistics** tab of the Profile panel
   shows *Property indexes* with their memory when the graph has some. Indexes travel with the
   catalog file (**Catalog ▾ ▸ Save catalog**).
-- **Dev server**: `GET /api/indexes`, `POST /api/indexes/create` `{label, key, element?, name?}`,
+- **Dev server**: `GET /api/indexes`, `POST /api/indexes/create` `{label, key, element?, name?, type?}`,
   `POST /api/indexes/drop` `{name}` (see [the dev server](../persistence/dev_server.md)); a
   create or drop is a commit recorded in the change feed, so open browsers reload. The start
   block on stderr names the index memory.
-- **MCP**: the tools `list_indexes` (also with `--mcp-read-only`), `create_index` and
-  `drop_index` (not offered read-only, where `query` refuses `g.create_index` too).
+- **MCP**: the tools `list_indexes` (also with `--mcp-read-only`), `create_index` (with an
+  optional `type`, an enum of the known types) and `drop_index` (not offered read-only, where
+  `query` refuses `g.create_index` too).
 
 ## Limits
 
-- Not indexed: nested values (jpath keys), lists and maps as values, labels other than the one
-  declared (an index on `person` does not serve `v().has("title", ..)` without `has_label`).
+- Not indexed: nested values (jpath keys), lists, maps and vectors as values (see
+  [index types](#index-types)), labels other than the one declared (an index on `person` does not
+  serve `v().has("title", ..)` without `has_label`).
+- One index type (`memory-ordered`): persisted, hash, vector (approximate nearest neighbour) and
+  full-text types are planned and will be additional values of `type`.
 - No unique indexes (constraints) in this version.
 - `order().by(key)` does not read the index.

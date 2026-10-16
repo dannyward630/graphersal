@@ -414,13 +414,17 @@ class Graph:
         key: str,
         element: str = "vertex",
         name: Optional[str] = None,
+        type: str = "memory-ordered",
         *,
         policy: Optional[AccessPolicy] = None,
     ) -> None:
         """Declares (or replaces) a property index: the ``element``s labelled ``label``,
-        ordered by their top-level property ``key`` (name: ``<label>_<key>`` by default)."""
+        ordered by their top-level property ``key`` (name: ``<label>_<key>`` by default) in an
+        index of ``type`` (``"memory-ordered"``, the only type this version knows). An unknown
+        type, or a key the schema declares as a vector, an array or an object, is refused."""
     def indexes(self, *, policy: Optional[AccessPolicy] = None) -> list[dict[str, Any]]:
-        """The property indexes with their current stats."""
+        """The property indexes with their type, whether they are served (``reason`` when
+        not) and their current stats."""
     def drop_index(self, name: str, *, policy: Optional[AccessPolicy] = None) -> bool:
         """Drops the property index; ``False`` when there is none."""
     def call_query(

@@ -10,6 +10,10 @@ import {
 } from '../js/indexes.js';
 import { catalogCountsText } from '../js/compression.js';
 import { statisticsModel } from '../js/statistics.js';
+import {
+  DEFAULT_INDEX_TYPE, INDEX_TYPES, indexTypeOf, isKnownIndexType, indexNotServedReason,
+  newTypedIndexDraft,
+} from '../js/indexes.js';
 
 const INDEX = {
   name: 'person_age',
@@ -95,4 +99,39 @@ test('the Statistics tab shows index memory only when there is some', () => {
   assert.deepEqual(names(memory), ['Structure', 'Indexes', 'Properties', 'Property indexes', 'Total']);
   assert.equal(statisticsModel({ memory }).memory[3].text, '2 KiB');
   assert.deepEqual(names({ ...memory, property_index_bytes: 0 }), ['Structure', 'Indexes', 'Properties', 'Total']);
+});
+
+test('index types: the default, the known list and the type of an entry', () => {
+  assert.equal(DEFAULT_INDEX_TYPE, 'memory-ordered');
+  assert.deepEqual(INDEX_TYPES.map((t) => t.name), ['memory-ordered']);
+  assert.match(INDEX_TYPES[0].description, /ordered index kept in memory/u);
+  assert.equal(isKnownIndexType('memory-ordered'), true);
+  assert.equal(isKnownIndexType('future-x'), false);
+  assert.equal(indexTypeOf({ ...INDEX, type: 'memory-ordered' }), 'memory-ordered');
+  assert.equal(indexTypeOf({ ...INDEX, type: 'future-x' }), 'future-x');
+  // An entry of an engine before the type field: the default type.
+  assert.equal(indexTypeOf(INDEX), 'memory-ordered');
+  assert.equal(indexTypeOf(null), 'memory-ordered');
+});
+
+test('not served: the engine reason wins, else the storage text', () => {
+  assert.equal(indexNotServedReason(INDEX), '');
+  const future = {
+    ...INDEX, type: 'future-x', served: false, stats: null,
+    reason: "index type 'future-x' is not known to this version",
+  };
+  assert.equal(indexNotServedReason(future), future.reason);
+  assert.match(indexNotServedReason({ ...INDEX, served: false, stats: null }), /serves no index/u);
+  assert.equal(indexNotServedReason(null), '');
+});
+
+test('the typed draft sends its type; a draft without one sends none', () => {
+  const draft = newTypedIndexDraft();
+  assert.deepEqual(draft, { name: '', element: 'vertex', label: '', key: '', type: 'memory-ordered' });
+  assert.deepEqual(indexDraftToSpec({ ...draft, label: 'person', key: 'age' }).spec, {
+    element: 'vertex', label: 'person', key: 'age', type: 'memory-ordered',
+  });
+  assert.deepEqual(indexDraftToSpec({ ...draft, label: 'person', key: 'age', type: ' ' }).spec, {
+    element: 'vertex', label: 'person', key: 'age',
+  });
 });

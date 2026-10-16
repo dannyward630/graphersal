@@ -2509,6 +2509,94 @@ fn mcp_property_index_tools_and_read_only() {
 }
 
 #[test]
+fn property_index_types_over_http_and_mcp() {
+    let ui = ui_dir("index-types");
+    let ui_arg = ui.to_str().unwrap().to_string();
+    let server = start(&["--graph", "modern", "--ui-dir", &ui_arg, "--mcp"]);
+    let port = server.port;
+    // HTTP: the type is listed, an unknown one is an error of the field `type`.
+    let created = post(
+        port,
+        "/api/indexes/create",
+        r#"{"label": "person", "key": "age", "type": "memory-ordered"}"#,
+    )
+    .json();
+    assert_eq!(created["ok"], true, "{created}");
+    assert_eq!(created["index"]["type"], "memory-ordered", "{created}");
+    let listed = get(port, "/api/indexes").json();
+    assert_eq!(listed[0]["type"], "memory-ordered", "{listed}");
+    assert_eq!(listed[0]["reason"], Value::Null, "{listed}");
+    let refused = post(
+        port,
+        "/api/indexes/create",
+        r#"{"label": "person", "key": "name", "type": "hash"}"#,
+    )
+    .json();
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert_eq!(refused["errors"][0]["field"], "type", "{refused}");
+    // A key the schema declares as a vector: an error of the field `key`.
+    let set = execute(
+        port,
+        r#"g.set_schema(#{mode: "open", vertices: #{doc: #{schema: #{type: "object",
+             properties: #{emb: #{type: "array", format: "vector", element: "f32"}}}}}})"#,
+    );
+    assert_eq!(set["ok"], true, "{set}");
+    let refused = post(
+        port,
+        "/api/indexes/create",
+        r#"{"label": "doc", "key": "emb"}"#,
+    )
+    .json();
+    assert_eq!(refused["errors"][0]["field"], "key", "{refused}");
+    assert!(
+        refused["errors"][0]["help"]
+            .as_str()
+            .unwrap()
+            .contains("nearest()"),
+        "{refused}"
+    );
+
+    // MCP: initialize -> tools/list (the type enum) -> tools/call.
+    let mut mcp = McpClient::connect(port, &[]);
+    let tools = mcp.rpc("tools/list", serde_json::json!({}));
+    let create = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "create_index")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        create["inputSchema"]["properties"]["type"]["enum"],
+        serde_json::json!(["memory-ordered"]),
+        "{create}"
+    );
+    let (error, text) = mcp.call(
+        "create_index",
+        serde_json::json!({"label": "software", "key": "lang", "type": "memory-ordered"}),
+    );
+    assert!(
+        !error && text.contains("\"type\": \"memory-ordered\""),
+        "{text}"
+    );
+    let (error, text) = mcp.call(
+        "create_index",
+        serde_json::json!({"label": "software", "key": "name", "type": "hash"}),
+    );
+    assert!(error && text.contains("\"type\""), "{text}");
+    let (error, text) = mcp.call(
+        "create_index",
+        serde_json::json!({"label": "doc", "key": "emb"}),
+    );
+    assert!(error && text.contains("vector<f32>"), "{text}");
+    let (error, text) = mcp.call("list_indexes", serde_json::json!({}));
+    assert!(
+        !error && text.matches("\"type\": \"memory-ordered\"").count() == 2,
+        "{text}"
+    );
+}
+
+#[test]
 fn mcp_saved_query_tools_and_resource() {
     let ui = ui_dir("mcp-queries");
     let ui_arg = ui.to_str().unwrap().to_string();

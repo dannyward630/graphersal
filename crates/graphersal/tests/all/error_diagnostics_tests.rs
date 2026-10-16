@@ -6636,3 +6636,54 @@ fn vector_search_errors_carry_their_help() {
     );
     assert!(report.contains("quantize(\"bit\")"), "{report}");
 }
+
+#[test]
+fn property_index_type_errors_carry_their_help() {
+    use crate::script_host::eval_value;
+
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    let fail = |script: &str| -> String {
+        eval_value(graph.clone(), script)
+            .expect_err(script)
+            .to_string()
+    };
+    let _ = eval_value(
+        graph.clone(),
+        r#"g.set_schema(#{mode: "open", vertices: #{doc: #{schema: #{type: "object", properties: #{
+             emb: #{type: "array", format: "vector", element: "f32"},
+             tags: #{type: ["array", "null"], items: #{type: "string"}}}}}}})"#,
+    )
+    .unwrap();
+
+    let vector = fail(r#"g.create_index(#{label: "doc", key: "emb"})"#);
+    for part in [
+        "Cannot create a property index on vertex 'doc' key 'emb': the schema declares 'emb' \
+         as vector<f32>, and an index of type 'memory-ordered' holds none of its values",
+        "Help: Vectors are not index keys: search them with nearest() or similarity() (an exact \
+         search, book page \"Vectors\"), for example \
+         g.v().has_label(\"doc\").nearest(\"emb\", query, 10)",
+        "a vector index type is planned",
+        "a schema change made after an index exists never drops it",
+    ] {
+        assert!(vector.contains(part), "{part}\n{vector}");
+    }
+    let array = fail(r#"g.createIndex(#{label: "doc", key: "tags"})"#);
+    for part in [
+        "declares 'tags' as array<string>",
+        "Help: An index of type 'memory-ordered' holds scalar values only",
+        "Index a scalar top-level property instead",
+        "g.v().has_label(\"doc\").property(\"tags_main\", ..)",
+    ] {
+        assert!(array.contains(part), "{part}\n{array}");
+    }
+    let unknown = fail(r#"g.create_index(#{label: "person", key: "age", type: "btree"})"#);
+    for part in [
+        "Invalid type of 'person_age': 'btree' is not an index type this version knows (known: \
+         memory-ordered)",
+        "Help: The index type says how the index keeps its entries. This version knows \
+         \"memory-ordered\".",
+        "g.create_index(#{label: \"person\", key: \"age\", type: \"memory-ordered\"})",
+    ] {
+        assert!(unknown.contains(part), "{part}\n{unknown}");
+    }
+}

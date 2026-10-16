@@ -470,10 +470,16 @@ speed-up. Its payload keys, in this order, followed by the unknown keys:
 | `element` | string: `"vertex"` or `"edge"` |
 | `label` | string: the label |
 | `key` | string: the top-level property name (not a jpath) |
+| `type` | string: the index type, `"memory-ordered"` (an ordered index in memory whose entries a load builds from the data) |
 
-`label` and `key` are required; `element` defaults to `"vertex"`. Two indexes with the same
-`element`, `label` and `key` are invalid (a writer refuses the second). A store written before
-this kind was decoded never holds it (kind 2 was reserved), so no format version changes.
+`label` and `key` are required; `element` defaults to `"vertex"`, `type` to `"memory-ordered"`
+(a payload written before the key existed has none). A writer of this version always writes
+`type`. Two indexes with the same `element`, `label`, `key` and `type` are invalid (a writer
+refuses the second); indexes of different types may cover the same key. A `type` the reader does
+not know (a newer writer's) is NOT damage and needs no new format version (16 rule 1): the
+reader keeps the definition, writes its payload back exactly as read (every key, in the order
+read), builds no entries for it and serves no query from it. A store written before this kind
+was decoded never holds it (kind 2 was reserved), so no format version changes.
 
 ## 7. Segment files and chunks
 
