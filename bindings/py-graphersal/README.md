@@ -15,6 +15,12 @@ and times, and `graphersal.Vertex` / `graphersal.Edge` for vertices and edges). 
 primary exchange format for Gremlin users) and GraphML; graphs can also be kept on disk with
 durable commits (the Store).
 
+**Vector search for GraphRAG.** Store the embeddings your model computes (a list or a `numpy`
+float32 array becomes a `graphersal.Vector`; `f32`, or quantized to `f16`, `i8`, `bit`), find the
+passages nearest to a question with `nearest()` and follow the graph from them in the same query:
+the context for your language model in one call. The guide, with a sentence-transformers example:
+[Embeddings and Vector Search](https://graphersal.dev/getting_started/embeddings.html).
+
 ## Installing
 
 ```bash

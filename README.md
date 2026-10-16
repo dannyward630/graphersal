@@ -1,6 +1,7 @@
 # Graphersal
 
-**An in-memory graph database and traversal engine in Rust, queried with Gremlin.**
+**An in-memory graph database and traversal engine in Rust, queried with Gremlin, with vector
+search for GraphRAG.**
 
 [![crates.io](https://img.shields.io/crates/v/graphersal.svg)](https://crates.io/crates/graphersal)
 [![docs.rs](https://img.shields.io/docsrs/graphersal)](https://docs.rs/graphersal)
@@ -24,6 +25,29 @@ ask about your graph in plain language and it writes and runs the queries for yo
 and transactions, and the safety to run queries you did not write — permissions, read-only access,
 resource limits and timeouts. You start with a working system, not with a list of components to
 wire together.
+
+## Vector search and GraphRAG
+
+Store your embeddings next to the graph and search them in the same query that walks it. A
+`vector` is a value type of its own (`f32`, or quantized to `f16`, `i8` or `bit` to save memory),
+declared in the schema, searched exactly with `nearest()` and `similarity()` (cosine, dot product,
+L2, Hamming). **GraphRAG** in one traversal: find the passages nearest to the question, then follow
+the edges to what the graph knows about them, and hand that context to your language model.
+
+```groovy
+// "What should I cook for my cat?" ~ the question's embedding
+g.v().has_label("doc").nearest("emb", question, 2)
+  .project("title", "author", "topic")
+    .by("title")
+    .by(__.in("wrote").values("name"))
+    .by(__.out("about").values("name"))
+```
+
+[Run it in the playground](https://play.graphersal.dev/#/play?graph=empty&q=%2F%2F%20Documents%20with%20toy%20embeddings%20%5Banimals%2C%20food%2C%20technology%5D%2C%20their%20authors%20and%20topics.%0Afor%20d%20in%20%5B%0A%20%20%5B%22Cats%20and%20dogs%22%2C%20%20%20%20%20%20%22Ada%22%2C%20%20%22pets%22%2C%20%20%20%20%20%20%20%20%5B0.9%2C%200.1%2C%200.0%5D%5D%2C%0A%20%20%5B%22Feeding%20your%20cat%22%2C%20%20%20%22Ada%22%2C%20%20%22pets%22%2C%20%20%20%20%20%20%20%20%5B0.6%2C%200.7%2C%200.0%5D%5D%2C%0A%20%20%5B%22Pasta%20at%20home%22%2C%20%20%20%20%20%20%22Ben%22%2C%20%20%22cooking%22%2C%20%20%20%20%20%5B0.0%2C%200.9%2C%200.1%5D%5D%2C%0A%20%20%5B%22Robot%20chefs%22%2C%20%20%20%20%20%20%20%20%22Cleo%22%2C%20%22cooking%22%2C%20%20%20%20%20%5B0.1%2C%200.6%2C%200.8%5D%5D%2C%0A%20%20%5B%22Rust%20for%20beginners%22%2C%20%22Cleo%22%2C%20%22programming%22%2C%20%5B0.0%2C%200.0%2C%201.0%5D%5D%2C%0A%5D%20%7B%0A%20%20g.merge_v(%23%7B%22T.label%22%3A%20%22person%22%2C%20name%3A%20d%5B1%5D%7D).as(%22a%22)%0A%20%20%20.merge_v(%23%7B%22T.label%22%3A%20%22topic%22%2C%20name%3A%20d%5B2%5D%7D).as(%22t%22)%0A%20%20%20.add_v(%22doc%22).property(%22title%22%2C%20d%5B0%5D).property(%22emb%22%2C%20vector(d%5B3%5D)).as(%22d%22)%0A%20%20%20.add_e(%22about%22).to(%22t%22)%0A%20%20%20.add_e(%22wrote%22).from(%22a%22).to(%22d%22)%0A%20%20%20.iterate()%3B%0A%7D%0A%0A%2F%2F%20%22What%20should%20I%20cook%20for%20my%20cat%3F%22%20~%20%5B0.5%2C%200.8%2C%200.0%5D%3A%20the%20two%20best%20hits%20with%20their%20context.%0A%2F%2F%20%5B%23%7B%22author%22%3A%20%22Ada%22%2C%20%22title%22%3A%20%22Feeding%20your%20cat%22%2C%20%22topic%22%3A%20%22pets%22%7D%2C%0A%2F%2F%20%20%23%7B%22author%22%3A%20%22Ben%22%2C%20%22title%22%3A%20%22Pasta%20at%20home%22%2C%20%22topic%22%3A%20%22cooking%22%7D%5D%0Ag.v().has_label(%22doc%22).nearest(%22emb%22%2C%20%5B0.5%2C%200.8%2C%200.0%5D%2C%202)%0A%20.project(%22title%22%2C%20%22author%22%2C%20%22topic%22)%0A%20%20%20.by(%22title%22)%0A%20%20%20.by(__.in(%22wrote%22).values(%22name%22))%0A%20%20%20.by(__.out(%22about%22).values(%22name%22))%0A%20.to_list()&run=1)
+with toy embeddings, no model needed. Embeddings come from the model of your choice (any provider,
+or a local one from Python): Graphersal stores, filters and searches them, in the browser, in your
+Rust application, from Python and through MCP. The guide:
+[Embeddings and Vector Search](https://graphersal.dev/getting_started/embeddings.html).
 
 ## A first look
 

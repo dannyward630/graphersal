@@ -1,7 +1,9 @@
 # graphersal
 
 An in-memory graph database and traversal engine in Rust, queried with Gremlin, the query language
-of Apache TinkerPop.
+of Apache TinkerPop, with vector search for GraphRAG: store embeddings as `vector` values (`f32`,
+or quantized to `f16`, `i8`, `bit`), find the nearest ones with `nearest()` and follow the graph
+from them in the same traversal ([Embeddings and Vector Search](https://graphersal.dev/getting_started/embeddings.html)).
 
 **[Playground](https://play.graphersal.dev)** · **[Book](https://graphersal.dev)** ·
 **[Step reference](https://graphersal.dev/traversal/step_reference.html)** ·

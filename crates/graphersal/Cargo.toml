@@ -7,9 +7,9 @@ repository.workspace = true
 homepage.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "In-memory graph traversal engine modelled on Apache TinkerPop Gremlin, with a Rhai DSL, optimizer and GraphSON/GraphML I/O"
+description = "In-memory graph database and traversal engine modelled on Apache TinkerPop Gremlin, with vector search for GraphRAG, a Rhai DSL, optimizer, persistence and GraphSON/GraphML I/O"
 readme = "README.md"
-keywords = ["graph", "gremlin", "tinkerpop", "traversal", "query"]
+keywords = ["graph", "gremlin", "tinkerpop", "vector-search", "graphrag"]
 categories = ["data-structures", "database-implementations"]
 include = ["/src/**", "/README.md", "/LICENSE-APACHE", "/NOTICE"]
 
