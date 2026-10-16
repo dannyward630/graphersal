@@ -263,7 +263,7 @@ class Edge:
 _Action = Literal["read", "create", "update", "delete", "execute", "custom", "*"]
 
 #: The name of a resource kind of an ``AccessPolicy`` rule (``"*"``: every one).
-_Resource = Literal["data", "schema", "file", "option", "definition", "custom", "*"]
+_Resource = Literal["data", "schema", "file", "option", "definition", "custom", "embedder", "*"]
 
 class GraphersalError(Exception):
     """Raised for any script/engine error: parse errors, traversal failures, GraphSON/GraphML import
@@ -318,7 +318,7 @@ class AccessPolicy:
     @staticmethod
     def read_only() -> AccessPolicy:
         """``"read"`` on ``"data"``, ``"schema"`` and ``"definition"``, ``"execute"`` on
-        ``"definition"`` (calling a saved query)."""
+        ``"definition"`` (calling a saved query) and on ``"embedder"`` (running an embedder)."""
     def allow(self, action: _Action, resource: _Resource) -> AccessPolicy:
         """A copy that also allows ``action`` on ``resource``."""
     def deny(self, action: _Action, resource: _Resource) -> AccessPolicy:
