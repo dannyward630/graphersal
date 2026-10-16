@@ -1,8 +1,9 @@
 # Release 0.2.0
 
 The second minor release of Graphersal. It brings date and time values, property indexes, schema
-defaults that are applied when an element is created, and vectors with exact similarity search.
-It changes the storage format and a few APIs: read [Breaking changes](#breaking-changes) and the
+defaults that are applied when an element is created, and vectors with exact similarity search
+and embedders that turn text into vectors inside the engine (a built-in one, Model2Vec models and
+your own, for GraphRAG). It changes the storage format and a few APIs: read [Breaking changes](#breaking-changes) and the
 [upgrade guide](#upgrading-from-01x) before you move a store or a storage implementation to it.
 What 0.2.0 does not do yet is on [Current Limitations](../users_guide/current_limitations.md).
 
