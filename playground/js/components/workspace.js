@@ -317,6 +317,7 @@ export const Workspace = {
   <div class="workspace">
     <header class="topbar">
       <a class="brand" href="#/" title="Back to the start page">Graphersal <small class="hide-narrow">Playground</small></a>
+      <span v-if="state.versionLabel" class="version-label hide-narrow" :title="state.versionLabel.title">{{ state.versionLabel.text }}</span>
       <span v-if="serverMode" class="badge danger dev-badge"
             :title="'Connected to the dev server (graphersal --server) on ' + location.host + ': DEV mode, unstable, local only. ' + (state.engineInfo.store ? 'Queries run in that process on the graph of the Store directory ' + state.engineInfo.store + ': every commit is persisted and survives a restart.' : 'Queries run in that process on its in-memory graph' + (state.engineInfo.source ? ' (from ' + state.engineInfo.source + ')' : '') + '; nothing is saved unless you save it.')">DEV SERVER · unstable</span>
       <span v-if="serverMode && state.engineInfo.mcp" class="badge accent mcp-badge"

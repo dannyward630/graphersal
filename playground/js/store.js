@@ -2,6 +2,7 @@
 // talks to the engine for graph loading and query execution. The query tabs' logic lives in
 // tabs.js (pure, tested under Node); this module wraps it in the reactive state and persists it.
 
+import { loadBuildInfo, versionLabel } from './build-info.js';
 import { reactive, markRaw } from 'vue';
 import { getEngine } from './engine/index.js';
 import { DEFAULT_LIMITS } from './engine/engine.js';
@@ -52,6 +53,8 @@ export const state = reactive({
   ready: false,
   engine: null,
   engineInfo: null,
+  // The header's version (js/build-info.js `versionLabel`): {text, title}, or null.
+  versionLabel: null,
   engineMissing: false, // the WebAssembly build is not there: the page explains how to build it
   route: 'start',
   graph: null,
@@ -150,6 +153,8 @@ export async function init() {
       state.engine = markRaw(engine);
       state.engineInfo = await engine.info();
       state.storeView = state.engineInfo.view || null;
+      const build = state.engineInfo.server ? null : await loadBuildInfo();
+      state.versionLabel = versionLabel(state.engineInfo.version, build);
     }
   } finally {
     engineGate.open();

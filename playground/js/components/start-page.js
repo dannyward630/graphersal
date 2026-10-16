@@ -124,6 +124,7 @@ export const StartPage = {
   <div class="start">
     <header class="topbar">
       <a class="brand" href="#/">Graphersal <small>Playground</small></a>
+      <span v-if="state.versionLabel" class="version-label hide-narrow" :title="state.versionLabel.title">{{ state.versionLabel.text }}</span>
       <span class="spacer"></span>
       <button class="icon-btn" @click="cycleTheme" :title="'Theme: ' + state.theme + ' (Alt+T)'" aria-label="Toggle theme">
         <span v-if="state.theme === 'dark'">☾</span><span v-else-if="state.theme === 'light'">☀</span><span v-else>◐</span>
