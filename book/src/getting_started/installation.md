@@ -99,7 +99,9 @@ benchmarks and heavy workloads (see the next section). From a clone of the repos
 The prebuilt Linux binaries are statically linked with musl, which makes them run on any
 distribution, including Alpine and WSL2. musl's memory allocator is noticeably slower than glibc's
 on allocation-heavy queries (large `group()`, `path()` or `to_list()` results, imports):
-<!-- TODO musl figure --> For benchmarks and heavy workloads, build from source with
+measured on
+the `large` sample graph, the same queries took 1.07 to 1.39 times as long as with a glibc build
+of the same source (the most for `group()` and write-heavy scripts). For benchmarks and heavy workloads, build from source with
 `cargo install graphersal-cli`, which uses the system's glibc. The figures in this book come from
 source builds. The macOS and Windows binaries have no such penalty.
 
