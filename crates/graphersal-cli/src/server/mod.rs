@@ -76,7 +76,7 @@ pub const SERVER_ID: &str = "graphersal-dev";
 /// The stderr banner.
 const BANNER: &str = "\
 ==============================================================================
- graphersal DEV SERVER - dev mode, unstable, local only
+ graphersal DEV SERVER - dev mode, unstable, local only, NOT for production
  No authentication. Loopback only. The graph lives in memory only: nothing
  is saved unless you click \"Save to file\" (a --graph file) or download it.
  The HTTP API is internal to the playground and changes without notice.
@@ -85,7 +85,7 @@ const BANNER: &str = "\
 /// The stderr banner of a server on a Store directory.
 const STORE_BANNER: &str = "\
 ==============================================================================
- graphersal DEV SERVER - dev mode, unstable, local only
+ graphersal DEV SERVER - dev mode, unstable, local only, NOT for production
  No authentication. Loopback only. The graph is a Store (a directory or a
  single file): every commit is written to its write-ahead log before the query
  answers, and it survives a restart (or a crash) of the server.

@@ -1,6 +1,6 @@
 # Dev Server and MCP
 
-> **DEV mode, unstable, local only, temporary.** The dev server is a way to try Graphersal "as a
+> **DEV mode, unstable, local only, temporary. Not for production.** The dev server is a way to try Graphersal "as a
 > small server" and watch how it behaves. Its HTTP API is internal to the playground and changes
 > without notice; it has no authentication and serves only the loopback (`127.0.0.1`, and `[::1]`
 > when the system has IPv6). Do not expose it.
