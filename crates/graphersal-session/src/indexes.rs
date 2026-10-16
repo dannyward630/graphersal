@@ -383,6 +383,98 @@ mod tests {
     }
 
     #[test]
+    fn the_type_is_listed_checked_and_mapped_to_its_field() {
+        let mut s = modern();
+        let created = s.create_index(&json!({"label": "person", "key": "age"}));
+        assert_eq!(created["index"]["type"], "memory-ordered", "{created}");
+        assert_eq!(created["index"]["reason"], Value::Null, "{created}");
+        let typed = s.create_index(&json!({
+            "label": "software", "key": "lang", "type": "memory-ordered"
+        }));
+        assert_eq!(typed["ok"], true, "{typed}");
+        assert_eq!(typed["index"]["type"], "memory-ordered");
+        // An unknown type: an error of the field `type`, with the known types in its help.
+        let refused = s.create_index(&json!({"label": "person", "key": "name", "type": "hash"}));
+        assert_eq!(refused["ok"], false);
+        assert_eq!(refused["errors"][0]["field"], "type", "{refused}");
+        assert!(
+            refused["errors"][0]["help"]
+                .as_str()
+                .unwrap()
+                .contains("memory-ordered"),
+            "{refused}"
+        );
+        let refused = s.create_index(&json!({"label": "person", "key": "name", "type": 3}));
+        assert_eq!(refused["errors"][0]["field"], "type", "{refused}");
+        // A key the schema declares as a vector: an error of the field `key`.
+        s.execute(
+            r#"g.set_schema(#{mode: "open", vertices: #{doc: #{schema: #{type: "object",
+                 properties: #{emb: #{type: "array", format: "vector", element: "f32"},
+                               tags: #{type: "array"}}}}}})"#,
+            &crate::RunOptions::default(),
+        );
+        let refused = s.create_index(&json!({"label": "doc", "key": "emb"}));
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert_eq!(refused["errors"][0]["field"], "key", "{refused}");
+        assert!(
+            refused["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("vector<f32>"),
+            "{refused}"
+        );
+        assert!(
+            refused["errors"][0]["help"]
+                .as_str()
+                .unwrap()
+                .contains("nearest()"),
+            "{refused}"
+        );
+        let refused = s.create_index(&json!({"label": "doc", "key": "tags"}));
+        assert_eq!(refused["errors"][0]["field"], "key", "{refused}");
+        assert_eq!(s.index_count(), 2);
+        // The known types for a form.
+        assert_eq!(index_types()[0]["name"], "memory-ordered");
+        assert!(index_types()[0]["description"].is_string());
+    }
+
+    #[test]
+    fn an_unknown_type_is_listed_not_served_with_its_reason() {
+        let mut tg = TraversalGraph::tinkerpop_modern();
+        let mut payload = PropertyMap::default();
+        payload.insert("label", "person".into());
+        payload.insert("key", "age".into());
+        payload.insert("type", "future-x".into());
+        let index = PropertyIndexDefinition::from_payload(&payload).unwrap();
+        tg.transaction(|g| g.set_definition(Definition::property_index("future", index)))
+            .unwrap();
+        let listed = indexes_in(&tg);
+        assert_eq!(listed[0]["type"], "future-x", "{listed}");
+        assert_eq!(listed[0]["served"], false, "{listed}");
+        assert_eq!(listed[0]["stats"], Value::Null, "{listed}");
+        assert!(
+            listed[0]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("index type 'future-x' is not known to this version"),
+            "{listed}"
+        );
+        // A storage without indexes says so.
+        let entry = entry(
+            "x",
+            &PropertyIndexDefinition::new(ElementKind::Vertex, "a", "b"),
+            None,
+        );
+        assert!(
+            entry["reason"]
+                .as_str()
+                .unwrap()
+                .contains("serves no property indexes"),
+            "{entry}"
+        );
+    }
+
+    #[test]
     fn indexes_on_a_foreign_storage_equal_those_of_a_traversal_graph() {
         let mut tg = TraversalGraph::tinkerpop_modern();
         let mut fw = graphersal_storage_tests::forwarding::Forwarding::new(

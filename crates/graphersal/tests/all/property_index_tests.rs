@@ -1356,3 +1356,492 @@ mod temporal {
         check(&graph);
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Index types: the default, unknown types from a newer version, the create-time schema check
+// ---------------------------------------------------------------------------------------------
+
+mod index_types {
+    use super::*;
+    use graphersal::catalog::PropertyIndexType;
+    use graphersal::schema::ValueType;
+
+    /// A graph with a schema declaring `doc` (vertex) and `rel` (edge) properties of every
+    /// interesting kind, in mode `open`, plus one `doc` vertex.
+    fn schema_graph() -> Arc<Graph> {
+        let graph = Arc::new(Graph::new(TraversalGraph::new()));
+        ok(
+            &graph,
+            r#"g.set_schema(#{mode: "open",
+                 vertices: #{doc: #{schema: #{type: "object", properties: #{
+                   emb: #{type: "array", format: "vector", element: "f32"},
+                   maybe_emb: #{type: ["array", "null"], format: "vector", element: "f32"},
+                   tags: #{type: "array", items: #{type: "string"}},
+                   meta: #{type: "object"},
+                   only_containers: #{anyOf: [#{type: "array"}, #{type: "object"}]},
+                   mixed: #{anyOf: [#{type: "array"}, #{type: "string"}]},
+                   title: #{type: ["string", "null"]},
+                   at: #{type: "string", format: "date-time"},
+                   anything: #{}
+                 }}}},
+                 edges: #{rel: #{connections: [#{from: "doc", to: "doc"}],
+                   schema: #{type: "object", properties: #{
+                     weight: #{type: "number"},
+                     path: #{type: "array", items: #{type: "integer"}}
+                   }}}}})"#,
+        );
+        ok(
+            &graph,
+            r#"g.add_v("doc").property("title", "a").property("mixed", "x").iterate()"#,
+        );
+        graph
+    }
+
+    fn create(graph: &Arc<Graph>, spec: &str) -> Result<(), String> {
+        run(graph, &format!("g.create_index({spec})")).map(|_| ())
+    }
+
+    #[test]
+    fn the_default_type_is_memory_ordered_and_written_explicitly() {
+        let index = PropertyIndexDefinition::new(ElementKind::Vertex, "person", "age");
+        assert_eq!(index.index_type(), &PropertyIndexType::MemoryOrdered);
+        assert_eq!(index.index_type().as_str(), "memory-ordered");
+        assert!(index.unserved_reason().is_none());
+        let payload = index.to_payload();
+        let keys: Vec<&str> = payload.keys().map(|key| key.as_str()).collect();
+        assert_eq!(keys, ["element", "label", "key", "type"]);
+        assert_eq!(payload.get("type"), Some(&"memory-ordered".into()));
+        // A payload without `type` (written before the field existed) is memory-ordered.
+        let mut old = PropertyMap::default();
+        old.insert("label", "person".into());
+        old.insert("key", "age".into());
+        let read = PropertyIndexDefinition::from_payload(&old).unwrap();
+        assert_eq!(read, index);
+        assert_eq!(
+            PropertyIndexType::default(),
+            PropertyIndexType::MemoryOrdered
+        );
+        assert_eq!(PropertyIndexType::KNOWN_NAMES, ["memory-ordered"]);
+        assert!(PropertyIndexType::MemoryOrdered.description().is_some());
+
+        // The DSL without and with `type`: both are listed with their type.
+        let graph = Arc::new(GraphSource::tinkerpop_modern());
+        ok(&graph, r#"g.create_index(#{label: "person", key: "age"})"#);
+        ok(
+            &graph,
+            r#"g.createIndex(#{label: "software", key: "lang", type: "memory-ordered"})"#,
+        );
+        let listed = run(&graph, "g.indexes()").unwrap().to_string();
+        assert_eq!(
+            listed.matches(r#""type": "memory-ordered""#).count(),
+            2,
+            "{listed}"
+        );
+        assert!(!listed.contains("reason"), "{listed}");
+        assert!(uses_index(
+            &graph,
+            r#"v().has_label("software").has("lang", "java")"#
+        ));
+        // The JSON exchange form carries the type.
+        let definition = graph
+            .read()
+            .definition(DefinitionKind::PROPERTY_INDEX, "person_age")
+            .cloned()
+            .unwrap();
+        let text = definition.to_json();
+        assert!(text.contains(r#""type":"memory-ordered""#), "{text}");
+        assert_eq!(Definition::from_json(&text).unwrap(), definition);
+    }
+
+    #[test]
+    fn the_rust_api_takes_an_explicit_type_and_refuses_an_unknown_one() {
+        let mut graph = TraversalGraph::tinkerpop_modern();
+        let index = PropertyIndexDefinition::new(ElementKind::Vertex, "person", "age")
+            .with_type(PropertyIndexType::MemoryOrdered);
+        graph.traversal_mut().create_index("ages", index).unwrap();
+        assert_eq!(graph.property_indexes().len(), 1);
+        assert_eq!(
+            graph.property_indexes()[0].index_type,
+            PropertyIndexType::MemoryOrdered
+        );
+        let future = PropertyIndexDefinition::new(ElementKind::Vertex, "person", "name")
+            .with_type(PropertyIndexType::from_name("future-x"));
+        let err = graph
+            .traversal_mut()
+            .create_index("names", future)
+            .unwrap_err();
+        let text = format_diagnostic(&err);
+        assert!(
+            text.contains("'future-x' is not an index type this version knows"),
+            "{text}"
+        );
+        assert!(
+            text.contains(r#"This version knows "memory-ordered""#),
+            "{text}"
+        );
+        assert!(
+            graph
+                .definition(DefinitionKind::PROPERTY_INDEX, "names")
+                .is_none()
+        );
+        // The DSL, both spellings.
+        let graph = Arc::new(GraphSource::tinkerpop_modern());
+        for call in ["create_index", "createIndex"] {
+            let err = run(
+                &graph,
+                &format!(r#"g.{call}(#{{label: "person", key: "age", type: "hash"}})"#),
+            )
+            .unwrap_err();
+            assert!(err.contains("Invalid type of 'person_age'"), "{err}");
+        }
+        assert!(
+            run(&graph, "g.indexes()")
+                .unwrap()
+                .into_array()
+                .unwrap()
+                .is_empty()
+        );
+        let err = run(
+            &graph,
+            r#"g.create_index(#{label: "person", key: "age", type: 1})"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("type"), "{err}");
+    }
+
+    #[test]
+    fn the_schema_check_refuses_keys_declared_as_values_the_type_cannot_hold() {
+        let graph = schema_graph();
+        for (key, declared) in [
+            ("emb", "vector<f32>"),
+            ("maybe_emb", "vector<f32>"),
+            ("tags", "array<string>"),
+            ("meta", "object"),
+            ("only_containers", "union<array|object>"),
+        ] {
+            let err = create(&graph, &format!(r#"#{{label: "doc", key: "{key}"}}"#)).unwrap_err();
+            assert!(
+                err.contains(&format!(
+                    "Cannot create a property index on vertex 'doc' key '{key}': the schema \
+                     declares '{key}' as {declared}, and an index of type 'memory-ordered' \
+                     holds none of its values"
+                )),
+                "{key}: {err}"
+            );
+        }
+        assert!(
+            run(&graph, "g.indexes()")
+                .unwrap()
+                .into_array()
+                .unwrap()
+                .is_empty()
+        );
+        // A union with a scalar member, a nullable scalar, a temporal format, an undeclared
+        // key, a key without a type and an undeclared label: allowed.
+        for key in ["mixed", "title", "at", "undeclared", "anything"] {
+            create(&graph, &format!(r#"#{{label: "doc", key: "{key}"}}"#))
+                .unwrap_or_else(|err| panic!("{key}: {err}"));
+        }
+        create(&graph, r#"#{label: "other", key: "emb"}"#).unwrap();
+        // The values the index cannot hold are skipped (the array value of `mixed`).
+        ok(
+            &graph,
+            r#"g.add_v("doc").property("mixed", ["a"]).iterate()"#,
+        );
+        check(&graph);
+        let mixed = graph
+            .read()
+            .property_indexes()
+            .into_iter()
+            .find(|info| info.key == "mixed")
+            .unwrap();
+        assert_eq!(mixed.stats.entries, 1);
+
+        // Edge indexes follow the edge label's declaration, not a vertex label's.
+        let err = create(&graph, r#"#{element: "edge", label: "rel", key: "path"}"#).unwrap_err();
+        assert!(
+            err.contains("on edge 'rel' key 'path'") && err.contains("array<int64>"),
+            "{err}"
+        );
+        create(&graph, r#"#{element: "edge", label: "rel", key: "weight"}"#).unwrap();
+        create(&graph, r#"#{element: "edge", label: "rel", key: "emb"}"#).unwrap();
+
+        // The Rust API runs the same check.
+        let mut guard = graph.write();
+        let err = guard
+            .traversal_mut()
+            .create_index(
+                "embs",
+                PropertyIndexDefinition::new(ElementKind::Vertex, "doc", "emb"),
+            )
+            .unwrap_err();
+        assert!(format_diagnostic(&err).contains("nearest("), "{err}");
+    }
+
+    #[test]
+    fn no_schema_or_mode_none_and_later_schema_changes() {
+        // No schema: every key is allowed (non-scalar values are skipped).
+        let graph = Arc::new(GraphSource::tinkerpop_modern());
+        ok(
+            &graph,
+            r#"g.v().has("name", "marko").property("tags", ["a", "b"]).iterate()"#,
+        );
+        create(&graph, r#"#{label: "person", key: "tags"}"#).unwrap();
+        check(&graph);
+        // The declaration counts whatever the mode is.
+        ok(
+            &graph,
+            r#"g.set_schema(#{mode: "none", vertices: #{software: #{schema: #{type: "object",
+                 properties: #{deps: #{type: "array"}}}}}})"#,
+        );
+        assert!(create(&graph, r#"#{label: "software", key: "deps"}"#).is_err());
+        // A schema change after the index exists never drops it.
+        ok(
+            &graph,
+            r#"g.set_schema(#{mode: "none", vertices: #{person: #{schema: #{type: "object",
+                 properties: #{tags: #{type: "array"}}}}}})"#,
+        );
+        let listed = run(&graph, "g.indexes()").unwrap().into_array().unwrap();
+        assert_eq!(listed.len(), 1);
+        check(&graph);
+    }
+
+    #[test]
+    fn set_definition_and_apply_change_set_do_not_run_the_schema_check() {
+        let journal = Arc::new(Mutex::new(Vec::new()));
+        let mut live = TraversalGraph::new();
+        live.register_commit_hook(Box::new(Collect(journal.clone())))
+            .unwrap();
+        let live = Arc::new(Graph::new(live));
+        // The index first (no schema yet), then a schema declaring its key as a vector.
+        ok(&live, r#"g.create_index(#{label: "doc", key: "emb"})"#);
+        ok(
+            &live,
+            r#"g.set_schema(#{mode: "open", vertices: #{doc: #{schema: #{type: "object",
+                 properties: #{emb: #{type: "array", format: "vector", element: "f32"}}}}}})"#,
+        );
+        // Storing a definition directly is not a create: it is accepted.
+        live.write()
+            .transaction(|g| {
+                g.set_definition(Definition::property_index(
+                    "doc_emb_again",
+                    PropertyIndexDefinition::new(ElementKind::Edge, "doc", "emb"),
+                ))
+            })
+            .unwrap();
+        // A fresh graph with the same schema first, then the captured changes: applied as
+        // they are.
+        let mut applied = TraversalGraph::new();
+        applied
+            .set_schema(live.read().get_schema().unwrap())
+            .unwrap();
+        for changes in journal.lock().unwrap().iter() {
+            applied.apply_change_set(changes).unwrap();
+        }
+        assert!(
+            applied
+                .definition(DefinitionKind::PROPERTY_INDEX, "doc_emb")
+                .is_some()
+        );
+        let mut replayed = TraversalGraph::new();
+        for changes in journal.lock().unwrap().iter() {
+            replayed = replayed.replay(changes).unwrap();
+        }
+        assert_eq!(replayed.property_indexes().len(), 2);
+    }
+
+    /// A payload of a type this version does not know, its keys in an order of their own and
+    /// with a key of the newer type.
+    fn future_payload() -> PropertyMap {
+        let mut map = PropertyMap::default();
+        map.insert("type", "future-x".into());
+        map.insert("label", "person".into());
+        map.insert("buckets", 16.into());
+        map.insert("key", "age".into());
+        map.insert("element", "vertex".into());
+        map
+    }
+
+    fn future_definition() -> Definition {
+        let index = PropertyIndexDefinition::from_payload(&future_payload()).unwrap();
+        Definition::property_index("future_age", index)
+    }
+
+    /// The graph holds the unknown definition unchanged and serves nothing for it.
+    fn kept_not_served(graph: &TraversalGraph) {
+        let stored = graph
+            .definition(DefinitionKind::PROPERTY_INDEX, "future_age")
+            .expect("kept");
+        assert_eq!(stored, &future_definition());
+        let index = stored.as_property_index().unwrap();
+        assert_eq!(index.index_type().as_str(), "future-x");
+        assert_eq!(index.to_payload(), future_payload());
+        let payload = index.to_payload();
+        let keys: Vec<&str> = payload.keys().map(|k| k.as_str()).collect();
+        assert_eq!(keys, ["type", "label", "buckets", "key", "element"]);
+        assert!(
+            graph
+                .property_indexes()
+                .iter()
+                .all(|info| info.name != "future_age")
+        );
+        graph.check_property_indexes().unwrap();
+    }
+
+    #[test]
+    fn an_unknown_type_is_kept_listed_with_a_reason_and_never_served() {
+        let index = future_definition();
+        let read = index.as_property_index().unwrap();
+        assert_eq!(read.index_type(), &PropertyIndexType::from_name("future-x"));
+        assert!(!read.index_type().is_known());
+        assert!(!read.index_type().holds(&ValueType::Int64));
+        assert!(
+            read.unserved_reason()
+                .unwrap()
+                .contains("index type 'future-x' is not known to this version")
+        );
+        assert_eq!(read.extra().get("buckets"), Some(&16.into()));
+        #[cfg(feature = "persist")]
+        {
+            // Byte for byte: the payload encodes exactly as the newer version wrote it.
+            let bytes = graphersal::catalog::encode_payload(&future_payload()).unwrap();
+            let decoded = graphersal::catalog::decode_payload(&bytes).unwrap();
+            let back = PropertyIndexDefinition::from_payload(&decoded).unwrap();
+            assert_eq!(
+                graphersal::catalog::encode_payload(&back.to_payload()).unwrap(),
+                bytes
+            );
+        }
+
+        let graph = Arc::new(GraphSource::tinkerpop_modern());
+        graph
+            .write()
+            .transaction(|g| g.set_definition(future_definition()))
+            .unwrap();
+        kept_not_served(&graph.read());
+        assert!(
+            graph
+                .read()
+                .vertices_by_property_index("person", "age", &PropertyIndexRange::equal(29.into()))
+                .is_none()
+        );
+        let query = r#"v().has_label("person").has("age", 29)"#;
+        assert!(!uses_index(&graph, query));
+        let (with, without) = both(&graph, query);
+        assert_eq!(with, without);
+        let listed = run(&graph, "g.indexes()").unwrap().to_string();
+        assert!(listed.contains(r#""type": "future-x""#), "{listed}");
+        assert!(listed.contains(r#""served": false"#), "{listed}");
+        assert!(
+            listed.contains("index type 'future-x' is not known to this version"),
+            "{listed}"
+        );
+        // A memory-ordered index on the same key coexists with it and is served.
+        ok(&graph, r#"g.create_index(#{label: "person", key: "age"})"#);
+        assert!(uses_index(&graph, query));
+        kept_not_served(&graph.read());
+        // The exchange form keeps it too (the catalog file).
+        let text = future_definition().to_json();
+        assert!(text.contains(r#""type":"future-x""#), "{text}");
+        assert_eq!(Definition::from_json(&text).unwrap(), future_definition());
+        // Dropping it works like any index.
+        ok(&graph, r#"g.drop_index("future_age")"#);
+        assert!(
+            graph
+                .read()
+                .definition(DefinitionKind::PROPERTY_INDEX, "future_age")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn an_unknown_type_travels_through_change_sets_replay_and_rollback() {
+        let journal = Arc::new(Mutex::new(Vec::new()));
+        let mut live = TraversalGraph::tinkerpop_modern();
+        live.register_commit_hook(Box::new(Collect(journal.clone())))
+            .unwrap();
+        live.transaction(|g| g.set_definition(future_definition()))
+            .unwrap();
+        kept_not_served(&live);
+        let mut applied = TraversalGraph::tinkerpop_modern();
+        let mut replayed = TraversalGraph::tinkerpop_modern();
+        for changes in journal.lock().unwrap().iter() {
+            applied.apply_change_set(changes).unwrap();
+            replayed = replayed.replay(changes).unwrap();
+            #[cfg(feature = "serde")]
+            {
+                let text = serde_json::to_string(changes).unwrap();
+                let back: ChangeSet = serde_json::from_str(&text).unwrap();
+                assert_eq!(&back, changes);
+            }
+        }
+        kept_not_served(&applied);
+        kept_not_served(&replayed);
+        // A rollback of a unit that dropped it brings it back unchanged.
+        let result: Result<(), GraphError> = live.transaction(|g| {
+            assert!(g.remove_definition(DefinitionKind::PROPERTY_INDEX, "future_age")?);
+            Err(GraphError::unsupported("test rollback"))
+        });
+        assert!(result.is_err());
+        kept_not_served(&live);
+    }
+
+    #[cfg(all(feature = "persist", not(target_arch = "wasm32")))]
+    #[test]
+    fn an_unknown_type_survives_the_store_snapshot_checkpoint_backup_and_fork() {
+        use graphersal::persist::{MemDir, RecoveryTarget, Store, StoreDir, StoreOptions};
+        let options = || StoreOptions::new().with_checkpoint_after_bytes(0);
+        let main: Arc<dyn StoreDir> = Arc::new(MemDir::named("pindex-type-main"));
+        let store = Store::create(&main, options()).unwrap();
+        run_on(
+            store.graph(),
+            r#"g.add_v("person").property("age", 29).iterate()"#,
+        );
+        store
+            .graph()
+            .write()
+            .transaction(|g| g.set_definition(future_definition()))
+            .unwrap();
+        kept_not_served(&store.graph().read());
+        store.close().unwrap();
+        // From the WAL.
+        let store = Store::open(&main, options()).unwrap();
+        kept_not_served(&store.graph().read());
+        // From a checkpoint's manifest.
+        store.checkpoint(None).unwrap();
+        store.close().unwrap();
+        let store = Store::open(&main, options()).unwrap();
+        assert_eq!(store.open_report().commits_replayed, 0);
+        kept_not_served(&store.graph().read());
+        // A backup and a fork.
+        let backup: Arc<dyn StoreDir> = Arc::new(MemDir::named("pindex-type-backup"));
+        store.backup(&backup).unwrap();
+        let opened = Store::open_backup(&backup, options()).unwrap();
+        kept_not_served(&opened.graph().read());
+        drop(opened);
+        let fork: Arc<dyn StoreDir> = Arc::new(MemDir::named("pindex-type-fork"));
+        store.fork(RecoveryTarget::Latest, &fork).unwrap();
+        let forked = Store::open(&fork, options()).unwrap();
+        kept_not_served(&forked.graph().read());
+        forked.close().unwrap();
+        // A packed snapshot.
+        let mut bytes = Vec::new();
+        graphersal::persist::write_snapshot(
+            &*store.graph().read(),
+            &mut bytes,
+            &graphersal::persist::WriteOptions::default(),
+        )
+        .unwrap();
+        let loaded = graphersal::persist::read_snapshot(
+            bytes.as_slice(),
+            &graphersal::persist::ReadOptions::default(),
+        )
+        .unwrap();
+        kept_not_served(&loaded);
+        store.close().unwrap();
+    }
+
+    fn run_on(graph: &Arc<Graph>, script: &str) {
+        ok(graph, script);
+    }
+}
