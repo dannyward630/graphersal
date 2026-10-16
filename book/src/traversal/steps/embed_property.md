@@ -3,7 +3,7 @@
 
 `embed_property` · `embedProperty` · category: [Vectors](../../traversal/step_reference.md#vectors)
 
-Embeds the property from of every element with label into the vector property to, page by page, and declares the model in the attached schema; returns the report.
+Embeds the property from of every element with label into the vector property to, page by page, with the embedder of that registry name (#{embedder: name}, else the default; g.embedders() lists them), and records its model in the attached schema; other keys: element, only_missing, batch; returns the report.
 
 ## Forms
 
@@ -14,5 +14,5 @@ embed_property(arg1: map)
 ## Example
 
 ```rhai,graph=modern
-{ g.set_schema(g.infer_schema(), SchemaMode.open); g.embed_property(#{label: "person", from: "name", to: "emb"}).embedded }   // 4
+{ g.set_schema(g.infer_schema(), SchemaMode.open); g.embed_property(#{label: "person", from: "name", to: "emb", embedder: "hash-ngram/1"}).model }   // hash-ngram/1
 ```
