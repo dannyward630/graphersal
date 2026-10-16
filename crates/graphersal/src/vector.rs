@@ -45,4 +45,8 @@ pub use crate::value::vector::embed::{DEFAULT_MAX_BATCH, MAX_EMBEDDER_NAME_BYTES
 pub use crate::value::{
     EmbedContext, EmbedError, Embedder, EmbedderInfo, Embedders, EmbeddersBuilder, HashNgram,
 };
+/// Feature `model2vec` (native targets only): a Model2Vec static embedding model loaded from a
+/// local directory.
+#[cfg(all(feature = "model2vec", not(target_arch = "wasm32")))]
+pub use crate::value::{Model2Vec, Model2VecOptions};
 pub use crate::value::{Vector, VectorElement, VectorError, VectorMetric};

@@ -4500,3 +4500,74 @@ fn property_index_transforms_over_http_and_mcp() {
         "{text}"
     );
 }
+
+/// `--embedder` with `--server`: the model is loaded at start, `GET /api/info` lists the
+/// registry and the queries of the session call it (here a tiny synthetic Model2Vec model).
+#[cfg(feature = "model2vec")]
+#[test]
+fn an_embedder_of_the_command_line_serves_the_session() {
+    let dir = std::env::temp_dir().join(format!("graphersal_srv_{}_m2v", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.json"), r#"{"normalize": true}"#).unwrap();
+    std::fs::write(
+        dir.join("tokenizer.json"),
+        r#"{"version": "1.0", "truncation": null, "padding": null, "added_tokens": [],
+            "normalizer": null, "pre_tokenizer": {"type": "Whitespace"},
+            "post_processor": null, "decoder": null,
+            "model": {"type": "WordLevel", "vocab": {"[UNK]": 0, "lop": 1, "ripple": 2},
+                      "unk_token": "[UNK]"}}"#,
+    )
+    .unwrap();
+    let data: Vec<u8> = [0.0f32, 1.0, 1.0, 0.0, 0.5, 0.5]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let mut header = format!(
+        r#"{{"embeddings": {{"dtype": "F32", "shape": [3, 2], "data_offsets": [0, {}]}}}}"#,
+        data.len()
+    );
+    while header.len() % 8 != 0 {
+        header.push(' ');
+    }
+    let mut model = (header.len() as u64).to_le_bytes().to_vec();
+    model.extend_from_slice(header.as_bytes());
+    model.extend_from_slice(&data);
+    std::fs::write(dir.join("model.safetensors"), model).unwrap();
+
+    let spec = format!("tiny={}", dir.display());
+    let server = start(&[
+        "--graph",
+        "modern",
+        "--embedder",
+        &spec,
+        "--default-embedder",
+        "tiny",
+    ]);
+    let port = server.port;
+    let info = get(port, "/api/info").json();
+    let embedders = info["embedders"].as_array().expect("embedders").clone();
+    let tiny = embedders
+        .iter()
+        .find(|e| e["name"] == "tiny")
+        .expect("tiny listed");
+    assert_eq!(tiny["dimension"], 2);
+    assert_eq!(tiny["default"], true);
+    assert!(
+        tiny["model"].as_str().unwrap().starts_with("model2vec@"),
+        "{tiny}"
+    );
+    assert!(
+        embedders
+            .iter()
+            .any(|e| e["name"] == "hash-ngram/1" && e["default"] == false)
+    );
+
+    let r = execute(
+        port,
+        r#"g.v().has_label("software").embed("name").to_list().len()"#,
+    );
+    assert_eq!(r["ok"], true, "{r}");
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -1100,7 +1100,27 @@ fn info(context: &Context) -> Value {
         // The AI Chat (`--ai`): `{provider, model, readOnly, sendsDataTo, maxToolCallsPerTurn}`
         // (never the key), or null.
         "ai": ai_status(context),
+        // The embedders queries can call (the built-in hash-ngram/1 and every --embedder):
+        // `[{name, model, dimension, default}]`.
+        "embedders": embedders_value(),
     })
+}
+
+/// The registry of [`crate::cli::embedders`] for `GET /api/info`.
+fn embedders_value() -> Value {
+    let registry = crate::cli::embedders();
+    let default = registry.default_embedder().info().name.clone();
+    registry
+        .infos()
+        .map(|info| {
+            json!({
+                "name": info.name.as_str(),
+                "model": info.model.as_str(),
+                "dimension": info.dimension,
+                "default": info.name == default,
+            })
+        })
+        .collect()
 }
 
 /// [`ai::status`], or null in a build without the `ai` feature.

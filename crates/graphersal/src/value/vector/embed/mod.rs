@@ -9,8 +9,14 @@
 //! loads never call an embedder.
 
 mod hash_ngram;
+#[cfg(all(feature = "model2vec", not(target_arch = "wasm32")))]
+mod model2vec;
+#[cfg(all(feature = "model2vec", not(target_arch = "wasm32")))]
+mod sha256;
 
 pub use hash_ngram::HashNgram;
+#[cfg(all(feature = "model2vec", not(target_arch = "wasm32")))]
+pub use model2vec::{Model2Vec, Model2VecOptions};
 
 use std::fmt;
 use std::sync::{Arc, OnceLock};

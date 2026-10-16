@@ -8,6 +8,8 @@ mod out;
 #[cfg(feature = "ai")]
 mod ai;
 mod cli;
+#[cfg(feature = "model2vec")]
+mod embed_model;
 mod log;
 mod repl;
 #[cfg(feature = "dev-server")]
@@ -62,6 +64,18 @@ fn run() -> Result<()> {
         log::install();
         exit(out::exit_code(store_cmd::run(&args[1..])));
     }
+    if args.first().map(String::as_str) == Some("embed-model") {
+        #[cfg(feature = "model2vec")]
+        exit(out::exit_code(embed_model::run(&args[1..])));
+        #[cfg(not(feature = "model2vec"))]
+        {
+            errln!(
+                "embed-model is not available: this graphersal was built without the \
+                 `model2vec` feature"
+            );
+            exit(cli::EXIT_USAGE_ERROR);
+        }
+    }
     let options = match Cli::parse(args) {
         Ok(options) => options,
         Err(err) => {
@@ -69,6 +83,14 @@ fn run() -> Result<()> {
             exit(cli::EXIT_USAGE_ERROR);
         }
     };
+    // The embedding models of --embedder are loaded once, before any graph or script: every
+    // mode (one-shot, REPL, --server and its MCP tools) calls the same registry.
+    if !matches!(options.mode, Mode::Help | Mode::Version)
+        && let Err(err) = cli::install_embedders(&options)
+    {
+        errln!("{err}");
+        exit(cli::EXIT_USAGE_ERROR);
+    }
 
     // Every mode that opens a Store (`-e`, `--in`, a script file, the REPL) prints the
     // library's store warnings (a failed automatic checkpoint, damage found, a read-only open)

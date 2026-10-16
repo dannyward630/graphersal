@@ -499,6 +499,46 @@ reserved, a name is unique and made of letters, digits and `. _ - / :` (such as
 `graphersal-session` takes the registry in `SessionPresets::with_embedders`, which the dev server
 (its MCP `query` tool and the AI Chat's tools included) and the WebAssembly playground run under.
 
+### Model2Vec models (feature `model2vec`)
+
+`graphersal::vector::Model2Vec` is a ready-made embedder for
+[Model2Vec](https://github.com/MinishLab/model2vec) static embedding models (one vector per
+token, averaged over the text; semantic, fast on a CPU), behind the feature `model2vec` of the
+`graphersal` crate (off by default, native targets only; the `graphersal` command line has it on:
+[Real models: Model2Vec](../getting_started/embeddings.md#real-models-model2vec)). It loads from a
+**local directory only** and never touches the network:
+
+```rust,no_run
+use std::sync::Arc;
+use graphersal::vector::{Embedder, Embedders, Model2Vec};
+
+let model = Model2Vec::options()
+    .with_max_tokens(256) // a longer text is cut (default 512)
+    .load("potion", "models/minishlab/potion-base-8M")?;
+assert_eq!(model.info().dimension, 256);
+let embedders = Embedders::builder().with(Arc::new(model))?.default_name("potion")?.build();
+# Ok::<(), graphersal::vector::EmbedError>(())
+```
+
+- **Layouts**: `config.json`, `tokenizer.json` and `model.safetensors` in the directory (the
+  Model2Vec layout), or `config_sentence_transformers.json` beside them or beside a
+  `0_StaticEmbedding` directory holding them (the sentence-transformers layout).
+- **Info**: the model's dimension, `f32`, metric cosine, 256 texts per call, `local`, and
+  `deterministic: false`: one build gives the same bits for the same text, but they depend on the
+  versions of `model2vec-rs` and `tokenizers` it was built with. Vectors are L2-normalized when the
+  model's config says so (`with_normalize` overrides it).
+- **Model identity**: `model2vec/<repo>@<12 hex digits>`, where `<repo>` comes from the manifest
+  `graphersal-embed-model.json` that `graphersal embed-model download` writes, else
+  `model2vec@<12 hex digits>`. The digits start a SHA-256 over the three files
+  (`Model2Vec::model_identity(dir)` computes it without loading the model); no path is part of it,
+  so a copied or moved directory keeps its identity. A normalization other than the config's adds
+  `?normalize=false`.
+- **Load failures** are `EmbedError::Unavailable` with the reason (a missing file, a file that
+  does not parse, a tokenizer whose vocabulary does not fit the embedding matrix) and the hint to
+  download a model. The checks at load make every later lookup safe; a tokenizer failure while
+  embedding is `EmbedError::Failed`, never a panic. A text with no known token (an empty text, or
+  only unknown words) fails like an empty text for `hash-ngram/1`.
+
 ## Storage and exchange
 
 | Format | A vector |

@@ -76,6 +76,15 @@ What 0.2.0 does not do yet is on [Current Limitations](../users_guide/current_li
   carries a stable model identity besides its registry name. Running an embedder is
   `Execute` on the new permission resource `Embedder`. A computed vector is stored as a plain
   value: replay, recovery and loads never call an embedder.
+- **Real embedding models: Model2Vec**
+  ([Embeddings](../getting_started/embeddings.md#real-models-model2vec)): `graphersal embed-model
+  download <repo>` fetches a Model2Vec static embedding model from Hugging Face (SHA-256
+  checked, a manifest beside it; the only network access of the tool) and `embed-model list`
+  shows the downloaded ones; `--embedder NAME=PATH|REPO` and `--default-embedder NAME` register a
+  model for every mode (one-shot, REPL, dev server, MCP, AI Chat tools), run locally on the CPU.
+  Its model identity is `model2vec/<repo>@<hash of the files>`, never a path. In Rust it is
+  `graphersal::vector::Model2Vec` behind the new feature `model2vec` (off by default, native only,
+  loads from a local directory only); the CLI has it on by default.
 - **Playground**: the schema editor's tables edit `defaultFunction` and a vector's element,
   dimension and metric; the Graph and Mermaid drawings always show the schema the tables show
   (also a draft); the Mermaid diagram parses whatever labels and property names hold; the
@@ -210,7 +219,13 @@ pass completely; the remaining gaps are mainly `call()` and the set type
 
 ## Dependencies
 
-- `jiff` (time zone rules and the bundled IANA database; the only new dependency).
+- `jiff` (time zone rules and the bundled IANA database; the only new dependency of the default
+  build).
+- Feature `model2vec` only: `model2vec-rs` (MIT), `tokenizers` (Apache-2.0, with the pure-Rust
+  `fancy-regex` backend: no C or C++ code) and `safetensors` (Apache-2.0), with their own
+  dependencies (`ndarray`, `half`, `rayon`, `fancy-regex`, ...). The CLI's `embed-model download`
+  uses the `ureq` client it already has and `ring` (already in its tree through rustls) for
+  SHA-256.
 - `rustls` 0.23.46 and `ruzstd` at least 0.9.1 (RustSec advisories), as in 0.1.1.
 
 ## Compatibility
