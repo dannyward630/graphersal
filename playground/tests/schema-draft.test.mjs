@@ -451,3 +451,17 @@ test('a vector property gets element f32 and keeps its vector keywords until the
   assert.deepEqual(doc.vertices.doc.schema.properties.emb, { type: 'string' });
   assert.deepEqual([...VECTOR_METRICS], ['cosine', 'dot', 'l2', 'hamming']);
 });
+
+test('a vector property keeps its embedder until the type changes', async () => {
+  const { setBaseType, setKeyword, typeText } = await import('../js/schema/draft.js');
+  const doc = { vertices: { doc: { schema: { type: 'object', properties: { emb: { type: 'string' } } } } } };
+  const path = ['vertices', 'doc', 'schema', 'properties', 'emb'];
+  setBaseType(doc, path, 'vector');
+  setKeyword(doc, path, 'dimension', 256);
+  setKeyword(doc, path, 'embedder', 'hash-ngram/1');
+  const emb = doc.vertices.doc.schema.properties.emb;
+  assert.equal(emb.embedder, 'hash-ngram/1');
+  assert.equal(typeText(emb), 'vector<f32, 256>');
+  setBaseType(doc, path, 'string');
+  assert.deepEqual(doc.vertices.doc.schema.properties.emb, { type: 'string' });
+});

@@ -471,6 +471,7 @@ fn lower_vector_query<'g, S: GraphStorage + 'g>(
     match query {
         ScriptVectorQuery::Value(vector) => VectorQuery::Value(vector.clone()),
         ScriptVectorQuery::Traversal(gts) => VectorQuery::Traversal(gts.ast_convert_to_anonymous()),
+        ScriptVectorQuery::Text(text) => VectorQuery::from(text.clone()),
     }
 }
 

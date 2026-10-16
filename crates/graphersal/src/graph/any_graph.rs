@@ -167,6 +167,17 @@ pub trait AnyGraph: Send + Sync + 'static + sealed::Sealed {
     /// their stats (empty on a storage without property indexes).
     fn property_indexes(&self) -> Vec<crate::graph::PropertyIndexInfo>;
 
+    /// [`Graph::embed_property`]: the job `embed_property` (book page "Vectors"), two-phase
+    /// (the embedder runs without this graph's lock), or under one write lock when the storage
+    /// is inside an open unit (a whole-script unit).
+    fn embed_property(
+        &self,
+        job: &crate::value::EmbedJob,
+        embedders: &crate::value::Embedders,
+        cancel: &crate::traversal::cancel::CancelToken,
+        progress: &mut dyn FnMut(&crate::value::EmbedReport),
+    ) -> Result<crate::value::EmbedReport, crate::value::EmbedJobError>;
+
     // ---- journal --------------------------------------------------------------------------
 
     /// [`GraphStorage::mark`]: a named mark at the current commit position; without a journal
@@ -352,6 +363,16 @@ where
 
     fn compression_stats(&self, name: &str) -> Option<CompressionStats> {
         self.read().compression_stats(name)
+    }
+
+    fn embed_property(
+        &self,
+        job: &crate::value::EmbedJob,
+        embedders: &crate::value::Embedders,
+        cancel: &crate::traversal::cancel::CancelToken,
+        progress: &mut dyn FnMut(&crate::value::EmbedReport),
+    ) -> Result<crate::value::EmbedReport, crate::value::EmbedJobError> {
+        Graph::embed_property(self, job, embedders, cancel, progress)
     }
 
     fn property_indexes(&self) -> Vec<crate::graph::PropertyIndexInfo> {

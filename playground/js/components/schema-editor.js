@@ -103,6 +103,10 @@ export const SchemaNodeDetails = {
           return;
         }
       }
+      if (keyword === 'embedder' && v !== undefined && !/^[A-Za-z0-9._/:@?=-]{1,128}$/.test(v)) {
+        bad.embedder = true;
+        return;
+      }
       if (keyword === 'element' && v === undefined) v = 'f32';
       bad[keyword] = false;
       edit(props.flow, (doc) => setKeyword(doc, valuePath(), keyword, v));
@@ -149,10 +153,16 @@ export const SchemaNodeDetails = {
           <option value="">none (cosine)</option>
           <option v-for="m in VECTOR_METRICS" :key="m" :value="m">{{ m }}</option>
         </select></label>
+      <label v-if="topLevel()"><span>embedder</span>
+        <input type="text" :class="{ invalid: bad.embedder }" :value="value().embedder ?? ''" placeholder="none"
+               spellcheck="false" @change="setVector('embedder', $event.target.value.trim())"></label>
       <p class="hint wide">element: how components are stored: f32 exact, f16 half precision, i8 one byte per component plus a scale,
         bit one bit per component (the sign). A list of numbers or a vector of another element written to the property is converted
         to it (quantized). dimension: the number of components every value must have (empty: any). metric: the default of
-        <code>similarity</code> and <code>nearest</code> on this property; <code>hamming</code> needs bit vectors.</p>
+        <code>similarity</code> and <code>nearest</code> on this property; <code>hamming</code> needs bit vectors.
+        embedder (a label's top-level property only): the model identity of the embedder that produced the vectors, as
+        <code>g.embedders()</code> lists it under <code>model</code> (<code>hash-ngram/1</code>); <code>embed_property</code> fills it in,
+        and a text query (<code>nearest("emb", "graph indexes", 5)</code>) embeds its text with that model.</p>
     </fieldset>
     <fieldset v-if="CONSTRAINTS[d().base] && CONSTRAINTS[d().base].length">
       <legend>Constraints</legend>

@@ -76,6 +76,16 @@ What 0.2.0 does not do yet is on [Current Limitations](../users_guide/current_li
   carries a stable model identity besides its registry name. Running an embedder is
   `Execute` on the new permission resource `Embedder`. A computed vector is stored as a plain
   value: replay, recovery and loads never call an embedder.
+- **Embedding a property and text queries** ([Vectors](../users_guide/vectors.md#embedding-a-property-embed_property)):
+  the job `g.embed_property(#{label, from, to, ..})` embeds a property of many elements page by
+  page, without holding the graph's lock while the embedder runs (a concurrent writer goes on;
+  a text changed meanwhile is skipped), restartable with `only_missing`; Rust
+  `Graph::embed_property` / `EmbedJob::run_in`. The vector schema keyword `embedder` records per
+  label and property which model produced the vectors; the job needs an attached schema (mode
+  `open` or `closed`), declares the property or its `embedder` in the unit of its first page, and
+  refuses another model or dimension (another element kind is quantized on write). `nearest(key, "text", k)` and `similarity(key, "text")` then take the
+  query as text and embed it with the registered embedder of the declared model, once per
+  execution. `diff_schema` reports an `embedder` change as `embedder_changed`.
 - **Real embedding models: Model2Vec**
   ([Embeddings](../getting_started/embeddings.md#real-models-model2vec)): `graphersal embed-model
   download <repo>` fetches a Model2Vec static embedding model from Hugging Face (SHA-256
@@ -86,7 +96,7 @@ What 0.2.0 does not do yet is on [Current Limitations](../users_guide/current_li
   `graphersal::vector::Model2Vec` behind the new feature `model2vec` (off by default, native only,
   loads from a local directory only); the CLI has it on by default.
 - **Playground**: the schema editor's tables edit `defaultFunction` and a vector's element,
-  dimension and metric; the Graph and Mermaid drawings always show the schema the tables show
+  dimension, metric and embedder; the Graph and Mermaid drawings always show the schema the tables show
   (also a draft); the Mermaid diagram parses whatever labels and property names hold; the
   Detailed drawing zooms by mouse wheel as fast as the Fast one; a click on a panel's title
   collapses it; the header shows the engine version and the build.

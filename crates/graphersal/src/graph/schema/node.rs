@@ -195,7 +195,13 @@ impl SchemaFormat {
 /// the dates do on `string`): another validator ignores the unknown format and the custom
 /// keywords and sees an array, which is what a vector exports as. `element` (default `f32`) and
 /// `dimension` (default: any) are checked exactly; `metric` is an annotation for the search
-/// steps. `items` is not allowed next to it. A list of numbers written to the property in mode
+/// steps. `embedder` (a top-level property of a label only) records the model identity of the
+/// embedder that produced the vectors (`"hash-ngram/1"`; an
+/// [`EmbedderInfo::model`](crate::vector::EmbedderInfo::model), never a path or a registry name):
+/// `embed_property` fills it in and checks it, and a text query
+/// (`nearest("emb", "graph indexes", 5)`) embeds the text with the registered embedder of that
+/// model. A plain write of a vector checks only `element` and `dimension`. `items` is not
+/// allowed next to it. A list of numbers written to the property in mode
 /// `open`/`closed` is coerced to a vector of the declared element, and a vector of another
 /// element is quantized to it: a property can be stored quantized from the start.
 #[derive(Debug, Clone, PartialEq)]
@@ -207,6 +213,11 @@ pub struct VectorSchema {
     pub dimension: Option<u32>,
     /// `metric`: an annotation, the metric the vectors are meant to be compared with.
     pub metric: Option<VectorMetric>,
+    /// `embedder`: the model identity of the embedder that produced the vectors
+    /// ([`EmbedderInfo::model`](crate::vector::EmbedderInfo::model)), on a label's top-level
+    /// property only. Not checked by a plain write; `embed_property` and the text queries of
+    /// `nearest`/`similarity` read it.
+    pub embedder: Option<String>,
 }
 
 impl VectorSchema {
@@ -216,7 +227,14 @@ impl VectorSchema {
             element,
             dimension: None,
             metric: None,
+            embedder: None,
         }
+    }
+
+    /// The same declaration with the model identity of its embedder (`"hash-ngram/1"`).
+    pub fn with_embedder(mut self, model: impl Into<String>) -> Self {
+        self.embedder = Some(model.into());
+        self
     }
 
     /// The same declaration with a dimension.
@@ -582,6 +600,7 @@ impl PropertySchema {
                 element,
                 dimension,
                 metric: None,
+                embedder: None,
             }),
             ..Self::of(JsonType::Array)
         }

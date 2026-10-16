@@ -137,7 +137,7 @@ schema. The format is described by the meta-schema `graphersal-schema-v1.json`
 | `"string"` + `"format": "duration"` | `duration` | ISO 8601 (`P1Y2M3DT4H`): months, days and microseconds. |
 | `"boolean"`, `"null"` | `boolean`, `null` | |
 | `"array"` + `items` | `array<T>` | `items` is a full schema (constraints and nullability apply to the items); without `items` any item. |
-| `"array"` + `"format": "vector"` (+ `element`, `dimension`, `metric`) | `vector<f32, 768>` | A vector of the declared element (`f32` default, `f16`, `i8`, `bit`) and dimension (optional). A list of numbers is coerced on write, a vector of another element quantized; a stored list does not conform. `items` is not allowed next to it; `metric` is an annotation. Book page [Vectors](vectors.md). |
+| `"array"` + `"format": "vector"` (+ `element`, `dimension`, `metric`) | `vector<f32, 768>` | A vector of the declared element (`f32` default, `f16`, `i8`, `bit`) and dimension (optional). A list of numbers is coerced on write, a vector of another element quantized; a stored list does not conform. `items` is not allowed next to it; `metric` is an annotation; `embedder` (a label's top-level property only) records the model identity of the embedder that produced the vectors (`"hash-ngram/1"`), which `embed_property()` fills in and checks and the text queries of `nearest()`/`similarity()` read; a plain write does not check it. Book page [Vectors](vectors.md#which-model-produced-a-property). |
 | `"object"` + `properties` | `object` | With `required` and `additionalProperties`. |
 | `["integer", "null"]` | `union<int64\|null>` | A type array: any of the listed types. |
 | `anyOf: [..]` | `union<..>` | At least one member accepts the value (Pydantic's `Optional[X]` is `anyOf: [X, {"type": "null"}]`). |
@@ -166,7 +166,7 @@ they do not know, so a schema with `local-date-time` stays usable with them. The
 
 | Kind | Keywords |
 |---|---|
-| Structure | `type`, `format` (`uuid`, `date-time`, `date`, `local-date-time`, `time`, `duration` on a string; `vector` on an array), `element`, `dimension`, `metric` (with `format: "vector"`), `items`, `properties`, `required`, `additionalProperties` (`true`/`false`), `anyOf` |
+| Structure | `type`, `format` (`uuid`, `date-time`, `date`, `local-date-time`, `time`, `duration` on a string; `vector` on an array), `element`, `dimension`, `metric`, `embedder` (with `format: "vector"`; `embedder` on a top-level property only), `items`, `properties`, `required`, `additionalProperties` (`true`/`false`), `anyOf` |
 | Constraints | `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` (numbers), `formatMinimum`, `formatMaximum`, `formatExclusiveMinimum`, `formatExclusiveMaximum` (dates and times), `minLength`, `maxLength`, `pattern` (strings), `minItems`, `maxItems` (arrays), `enum`, `const` (any value) |
 | Annotations (no effect on validation) | `title`, `description`, `$comment`, `examples`, `deprecated` |
 | Create-time defaults ([Defaults on create](#defaults-on-create)) | `default` (also an annotation below the top level), `defaultFunction` (`uuidv4`, `uuidv7`, `now`, `today`) |
@@ -543,6 +543,7 @@ in a `before_commit` hook.
 | `mode` | it gets less strict (`closed` → `open` → `none`); `open` → `closed` is incompatible |
 | `meta`, annotations (`title`, `description`, ...) | always |
 | `default`, `defaultFunction` (added, changed, removed; kind `default_changed`) | always: it changes only what future creates store |
+| `embedder` of a vector (kind `embedder_changed`) | when it is declared where there was none; changing or removing it is incompatible: the stored vectors and a text query embedded by another model are not comparable, and a text query needs the model |
 | label added | the old mode was `closed` (no client could write it), or its schema requires no key and admits undeclared keys (an open graph) |
 | label removed | never |
 | connection added/removed | the label's connections still allow every old pair (an empty list allows all), or the new mode is not `closed` (topology binds only there) |

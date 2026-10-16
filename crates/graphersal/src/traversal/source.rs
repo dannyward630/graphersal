@@ -453,14 +453,20 @@ pub(crate) fn locate_pre_run_error<'g, S: GraphStorage + 'g>(
 
 /// Resolves the embedder of every `embed` step of `steps` (child traversals included) in
 /// `registry` and binds it to the step; an unknown name is [`TraverserError::Embed`] located at
-/// its step. Runs before the permission check, on the plan as written.
+/// its step. A text query of `similarity`/`nearest` binds the candidate embedders of the model
+/// the attached schema declares for its property (`schema` is read once, only when a text
+/// query exists). Runs before the permission check, on the plan as written.
 fn bind_embedders<'g, S: GraphStorage + 'g>(
     steps: &mut [GraphStep<'g, S>],
     registry: &crate::value::Embedders,
+    schema: &dyn Fn() -> Option<crate::graph::schema::GraphSchema>,
 ) -> TraverserResult<()> {
+    type Schema = Option<Option<crate::graph::schema::GraphSchema>>;
     fn walk<'g, S: GraphStorage + 'g>(
         steps: &mut [GraphStep<'g, S>],
         registry: &crate::value::Embedders,
+        schema: &dyn Fn() -> Option<crate::graph::schema::GraphSchema>,
+        loaded: &mut Schema,
     ) -> Result<(), crate::value::EmbedError> {
         for step in steps.iter_mut() {
             if let GraphStep::Map(_, map) = step
@@ -469,17 +475,31 @@ fn bind_embedders<'g, S: GraphStorage + 'g>(
                 let embedder = registry.resolve(requested.as_deref())?.clone();
                 map.bind_embedder(embedder);
             }
+            let (name, text) = match step {
+                GraphStep::Map(name, map) => (*name, map.text_query_mut()),
+                GraphStep::FlatBarrier(name, step) => (*name, step.text_query_mut()),
+                _ => ("", None),
+            };
+            if let Some((key, text)) = text {
+                let schema = loaded.get_or_insert_with(schema).as_ref();
+                text.bind(name, key, schema, registry)?;
+            }
             for child in step.child_traversals_mut() {
-                walk(&mut child.steps, registry)?;
+                walk(&mut child.steps, registry, schema, loaded)?;
             }
         }
         Ok(())
     }
-    walk(steps, registry).map_err(|err| {
+    walk(steps, registry, schema, &mut None).map_err(|err| {
         let fault = |step: &GraphStep<'g, S>| match step {
-            GraphStep::Map(_, map) => map
-                .embedder_request()
-                .is_some_and(|requested| registry.resolve(requested.as_deref()).is_err()),
+            GraphStep::Map(_, map) => {
+                map.embedder_request()
+                    .is_some_and(|requested| registry.resolve(requested.as_deref()).is_err())
+                    || map.text_query().is_some_and(|text| text.bind_failed())
+            }
+            GraphStep::FlatBarrier(_, step) => {
+                step.text_query().is_some_and(|text| text.bind_failed())
+            }
             _ => false,
         };
         GraphStep::number_children(steps);
@@ -2269,7 +2289,8 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
             .embedders
             .clone()
             .unwrap_or_else(crate::value::Embedders::shared_default);
-        if let Err(err) = bind_embedders(&mut self.steps, &embedders) {
+        let storage = &self.storage;
+        if let Err(err) = bind_embedders(&mut self.steps, &embedders, &|| storage.get_schema()) {
             return failed_before_run(err, &self.options);
         }
         if let Some(restrictions) = &self.restrictions

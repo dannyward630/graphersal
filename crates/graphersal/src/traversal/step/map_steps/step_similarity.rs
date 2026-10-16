@@ -6,24 +6,31 @@ use std::borrow::Cow;
 
 use crate::graph::GraphStorage;
 use crate::traversal::optimizer::path_analysis::{PathAnalysis, PathRequirement};
+use crate::traversal::step::map_steps::step_embed::embed_failure;
 use crate::traversal::step::map_steps::temporal::{describe, held_value, replaced};
 use crate::traversal::step::prop_path::peek_path;
 use crate::value::json_path::JsonPathSegment;
+use crate::value::vector::embed::provenance::{TextCandidate, text_query_candidates};
 use crate::value::vector::vector_error;
 use crate::value::{Vector, VectorError, VectorMetric};
 use crate::*;
 
-/// The query vector of `similarity()` / `nearest()`: a constant, or a child traversal whose first
-/// result (a vector, or a list of numbers made an f32 vector) is the query.
+/// The query vector of `similarity()` / `nearest()`: a constant, a child traversal whose first
+/// result (a vector, or a list of numbers made an f32 vector) is the query, or a text embedded
+/// with the embedder of the model the attached schema declares for the step's property.
 ///
-/// Built from a [`Vector`] or an anonymous traversal (`__::select("q")`) through `From`, so the
-/// step methods take `impl Into<VectorQuery>`.
+/// Built from a [`Vector`], an anonymous traversal (`__::select("q")`) or a string through
+/// `From`, so the step methods take `impl Into<VectorQuery>`.
+#[non_exhaustive]
 pub enum VectorQuery<'g, S: GraphStorage + 'g> {
     /// A constant query vector.
     Value(Vector),
     /// A child traversal run on the incoming traverser (path included); its first result is
     /// the query vector.
     Traversal(AnonymousTraversal<'g, S>),
+    /// A text, embedded once per execution with the registered embedder whose model the
+    /// attached schema declares (`embedder`) for the step's property on the elements met.
+    Text(TextQuery),
 }
 
 impl<'g, S: GraphStorage + 'g> Clone for VectorQuery<'g, S> {
@@ -31,6 +38,254 @@ impl<'g, S: GraphStorage + 'g> Clone for VectorQuery<'g, S> {
         match self {
             VectorQuery::Value(vector) => VectorQuery::Value(vector.clone()),
             VectorQuery::Traversal(traversal) => VectorQuery::Traversal(traversal.clone()),
+            VectorQuery::Text(text) => VectorQuery::Text(text.clone()),
+        }
+    }
+}
+
+impl<'g, S: GraphStorage + 'g> From<&str> for VectorQuery<'g, S> {
+    fn from(text: &str) -> Self {
+        VectorQuery::Text(TextQuery::new(text))
+    }
+}
+
+impl<'g, S: GraphStorage + 'g> From<String> for VectorQuery<'g, S> {
+    fn from(text: String) -> Self {
+        VectorQuery::Text(TextQuery::new(text))
+    }
+}
+
+/// A text query of `similarity()` / `nearest()` (book page "Vectors", section "Text
+/// queries"): before the run (`bind`) the candidate embedders come from the attached schema's
+/// `embedder` declarations of the step's property; during it the first element met picks the
+/// model, the text is embedded once and every later element must declare the same model.
+pub struct TextQuery {
+    text: String,
+    /// Bound by `run()` before the permission check.
+    candidates: Vec<TextCandidate>,
+    /// The candidate chosen, the label that chose it and the embedded text (per execution).
+    resolved: parking_lot::Mutex<Option<Resolved>>,
+    /// Set when `bind` refused it, so the error is located at this step.
+    bind_failed: bool,
+}
+
+/// A resolved text query: the candidate, the label that chose it, the embedded text and its
+/// bit quantization (made when a `bit` property needs it).
+type Resolved = (usize, CompactString, Vector, Option<Vector>);
+
+impl Clone for TextQuery {
+    fn clone(&self) -> Self {
+        TextQuery {
+            text: self.text.clone(),
+            candidates: self.candidates.clone(),
+            resolved: parking_lot::Mutex::new(None),
+            bind_failed: false,
+        }
+    }
+}
+
+impl TextQuery {
+    fn new(text: impl Into<String>) -> Self {
+        TextQuery {
+            text: text.into(),
+            candidates: Vec::new(),
+            resolved: parking_lot::Mutex::new(None),
+            bind_failed: false,
+        }
+    }
+
+    /// Binds the candidate embedders for the property `key` of `step` from the attached
+    /// `schema` and the `registry` (refused without an attached schema, a top-level name or a
+    /// declared model).
+    pub(crate) fn bind(
+        &mut self,
+        step: &str,
+        key: Option<&PropKey>,
+        schema: Option<&crate::graph::schema::GraphSchema>,
+        registry: &crate::value::Embedders,
+    ) -> Result<(), crate::value::EmbedError> {
+        let bound = self.bind_inner(step, key, schema, registry);
+        self.bind_failed = bound.is_err();
+        bound
+    }
+
+    /// Whether `bind` refused this query.
+    pub(crate) fn bind_failed(&self) -> bool {
+        self.bind_failed
+    }
+
+    fn bind_inner(
+        &mut self,
+        step: &str,
+        key: Option<&PropKey>,
+        schema: Option<&crate::graph::schema::GraphSchema>,
+        registry: &crate::value::Embedders,
+    ) -> Result<(), crate::value::EmbedError> {
+        let name = match key {
+            Some(PropKey::Name(name)) => name,
+            Some(path @ PropKey::Path(_)) => {
+                return Err(crate::value::EmbedError::TextQueryKey {
+                    found: crate::value::literal::rhai_prop_key(path),
+                });
+            }
+            None => {
+                return Err(crate::value::EmbedError::TextQueryKey {
+                    found: "the incoming value (no key)".to_string(),
+                });
+            }
+        };
+        self.candidates = text_query_candidates(schema, step, name, registry)?;
+        Ok(())
+    }
+
+    /// The registry names of the bound embedders (the permission check asks `Execute` on each).
+    pub(crate) fn embedder_names(&self) -> impl Iterator<Item = &str> {
+        self.candidates
+            .iter()
+            .filter_map(|c| c.embedder.as_ref().map(|e| e.info().name.as_str()))
+    }
+
+    /// The query vector for the element `value` whose property `key` is searched: the text
+    /// embedded with the embedder of the model the schema declares there (embedded once; a
+    /// later element declaring another model fails).
+    fn vector_for<S: GraphStorage>(
+        &self,
+        context: &TraverserContext<'_, S>,
+        key: &VectorKey,
+        value: &TraverserValue<S>,
+    ) -> TraverserResult<Vector> {
+        use crate::value::EmbedError;
+        let quoted = |text: &str| crate::value::literal::rhai_string(text);
+        let name = match &key.key {
+            PropKey::Name(name) => name.as_str(),
+            PropKey::Path(_) => "",
+        };
+        let (declared, label) = match value {
+            TraverserValue::Vertex(node) => {
+                let labels = context.storage.vertex_labels(*node);
+                (
+                    context
+                        .storage
+                        .declared_property_schema(GraphNodeType::Vertex, labels, name),
+                    labels.first().cloned().unwrap_or_default(),
+                )
+            }
+            TraverserValue::Edge(edge) => {
+                let label = CompactString::new(context.storage.edge_label(*edge).unwrap_or(""));
+                (
+                    context.storage.declared_property_schema(
+                        GraphNodeType::Edge,
+                        std::slice::from_ref(&label),
+                        name,
+                    ),
+                    label,
+                )
+            }
+            _ => (None, CompactString::default()),
+        };
+        let declared = declared.and_then(|node| node.vector);
+        // A bit property compares only with bit vectors: the query is quantized like a write.
+        let bit = declared
+            .as_ref()
+            .is_some_and(|vector| vector.element == crate::value::VectorElement::Bit);
+        let Some(model) = declared.and_then(|vector| vector.embedder) else {
+            return Err(Box::new(TraverserError::Embed(
+                EmbedError::NoDeclaredEmbedder {
+                    key: quoted(name),
+                    on: if label.is_empty() {
+                        " on a value without a label".to_string()
+                    } else {
+                        format!(" of {}", quoted(&label))
+                    },
+                },
+            )));
+        };
+        let Some(index) = self.candidates.iter().position(|c| c.model == model) else {
+            return Err(Box::new(TraverserError::Embed(
+                EmbedError::ModelNotRegistered {
+                    model: quoted(&model),
+                    key: quoted(name),
+                },
+            )));
+        };
+        let mut resolved = self.resolved.lock();
+        if let Some((first, first_label, vector, bits)) = resolved.as_mut() {
+            if *first == index {
+                if !bit {
+                    return Ok(vector.clone());
+                }
+                if bits.is_none() {
+                    *bits = Some(Self::to_bits(vector)?);
+                }
+                return Ok(bits.clone().unwrap_or_else(|| vector.clone()));
+            }
+            return Err(Box::new(TraverserError::Embed(EmbedError::ModelConflict {
+                key: quoted(name),
+                first: format!(
+                    "{} on {}",
+                    quoted(&self.candidates[*first].model),
+                    quoted(first_label)
+                ),
+                second: format!("{} on {}", quoted(&model), quoted(&label)),
+            })));
+        }
+        let Some(embedder) = self.candidates[index].embedder.as_ref() else {
+            return Err(Box::new(TraverserError::Embed(
+                EmbedError::ModelNotRegistered {
+                    model: quoted(&model),
+                    key: quoted(name),
+                },
+            )));
+        };
+        let ctx = crate::value::EmbedContext::of_deadline(context.deadline.as_ref());
+        let vector = crate::value::vector::embed::checked_embed(&**embedder, &[&self.text], &ctx)
+            .map_err(|error| embed_failure(context, error))?
+            .pop()
+            .ok_or_else(|| {
+                Box::new(TraverserError::Embed(EmbedError::bad_output(
+                    "no vector for the query text",
+                )))
+            })?;
+        let bits = if bit {
+            Some(Self::to_bits(&vector)?)
+        } else {
+            None
+        };
+        let answer = bits.clone().unwrap_or_else(|| vector.clone());
+        *resolved = Some((index, label, vector, bits));
+        Ok(answer)
+    }
+
+    /// The query quantized to bits for a property declared `element: bit` (the quantizer a
+    /// schema write uses).
+    fn to_bits(vector: &Vector) -> TraverserResult<Vector> {
+        vector
+            .quantize(crate::value::VectorElement::Bit)
+            .map_err(|error| vector_error("nearest", error))
+    }
+}
+
+impl fmt::Display for TextQuery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&crate::value::literal::rhai_string(&self.text))
+    }
+}
+
+impl<'g, S: GraphStorage + 'g> VectorQuery<'g, S> {
+    /// The rendering suffix naming the embedder(s) a text query resolved (`, embedder:
+    /// "hash-ngram/1"`), empty for any other query: the profile shows what runs.
+    pub(crate) fn embedder_suffix(&self) -> String {
+        let VectorQuery::Text(text) = self else {
+            return String::new();
+        };
+        let names: Vec<String> = text
+            .embedder_names()
+            .map(crate::value::literal::rhai_string)
+            .collect();
+        match names.len() {
+            0 => String::new(),
+            1 => format!(", embedder: {}", names[0]),
+            _ => format!(", embedder: [{}]", names.join(", ")),
         }
     }
 }
@@ -58,21 +313,32 @@ impl<'g, S: GraphStorage + 'g> fmt::Display for VectorQuery<'g, S> {
         match self {
             VectorQuery::Value(vector) => f.write_str(&vector.literal(Some(16))),
             VectorQuery::Traversal(traversal) => write!(f, "{traversal}"),
+            VectorQuery::Text(text) => write!(f, "{text}"),
         }
     }
 }
 
 impl<'g, S: GraphStorage + 'g> VectorQuery<'g, S> {
-    /// The query vector for `source`: the constant, or the first result of the traversal run on
-    /// `source`.
+    /// The query vector for `source`: the constant, the first result of the traversal run on
+    /// `source`, or the text embedded for the element's property `key` (`None`: the step has
+    /// no key, which `bind` refused already).
     pub(crate) fn evaluate(
         &self,
         step: &'static str,
         context: &mut TraverserContext<'_, S>,
         source: &Traverser<S>,
+        key: Option<&VectorKey>,
     ) -> TraverserResult<Vector> {
         match self {
             VectorQuery::Value(vector) => Ok(vector.clone()),
+            VectorQuery::Text(text) => match key {
+                Some(key) => text.vector_for(context, key, &source.value),
+                None => Err(Box::new(TraverserError::Embed(
+                    crate::value::EmbedError::TextQueryKey {
+                        found: "the incoming value (no key)".to_string(),
+                    },
+                ))),
+            },
             VectorQuery::Traversal(traversal) => {
                 let Some(first) = traversal.first(context, source)? else {
                     return Err(vector_error(
@@ -89,7 +355,7 @@ impl<'g, S: GraphStorage + 'g> VectorQuery<'g, S> {
 
     pub(crate) fn traversal_mut(&mut self) -> Option<&mut AnonymousTraversal<'g, S>> {
         match self {
-            VectorQuery::Value(_) => None,
+            VectorQuery::Value(_) | VectorQuery::Text(_) => None,
             VectorQuery::Traversal(traversal) => Some(traversal),
         }
     }
@@ -98,7 +364,7 @@ impl<'g, S: GraphStorage + 'g> VectorQuery<'g, S> {
     /// traverser; its output does not continue the path).
     pub(crate) fn analyze_paths(&mut self, analysis: &PathAnalysis) -> PathRequirement {
         match self {
-            VectorQuery::Value(_) => PathRequirement::None,
+            VectorQuery::Value(_) | VectorQuery::Text(_) => PathRequirement::None,
             VectorQuery::Traversal(traversal) => {
                 traversal.analyze_paths(analysis, PathRequirement::None)
             }
@@ -153,6 +419,11 @@ impl VectorKey {
             PropKey::Path(path) => path.segments().to_vec(),
         };
         VectorKey { key, segments }
+    }
+
+    /// The property key.
+    pub(crate) fn prop_key(&self) -> &PropKey {
+        &self.key
     }
 
     /// The key as a Rhai literal (`"emb"`, `jpath("$.a.emb")`).
@@ -262,6 +533,7 @@ impl<'g, S: GraphStorage + 'g> fmt::Display for StepSimilarity<'g, S> {
         if let Some(metric) = self.metric {
             write!(f, ", {}", metric_literal(metric))?;
         }
+        f.write_str(&self.query.embedder_suffix())?;
         f.write_str(")")
     }
 }
@@ -337,7 +609,9 @@ impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepSimilarity<'g, S> {
                 }
             },
         };
-        let query = self.query.evaluate("similarity", context, &source)?;
+        let query = self
+            .query
+            .evaluate("similarity", context, &source, self.key.as_ref())?;
         let metric = match self.metric {
             Some(metric) => metric,
             None => match &self.key {
@@ -358,6 +632,20 @@ impl<'g, S: GraphStorage + 'g> GraphStepMap<'g, S> for StepSimilarity<'g, S> {
 
     fn may_filter(&self) -> bool {
         true
+    }
+
+    fn text_query_mut(&mut self) -> Option<(Option<&PropKey>, &mut TextQuery)> {
+        match &mut self.query {
+            VectorQuery::Text(text) => Some((self.key.as_ref().map(|key| &key.key), text)),
+            _ => None,
+        }
+    }
+
+    fn text_query(&self) -> Option<&TextQuery> {
+        match &self.query {
+            VectorQuery::Text(text) => Some(text),
+            _ => None,
+        }
     }
 
     fn analyze_nested_paths(

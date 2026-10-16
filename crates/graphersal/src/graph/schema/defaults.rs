@@ -117,7 +117,8 @@ pub(crate) fn fill_defaults(
 /// valid for its property (after the write coercion: a canonical string default of a `uuid`
 /// property is fine), and no `defaultFunction` sits anywhere else (a label's root, a nested
 /// property, array items, an `anyOf` member), where nothing would apply it. A `default` below
-/// the top level stays an annotation and is not checked. Fails with
+/// the top level stays an annotation and is not checked. A vector's `embedder` is likewise
+/// refused anywhere but on a label's top-level property. Fails with
 /// [`SchemaError::InvalidSchema`] naming the keyword's location.
 pub(crate) fn check_defaults(schema: &GraphSchema) -> Result<(), SchemaError> {
     let additional_default = schema.mode.default_additional_properties();
@@ -136,11 +137,17 @@ pub(crate) fn check_defaults(schema: &GraphSchema) -> Result<(), SchemaError> {
         if let Some(at) = misplaced_function(root, &root_at, true) {
             return Err(misplaced(at));
         }
+        if let Some(at) = misplaced_embedder(root, &root_at, true) {
+            return Err(misplaced_embedder_error(at));
+        }
         for (key, node) in &root.properties {
             let at = format!("{root_at}/properties/{}", escape(key));
             for (name, child) in children(node) {
                 if let Some(found) = misplaced_function(child, &format!("{at}/{name}"), false) {
                     return Err(misplaced(found));
+                }
+                if let Some(found) = misplaced_embedder(child, &format!("{at}/{name}"), false) {
+                    return Err(misplaced_embedder_error(found));
                 }
             }
             let Some(default) = node.create_default() else {
@@ -234,6 +241,31 @@ fn misplaced_function(node: &PropertySchema, at: &str, root: bool) -> Option<Str
         .into_iter()
         .filter(|(name, _)| !(root && name.starts_with("properties/")))
         .find_map(|(name, child)| misplaced_function(child, &format!("{at}/{name}"), false))
+}
+
+/// The location of the first vector `embedder` in `node` (itself, then its children, depth
+/// first), as a JSON Pointer; like [`misplaced_function`], a label root's `properties` are the
+/// top level and skipped.
+fn misplaced_embedder(node: &PropertySchema, at: &str, root: bool) -> Option<String> {
+    if node.vector.as_ref().is_some_and(|v| v.embedder.is_some()) {
+        return Some(format!("{at}/embedder"));
+    }
+    children(node)
+        .into_iter()
+        .filter(|(name, _)| !(root && name.starts_with("properties/")))
+        .find_map(|(name, child)| misplaced_embedder(child, &format!("{at}/{name}"), false))
+}
+
+fn misplaced_embedder_error(at: String) -> SchemaError {
+    SchemaError::InvalidSchema {
+        path: at,
+        reason: "embedder applies only to a label's top-level vector properties".to_string(),
+        hint: "Declare the vector directly under the label schema's \"properties\": \
+               {\"emb\": {\"type\": \"array\", \"format\": \"vector\", \"dimension\": 256, \
+               \"embedder\": \"hash-ngram/1\"}}; embed_property and the text queries of \
+               nearest() and similarity() read it there."
+            .to_string(),
+    }
 }
 
 /// The location (JSON Pointer below `at`) of the first `defaultFunction` in `node` or any node

@@ -84,11 +84,12 @@ fn test_meta_schema_constant_validity() {
         "element",
         "dimension",
         "metric",
+        "embedder",
         "$ref",
     ] {
         assert!(node_keys.iter().any(|k| k == keyword), "{keyword} missing");
     }
-    assert_eq!(node_keys.len(), 33, "{node_keys:?}");
+    assert_eq!(node_keys.len(), 34, "{node_keys:?}");
     for rejected in ["oneOf", "allOf", "uniqueItems", "multipleOf", "nullable"] {
         assert!(!node_keys.iter().any(|k| k == rejected), "{rejected}");
     }

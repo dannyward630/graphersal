@@ -3,7 +3,7 @@
 
 `nearest` · category: [Vectors](../../traversal/step_reference.md#vectors)
 
-Exact top-k: the k inputs whose vector property is closest to q, best first.
+Exact top-k: the k inputs whose vector property is closest to q, best first; a text q is embedded by the model the schema declares for the property.
 
 ## Forms
 

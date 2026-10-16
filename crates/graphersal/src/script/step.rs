@@ -23,11 +23,14 @@ pub(super) enum ScriptListArg {
 }
 
 /// The query vector of a DSL `similarity()` / `nearest()`: a constant vector (a list of numbers
-/// is made one when the step is built) or a child traversal whose first result is the query.
+/// is made one when the step is built), a child traversal whose first result is the query, or a
+/// text embedded by the model the attached schema declares for the property.
 #[derive(Debug, Clone)]
 pub(super) enum ScriptVectorQuery {
     Value(crate::value::Vector),
     Traversal(ScriptGraphTraversalSource),
+    /// A text, embedded with the embedder of the model the schema declares for the property.
+    Text(String),
 }
 
 /// Which token `property(T.x, v)` names in the DSL.

@@ -204,6 +204,64 @@ g.v().has_label("doc").nearest("emb", [0.5, 0.8, 0.0], 1).as("hit")
 The host then turns the rows into the prompt for its language model. In Python this is a few
 lines ([below](#graphrag-from-python)).
 
+### GraphRAG with text: `embed_property()` and a text query
+
+The same flow without making up any vector: `embed_property()` embeds every document's title
+with an embedder (here the built-in `hash-ngram/1`, which compares spelling, not meaning; a host
+registers a semantic model the same way) and records in the schema which model produced the
+vectors. A query then passes the question as **text**: `nearest()` embeds it once, with that
+same model, so the question and the documents are always comparable. Both need a schema
+attached (mode `open` or `closed`):
+
+```rhai,graph=empty,script
+g.set_schema(#{mode: "open"});
+for d in [
+  ["Cats and dogs",      "Ada",  "pets"],
+  ["Feeding your cat",   "Ada",  "pets"],
+  ["Pasta at home",      "Ben",  "cooking"],
+  ["Cooking for robots", "Cleo", "cooking"],
+  ["Rust for beginners", "Cleo", "programming"],
+] {
+  g.merge_v(#{"T.label": "person", name: d[1]}).as("a")
+   .merge_v(#{"T.label": "topic", name: d[2]}).as("t")
+   .add_v("doc").property("title", d[0]).as("d")
+   .add_e("about").to("t")
+   .add_e("wrote").from("a").to("d")
+   .iterate();
+}
+// Embeds the 5 titles into "emb" and declares {"format": "vector", "embedder": "hash-ngram/1", ..}.
+g.embed_property(#{label: "doc", from: "title", to: "emb"});
+
+// [#{"author": "Ada", "title": "Feeding your cat", "topic": "pets"},
+//  #{"author": "Ada", "title": "Cats and dogs", "topic": "pets"}]
+g.v().has_label("doc").nearest("emb", "feeding cats", 2)
+ .project("title", "author", "topic")
+   .by("title")
+   .by(__.in("wrote").values("name"))
+   .by(__.out("about").values("name"))
+ .to_list()
+```
+
+The job works page by page and never holds the graph's lock while the embedder runs, so a slow
+model does not block other queries; a second run embeds only documents added since
+([Embedding a property](../users_guide/vectors.md#embedding-a-property-embed_property)). One more
+hop works as before:
+
+```rhai,graph=empty,script
+g.set_schema(#{mode: "open"});
+for d in [["Pasta at home", "cooking"], ["Cooking for robots", "cooking"], ["Cats and dogs", "pets"]] {
+  g.merge_v(#{"T.label": "topic", name: d[1]}).as("t")
+   .add_v("doc").property("title", d[0])
+   .add_e("about").to("t")
+   .iterate();
+}
+g.embed_property(#{label: "doc", from: "title", to: "emb"});
+// The best hit for "cooking pasta" shares its topic with: ["Pasta at home"]
+g.v().has_label("doc").nearest("emb", "cooking pasta", 1).as("hit")
+ .out("about").in("about").where(P.neq("hit"))
+ .values("title").to_list()
+```
+
 ### More like this
 
 The query vector can come from the graph: take a document's own embedding, label it with
@@ -498,6 +556,11 @@ graph.define_query({
 })
 graph.call_query("semantic_search", {"q": graphersal.Vector(q), "k": 2})
 ```
+
+When the host registers its model as an embedder and the documents were embedded with
+`embed_property()`, the schema knows the model, and the parameter can be the question itself:
+`nearest("emb", question, k)` with `params: {"question": "string"}` embeds it with that model, so
+the agent needs no embedding tool at all.
 
 **Any model works.** OpenAI, Cohere, Ollama or a model of your own: an embedding is just a list
 of numbers. Keep the schema's `dimension` equal to the model's, embed documents and questions

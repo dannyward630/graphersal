@@ -550,8 +550,8 @@ fn search_errors_carry_their_help() {
             &["k >= 0"],
         ),
         (
-            r#"g.v().nearest("emb", "not a vector", 2)"#,
-            &["expected a vector"],
+            r#"g.v().nearest("emb", "not a vector", 2).to_list()"#,
+            &["nearest needs a schema attached"],
         ),
         (r#"g.v().similarity("emb", vector([1.0]), 5)"#, &[]),
         (

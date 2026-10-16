@@ -42,6 +42,7 @@ mod drop_shape_tests;
 mod edge_label_tests;
 mod element_order_tests;
 mod element_value_tests;
+mod embed_job_tests;
 mod embed_tests;
 mod empty_side_effect_tests;
 mod engine_correctness_tests;

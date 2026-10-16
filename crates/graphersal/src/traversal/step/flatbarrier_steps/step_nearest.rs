@@ -95,6 +95,7 @@ impl<'g, S: GraphStorage + 'g> fmt::Display for StepNearest<'g, S> {
                 crate::value::literal::rhai_string(metric.name())
             )?;
         }
+        f.write_str(&self.query.embedder_suffix())?;
         f.write_str(")")
     }
 }
@@ -202,7 +203,9 @@ impl<'g, S: GraphStorage + 'g> GraphStepFlatBarrier<'g, S> for StepNearest<'g, S
                 // No such property, or a value that is not a vector: skipped.
                 continue;
             };
-            let this_query = self.query.evaluate("nearest", context, &traverser)?;
+            let this_query =
+                self.query
+                    .evaluate("nearest", context, &traverser, Some(&self.key))?;
             let query = match &query {
                 None => {
                     query_norm = this_query.raw_squared_norm();
@@ -261,6 +264,25 @@ impl<'g, S: GraphStorage + 'g> GraphStepFlatBarrier<'g, S> for StepNearest<'g, S
             last.bulk -= units - k;
         }
         Ok(Some(kept))
+    }
+
+    fn text_query_mut(
+        &mut self,
+    ) -> Option<(
+        Option<&PropKey>,
+        &mut crate::traversal::step::map_steps::step_similarity::TextQuery,
+    )> {
+        match &mut self.query {
+            VectorQuery::Text(text) => Some((Some(self.key.prop_key()), text)),
+            _ => None,
+        }
+    }
+
+    fn text_query(&self) -> Option<&crate::traversal::step::map_steps::step_similarity::TextQuery> {
+        match &self.query {
+            VectorQuery::Text(text) => Some(text),
+            _ => None,
+        }
     }
 
     fn analyze_nested_paths(

@@ -418,6 +418,25 @@ impl<'g, S: GraphStorage + 'g> GraphStep<'g, S> {
                 )),
                 None => Ok(()),
             },
+            // A text query embeds its text: `Execute` on each candidate embedder of its model.
+            GraphStep::Map("similarity", step) => match step.text_query() {
+                Some(query) => query.embedder_names().try_for_each(|name| {
+                    visit(AccessRequest::new(
+                        Action::Execute,
+                        Resource::Embedder { name },
+                    ))
+                }),
+                None => Ok(()),
+            },
+            GraphStep::FlatBarrier("nearest", step) => match step.text_query() {
+                Some(query) => query.embedder_names().try_for_each(|name| {
+                    visit(AccessRequest::new(
+                        Action::Execute,
+                        Resource::Embedder { name },
+                    ))
+                }),
+                None => Ok(()),
+            },
             // `inject(v)` of a vertex or edge value reaches the stored element of its id.
             GraphStep::Append(_, step) => {
                 let (vertices, edges) = step.reads_elements();
@@ -1219,6 +1238,21 @@ pub(crate) trait GraphStepMap<'g, S: GraphStorage + 'g>: Send + Sync + fmt::Disp
     fn embedder_name(&self) -> Option<&str> {
         None
     }
+    /// The text query of a step searching vectors by a text (`similarity("emb", "text")`)
+    /// with the step's property key: `run()` binds its candidate embedders before the
+    /// permission check.
+    fn text_query_mut(
+        &mut self,
+    ) -> Option<(
+        Option<&crate::PropKey>,
+        &mut crate::traversal::step::map_steps::step_similarity::TextQuery,
+    )> {
+        None
+    }
+    /// The bound text query (the permission check asks `Execute` on its embedders).
+    fn text_query(&self) -> Option<&crate::traversal::step::map_steps::step_similarity::TextQuery> {
+        None
+    }
     /// Maps one traverser, or drops it; the executor calls this rather than `process`.
     fn process_filter(
         &self,
@@ -1478,6 +1512,20 @@ pub(crate) trait GraphStepFlatBarrier<'g, S: GraphStorage + 'g>:
         context: &mut TraverserContext<'_, S>,
         source: Vec<Traverser<S>>,
     ) -> TraverserResult<Option<Vec<Traverser<S>>>>;
+    /// The text query of `nearest("emb", "text", k)` with its property key; see
+    /// [`GraphStepMap::text_query_mut`].
+    fn text_query_mut(
+        &mut self,
+    ) -> Option<(
+        Option<&crate::PropKey>,
+        &mut crate::traversal::step::map_steps::step_similarity::TextQuery,
+    )> {
+        None
+    }
+    /// The bound text query; see [`GraphStepMap::text_query`].
+    fn text_query(&self) -> Option<&crate::traversal::step::map_steps::step_similarity::TextQuery> {
+        None
+    }
     /// Attaches a `from()`/`to()` modulator argument list. The default rejects it: only a
     /// step that overrides this and returns [`ArgsModulation::Accepted`] takes `from()`/
     /// `to()` (TinkerPop's `FromToModulating`: `add_e()` today), so a step can never swallow
