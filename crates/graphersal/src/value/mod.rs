@@ -98,6 +98,9 @@ pub use scope::Scope;
 pub use stream_map::StreamMap;
 pub use temporal::Temporal;
 pub use value_map::ValueMap;
+pub use vector::embed::{
+    EmbedContext, EmbedError, Embedder, EmbedderInfo, Embedders, EmbeddersBuilder, HashNgram,
+};
 pub use vector::{Vector, VectorElement, VectorError, VectorMetric};
 pub use with_options::WithOptions;
 

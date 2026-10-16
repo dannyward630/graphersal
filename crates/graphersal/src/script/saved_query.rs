@@ -952,6 +952,7 @@ impl ScriptGraphTraversalSource {
             max_value_depth: self.access.max_value_depth,
             read_only: true,
             query_depth: self.access.query_depth + 1,
+            embedders: self.access.embedders.clone(),
         });
         let g = ScriptGraphTraversalSource {
             g: Some(graph.clone()),

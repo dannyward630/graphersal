@@ -43,6 +43,7 @@ mod step_rtrim;
 mod step_sample_local;
 pub(crate) mod temporal;
 pub(crate) use step_sample_local::sample_local_step;
+mod step_embed;
 mod step_sack;
 pub(crate) mod step_select;
 mod step_select_column;

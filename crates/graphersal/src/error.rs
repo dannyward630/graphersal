@@ -3700,6 +3700,13 @@ pub enum TraverserError {
         elapsed_ms: u64,
     },
 
+    /// An embedding failed (the `embed` step or the DSL function `embed(text)`): an unknown
+    /// embedder, a value that is not a string, a text with nothing to embed, an embedder that
+    /// failed or answered wrongly. A cancelled or timed-out embedding is [`Self::Cancelled`] or
+    /// [`Self::Timeout`] instead.
+    #[error("Embedding failed: {0}")]
+    Embed(crate::value::EmbedError),
+
     /// An execution option set with `with()` holds a value of the wrong shape.
     ///
     /// Raised when the traversal is executed, since `with()` itself cannot fail.
@@ -4330,6 +4337,7 @@ impl TraverserError {
             TraverserError::Spelled { source, .. } => source.canonical_help(),
             TraverserError::Timeout { limit_ms, .. } => Some(timeout_help(*limit_ms, None)),
             TraverserError::Cancelled { .. } => Some(cancelled_help()),
+            TraverserError::Embed(err) => Some(err.help()),
             TraverserError::InvalidOption { key, .. } => Some(invalid_option_help(key)),
             TraverserError::LockedOption { key } => Some(locked_option_help(key)),
             TraverserError::PermissionDenied { reason, .. }
@@ -6614,6 +6622,34 @@ impl TraverserError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The embedding errors a query cannot trigger with the built-in embedder (they come from a
+    /// host's embedder or its registration) carry their help through `TraverserError::Embed`.
+    #[test]
+    fn embed_error_help_for_host_embedders() {
+        use crate::value::EmbedError;
+        for (error, expected) in [
+            (
+                EmbedError::bad_output("2 vectors for 3 texts"),
+                "broke its contract",
+            ),
+            (
+                EmbedError::unavailable("the model file is missing"),
+                "Retry later",
+            ),
+            (EmbedError::failed("CUDA out of memory"), "its message"),
+            (
+                EmbedError::Cancelled,
+                "g.with(\"evaluationTimeout\", 60000)",
+            ),
+            (EmbedError::registry("a duplicate"), "registered once"),
+        ] {
+            let err = TraverserError::Embed(error);
+            let help = err.help().expect("help");
+            assert!(help.contains(expected), "{help}");
+            assert!(format_diagnostic(&err).contains("Embedding failed: "));
+        }
+    }
 
     /// The `path` help (a label that is not set on the traverser's path) names the `Pop` forms; a
     /// named-field variant, so built by hand here.

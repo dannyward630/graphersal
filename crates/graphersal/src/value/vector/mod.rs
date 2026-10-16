@@ -24,6 +24,7 @@
 //! (f32, f16, i8, bit), then dimension, then the component values lexicographically (an i8
 //! vector then by its scale).
 
+pub mod embed;
 pub(crate) mod half;
 pub(crate) mod similarity;
 pub(crate) mod tagged;
@@ -330,7 +331,9 @@ impl VectorError {
                  vector_mean() take vector values. Build one \
                  from a list of numbers with vector([0.1, 0.2]) or the as_vector() step, or \
                  declare the property as a vector in the schema ({\"type\": \"array\", \
-                 \"format\": \"vector\", \"element\": \"f32\"}) so a written list becomes one."
+                 \"format\": \"vector\", \"element\": \"f32\"}) so a written list becomes one. \
+                 A text becomes a vector through an embedder: embed(\"graph indexes\") or \
+                 g.v().embed(\"name\")."
                 .to_string(),
             VectorError::UnknownElement { .. } => "The element kinds are \"f32\", \"f16\", \
                  \"i8\" and \"bit\": vector([0.1, 0.2], \"i8\") or .quantize(\"f16\")."

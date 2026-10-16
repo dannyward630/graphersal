@@ -78,6 +78,15 @@ pub(crate) fn register_vector(registry: &mut crate::script::register::Registry) 
         .register_type_with_name::<ScriptVector>("Vector")
         .register_fn("vector", script_vector)
         .register_fn("vector", script_vector_of)
+        .register_fn("embed", |ctx: NativeCallContext, text: &str| {
+            crate::script::source::script_embed(&ctx, text, None)
+        })
+        .register_fn(
+            "embed",
+            |ctx: NativeCallContext, text: &str, options: rhai::Map| {
+                crate::script::source::script_embed(&ctx, text, Some(&options))
+            },
+        )
         .register_fn_as(&["to_string", "to_debug"], |v: &mut ScriptVector| {
             v.0.literal(Some(crate::value::literal::MAX_LITERAL_ITEMS))
         })

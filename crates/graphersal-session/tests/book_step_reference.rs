@@ -149,6 +149,8 @@ const CATEGORIES: &[(&str, &[&str])] = &[
             "similarity",
             "nearest",
             "vector_mean",
+            "embed",
+            "embedders",
         ],
     ),
     (

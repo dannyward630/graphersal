@@ -25,6 +25,12 @@ pub fn authorizer() -> Arc<dyn graphersal::auth::Authorizer> {
     Arc::new(graphersal::auth::AllowAll)
 }
 
+/// The embedders the CLI's scripts and its dev server call: the default registry, which holds
+/// the built-in `hash-ngram/1` (a configured embedder is registered here).
+pub fn embedders() -> Arc<graphersal::vector::Embedders> {
+    Arc::new(graphersal::vector::Embedders::default())
+}
+
 /// Exit code returned when every script evaluated successfully.
 pub const EXIT_OK: i32 = 0;
 /// Exit code returned when a script failed to evaluate.
@@ -1249,6 +1255,7 @@ impl ScriptBudget {
             authorizer(),
             &self.traversal_options(),
         );
+        graphersal::script::set_engine_embedders(&mut engine, embedders());
         self.install(&mut engine);
         engine
     }
@@ -1259,7 +1266,9 @@ impl ScriptBudget {
     pub fn scope(&self, graph: Arc<Graph>, render: &RenderOptions) -> Scope<'static> {
         let mut options = self.traversal_options();
         options.extend(graphersal::script::render_scope_options(render));
-        graphersal::script::graph_scope_with_options(graph, &options, authorizer())
+        let mut scope = graphersal::script::graph_scope_with_options(graph, &options, authorizer());
+        graphersal::script::set_scope_embedders(&mut scope, embedders());
+        scope
     }
 
     /// Replaces the traversal sources `g`, `_g` and `__` of a session scope by fresh ones carrying

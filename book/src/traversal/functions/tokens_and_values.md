@@ -23,6 +23,12 @@ datetime("2023-08-02T09:30Z").hour   // 9
 duration("P1Y2M").months   // 14
 ```
 
+**`embed`**: A vector for a text from an embedder (default hash-ngram/1), computed before any traversal runs.
+
+```rhai,graph=modern
+embed("Marko") == embed("marko")   // true
+```
+
 **`empty`**: Creates a new empty graph, private to the script, and returns its traversal source.
 
 ```rhai,graph=modern

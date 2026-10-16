@@ -8,11 +8,12 @@ direction, while "Rust for beginners" points elsewhere. Searching by embedding f
 [vector](../users_guide/vectors.md) value, searches them exactly with `nearest()` and
 `similarity()`, and combines the hits with everything a graph does well: filters, edges, paths.
 
-**Graphersal stores and searches vectors, it never computes them.** Your host program does that,
-with the model of your choice (Python, a server, an MCP tool), and writes the result as an
-ordinary property value. A step that called a model would make a query depend on a network
-service and could not be rolled back; the [reference page](../users_guide/vectors.md) has the
-full reasoning.
+**Graphersal never calls a model on its own.** A semantic model runs in your host program (Python,
+a server, an MCP tool), which writes the result as an ordinary property value, or registers the
+model as an *embedder* that the `embed` step calls. Built in is one small embedder,
+`hash-ngram/1`: no model, lexical similarity only (typos and word forms, not meaning), enough for
+fuzzy lookup and for trying the steps; the [reference page](../users_guide/vectors.md#embeddings)
+has the details and the reasoning.
 
 This page is the practical tour. Every detail (element kinds, metrics, schema rules, formats) is
 on the reference page [Vectors](../users_guide/vectors.md).

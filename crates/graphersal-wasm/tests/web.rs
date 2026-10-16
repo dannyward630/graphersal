@@ -373,6 +373,25 @@ fn a_loaded_graph_is_a_store_in_memory_in_the_browser() {
 /// `Fake(seed)` gives the same values in the browser build as natively (the reproducibility
 /// contract of `graphersal`'s `script/fake`; `fake_tests.rs` pins the same string natively, so a
 /// platform difference in the generator or the float formatting shows here).
+/// The built-in embedder runs in the browser: the `embed` step, `embed(text)` and
+/// `g.embedders()`.
+#[wasm_bindgen_test]
+fn embed_runs_in_the_browser() {
+    let mut p = modern();
+    let r = json(
+        &p.execute(
+            r#"g.v().has_label("person").property("emb", __.embed("name")).iterate();
+               [g.v().has_label("person").nearest("emb", embed("marco"), 1).values("name").next(),
+                g.embedders()[0].name]"#,
+            "{}",
+        )
+        .unwrap(),
+    );
+    assert_eq!(r["ok"], true, "{r}");
+    let raw = r["display"]["raw"].as_str().unwrap();
+    assert!(raw.contains("marko") && raw.contains("hash-ngram/1"), "{r}");
+}
+
 #[wasm_bindgen_test]
 fn fake_values_match_the_native_build() {
     let mut p = Playground::new();
