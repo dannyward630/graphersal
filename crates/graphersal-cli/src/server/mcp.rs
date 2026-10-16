@@ -449,7 +449,10 @@ compressed in memory with a compression rule: `list_compressions`, `define_compr
 `drop_compression`, `recompress` (reads stay plain). A query that filters a label on a \
 property (`g.v().has_label(\"person\").has(\"age\", P.gt(30))`) and is slow on a large \
 graph can be served by a property index: `list_indexes`, `create_index` {label, key, \
-element?, type?}, `drop_index`; results never change, `.profile()` names the index it reads. \
+element?, type?, transform?}, `drop_index`; results never change, `.profile()` names the index \
+it reads. For a case-insensitive search create it with transform \"to_lower\" and query \
+`has(\"name\", __.to_lower().is(\"alice\"))` (the constant compared as given, so write it in \
+lower case). \
 Resources: graphersal://dsl-reference (every step and function), \
 graphersal://examples (runnable examples), graphersal://saved-queries, graphersal://schema, \
 graphersal://statistics. To create test data, use \
@@ -704,10 +707,12 @@ fn all_tools() -> Vec<Tool> {
             "The property indexes of the graph: the vertices or edges of one label ordered by \
              one top-level property, so that v()/e() with has_label(label) and has(key, ..) \
              (equality, P.within, ranges) read only the matching elements. Each has name, \
-             element, label, key, type (memory-ordered), served (false: the definition is kept \
-             but no query reads it; reason says why, such as a storage without indexes or a \
-             type this version does not know) and its current stats (entries, distinctValues, \
-             bytes).",
+             element, label, key, type (memory-ordered), transform (null, or to_lower: the \
+             lowered text of string values), served (false: the definition is kept but no \
+             query reads it; reason says why, such as a storage without indexes or a type or \
+             transform this version does not know) and its current stats (entries, \
+             distinctValues, skipped, bytes; a to_lower index is read only while skipped, the \
+             count of non-string values at the key, is 0).",
             no_args(),
         ),
         tool(
@@ -720,11 +725,15 @@ fn all_tools() -> Vec<Tool> {
              has(key, P.within(..)) or a range (P.gt/gte/lt/lte/between/inside/outside) then \
              read only the matching elements; results are the same as without the index, only \
              their order may differ. It costs memory (see bytes in list_indexes) and a little \
-             time on every write of the key. One index per element, label, key and type; `name` \
-             defaults to <label>_<key> (<label>_<key>_edge for edges), `type` to \
-             memory-ordered (an ordered index in memory holding scalar values: null, booleans, \
-             numbers, strings, uuids, dates and times). A key the schema declares as a vector, \
-             an array or an object is refused (search vectors with nearest()/similarity()).",
+             time on every write of the key. One index per element, label, key, type and \
+             transform; `name` defaults to <label>_<key> (<label>_<key>_edge for edges, then \
+             _to_lower with that transform), `type` to memory-ordered (an ordered index in \
+             memory holding scalar values: null, booleans, numbers, strings, uuids, dates and \
+             times). `transform` \"to_lower\" indexes the lowered text of string values for a \
+             case-insensitive search written has(key, __.to_lower().is(\"alice\")) (also \
+             P.within and ranges; the constants compared as given). A key the schema declares \
+             as a vector, an array or an object is refused (search vectors with \
+             nearest()/similarity()), with to_lower any non-string key.",
             json!({
                 "type": "object",
                 "properties": {
@@ -736,6 +745,11 @@ fn all_tools() -> Vec<Tool> {
                         "type": "string",
                         "enum": graphersal::catalog::PropertyIndexType::KNOWN_NAMES,
                         "description": "The index type; default memory-ordered (an ordered index kept in memory, rebuilt from the data on open; serves =, P.within and ranges).",
+                    },
+                    "transform": {
+                        "type": "string",
+                        "enum": graphersal::catalog::PropertyIndexTransform::KNOWN_NAMES,
+                        "description": "Optional: to_lower indexes the lowered text of string values, for has(key, __.to_lower().is(..)) (case-insensitive search). Default: none (the values themselves).",
                     },
                 },
                 "required": ["label", "key"],

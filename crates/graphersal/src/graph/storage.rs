@@ -533,6 +533,37 @@ pub trait GraphStorage: Send + Sync {
         None
     }
 
+    /// The vertices labelled `label` whose top-level property `key`, transformed by
+    /// `transform` (`to_lower`: the lowered text of a string value), lies in `range`, read from
+    /// the property index on `(vertex, label, key, transform)` (book page "Property Indexes",
+    /// section "Case-insensitive search"); `None` when there is no such index (the default).
+    /// The same contract as [`Self::vertices_by_property_index`]: a superset, each vertex once.
+    /// A storage serving such an index must report its
+    /// [`skipped`](crate::graph::PropertyIndexStats::skipped) count in
+    /// [`Self::property_indexes`].
+    fn vertices_by_transformed_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::VertexId> + 'a>> {
+        let _ = (label, key, transform, range);
+        None
+    }
+
+    /// The edge counterpart of [`Self::vertices_by_transformed_property_index`].
+    fn edges_by_transformed_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::EdgeId> + 'a>> {
+        let _ = (label, key, transform, range);
+        None
+    }
+
     // Mutation methods required for side-effect steps
     /// Stores a new vertex exactly as given: the storage primitive every storage implements
     /// (the heap level under SQL's `INSERT`). It applies no schema defaults; it coerces and
@@ -2186,7 +2217,27 @@ impl GraphStorage for TraversalGraph {
         key: &'a str,
         range: &crate::graph::PropertyIndexRange,
     ) -> Option<Box<dyn Iterator<Item = VertexHandle> + 'a>> {
-        self.property_index_vertices(label, key, range)
+        self.property_index_vertices(label, key, None, range)
+    }
+
+    fn vertices_by_transformed_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = VertexHandle> + 'a>> {
+        self.property_index_vertices(label, key, Some(transform), range)
+    }
+
+    fn edges_by_transformed_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = EdgeHandle> + 'a>> {
+        self.property_index_edges(label, key, Some(transform), range)
     }
 
     fn edges_by_property_index<'a>(
@@ -2195,7 +2246,7 @@ impl GraphStorage for TraversalGraph {
         key: &'a str,
         range: &crate::graph::PropertyIndexRange,
     ) -> Option<Box<dyn Iterator<Item = EdgeHandle> + 'a>> {
-        self.property_index_edges(label, key, range)
+        self.property_index_edges(label, key, None, range)
     }
 
     #[inline]
@@ -2631,6 +2682,28 @@ impl<G: GraphStorage> GraphStorage for &G {
     }
 
     #[inline]
+    fn vertices_by_transformed_property_index<'b>(
+        &'b self,
+        label: &'b str,
+        key: &'b str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::VertexId> + 'b>> {
+        (**self).vertices_by_transformed_property_index(label, key, transform, range)
+    }
+
+    #[inline]
+    fn edges_by_transformed_property_index<'b>(
+        &'b self,
+        label: &'b str,
+        key: &'b str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::EdgeId> + 'b>> {
+        (**self).edges_by_transformed_property_index(label, key, transform, range)
+    }
+
+    #[inline]
     fn declared_property_schema(
         &self,
         kind: GraphNodeType,
@@ -2983,6 +3056,28 @@ impl<G: GraphStorage> GraphStorage for Box<G> {
         range: &crate::graph::PropertyIndexRange,
     ) -> Option<Box<dyn Iterator<Item = Self::EdgeId> + 'b>> {
         (**self).edges_by_property_index(label, key, range)
+    }
+
+    #[inline]
+    fn vertices_by_transformed_property_index<'b>(
+        &'b self,
+        label: &'b str,
+        key: &'b str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::VertexId> + 'b>> {
+        (**self).vertices_by_transformed_property_index(label, key, transform, range)
+    }
+
+    #[inline]
+    fn edges_by_transformed_property_index<'b>(
+        &'b self,
+        label: &'b str,
+        key: &'b str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::EdgeId> + 'b>> {
+        (**self).edges_by_transformed_property_index(label, key, transform, range)
     }
 
     #[inline]
@@ -3391,6 +3486,28 @@ impl<G: GraphStorage> GraphStorage for &mut G {
         range: &crate::graph::PropertyIndexRange,
     ) -> Option<Box<dyn Iterator<Item = Self::EdgeId> + 'b>> {
         (**self).edges_by_property_index(label, key, range)
+    }
+
+    #[inline]
+    fn vertices_by_transformed_property_index<'b>(
+        &'b self,
+        label: &'b str,
+        key: &'b str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::VertexId> + 'b>> {
+        (**self).vertices_by_transformed_property_index(label, key, transform, range)
+    }
+
+    #[inline]
+    fn edges_by_transformed_property_index<'b>(
+        &'b self,
+        label: &'b str,
+        key: &'b str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::EdgeId> + 'b>> {
+        (**self).edges_by_transformed_property_index(label, key, transform, range)
     }
 
     #[inline]
@@ -3925,7 +4042,8 @@ impl GraphStorage for Arc<TraversalGraph> {
         key: &'a str,
         range: &crate::graph::PropertyIndexRange,
     ) -> Option<Box<dyn Iterator<Item = VertexHandle> + 'a>> {
-        self.as_ref().property_index_vertices(label, key, range)
+        self.as_ref()
+            .property_index_vertices(label, key, None, range)
     }
 
     #[inline]
@@ -3935,7 +4053,31 @@ impl GraphStorage for Arc<TraversalGraph> {
         key: &'a str,
         range: &crate::graph::PropertyIndexRange,
     ) -> Option<Box<dyn Iterator<Item = EdgeHandle> + 'a>> {
-        self.as_ref().property_index_edges(label, key, range)
+        self.as_ref().property_index_edges(label, key, None, range)
+    }
+
+    #[inline]
+    fn vertices_by_transformed_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = VertexHandle> + 'a>> {
+        self.as_ref()
+            .property_index_vertices(label, key, Some(transform), range)
+    }
+
+    #[inline]
+    fn edges_by_transformed_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = EdgeHandle> + 'a>> {
+        self.as_ref()
+            .property_index_edges(label, key, Some(transform), range)
     }
 
     #[inline]

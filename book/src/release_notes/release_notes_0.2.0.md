@@ -35,8 +35,18 @@ What 0.2.0 does not do yet is on [Current Limitations](../users_guide/current_li
   load. Every index has a type: `memory-ordered` is the one type of 0.2 (an index type a later
   version adds is kept and listed as not served, never misread), and an index on a key the schema
   declares as a vector, list or map is refused with a clear message
-  ([Index types](../users_guide/property_indexes.md#index-types)). Python `Graph.create_index`,
-  the playground's **Catalog ▸ Property indexes**, the dev server's `/api/indexes` and MCP tools.
+  ([Index types](../users_guide/property_indexes.md#index-types)). An index may carry the
+  transform `to_lower` for **case-insensitive search**: it keys the lowered text of string values
+  and serves `has("name", __.to_lower().is("alice"))` (equality, `P.within`, ranges; default name
+  `<label>_<key>_to_lower`; a plain index on the same key coexists)
+  ([Case-insensitive search](../users_guide/property_indexes.md#case-insensitive-search)). Python
+  `Graph.create_index` (`transform=`), the playground's **Catalog ▸ Property indexes**, the dev
+  server's `/api/indexes` and MCP tools.
+- **`has(key, traversal)`** follows TinkerPop: `has("name", __.to_lower().is("alice"))` is
+  `filter(values("name").to_lower().is("alice"))` (the child runs on the property's value; an
+  element without the property is filtered out), also with a jpath key and in the three-argument
+  form `has(label, key, traversal)`. Before, the anonymous traversal was silently compared as a
+  string and matched nothing. Rust `has_traversal(key, traversal)`.
 - **Schema defaults on create** ([#5](https://github.com/graphersal/graphersal/issues/5);
   [Defaults on create](../users_guide/schema_enforcement.md#defaults-on-create)): a schema's
   `default` now has SQL `DEFAULT` semantics on a label's top-level properties, and the new keyword

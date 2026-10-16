@@ -934,16 +934,23 @@ impl PropertyFilter {
 pub(crate) struct IndexAccess {
     /// The top-level property key of the index.
     pub(crate) key: String,
+    /// The transform of the index (`None`: the plain index on the value).
+    pub(crate) transform: Option<crate::graph::PropertyIndexTransform>,
     /// The slices of the index to read (several for `P.within` and `P.outside`).
     pub(crate) ranges: Vec<crate::graph::PropertyIndexRange>,
 }
 
 impl IndexAccess {
-    /// `[index: vertex person.title, vertex employee.title]`: what `.profile()` shows.
+    /// `[index: vertex person.title, vertex employee.title]`: what `.profile()` shows; an index
+    /// with a transform names it (`[index: vertex person.name to_lower]`).
     pub(crate) fn render(&self, element: &str, labels: &[String]) -> String {
+        let suffix = match &self.transform {
+            Some(transform) => format!(" {transform}"),
+            None => String::new(),
+        };
         let names: Vec<String> = labels
             .iter()
-            .map(|label| format!("{element} {label}.{}", self.key))
+            .map(|label| format!("{element} {label}.{}{suffix}", self.key))
             .collect();
         format!(" [index: {}]", names.join(", "))
     }
@@ -955,6 +962,9 @@ impl IndexAccess {
 pub(crate) struct IndexCondition<'a> {
     /// The top-level property key.
     pub(crate) key: &'a str,
+    /// The transform the condition applies to the value before the predicate (`has(key,
+    /// __.to_lower().is(P))`: `to_lower`), so only an index of that transform serves it.
+    pub(crate) transform: Option<crate::graph::PropertyIndexTransform>,
     /// The slices holding every value the predicate accepts.
     pub(crate) ranges: Vec<crate::graph::PropertyIndexRange>,
     /// The predicate reads a string operand as a path label first (`P.eq("a")`): only a source
@@ -1107,6 +1117,13 @@ pub(crate) trait GraphStepMap<'g, S: GraphStorage + 'g>: Send + Sync + fmt::Disp
         context: &mut TraverserContext<'_, S>,
         source: Traverser<S>,
     ) -> TraverserResult<Traverser<S>>;
+    /// The property index transform this step computes on a string, when it is exactly one
+    /// (`to_lower()`: [`PropertyIndexTransform::ToLower`](crate::graph::PropertyIndexTransform)),
+    /// so the `property_index` rule can serve `has(key, __.to_lower().is(P))` from an index of
+    /// that transform. Default `None`.
+    fn index_transform(&self) -> Option<crate::graph::PropertyIndexTransform> {
+        None
+    }
     /// Attaches a `from()`/`to()` modulator argument list. The default rejects it: only a
     /// step that overrides this and returns [`ArgsModulation::Accepted`] takes `from()`/
     /// `to()` (TinkerPop's `FromToModulating`: `add_e()` today), so a step can never swallow
@@ -1531,6 +1548,13 @@ pub(crate) trait GraphStepFilter<'g, S: GraphStorage + 'g>:
     /// property index that hold every value it can accept (book page "Property Indexes"):
     /// `(key, ranges)`. Default `None`: no index can serve it.
     fn index_condition(&self) -> Option<IndexCondition<'_>> {
+        None
+    }
+    /// The predicate of an `is(P)` on the incoming value as the slices of an ordered property
+    /// index that hold every value it can accept, with whether it reads a string operand as a
+    /// path label first (see [`IndexCondition::reads_path_labels`]): read by the
+    /// `property_index` rule for the child of `has(key, __.to_lower().is(P))`. Default `None`.
+    fn value_index_ranges(&self) -> Option<(Vec<crate::graph::PropertyIndexRange>, bool)> {
         None
     }
     fn as_where_traversal(&self) -> Option<&AnonymousTraversal<'g, S>> {

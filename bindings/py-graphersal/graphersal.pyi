@@ -416,12 +416,16 @@ class Graph:
         name: Optional[str] = None,
         type: str = "memory-ordered",
         *,
+        transform: Optional[str] = None,
         policy: Optional[AccessPolicy] = None,
     ) -> None:
         """Declares (or replaces) a property index: the ``element``s labelled ``label``,
-        ordered by their top-level property ``key`` (name: ``<label>_<key>`` by default) in an
-        index of ``type`` (``"memory-ordered"``, the only type this version knows). An unknown
-        type, or a key the schema declares as a vector, an array or an object, is refused."""
+        ordered by their top-level property ``key`` (name: ``<label>_<key>`` by default, with
+        ``_to_lower`` appended for that transform) in an index of ``type``
+        (``"memory-ordered"``, the only type this version knows). ``transform="to_lower"``
+        indexes the lowered text of string values for ``has(key, __.to_lower().is(..))``. An
+        unknown type or transform, or a key the schema declares as values the index cannot
+        hold, is refused."""
     def indexes(self, *, policy: Optional[AccessPolicy] = None) -> list[dict[str, Any]]:
         """The property indexes with their type, whether they are served (``reason`` when
         not) and their current stats."""

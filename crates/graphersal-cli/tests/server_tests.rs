@@ -4423,3 +4423,80 @@ fn the_server_keeps_serving_with_a_closed_stderr() {
     assert_eq!(r["ok"], false, "{r}");
     assert_eq!(get(server.port, "/api/info").status, 200);
 }
+
+#[test]
+fn property_index_transforms_over_http_and_mcp() {
+    let ui = ui_dir("index-transforms");
+    let ui_arg = ui.to_str().unwrap().to_string();
+    let server = start(&["--graph", "modern", "--ui-dir", &ui_arg, "--mcp"]);
+    let port = server.port;
+    // HTTP: the transform is stored, listed and names the default; a plain index beside it.
+    let created = post(
+        port,
+        "/api/indexes/create",
+        r#"{"label": "person", "key": "name", "transform": "to_lower"}"#,
+    )
+    .json();
+    assert_eq!(created["ok"], true, "{created}");
+    assert_eq!(
+        created["index"]["name"], "person_name_to_lower",
+        "{created}"
+    );
+    assert_eq!(created["index"]["transform"], "to_lower", "{created}");
+    assert_eq!(created["index"]["stats"]["skipped"], 0, "{created}");
+    let plain = post(
+        port,
+        "/api/indexes/create",
+        r#"{"label": "person", "key": "name"}"#,
+    )
+    .json();
+    assert_eq!(plain["index"]["transform"], Value::Null, "{plain}");
+    let listed = get(port, "/api/indexes").json();
+    assert_eq!(listed.as_array().unwrap().len(), 2, "{listed}");
+    let refused = post(
+        port,
+        "/api/indexes/create",
+        r#"{"label": "person", "key": "name", "transform": "upper"}"#,
+    )
+    .json();
+    assert_eq!(refused["errors"][0]["field"], "transform", "{refused}");
+    let found = execute(
+        port,
+        r#"g.V().hasLabel("person").has("name", __.to_lower().is("marko")).values("name").toList()"#,
+    );
+    assert_eq!(found["ok"], true, "{found}");
+
+    // MCP: initialize -> tools/list (the transform enum) -> tools/call.
+    let mut mcp = McpClient::connect(port, &[]);
+    let tools = mcp.rpc("tools/list", serde_json::json!({}));
+    let create = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "create_index")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        create["inputSchema"]["properties"]["transform"]["enum"],
+        serde_json::json!(["to_lower"]),
+        "{create}"
+    );
+    let (error, text) = mcp.call(
+        "create_index",
+        serde_json::json!({"label": "software", "key": "name", "transform": "to_lower"}),
+    );
+    assert!(
+        !error && text.contains("\"name\": \"software_name_to_lower\""),
+        "{text}"
+    );
+    let (error, text) = mcp.call(
+        "create_index",
+        serde_json::json!({"label": "software", "key": "lang", "transform": "x"}),
+    );
+    assert!(error && text.contains("\"transform\""), "{text}");
+    let (error, text) = mcp.call("list_indexes", serde_json::json!({}));
+    assert!(
+        !error && text.matches("\"transform\": \"to_lower\"").count() == 2,
+        "{text}"
+    );
+}

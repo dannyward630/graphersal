@@ -144,6 +144,9 @@ impl ScriptGraphTraversalSource {
                     graph.has(prop.clone(), element_property.clone())
                 }
                 Step::HasProperty(key) => graph.has_property(key.clone()),
+                Step::HasTraversal(key, arg) => {
+                    graph.has_traversal(key.clone(), arg.ast_convert_to_anonymous())
+                }
                 Step::HasNot(key) => graph.has_not(key.clone()),
                 Step::Discard => graph.discard(),
                 Step::Dedup => graph.dedup(),

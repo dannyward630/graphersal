@@ -51,7 +51,7 @@ mod step_select_traversal;
 pub(crate) mod step_similarity;
 mod step_split;
 mod step_substring;
-mod step_to_lower;
+pub(crate) mod step_to_lower;
 mod step_to_upper;
 mod step_trim;
 mod step_value;

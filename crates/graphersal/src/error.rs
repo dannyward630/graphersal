@@ -3125,12 +3125,14 @@ pub enum DefinitionError {
         reason: String,
     },
     /// A property index cannot be created because the graph's schema declares its key as
-    /// values the index type does not hold (a vector, an array, an object, or a union of only
-    /// such; book page "Property Indexes", section "Index types").
+    /// values the index does not hold (for its type a vector, an array, an object, or a union
+    /// of only such; with the transform `to_lower` anything but a string; book page "Property
+    /// Indexes", sections "Index types" and "Case-insensitive search").
     #[error(
         "Cannot create a property index on {element} '{label}' key '{key}': the schema \
-         declares '{key}' as {declared}, and an index of type '{index_type}' holds none of its \
-         values"
+         declares '{key}' as {declared}, and an index of type '{index_type}'{} holds none of \
+         its values",
+        transform_clause(.transform)
     )]
     #[non_exhaustive]
     IndexTypeMismatch {
@@ -3143,7 +3145,9 @@ pub enum DefinitionError {
         /// The declared type, without `null` (`vector<f32>`, `array<string>`, `object`).
         declared: String,
         /// The index type (`memory-ordered`).
-        index_type: String,
+        index_type: Box<str>,
+        /// The index transform (`to_lower`), `None` without one.
+        transform: Option<Box<str>>,
     },
     /// The JSON (or value) form of a definition or a catalog is malformed.
     #[error("Malformed definition: {reason}")]
@@ -3152,6 +3156,14 @@ pub enum DefinitionError {
         /// What is wrong, with the place (`/definitions/2/params`).
         reason: String,
     },
+}
+
+/// ` with the transform 'to_lower'` for a mismatch of an index with a transform, else empty.
+fn transform_clause(transform: &Option<Box<str>>) -> String {
+    match transform {
+        Some(transform) => format!(" with the transform '{transform}'"),
+        None => String::new(),
+    }
 }
 
 impl DiagnosticError for DefinitionError {
@@ -3217,6 +3229,19 @@ impl DiagnosticError for DefinitionError {
                      are not indexed).",
                     crate::graph::property_index::MAX_INDEX_KEY_BYTES
                 ),
+                "transform" => format!(
+                    "The transform says what an index keys its values by. This version knows \
+                     {}; leave transform out to index the values themselves. \"to_lower\" \
+                     indexes the lowered text of string values for case-insensitive search: \
+                     g.create_index(#{{label: \"person\", key: \"name\", transform: \
+                     \"to_lower\"}}), queried with \
+                     g.v().has_label(\"person\").has(\"name\", __.to_lower().is(\"marko\")).",
+                    crate::graph::property_index::PropertyIndexTransform::KNOWN_NAMES
+                        .iter()
+                        .map(|name| format!("\"{name}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
                 "type" => format!(
                     "The index type says how the index keeps its entries. This version knows \
                      {}. \"memory-ordered\" (the default; leave type out for it) is an ordered \
@@ -3276,9 +3301,20 @@ impl DiagnosticError for DefinitionError {
                 key,
                 declared,
                 index_type,
+                transform,
                 ..
             } => {
-                let mut help = if declared.contains("vector<") {
+                let mut help = if let Some(transform) = transform {
+                    format!(
+                        "An index with the transform '{transform}' holds the lowered text of \
+                         string values only, for case-insensitive search with \
+                         has(\"{key}\", __.to_lower().is(..)); '{key}' is declared as \
+                         {declared}, so it would hold nothing. Index the values themselves \
+                         instead (leave transform out: g.create_index(#{{label: \"{label}\", \
+                         key: \"{key}\"}})), or keep the text you search in its own string \
+                         property and index that with transform: \"{transform}\"."
+                    )
+                } else if declared.contains("vector<") {
                     format!(
                         "Vectors are not index keys: search them with nearest() or similarity() \
                          (an exact search, book page \"Vectors\"), for example \
@@ -3311,7 +3347,7 @@ impl DiagnosticError for DefinitionError {
                  (\"kind\": \"compression\") has \"label\", \"path\" and optionally \"element\", \
                  \"codec\", \"min_bytes\" and \"dictionary\"; a property index \
                  (\"kind\": \"property_index\") has \"label\", \"key\" and optionally \
-                 \"element\" and \"type\"; a catalog is {\"definitions\": [..]}."
+                 \"element\", \"type\" and \"transform\"; a catalog is {\"definitions\": [..]}."
                     .to_string()
             }
         })

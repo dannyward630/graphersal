@@ -376,7 +376,16 @@ fn index_vertices<S: GraphStorage>(
     let mut out = Vec::new();
     for label in labels {
         for range in &access.ranges {
-            for node in storage.vertices_by_property_index(label, &access.key, range)? {
+            let found = match &access.transform {
+                None => storage.vertices_by_property_index(label, &access.key, range)?,
+                Some(transform) => storage.vertices_by_transformed_property_index(
+                    label,
+                    &access.key,
+                    transform,
+                    range,
+                )?,
+            };
+            for node in found {
                 if !dedup || seen.insert(node) {
                     out.push(node);
                 }
@@ -397,7 +406,16 @@ fn index_edges<S: GraphStorage>(
     let mut out = Vec::new();
     for label in labels {
         for range in &access.ranges {
-            for edge in storage.edges_by_property_index(label, &access.key, range)? {
+            let found = match &access.transform {
+                None => storage.edges_by_property_index(label, &access.key, range)?,
+                Some(transform) => storage.edges_by_transformed_property_index(
+                    label,
+                    &access.key,
+                    transform,
+                    range,
+                )?,
+            };
+            for edge in found {
                 if !dedup || seen.insert(edge) {
                     out.push(edge);
                 }

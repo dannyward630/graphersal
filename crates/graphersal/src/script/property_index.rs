@@ -6,18 +6,20 @@ use super::*;
 use crate::error::ScriptError;
 use crate::graph::definition::{Definition, DefinitionKind};
 use crate::graph::{
-    AccessRequest, Action, ElementKind, PropertyIndexDefinition, PropertyIndexType, Resource,
+    AccessRequest, Action, ElementKind, PropertyIndexDefinition, PropertyIndexTransform,
+    PropertyIndexType, Resource,
 };
 
 /// The keys `create_index` accepts.
-const KEYS: [&str; 5] = ["name", "element", "label", "key", "type"];
+const KEYS: [&str; 6] = ["name", "element", "label", "key", "type", "transform"];
 
 /// Why a storage that does not serve property indexes at all serves none.
 const STORAGE_SERVES_NONE: &str = "this storage keeps the definition but serves no property \
                                    indexes; queries scan";
 
-/// One index as a map: name, element, label, key, type, served (with `reason` when it is not
-/// served) and its current stats (entries, distinct_values, bytes; zero when it is not served).
+/// One index as a map: name, element, label, key, type, transform (`()` without one), served
+/// (with `reason` when it is not served) and its current stats (entries, distinct_values,
+/// skipped, bytes; zero when it is not served).
 fn index_entry(
     definition: &Definition,
     stats: Option<crate::graph::PropertyIndexStats>,
@@ -35,6 +37,13 @@ fn index_entry(
         "type".into(),
         index.index_type().as_str().to_string().into(),
     );
+    map.insert(
+        "transform".into(),
+        index
+            .transform()
+            .map(|transform| Dynamic::from(transform.as_str().to_string()))
+            .unwrap_or(Dynamic::UNIT),
+    );
     map.insert("served".into(), Dynamic::from_bool(stats.is_some()));
     if stats.is_none() {
         let reason = index
@@ -46,6 +55,7 @@ fn index_entry(
     let int = |n: u64| Dynamic::from_int(i64::try_from(n).unwrap_or(i64::MAX));
     map.insert("entries".into(), int(stats.entries));
     map.insert("distinct_values".into(), int(stats.distinct_values));
+    map.insert("skipped".into(), int(stats.skipped));
     map.insert("bytes".into(), int(stats.bytes));
     Some(map)
 }
@@ -77,11 +87,14 @@ impl ScriptGraphTraversalSource {
         })
     }
 
-    /// `g.create_index(#{label, key, element?, name?, type?})` / `g.createIndex(..)`: declares
-    /// (or replaces) a property index: the `element`s (`"vertex"`, the default, or `"edge"`)
-    /// labelled `label`, ordered by their top-level property `key` (a plain name). `name`
-    /// defaults to `<label>_<key>` (`<label>_<key>_edge` for edges), `type` to
-    /// `"memory-ordered"` (the only type this version knows). The index is built in the same
+    /// `g.create_index(#{label, key, element?, name?, type?, transform?})` /
+    /// `g.createIndex(..)`: declares (or replaces) a property index: the `element`s
+    /// (`"vertex"`, the default, or `"edge"`) labelled `label`, ordered by their top-level
+    /// property `key` (a plain name). `name` defaults to
+    /// [`PropertyIndexDefinition::default_name`] (`<label>_<key>`, `_edge` for edges,
+    /// `_to_lower` with that transform), `type` to `"memory-ordered"` (the only type this
+    /// version knows), `transform` to none (`"to_lower"`: the lowered text of string values,
+    /// for `has(key, __.to_lower().is(..))`). The index is built in the same
     /// unit. Asks for `Create` on the index (`Update` when it replaces one); a storage without
     /// property indexes refuses it, and so does
     /// [`PropertyIndexDefinition::check_create`] (an unknown type, a key the stored schema
@@ -98,7 +111,7 @@ impl ScriptGraphTraversalSource {
         };
         let Some(mut spec) = spec.try_cast::<rhai::Map>() else {
             return Err(mismatch(
-                "a map #{label, key, element?, name?, type?}".into(),
+                "a map #{label, key, element?, name?, type?, transform?}".into(),
                 actual,
             ));
         };
@@ -135,7 +148,11 @@ impl ScriptGraphTraversalSource {
             None => PropertyIndexType::MemoryOrdered,
             Some(name) => PropertyIndexType::from_name(&name),
         };
-        let index = PropertyIndexDefinition::new(element, label, key).with_type(index_type);
+        let transform = optional_text(operation, "transform", take("transform"))?
+            .map(|name| PropertyIndexTransform::from_name(&name));
+        let index = PropertyIndexDefinition::new(element, label, key)
+            .with_type(index_type)
+            .with_transform(transform);
         let name = match optional_text(operation, "name", take("name"))? {
             Some(name) => name,
             None => index.default_name(),
@@ -167,8 +184,9 @@ impl ScriptGraphTraversalSource {
             .map_err(script_error)
     }
 
-    /// `g.indexes()`: every property index as a map (name, element, label, key, type, served,
-    /// `reason` when it is not served, entries, distinct_values, bytes), by name. Asks for
+    /// `g.indexes()`: every property index as a map (name, element, label, key, type,
+    /// transform, served, `reason` when it is not served, entries, distinct_values, skipped,
+    /// bytes), by name. Asks for
     /// `Read` on the indexes.
     pub fn indexes(&mut self) -> Result<rhai::Array, Box<EvalAltResult>> {
         self.require_index("indexes", Action::Read, None)?;

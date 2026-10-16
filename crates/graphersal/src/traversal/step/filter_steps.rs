@@ -16,6 +16,7 @@ mod step_has_p;
 pub(crate) mod step_has_path;
 mod step_has_property;
 mod step_has_token_p;
+mod step_has_traversal;
 mod step_has_value;
 mod step_is;
 mod step_none;

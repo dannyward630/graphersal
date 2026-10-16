@@ -542,8 +542,10 @@ impl ScriptGraphTraversalSource {
         Ok(self.add_step(Step::HasValueP(val)))
     }
 
-    /// Keeps elements that have the property (and, with a value or predicate, whose value matches);
-    /// the 3-argument form also tests the label. Rhai binding of `has()`.
+    /// Keeps elements that have the property (and, with a value or predicate, whose value matches;
+    /// with a traversal, for whose value the traversal yields a result: `has(key, __.to_lower()
+    /// .is("x"))` is `filter(values(key).to_lower().is("x"))`, TinkerPop's `has(String,
+    /// Traversal)`); the 3-argument form also tests the label. Rhai binding of `has()`.
     pub fn has(
         ctx: NativeCallContext,
         this: &mut Self,
@@ -551,7 +553,10 @@ impl ScriptGraphTraversalSource {
         arg: Dynamic,
     ) -> Result<Self, Box<rhai::EvalAltResult>> {
         let prop = dynamic_to_prop_key(prop);
-        if arg.is::<ArgP>() || arg.type_name() == std::any::type_name::<ArgP>() {
+        if arg.is::<ScriptGraphTraversalSource>() {
+            let child = try_dynamic_to_gts(arg)?;
+            Ok(this.add_step(Step::HasTraversal(prop, child)))
+        } else if arg.is::<ArgP>() || arg.type_name() == std::any::type_name::<ArgP>() {
             let val = try_dynamic_to_argp(&arg)?;
             Ok(this.add_step(Step::HasP(prop, val)))
         } else {
