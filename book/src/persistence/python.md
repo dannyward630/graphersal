@@ -64,6 +64,7 @@ with graphersal.Store.create("data") as store:            # or Store.open("data"
 | `store.maintenance` | `None`, or the damage report of a store that opened read-only in maintenance mode | [Damage](store_damage.md) |
 | `store.repair_to(path)` | a repaired copy: `{"commit_seq", "lossless", "marks_not_carried", "lineage_approximate_before", "report"}` | [Damage](store_damage.md) |
 | `Store.convert(source, target, single_file=False)` | copy a closed store between a directory and a single file | [Single-File Store](single_file_store.md) |
+| `Store.upgrade(source, target=None, in_place=False, single_file=False)` | convert a store (or backup) of Graphersal 0.1.x to the current format, into `target` or in place | [Format Versions](store_versions.md#upgrading-a-store-of-an-older-version) |
 
 ```python
 with graphersal.Store.open_backup("bk") as backup:        # read-only; backup.backup_marker
@@ -74,6 +75,7 @@ with graphersal.Store.create("graph.gstore") as store:     # one file
     if store.compaction_advice()["recommended"]:
         store.compact()
 graphersal.Store.convert("graph.gstore", "data")           # a closed store into a directory (or back)
+graphersal.Store.upgrade("old_store", "new_store")         # a store of Graphersal 0.1.x, upgraded (or in_place=True)
 ```
 
 Times in Python are microseconds since the Unix epoch (`time=`), as in Rust.

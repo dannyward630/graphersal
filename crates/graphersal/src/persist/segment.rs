@@ -314,6 +314,8 @@ pub(crate) struct RawChunk<'a> {
     pub(crate) count: u32,
     pub(crate) crc: u32,
     pub(crate) stored: &'a [u8],
+    /// The file format version of the segment (its header's): the value tags it may hold.
+    pub(crate) version: u32,
 }
 
 /// The checked framing of a segment: its chunks in order.
@@ -322,6 +324,32 @@ pub(crate) struct SegmentFrame<'a> {
     pub(crate) chunks: Vec<RawChunk<'a>>,
     /// The footer's first id per chunk.
     pub(crate) footer_ids: Vec<&'a str>,
+}
+
+/// The file format version stated by a segment's header bytes (at least its first 64), for a
+/// chunk read through the manifest's chunk index without framing the whole segment (a merge
+/// checkpoint, a damage scan): the header's version when its checksum holds and this build
+/// reads it, else the current one (the chunk's own checksum was checked against the index).
+/// An intact header of a NEWER file format version is an error ([`DecodeError::newer`]): its
+/// chunks are never decoded as this version's (format spec 15).
+pub(crate) fn header_version(head: &[u8]) -> DecodeResult<u32> {
+    match head.get(..SEGMENT_HEADER_BYTES) {
+        Some(head)
+            if head[..8] == SEGMENT_MAGIC[..]
+                && crc(&head[..60])
+                    == u32::from_le_bytes([head[60], head[61], head[62], head[63]]) =>
+        {
+            let version = u32::from_le_bytes([head[8], head[9], head[10], head[11]]);
+            if version > FORMAT_VERSION {
+                Err(DecodeError::newer(8, "segment", version))
+            } else if codec::readable_version(version) {
+                Ok(version)
+            } else {
+                Ok(FORMAT_VERSION)
+            }
+        }
+        _ => Ok(FORMAT_VERSION),
+    }
 }
 
 /// Checks a segment's header, chunk framing and checksums and its footer; decodes nothing.
@@ -342,15 +370,7 @@ pub(crate) fn frame_segment(
         return Err(DecodeError::new(60, "segment header checksum mismatch"));
     }
     let version = header.u32()?;
-    if version > FORMAT_VERSION {
-        return Err(DecodeError::newer(8, "segment", version));
-    }
-    if version != FORMAT_VERSION {
-        return Err(DecodeError::new(
-            8,
-            format!("segment format version {version}"),
-        ));
-    }
+    DecodeError::check_version(8, "segment", version)?;
     let found_kind = header.u8()?;
     if found_kind != kind {
         return Err(DecodeError::new(
@@ -400,6 +420,7 @@ pub(crate) fn frame_segment(
             count,
             crc: chunk_crc,
             stored,
+            version,
         });
     }
     if !body.is_empty() {
@@ -477,7 +498,7 @@ pub(crate) fn decode_vertex_chunk(
 ) -> DecodeResult<Vec<VertexRecord>> {
     let (payload, table, position) = open_chunk(chunk).map_err(|e| in_chunk(chunk, e))?;
     let keys = TableKeys(&table);
-    let mut reader = Reader::new(&payload[position..]);
+    let mut reader = Reader::new(&payload[position..]).with_version(chunk.version);
     let count = chunk.count as usize;
     let mut out = Vec::with_capacity(count.min(reader.remaining()));
     let result: DecodeResult<()> = (|| {
@@ -516,7 +537,7 @@ pub(crate) fn decode_edge_chunk(
 ) -> DecodeResult<Vec<EdgeRecord>> {
     let (payload, table, position) = open_chunk(chunk).map_err(|e| in_chunk(chunk, e))?;
     let keys = TableKeys(&table);
-    let mut reader = Reader::new(&payload[position..]);
+    let mut reader = Reader::new(&payload[position..]).with_version(chunk.version);
     let count = chunk.count as usize;
     let mut out = Vec::with_capacity(count.min(reader.remaining()));
     let result: DecodeResult<()> = (|| {

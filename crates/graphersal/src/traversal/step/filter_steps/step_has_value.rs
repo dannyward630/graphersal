@@ -56,7 +56,7 @@ impl StepHasValue {
     /// `TraverserValue::Computed`'s match arm already did correctly for a scalar (D2 of the
     /// `has_value` TinkerPop-compliance fix).
     ///
-    /// A scalar (`String`/`Number`/`Boolean`/`Uuid`) is compared directly — this is the fix: the
+    /// A scalar (`String`/`Number`/`Boolean`/`Uuid`/`Temporal`) is compared directly — this is the fix: the
     /// pre-existing bug compared only `Computed`-shaped traversers this way and threw a
     /// misleading `CastException` ("expected object") for every other traverser shape holding a
     /// scalar property value, which is the common case once `properties()` (this engine has no
@@ -75,7 +75,9 @@ impl StepHasValue {
             | ElementProperty::Compressed(_)
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
-            | ElementProperty::Uuid(_) => self.value.eq(value),
+            | ElementProperty::Uuid(_)
+            | ElementProperty::Temporal(_)
+            | ElementProperty::Vector(_) => self.value.eq(value),
             ElementProperty::Object(_) | ElementProperty::Vertex(_) | ElementProperty::Edge(_) => {
                 value
                     .map_entries()
@@ -359,7 +361,9 @@ impl<B: Into<PValue> + Debug + Clone + Send + Sync> StepHasValueP<B> {
             | ElementProperty::Compressed(_)
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
-            | ElementProperty::Uuid(_) => {
+            | ElementProperty::Uuid(_)
+            | ElementProperty::Temporal(_)
+            | ElementProperty::Vector(_) => {
                 let candidate = TraverserValue::Computed(value.to_logical(), None);
                 self.predicate.test(context, &candidate, path)
             }
@@ -635,7 +639,9 @@ impl StepHasValueAny {
             | ElementProperty::Compressed(_)
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
-            | ElementProperty::Uuid(_) => self.values.iter().any(|v| v.eq(value)),
+            | ElementProperty::Uuid(_)
+            | ElementProperty::Temporal(_)
+            | ElementProperty::Vector(_) => self.values.iter().any(|v| v.eq(value)),
             ElementProperty::Object(_) | ElementProperty::Vertex(_) | ElementProperty::Edge(_) => {
                 value.map_entries().is_some_and(|nested| {
                     nested.values().any(|r| self.values.iter().any(|v| v.eq(r)))

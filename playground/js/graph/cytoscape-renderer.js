@@ -17,6 +17,7 @@
 // pointer and, released on a vertex, reports the pair (`onConnect`). Panning on empty space and
 // zooming stay as they are; a double click reports its position in drawing coordinates.
 
+import { wheelZoomRatio } from './wheel-zoom.js';
 import { toCyElements, drawPlan, vertexCaption, edgeCaption } from '../graph-data.js';
 import { PALETTE_SIZE, slotColor } from './palette.js';
 import { TIER_CAPABILITIES } from './renderer.js';
@@ -146,10 +147,15 @@ export class CytoscapeRenderer {
     this.editMode = false;
     this.gesture = new ConnectGesture();
     this.band = null; // the rubber band's SVG, while a connect drag runs
+    // Our wheel zoom runs before Cytoscape's (a capturing listener registered first on the same
+    // element) and stops it: js/graph/wheel-zoom.js says why.
+    this.wheelMemo = {};
+    this.wheelTimer = null;
+    this.onWheel = (e) => this.wheelZoom(e);
+    container.addEventListener('wheel', this.onWheel, { capture: true, passive: false });
     this.cy = window.cytoscape({
       container,
       style: buildStyle(this.kind, this.plan, this.dark),
-      wheelSensitivity: 0.25,
       minZoom: 0.02,
       maxZoom: 4,
       boxSelectionEnabled: false,
@@ -166,6 +172,32 @@ export class CytoscapeRenderer {
     this.cy.on('tapdrag', (evt) => this.connectMove(evt));
     this.cy.on('tapend', (evt) => this.connectEnd(evt));
     this.cy.on('scrollzoom pinchzoom dragpan', () => { if (this.handlers.move) this.handlers.move(); });
+  }
+
+  /** One wheel event: zoom around the pointer by `wheelZoomRatio`, Cytoscape's handler skipped. */
+  wheelZoom(e) {
+    const cy = this.cy;
+    if (!cy || !cy.zoomingEnabled() || !cy.userZoomingEnabled()) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const ratio = wheelZoomRatio(e, this.wheelMemo, performance.now());
+    if (ratio === null) return;
+    const rect = this.container.getBoundingClientRect();
+    // While the view moves, the renderer draws the cheap way (a texture, edges hidden on large
+    // drawings), as during its own wheel zoom; the full drawing comes back 150 ms after the last.
+    const r = cy.renderer();
+    if (r && r.data) {
+      r.data.wheelZooming = true;
+      clearTimeout(this.wheelTimer);
+      this.wheelTimer = setTimeout(() => {
+        if (!this.cy) return;
+        r.data.wheelZooming = false;
+        r.redrawHint('eles', true);
+        r.redraw();
+      }, 150);
+    }
+    cy.zoom({ level: cy.zoom() * ratio, renderedPosition: { x: e.clientX - rect.left, y: e.clientY - rect.top } });
+    cy.emit('scrollzoom');
   }
 
   isHidden() {
@@ -424,6 +456,8 @@ export class CytoscapeRenderer {
   }
 
   destroy() {
+    this.container.removeEventListener('wheel', this.onWheel, { capture: true });
+    clearTimeout(this.wheelTimer);
     this.connectAbort();
     this.container.classList.remove('graph-editing');
     this.cy.destroy();

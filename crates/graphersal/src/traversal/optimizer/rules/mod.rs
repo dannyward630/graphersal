@@ -6,6 +6,7 @@ pub(crate) mod filter_reorder;
 pub(crate) mod group_count_pushdown;
 pub(crate) mod has_id_pushdown;
 pub(crate) mod lazy_barrier;
+pub(crate) mod property_index;
 pub(crate) mod where_unnest;
 
 /// The distinct entries of a `has_id(..)`/`has_label(..)` argument list, first occurrence first.

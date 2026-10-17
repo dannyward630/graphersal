@@ -235,6 +235,7 @@ pub(crate) fn token_literal(value: &Dynamic) -> Option<String> {
         GType,
         Order,
         Pop,
+        crate::value::dt::DT,
         Operator,
         Barrier,
         crate::value::WithOptions,
@@ -284,6 +285,15 @@ fn debug_at_depth(
 ) -> String {
     if let Some(uuid) = value.read_lock::<ScriptUuid>() {
         return uuid.canonical();
+    }
+    // A date or time shows its DSL literal (`datetime("2023-08-02T00:00:00Z")`), so it is told
+    // apart from a string.
+    if let Some(temporal) = dynamic_temporal(value) {
+        return crate::value::literal::rhai_temporal(&temporal);
+    }
+    // A vector shows its DSL literal (`vector([0.1, 0.2])`, cut like a list), never an array.
+    if let Some(vector) = value.read_lock::<ScriptVector>() {
+        return vector.0.literal(Some(limit.keep(vector.0.dimension())));
     }
     // A path value shows its canonical text (`$.a.b[1]`), not the Rust type name.
     if let Some(path) = value.read_lock::<crate::value::JsonPath>() {

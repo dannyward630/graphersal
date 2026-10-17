@@ -15,12 +15,40 @@ categories = ["command-line-utilities", "database"]
 # holds a real copy of the UI files `build.rs` embeds (the same entries as its `ENTRIES`).
 include = ["/src/**", "/build.rs", "/ui/index.html", "/ui/css/**", "/ui/js/**", "/ui/assets/**", "/ui/reset/**", "/README.md", "/LICENSE-APACHE", "/NOTICE"]
 
+# `cargo binstall graphersal-cli`: the prebuilt archives of the GitHub Release
+# (.github/workflows/binaries.yml names them `graphersal-v<version>-<platform>`, each holding a
+# directory of that name). One override per built target, since the archive names carry a
+# platform, not the target triple; binstall also falls back to the musl builds on a glibc Linux.
+[package.metadata.binstall]
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/graphersal-v{ version }-linux-x86_64.tar.gz"
+bin-dir = "graphersal-v{ version }-linux-x86_64/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/graphersal-v{ version }-linux-aarch64.tar.gz"
+bin-dir = "graphersal-v{ version }-linux-aarch64/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/graphersal-v{ version }-macos-arm64.tar.gz"
+bin-dir = "graphersal-v{ version }-macos-arm64/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/graphersal-v{ version }-macos-x86_64.tar.gz"
+bin-dir = "graphersal-v{ version }-macos-x86_64/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/graphersal-v{ version }-windows-x86_64.zip"
+bin-dir = "graphersal-v{ version }-windows-x86_64/{ bin }{ binary-ext }"
+pkg-fmt = "zip"
+
 [[bin]]
 name = "graphersal"
 path = "src/main.rs"
 
 [features]
-default = ["dev-server", "ai"]
+default = ["dev-server", "ai", "model2vec"]
 # `graphersal --server`: the playground UI over HTTP on 127.0.0.1 (DEV mode, unstable).
 # `--mcp` adds the MCP endpoint `/mcp`; `rand` (already in the tree through graphersal) makes
 # its session ids unguessable.
@@ -29,6 +57,11 @@ dev-server = ["dep:tiny_http", "dep:serde_json", "dep:rand"]
 # (EXPERIMENTAL). `ureq` calls the provider (OpenAI-compatible Chat Completions or Anthropic
 # Messages) over HTTPS.
 ai = ["dev-server", "dep:ureq"]
+# Real embedding models: `--embedder NAME=PATH|REPO` loads a Model2Vec model (graphersal's
+# `model2vec` feature, pure Rust) for every mode, and `graphersal embed-model download <repo>`
+# fetches one from Hugging Face over HTTPS (`ureq`, SHA-256 checked with `ring`, the manifest
+# written with `serde_json`; all three already in the tree).
+model2vec = ["graphersal/model2vec", "dep:ureq", "dep:ring", "dep:serde_json"]
 
 [dependencies]
 graphersal = { workspace = true, features = ["io", "script", "display", "serde", "persist", "persist-zip", "alloc-tracking"] }
@@ -46,6 +79,7 @@ tiny_http = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 ureq = { workspace = true, optional = true }
+ring = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Parses `--format json` output and the dev server's answers in the CLI contract tests; already

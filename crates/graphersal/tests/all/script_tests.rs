@@ -814,25 +814,31 @@ mod tests {
             .unwrap();
             assert_eq!(n.as_int().unwrap(), 2);
         }
-        // The report text names what was skipped.
+        // The report text names what was skipped (a year, which Graphersal cannot hold); a
+        // date it holds (`seen`) is imported and not reported.
         let skipped = dir.join("dates.json");
         std::fs::write(
             &skipped,
-            r#"{"id":"v","properties":{"born":[{"value":{"@type":"g:Date","@value":1}}]}}"#,
+            r#"{"id":"v","properties":{"born":[{"value":{"@type":"gx:Year","@value":"2016"}}],"seen":[{"value":{"@type":"g:Date","@value":1}}]}}"#,
         )
         .unwrap();
         let path = skipped.to_str().unwrap().replace('\\', "/");
-        let msg = eval_value(
-            Arc::new(GraphSource::empty()),
-            &format!(r#"g.importGraphson("{path}")"#),
-        )
-        .unwrap()
-        .into_string()
-        .unwrap();
+        let target = Arc::new(GraphSource::empty());
+        let msg = eval_value(target.clone(), &format!(r#"g.importGraphson("{path}")"#))
+            .unwrap()
+            .into_string()
+            .unwrap();
         assert!(
-            msg.contains("skipped date/time values (g:Date, no date type yet): 1"),
+            msg.contains("skipped date/time values (gx:Year, a type Graphersal cannot hold): 1"),
             "{msg}"
         );
+        assert!(!msg.contains("g:Date"), "{msg}");
+        let seen = eval_value(
+            target,
+            r#"g.V("v").values("seen").next() == datetime("1970-01-01T00:00:00.001Z")"#,
+        )
+        .unwrap();
+        assert!(seen.as_bool().unwrap());
         assert!(
             msg.contains(r#"line 1: vertex "v", property "born""#),
             "{msg}"

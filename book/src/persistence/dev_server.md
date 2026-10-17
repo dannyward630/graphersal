@@ -1,6 +1,6 @@
 # Dev Server and MCP
 
-> **DEV mode, unstable, local only, temporary.** The dev server is a way to try Graphersal "as a
+> **DEV mode, unstable, local only, temporary. Not for production.** The dev server is a way to try Graphersal "as a
 > small server" and watch how it behaves. Its HTTP API is internal to the playground and changes
 > without notice; it has no authentication and serves only the loopback (`127.0.0.1`, and `[::1]`
 > when the system has IPv6). Do not expose it.
@@ -40,8 +40,10 @@ graphersal --graph g.graphml --schema schema.json --server        # a graph file
   the same data as the playground's Profile -> Statistics tab: the load time (sample build, file
   import with `--schema`, `.gsnap` load, or Store open = snapshot load + WAL replay, with the
   number of WAL commits replayed), the vertex and edge totals, the ten largest vertex and edge
-  labels (`+N more` for the rest), the graph's memory (structure, indexes, properties) with the
-  process heap, and the compressed values when there are any:
+  labels (`+N more` for the rest), the graph's memory (structure, indexes, properties, and the
+  [property indexes](../users_guide/property_indexes.md) when there are any, as
+  `..., property indexes 2.0 KiB)`) with the process heap, and the compressed values when there
+  are any:
 
   ```text
   Loaded in 34.3 ms: 6 vertices, 6 edges
@@ -86,6 +88,20 @@ budget; Stop is the way to end a runaway query.
 
 ```bash
 graphersal --graph large --server --timeout 5000 --memory-limit auto
+```
+
+## Embedding models
+
+`--embedder NAME=PATH|REPO` (repeatable) and `--default-embedder NAME` work with `--server` as
+with every other mode: the Model2Vec models are loaded once at start (a model that does not
+load stops the start with exit code 2), and every query of the server, the MCP `query` tool and
+the AI Chat's tools call the same registry (`embed()`, the `embed` step, `g.embedders()`).
+`GET /api/info` lists it as `embedders`. Running a model is local; only `graphersal embed-model
+download` connects to Hugging Face ([Embeddings](../getting_started/embeddings.md#real-models-model2vec)).
+
+```bash
+graphersal embed-model download minishlab/potion-base-8M
+graphersal --graph data/ --server --mcp --embedder potion=minishlab/potion-base-8M --default-embedder potion
 ```
 
 ## What the UI does in this mode
@@ -275,8 +291,8 @@ graphersal --graph data/ --server --port 9000 --mcp
 ```
 
 Read-only for the agent (only the reading tools are offered, and a query that would create,
-change or delete data, the schema or a catalog definition (a saved query, a compression rule) is
-refused; the browser can still write):
+change or delete data, the schema or a catalog definition (a saved query, a compression rule, a
+property index) is refused; the browser can still write):
 
 ```bash
 graphersal --graph modern --server --port 9000 --mcp --mcp-read-only
@@ -342,7 +358,8 @@ a new session).
 
 The server introduces itself as `graphersal-dev` with instructions that explain the query
 language. Tools (each one queues on the server's session like a browser call; read-only tools
-are marked `readOnlyHint`, `query`, `set_schema` and `drop_compression` `destructiveHint`).
+are marked `readOnlyHint`, `query`, `set_schema`, `drop_compression` and `drop_index`
+`destructiveHint`).
 The list is the same on every `--graph` source; there are no persistence tools:
 
 | Tool | What it does |
@@ -353,6 +370,8 @@ The list is the same on every `--graph` source; there are no persistence tools:
 | `set_schema` `{schema, mode?}`, `patch_schema` `{patch}` | Store a schema, patch the stored one (validated against the data) |
 | `list_compressions` | The [compression rules](../users_guide/compressed_properties.md) with their stats (also in read-only mode) |
 | `define_compression` `{name, label, path, element?, minBytes?, dictionary?, replaces?}`, `drop_compression` `{name}`, `recompress` `{name}` | Define, drop or re-run a compression rule (refused in read-only mode); a refused rule answers its field errors |
+| `list_indexes` | The [property indexes](../users_guide/property_indexes.md) with their `type` and stats (`entries`, `distinctValues`, `bytes`; `served: false` with a `reason` when the storage serves none or the index type is unknown to this version) (also in read-only mode) |
+| `create_index` `{label, key, element?, name?, type?}`, `drop_index` `{name}` | Create (built from the data in the same commit) or drop a property index; `type` is an enum of the known [index types](../users_guide/property_indexes.md#index-types) (`memory-ordered`, the default); refused in read-only mode, where `query` also refuses `g.create_index`/`g.drop_index`; a refused index answers its field errors (an unknown type, a key the schema declares as a vector, a list or a map) |
 | `list_saved_queries` `{folder?, search?}` | The [saved queries](../users_guide/saved_queries.md) stored in the graph: name, folder, description, parameters (JSON Schema, default, required, description) and status (`error` with the reason when a body no longer compiles); `folder` keeps a folder and those below it, `search` a text in the name or description (case-insensitive) |
 | `run_saved_query` `{name, params?, max_rows?}` | Runs `g.query(name, #{..})` like `query` (bounded answer, the call text on its first line): the arguments are checked against the parameter schemas, omitted ones take their default, a wrong one is a tool error with its `Help:` line. A saved query never writes |
 | `statistics`, `graph_info` | Counts per label, memory and limits; what the server serves (name, counts, schema mode, source file or Store directory, `view` and a `note` while a read-only view is open, `damageFound`, `mcpReadOnly`) |
@@ -579,7 +598,7 @@ For reference while it exists; it follows the playground's engine boundary
 
 | Endpoint | Engine method |
 |---|---|
-| `GET /api/info` | `info()` (`server: "graphersal-dev"`, `version`, `saveable`, `source`, `presets`: the limits in force, `mcp`: `{endpoint, readOnly, client}` or null, `ai`: `{provider, model, readOnly, sendsDataTo, maxToolCallsPerTurn}` or null (never the key; `sendsDataTo` is the provider's host, null for one on this machine), `damageFound`: `{text, frozen, foundBy, policy, problems}` or null) |
+| `GET /api/info` | `info()` (`server: "graphersal-dev"`, `version`, `saveable`, `source`, `presets`: the limits in force, `mcp`: `{endpoint, readOnly, client}` or null, `ai`: `{provider, model, readOnly, sendsDataTo, maxToolCallsPerTurn}` or null (never the key; `sendsDataTo` is the provider's host, null for one on this machine), `damageFound`: `{text, frozen, foundBy, policy, problems}` or null, `embedders`: `[{name, model, dimension, default}]`, the built-in `hash-ngram/1` and every `--embedder`) |
 | `GET /api/changes` | `changes()`: the change feed `{version, commitSeq, recent: [{version, by, commitSeq, detail?}], view, mcp, damageFound}`; `by` is the page's `X-Graphersal-Client` header (every request of the page sends it), `mcp`, or `ai` (an AI Chat conversation, its id in `detail`) |
 | `POST /mcp` | the MCP endpoint (with `--mcp`, [above](#mcp-an-ai-agent-on-the-same-graph)) |
 | `POST /api/ai/conversations` | with `--ai` (EXPERIMENTAL): a new AI Chat conversation `{id}` (random, 128 bits) owned by the page's `X-Graphersal-Client` (required); every other client gets `403` for it, an unknown id is `404`, and without `--ai` every `/api/ai/*` is `404` |
@@ -592,6 +611,7 @@ For reference while it exists; it follows the playground's engine boundary
 | `POST /api/cancel` | `stop()`: `{cancelled}` |
 | `GET /api/schema` | `schema()` (the schema views) |
 | `GET /api/schema/stored`, `GET /api/schema/infer` | `getSchema()`, `inferSchema()` |
+| `POST /api/schema/view` (body: a schema) | `schemaViewOf(schema)`: the schema views of that schema (the editor's draft) with the graph's label counts, `source: "given"`; nothing stored |
 | `POST /api/schema/set`, `/patch`, `/validate`, `/validate-patch`, `/diff` | the schema methods (body: the schema or patch; `schema/set?mode=open\|closed\|none` replaces the schema's mode) |
 | `GET /api/graph-view?maxNodes=&maxEdges=` | `graphView()`: the drawing as columns (ids, label indices, captions, edge endpoints as indices), no properties |
 | `POST /api/neighbourhood` | `neighbourhood(request)`: the vertices within `hops` (the depth, 1-5) along `direction` (`both`, `out`, `in`) of the centre `ids`, plus the vertices `keep` (a drawing being expanded), and the edges between them, bounded by `maxNodes`/`maxEdges`: the drawing's columns plus `seeds`, `missing`, `hiddenEdges` and, when the limits cut it, `leftOut: {vertices, edges, complete}`; 422 for an unknown id or a depth above 5 |
@@ -633,10 +653,13 @@ For reference while it exists; it follows the playground's engine boundary
 | `GET /api/compression` | `listCompressions()`: the [compression rules](../users_guide/compressed_properties.md) `[{name, element, label, path, codec, minBytes, dictionary, stats: {compressedValues, plainBytes, storedBytes, dictionaryBytes}}]` |
 | `POST /api/compression/define` `{name, label, path, element?, codec?, minBytes?, dictionary?, replaces?}` | `defineCompression(spec)`: `{ok: true, rule}` or `{ok: false, errors: [{field, message, help?}]}` (always 200); `replaces` renames in the same commit |
 | `POST /api/compression/drop` `{name}`, `POST /api/compression/recompress` `{name}` | `dropCompression(name)`: `{dropped}`; `recompress(name)`: the rule's entry (422 when there is none) |
+| `GET /api/indexes` | `listIndexes()`: the [property indexes](../users_guide/property_indexes.md) `[{name, element, label, key, type, transform, served, reason, stats: {entries, distinctValues, skipped, bytes} \| null}]` (`transform` is `null` or `"to_lower"`; `stats` is `null`, `served` false and `reason` a text when the storage keeps the definition but serves no index, or the index type or transform is unknown to this version; `reason` is `null` otherwise) |
+| `POST /api/indexes/create` `{label, key, element?, name?, type?, transform?}` | `createIndex(spec)`: `{ok: true, index}` or `{ok: false, errors: [{field, message, help?}]}` (always 200; `field` is `name`, `element`, `label`, `key`, `type`, `transform` or `general`; an unknown `type` is an error of `type`, an unknown `transform` of `transform`, a key the schema declares as values the index cannot hold one of `key`); `name` defaults to `<label>_<key>` (`<label>_<key>_edge` for an edge index, then `_to_lower` with that transform), `type` to `memory-ordered`, `transform` to none (`"to_lower"`: case-insensitive search with `has(key, __.to_lower().is(..))`); an existing name is refused (drop it first) |
+| `POST /api/indexes/drop` `{name}` | `dropIndex(name)`: `{dropped}` |
 
 A `target` is `{"commit": N}`, `{"mark": "name"}` or `{"time": T}` with `T` an RFC 3339 date-time
 (as the CLI's `--at-time`) or microseconds. `GET /api/store` lists every attic entry with
 `bytes`, `restorable` and `restoreBlocked` (the reason a restore is refused now). A change of the
-catalog (a saved query or a compression rule defined, replaced or dropped) is a commit like any
-other: the change feed records it, and on a Store it is journaled. A `recompress` changes no data
+catalog (a saved query or a compression rule defined, replaced or dropped, a property index
+created or dropped) is a commit like any other: the change feed records it, and on a Store it is journaled. A `recompress` changes no data
 and commits nothing. Any other path is a static file of the UI (`--ui-dir` first, then the embedded copy).

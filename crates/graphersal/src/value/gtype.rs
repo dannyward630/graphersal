@@ -60,6 +60,8 @@ pub enum GType {
     List,
     /// Any map, whatever its fields.
     Map,
+    /// Any vector, whatever its element kind and dimension (a Graphersal extension).
+    Vector,
     /// A graph element kind.
     Stream(StreamKind),
 }
@@ -81,6 +83,21 @@ impl GType {
     pub const NULL: GType = GType::Value(ValueType::Null);
     /// `GType.UUID` — a UUID.
     pub const UUID: GType = GType::Value(ValueType::Uuid);
+    /// `GType.DATETIME` — an instant with its UTC offset (TinkerPop's date type).
+    pub const DATETIME: GType = GType::Value(ValueType::DateTime);
+    /// `GType.DURATION` — a length of time (TinkerPop `DURATION`; months, days and
+    /// microseconds here).
+    pub const DURATION: GType = GType::Value(ValueType::Duration);
+    /// `GType.DATE` — a calendar day (a Graphersal extension).
+    pub const DATE: GType = GType::Value(ValueType::Date);
+    /// `GType.LOCALDATETIME` — a wall-clock date and time without a zone (a Graphersal
+    /// extension).
+    pub const LOCALDATETIME: GType = GType::Value(ValueType::LocalDateTime);
+    /// `GType.TIME` — a time of day (a Graphersal extension).
+    pub const TIME: GType = GType::Value(ValueType::Time);
+    /// `GType.VECTOR` — any vector, whatever its element kind (a Graphersal extension); as a
+    /// conversion target (`as_vector()`) an f32 vector.
+    pub const VECTOR: GType = GType::Vector;
     /// `GType.NUMBER` — any numeric type.
     pub const NUMBER: GType = GType::Number;
     /// `GType.LIST` — any array.
@@ -107,6 +124,12 @@ impl GType {
             GType::Value(ValueType::Float64) => "DOUBLE",
             GType::Value(ValueType::String) => "STRING",
             GType::Value(ValueType::Uuid) => "UUID",
+            GType::Value(ValueType::DateTime) => "DATETIME",
+            GType::Value(ValueType::Duration) => "DURATION",
+            GType::Value(ValueType::Date) => "DATE",
+            GType::Value(ValueType::LocalDateTime) => "LOCALDATETIME",
+            GType::Value(ValueType::Time) => "TIME",
+            GType::Value(ValueType::Vector(_)) | GType::Vector => "VECTOR",
             GType::Value(ValueType::Array(_)) => "LIST",
             GType::Value(ValueType::Object) => "MAP",
             GType::Value(union @ ValueType::Union(_)) => return union.to_string(),
@@ -125,8 +148,26 @@ impl GType {
     /// registered-type cache, whose entries are the Java simple class names), in the order a
     /// diagnostic lists them.
     pub const TYPE_NAMES: &'static [&'static str] = &[
-        "String", "Integer", "Long", "Double", "Float", "Boolean", "UUID", "Number", "List", "Map",
-        "Vertex", "Edge", "Path", "Graph",
+        "String",
+        "Integer",
+        "Long",
+        "Double",
+        "Float",
+        "Boolean",
+        "UUID",
+        "OffsetDateTime",
+        "Duration",
+        "LocalDate",
+        "LocalDateTime",
+        "LocalTime",
+        "Vector",
+        "Number",
+        "List",
+        "Map",
+        "Vertex",
+        "Edge",
+        "Path",
+        "Graph",
     ];
 
     /// The token a TinkerPop type name stands for in `P.typeOf(name)`: `"String"` is
@@ -141,6 +182,12 @@ impl GType {
             "Double" | "Float" => GType::DOUBLE,
             "Boolean" => GType::BOOLEAN,
             "UUID" => GType::UUID,
+            "OffsetDateTime" => GType::DATETIME,
+            "Duration" => GType::DURATION,
+            "LocalDate" => GType::DATE,
+            "LocalDateTime" => GType::LOCALDATETIME,
+            "LocalTime" => GType::TIME,
+            "Vector" => GType::VECTOR,
             "Number" => GType::NUMBER,
             "List" => GType::LIST,
             "Map" => GType::MAP,
@@ -164,6 +211,7 @@ impl GType {
             GType::Number => matches!(observed, ValueType::Int64 | ValueType::Float64),
             GType::List => matches!(observed, ValueType::Array(_)),
             GType::Map => matches!(observed, ValueType::Object),
+            GType::Vector => matches!(observed, ValueType::Vector(_)),
             GType::Stream(_) => false,
         }
     }
@@ -207,6 +255,7 @@ impl fmt::Display for GType {
             GType::Number => f.write_str("number"),
             GType::List => f.write_str("list"),
             GType::Map => f.write_str("map"),
+            GType::Vector => f.write_str("vector"),
             GType::Stream(kind) => write!(f, "{kind}"),
         }
     }

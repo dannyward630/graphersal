@@ -35,7 +35,8 @@ const MAX_LITERAL_DEPTH: usize = 128;
 #[derive(Debug, Clone, PartialEq)]
 pub struct FieldError {
     /// `name`, `folder`, `description`, `meta`, `body`, `params`, `params.<parameter>`,
-    /// `general`.
+    /// `general`; a compression rule's and a property index's form add their own fields
+    /// (`label`, `path`, `key`, ...).
     pub field: String,
     /// One line: what is wrong.
     pub message: String,
@@ -63,6 +64,12 @@ impl FieldError {
                 _ => "general".to_string(),
             },
             DefinitionError::InvalidParameter { parameter, .. } => format!("params.{parameter}"),
+            // What two definitions of the kind may not share: a compression rule's path, a
+            // property index's key (the label and element kind come with it).
+            DefinitionError::Conflict { kind, .. } if kind == "property index" => "key".to_string(),
+            DefinitionError::Conflict { kind, .. } if kind == "compression rule" => {
+                "path".to_string()
+            }
             _ => "general".to_string(),
         };
         Self {
@@ -875,6 +882,26 @@ mod tests {
         // A sample starts without one.
         other.load_sample("modern").unwrap();
         assert_eq!(other.query_count(), 0);
+    }
+
+    #[test]
+    fn a_catalog_file_round_trips_property_indexes() {
+        let mut s = modern();
+        let r = run(&mut s, "g.create_index(#{label: \"person\", key: \"age\"})");
+        assert_eq!(r["changes"]["definitions"], true, "{r}");
+        let file = s.save_catalog_text();
+        assert!(file.contains("\"kind\":\"property_index\""), "{file}");
+
+        let mut other = modern();
+        let loaded = other.load_catalog(&file, true).unwrap();
+        assert_eq!(loaded["loaded"], 1);
+        assert_eq!(other.save_catalog_text(), file);
+        // The loaded definition is served: the profile shows the index.
+        let r = run(
+            &mut other,
+            "g.v().has_label(\"person\").has(\"age\", P.gt(30)).profile().to_string()",
+        );
+        assert!(r.to_string().contains("[index: vertex person.age]"), "{r}");
     }
 
     #[test]

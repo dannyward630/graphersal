@@ -42,7 +42,7 @@ mod sealed {
 }
 
 /// A shared graph of ANY storage type, as one object-safe type: what the front ends (the
-/// script layer, a session) hold as `Arc<dyn AnyGraph>`. EXPERIMENTAL in 0.1.x, like
+/// script layer, a session) hold as `Arc<dyn AnyGraph>`. EXPERIMENTAL in 0.2.x, like
 /// [`GraphStorage`]: methods are added as the front ends need them.
 ///
 /// **Sealed:** only [`Graph<S>`](Graph) implements it (a blanket implementation for every
@@ -162,6 +162,21 @@ pub trait AnyGraph: Send + Sync + 'static + sealed::Sealed {
     /// [`GraphStorage::compression_stats`] of the rule `name`; `None` without such a rule or on
     /// a storage without compressed properties.
     fn compression_stats(&self, name: &str) -> Option<CompressionStats>;
+
+    /// [`GraphStorage::property_indexes`] of the storage: the property indexes it serves, with
+    /// their stats (empty on a storage without property indexes).
+    fn property_indexes(&self) -> Vec<crate::graph::PropertyIndexInfo>;
+
+    /// [`Graph::embed_property`]: the job `embed_property` (book page "Vectors"), two-phase
+    /// (the embedder runs without this graph's lock), or under one write lock when the storage
+    /// is inside an open unit (a whole-script unit).
+    fn embed_property(
+        &self,
+        job: &crate::value::EmbedJob,
+        embedders: &crate::value::Embedders,
+        cancel: &crate::traversal::cancel::CancelToken,
+        progress: &mut dyn FnMut(&crate::value::EmbedReport),
+    ) -> Result<crate::value::EmbedReport, crate::value::EmbedJobError>;
 
     // ---- journal --------------------------------------------------------------------------
 
@@ -348,6 +363,20 @@ where
 
     fn compression_stats(&self, name: &str) -> Option<CompressionStats> {
         self.read().compression_stats(name)
+    }
+
+    fn embed_property(
+        &self,
+        job: &crate::value::EmbedJob,
+        embedders: &crate::value::Embedders,
+        cancel: &crate::traversal::cancel::CancelToken,
+        progress: &mut dyn FnMut(&crate::value::EmbedReport),
+    ) -> Result<crate::value::EmbedReport, crate::value::EmbedJobError> {
+        Graph::embed_property(self, job, embedders, cancel, progress)
+    }
+
+    fn property_indexes(&self) -> Vec<crate::graph::PropertyIndexInfo> {
+        self.read().property_indexes()
     }
 
     fn mark(&self, name: &str) -> Result<Mark, GraphError> {

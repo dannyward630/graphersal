@@ -556,6 +556,8 @@ fn value_kind(value: &ElementProperty) -> &'static str {
         ElementProperty::Number(_) => "number",
         ElementProperty::Boolean(_) => "boolean",
         ElementProperty::Uuid(_) => "uuid",
+        ElementProperty::Temporal(value) => value.kind().name(),
+        ElementProperty::Vector(_) => "vector",
         ElementProperty::Object(_) => "object",
         ElementProperty::Array(_) => "array",
         ElementProperty::Vertex(_) => "vertex",

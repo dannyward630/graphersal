@@ -5,14 +5,15 @@
 //! and the WAL's op 10 `SetDefinition` share this encoding.
 
 use super::codec::{
-    DecodeError, DecodeResult, InlineKeys, Reader, put_properties, put_str, put_u8, put_uvar,
-    read_properties,
+    DecodeError, DecodeResult, FORMAT_VERSION, InlineKeys, Reader, put_properties, put_str, put_u8,
+    put_uvar, read_properties,
 };
 use crate::graph::compression::CompressionDefinition;
 use crate::graph::definition::{
     Definition, DefinitionBody, DefinitionFlags, DefinitionKind, QueryDefinition,
     RESERVED_PAYLOAD_KEYS,
 };
+use crate::graph::property_index::PropertyIndexDefinition;
 use crate::value::PropertyMap;
 
 /// One definition as stored: kind, flags, name and the payload bytes. The manifest keeps the
@@ -32,6 +33,7 @@ impl DefinitionRecord {
         let known = match definition.body() {
             DefinitionBody::Query(query) => Some(query.to_payload()),
             DefinitionBody::Compression(rule) => Some(rule.to_payload()),
+            DefinitionBody::PropertyIndex(index) => Some(index.to_payload()),
             DefinitionBody::Opaque(_) => None,
         };
         let payload = match (known, definition.body()) {
@@ -43,7 +45,12 @@ impl DefinitionRecord {
                 )
             })?,
             (None, DefinitionBody::Opaque(bytes)) => bytes.clone(),
-            (None, DefinitionBody::Query(_) | DefinitionBody::Compression(_)) => Vec::new(),
+            (
+                None,
+                DefinitionBody::Query(_)
+                | DefinitionBody::Compression(_)
+                | DefinitionBody::PropertyIndex(_),
+            ) => Vec::new(),
         };
         Ok(Self {
             kind: definition.kind().code(),
@@ -56,7 +63,14 @@ impl DefinitionRecord {
     /// The definition: a known kind's payload decoded (a payload that is not a valid map of its
     /// kind, or that has a reserved key, is invalid: `Err` with the reason and the offset within
     /// the payload), an unknown kind kept opaque.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn decode(&self, max_depth: usize) -> DecodeResult<Definition> {
+        self.decode_in(max_depth, FORMAT_VERSION)
+    }
+
+    /// [`DefinitionRecord::decode`] of a record read from a file of format `version` (a
+    /// temporal value in the payload of a version 1 file is invalid).
+    pub(crate) fn decode_in(&self, max_depth: usize, version: u32) -> DecodeResult<Definition> {
         let kind = DefinitionKind::from_code(self.kind);
         let flags = DefinitionFlags::from_bits(self.flags);
         if !kind.is_known() {
@@ -67,13 +81,17 @@ impl DefinitionRecord {
                 self.payload.clone(),
             ));
         }
-        let map = decode_payload(&self.payload, max_depth)?;
+        let map = decode_payload_in(&self.payload, max_depth, version)?;
         let invalid = |err: crate::error::DefinitionError| {
             DecodeError::new(0, format!("invalid {kind} payload: {err}"))
         };
         if kind == DefinitionKind::COMPRESSION {
             let rule = CompressionDefinition::from_payload(&map).map_err(invalid)?;
             return Ok(Definition::compression(self.name.clone(), rule).with_flags(flags));
+        }
+        if kind == DefinitionKind::PROPERTY_INDEX {
+            let index = PropertyIndexDefinition::from_payload(&map).map_err(invalid)?;
+            return Ok(Definition::property_index(self.name.clone(), index).with_flags(flags));
         }
         let query = QueryDefinition::from_payload(&map).map_err(invalid)?;
         Ok(Definition::query(self.name.clone(), query).with_flags(flags))
@@ -164,7 +182,12 @@ pub(crate) fn encode_payload(map: &PropertyMap) -> Result<Vec<u8>, String> {
 /// the remaining bytes before allocating, values nest at most `max_depth` levels; trailing
 /// bytes, a repeated key and a reserved key are errors (offsets within the payload).
 pub(crate) fn decode_payload(payload: &[u8], max_depth: usize) -> DecodeResult<PropertyMap> {
-    let mut r = Reader::new(payload);
+    decode_payload_in(payload, max_depth, FORMAT_VERSION)
+}
+
+/// [`decode_payload`] of a payload read from a file of format `version`.
+fn decode_payload_in(payload: &[u8], max_depth: usize, version: u32) -> DecodeResult<PropertyMap> {
+    let mut r = Reader::new(payload).with_version(version);
     let map = read_properties(&mut r, &InlineKeys, max_depth)?;
     if !r.is_empty() {
         return Err(r.error("trailing bytes after the payload map"));

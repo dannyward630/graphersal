@@ -10,10 +10,36 @@
 use compact_str::CompactString;
 
 use crate::value::number::{N, Number};
-use crate::value::{ElementProperty, PropertyMap};
+use crate::value::temporal::{Date, DateTime, Duration, LocalDateTime, Temporal, Time};
+use crate::value::vector::MAX_VECTOR_DIMENSION;
+use crate::value::{ElementProperty, PropertyMap, Vector, VectorElement};
 
-/// The format version every file of this build writes and reads.
-pub(crate) const FORMAT_VERSION: u32 = 1;
+/// The file format version every file of this build writes (format spec 15).
+pub(crate) const FORMAT_VERSION: u32 = 2;
+
+/// The oldest file format version this build reads: version 1 (Graphersal 0.1.x) differs from
+/// version 2 only by the temporal value tags it does not have (format spec 3, 15).
+pub(crate) const MIN_FORMAT_VERSION: u32 = 1;
+
+/// The first file format version with the temporal value tags (9 to 13) and the vector tag (14).
+pub(crate) const TEMPORAL_FORMAT_VERSION: u32 = 2;
+
+/// Whether this build reads files of format `version` (1 and 2).
+#[inline]
+pub(crate) fn readable_version(version: u32) -> bool {
+    (MIN_FORMAT_VERSION..=FORMAT_VERSION).contains(&version)
+}
+
+/// The file format version a decoded file was written with; the current one by default (what
+/// this build writes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FileVersion(pub(crate) u32);
+
+impl Default for FileVersion {
+    fn default() -> Self {
+        FileVersion(FORMAT_VERSION)
+    }
+}
 
 /// The largest uncompressed chunk or record body this build writes or accepts (1 GiB): far
 /// above the 1 MiB chunk target, so only a single giant element comes near it.
@@ -54,6 +80,22 @@ impl DecodeError {
             ),
             newer_version: Some(found),
         }
+    }
+
+    /// The version check of an intact header (magic and checksum valid) of `what`: a version
+    /// newer than [`FORMAT_VERSION`] is [`Self::newer`], one older than
+    /// [`MIN_FORMAT_VERSION`] (never written by a release) is damage.
+    pub(crate) fn check_version(offset: u64, what: &str, version: u32) -> DecodeResult<()> {
+        if version > FORMAT_VERSION {
+            return Err(Self::newer(offset, what, version));
+        }
+        if !readable_version(version) {
+            return Err(Self::new(
+                offset,
+                format!("{what} format version {version}"),
+            ));
+        }
+        Ok(())
     }
 
     /// The error as a [`super::PersistError::Corrupt`] of `location`, the offset shifted by
@@ -185,6 +227,21 @@ pub(crate) mod tag {
     pub(crate) const UUID: u8 = 6;
     pub(crate) const ARRAY: u8 = 7;
     pub(crate) const OBJECT: u8 = 8;
+    /// `date`: `svar` days since 1970-01-01 (file format version 2).
+    pub(crate) const DATE: u8 = 9;
+    /// `localdatetime`: `svar` microseconds since 1970-01-01T00:00:00 (wall clock).
+    pub(crate) const LOCAL_DATE_TIME: u8 = 10;
+    /// `datetime`: `svar` microseconds since the epoch (UTC), `svar` offset seconds.
+    pub(crate) const DATE_TIME: u8 = 11;
+    /// `time`: `uvar` microseconds since midnight.
+    pub(crate) const TIME: u8 = 12;
+    /// `duration`: `svar` months, `svar` days, `svar` microseconds.
+    pub(crate) const DURATION: u8 = 13;
+    /// `vector`: `u8` element kind (0 f32, 1 f16, 2 i8, 3 bit), `uvar` dimension
+    /// (1..=65536), for i8 the `f32` scale, then the packed components little endian (f32: 4
+    /// bytes, f16: 2, i8: 1, bit: `ceil(dimension / 8)` bytes in all, first component in the
+    /// most significant bit) (file format version 2).
+    pub(crate) const VECTOR: u8 = 14;
     /// "Absent" in the `before` of a journal SetProperty (never a value).
     pub(crate) const ABSENT: u8 = 255;
 }
@@ -256,6 +313,8 @@ fn put_value_at<K: KeyWriter>(
                 put_value_at(out, item, keys, depth + 1)?;
             }
         }
+        ElementProperty::Temporal(value) => put_temporal(out, value),
+        ElementProperty::Vector(vector) => put_vector(out, vector),
         ElementProperty::Vertex(_) => return Err("a vertex is not a storable value".into()),
         ElementProperty::Edge(_) => return Err("an edge is not a storable value".into()),
         ElementProperty::Map(_) => {
@@ -263,6 +322,124 @@ fn put_value_at<K: KeyWriter>(
         }
     }
     Ok(())
+}
+
+/// Writes a vector with its tag (format spec 3, file format version 2).
+fn put_vector(out: &mut Vec<u8>, vector: &Vector) {
+    put_u8(out, tag::VECTOR);
+    put_u8(out, vector.element().code());
+    put_uvar(out, vector.dimension() as u64);
+    out.reserve(vector.data_bytes() + 4);
+    if let Some(values) = vector.as_f32() {
+        for value in values {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    } else if let Some(values) = vector.as_f16_bits() {
+        for value in values {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    } else if let Some((codes, scale)) = vector.as_i8() {
+        out.extend_from_slice(&scale.to_le_bytes());
+        out.extend(codes.iter().map(|code| code.to_le_bytes()[0]));
+    } else if let Some(bits) = vector.as_bits() {
+        out.extend_from_slice(bits);
+    }
+}
+
+/// Reads the payload of a vector tag; an unknown element kind, a dimension out of range or a
+/// component the constructors refuse (NaN, an infinity, a negative scale, padding bits) is
+/// invalid (damage), and so is the tag in a file of format version 1. The payload length is
+/// checked against the remaining bytes before anything is allocated.
+fn read_vector(reader: &mut Reader<'_>, start: u64) -> DecodeResult<Vector> {
+    if reader.version < TEMPORAL_FORMAT_VERSION {
+        return Err(DecodeError::new(
+            start,
+            format!(
+                "value tag {} (a vector) in a file of format version {}",
+                tag::VECTOR,
+                reader.version
+            ),
+        ));
+    }
+    let invalid = |why: String| DecodeError::new(start, format!("invalid vector value: {why}"));
+    let code = reader.u8()?;
+    let element = VectorElement::from_code(code)
+        .ok_or_else(|| invalid(format!("unknown element kind {code}")))?;
+    let dimension = reader.uvar()?;
+    if dimension == 0 || dimension > MAX_VECTOR_DIMENSION as u64 {
+        return Err(invalid(format!("dimension {dimension}")));
+    }
+    let dimension = dimension as usize;
+    let vector = match element {
+        VectorElement::F32 => {
+            let bytes = reader.bytes(dimension * 4)?;
+            Vector::from_f32(
+                bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|chunk| f32::from_le_bytes(*chunk))
+                    .collect::<Vec<_>>(),
+            )
+        }
+        VectorElement::F16 => {
+            let bytes = reader.bytes(dimension * 2)?;
+            Vector::from_f16_bits(
+                bytes
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|chunk| u16::from_le_bytes(*chunk))
+                    .collect::<Vec<_>>(),
+            )
+        }
+        VectorElement::I8 => {
+            let scale = f32::from_bits(reader.u32()?);
+            let bytes = reader.bytes(dimension)?;
+            Vector::from_i8(
+                bytes
+                    .iter()
+                    .map(|byte| i8::from_le_bytes([*byte]))
+                    .collect::<Vec<_>>(),
+                scale,
+            )
+        }
+        VectorElement::Bit => {
+            let bytes = reader.bytes(dimension.div_ceil(8))?;
+            Vector::from_bits(bytes.to_vec(), dimension)
+        }
+    };
+    vector.map_err(|err| invalid(err.to_string()))
+}
+
+/// Writes a temporal value with its tag (format spec 3, file format version 2).
+fn put_temporal(out: &mut Vec<u8>, value: &Temporal) {
+    match *value {
+        Temporal::Date(date) => {
+            put_u8(out, tag::DATE);
+            put_svar(out, date.days_since_epoch() as i64);
+        }
+        Temporal::LocalDateTime(local) => {
+            put_u8(out, tag::LOCAL_DATE_TIME);
+            put_svar(out, local.micros());
+        }
+        Temporal::DateTime(value) => {
+            put_u8(out, tag::DATE_TIME);
+            put_svar(out, value.epoch_micros());
+            put_svar(out, value.offset_seconds() as i64);
+        }
+        Temporal::Time(time) => {
+            put_u8(out, tag::TIME);
+            // Within `0..86_400_000_000` by construction.
+            put_uvar(out, time.micros_of_day() as u64);
+        }
+        Temporal::Duration(duration) => {
+            put_u8(out, tag::DURATION);
+            put_svar(out, duration.months() as i64);
+            put_svar(out, duration.days() as i64);
+            put_svar(out, duration.micros());
+        }
+    }
 }
 
 /// Writes a property map: `uvar count | (key | value)*`, insertion order kept.
@@ -292,11 +469,30 @@ pub(crate) fn put_properties<K: KeyWriter>(
 pub(crate) struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,
+    /// The file format version of the bytes: a temporal value tag needs version 2 or later.
+    version: u32,
 }
 
 impl<'a> Reader<'a> {
+    /// A reader of bytes of the current file format version.
     pub(crate) fn new(buf: &'a [u8]) -> Self {
-        Self { buf, pos: 0 }
+        Self {
+            buf,
+            pos: 0,
+            version: FORMAT_VERSION,
+        }
+    }
+
+    /// The same reader for bytes of file format `version` (read from the file's header).
+    pub(crate) fn with_version(mut self, version: u32) -> Self {
+        self.version = version;
+        self
+    }
+
+    /// The file format version of the bytes.
+    #[inline]
+    pub(crate) fn version(&self) -> u32 {
+        self.version
     }
 
     /// The current offset within the section.
@@ -512,6 +708,10 @@ pub(crate) fn read_tagged_value<K: KeyReader>(
         }
         tag::STRING => ElementProperty::String(CompactString::from(reader.str()?)),
         tag::UUID => ElementProperty::Uuid(reader.u128_be()?),
+        tag::DATE | tag::LOCAL_DATE_TIME | tag::DATE_TIME | tag::TIME | tag::DURATION => {
+            ElementProperty::Temporal(read_temporal(reader, tag, start)?)
+        }
+        tag::VECTOR => ElementProperty::Vector(read_vector(reader, start)?),
         tag::ARRAY => {
             if depth >= max_depth {
                 return Err(DecodeError::new(
@@ -552,6 +752,47 @@ pub(crate) fn read_tagged_value<K: KeyReader>(
                 start,
                 format!("unknown value tag {other}"),
             ));
+        }
+    })
+}
+
+/// Reads the payload of a temporal value tag; a value outside the supported range is invalid
+/// (damage), and so is the tag in a file of format version 1.
+fn read_temporal(reader: &mut Reader<'_>, tag: u8, start: u64) -> DecodeResult<Temporal> {
+    if reader.version < TEMPORAL_FORMAT_VERSION {
+        return Err(DecodeError::new(
+            start,
+            format!(
+                "value tag {tag} (a temporal value) in a file of format version {}",
+                reader.version
+            ),
+        ));
+    }
+    let invalid = |what: &str| DecodeError::new(start, format!("invalid {what} value"));
+    let int32 = |value: i64, what: &str| i32::try_from(value).map_err(|_| invalid(what));
+    Ok(match tag {
+        tag::DATE => {
+            let days = int32(reader.svar()?, "date")?;
+            Temporal::Date(Date::from_days_since_epoch(days).map_err(|_| invalid("date"))?)
+        }
+        tag::LOCAL_DATE_TIME => Temporal::LocalDateTime(
+            LocalDateTime::from_micros(reader.svar()?).map_err(|_| invalid("localdatetime"))?,
+        ),
+        tag::DATE_TIME => {
+            let micros = reader.svar()?;
+            let offset = int32(reader.svar()?, "datetime")?;
+            Temporal::DateTime(
+                DateTime::from_micros(micros, offset).map_err(|_| invalid("datetime"))?,
+            )
+        }
+        tag::TIME => {
+            let micros = i64::try_from(reader.uvar()?).map_err(|_| invalid("time"))?;
+            Temporal::Time(Time::from_micros_of_day(micros).map_err(|_| invalid("time"))?)
+        }
+        _ => {
+            let months = int32(reader.svar()?, "duration")?;
+            let days = int32(reader.svar()?, "duration")?;
+            Temporal::Duration(Duration::new(months, days, reader.svar()?))
         }
     })
 }

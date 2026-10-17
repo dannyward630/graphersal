@@ -21,7 +21,7 @@ Every step and every file or schema operation of a query makes one or more
 | `Create` | create elements, write a file |
 | `Update` | change elements (properties, labels), the schema or an option |
 | `Delete` | drop elements or properties |
-| `Execute` | run code: Rhai's `import "module"`, calling a saved query |
+| `Execute` | run code: Rhai's `import "module"`, calling a saved query, running an embedder |
 | `Custom(name)` | an action of an embedding server, never produced by the library |
 
 | Resource | |
@@ -31,6 +31,7 @@ Every step and every file or schema operation of a query makes one or more
 | `Definition { kind, name }` | a definition of the graph's catalog (a saved query, ...); `kind` and `name` are `None` for a request about all of them (listing) |
 | `File { path }` | a file, with the path as the script wrote it |
 | `Option { key }` | an administrative `g.with()` option ([below](#administrative-gwith-options)) |
+| `Embedder { name }` | an embedder of the registry the host gave its traversals, by its registry name (`"hash-ngram/1"`; [Vectors](vectors.md#embeddings)) |
 | `Custom { kind, name }` | a resource of an embedding server (a database, a tenant, ...), never produced by the library |
 
 What each step requests is decided in one place in the engine (`GraphStep::for_each_access`):
@@ -51,6 +52,10 @@ What each step requests is decided in one place in the engine (`GraphStep::for_e
 | `drop()` | `Delete` on `Data` |
 | `infer_schema()`, `g.get_schema()`, `g.infer_schema()`, `g.diff_schema(..)`, `g.validate_schema(..)`, `g.validate_schema_patch(..)` | `Read` on `Schema` |
 | `g.statistics()`, `g.memory_usage()` | `Read` on `Data` |
+| `embed(..)` (the step) and `embed(text)` (the function) | `Execute` on `Embedder("name")`, the embedder that runs (the default resolved to its name), for every embedder including the built-in `hash-ngram/1` |
+| `g.embedders()` | nothing (it lists what the host registered and runs none of them) |
+| `g.embed_property(..)` | `Read` and `Update` on `Data(element "label")`, `Execute` on `Embedder("name")`, and `Update` on `Schema` when it declares the property (or its `embedder`) in the schema; denied in a saved query (read-only) |
+| `nearest(key, "text", k)`, `similarity(key, "text")` (a text query) | `Execute` on the embedder of the model the schema declares for the property (on each one when labels declare different models) |
 | `g.set_schema(..)`, `g.patch_schema(..)` | `Update` on `Schema` (a schema is never read from a file) |
 | `list_definitions(kind)` (Rust) | `Read` on `Definition(kind)` (`Definition` for every kind) |
 | `get_definition(kind, name)` (Rust) | `Read` on `Definition(kind "name")` |
@@ -103,6 +108,7 @@ use graphersal::catalog::Definition;
 
 let query_service = AccessPolicy::read_only();             // Read on Data, Schema, Definition;
                                                            // Execute on Definition (saved queries)
+                                                           // and on Embedder
 let editor = AccessPolicy::read_only()
     .allow(ActionKind::Create, ResourceKind::Data)
     .allow(ActionKind::Update, ResourceKind::Data)

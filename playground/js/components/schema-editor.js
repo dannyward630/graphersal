@@ -10,7 +10,8 @@ import {
   BASE_TYPES, CONSTRAINTS, MODES, describe, getAt, typeText, constraintSummary, propertiesOf,
   nestedObjectPath, isRequired, setBaseType, setNullable, setRequired, setKeyword, addProperty,
   renameProperty, removeProperty, addLabel, renameLabel, removeLabel, addConnection, setConnection,
-  removeConnection, isPlainObject, backfillScript,
+  removeConnection, isPlainObject, backfillScript, DEFAULT_FUNCTIONS, isTopLevelProperty, defaultSummary,
+  VECTOR_ELEMENTS, VECTOR_METRICS, MAX_VECTOR_DIMENSION,
 } from '../schema/draft.js';
 
 /** Runs an edit of the draft; a refused edit (a duplicate name) becomes a toast. */
@@ -23,9 +24,19 @@ function edit(flow, fn) {
   }
 }
 
+/** The delete button's icon (a trash can): unlike "×" it does not read as "close". */
+const TRASH_ICON = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.8 6.5v5M9.2 6.5v5"/></svg>';
+
 const CONSTRAINT_LABELS = {
   minimum: 'minimum', maximum: 'maximum', exclusiveMinimum: 'exclusive min', exclusiveMaximum: 'exclusive max',
   minLength: 'min length', maxLength: 'max length', pattern: 'pattern', minItems: 'min items', maxItems: 'max items',
+  formatMinimum: 'earliest', formatMaximum: 'latest', formatExclusiveMinimum: 'after', formatExclusiveMaximum: 'before',
+};
+/** Constraints written as text (a pattern, a date bound), not as a number. */
+const TEXT_KEYWORDS = new Set(['pattern', 'formatMinimum', 'formatMaximum', 'formatExclusiveMinimum', 'formatExclusiveMaximum']);
+/** An example bound of a date and time type (the field's placeholder). */
+const BOUND_EXAMPLE = {
+  datetime: '2000-01-01T00:00:00Z', localdatetime: '2000-01-01T00:00:00', date: '2000-01-01', time: '08:00:00', duration: 'PT1H',
 };
 const INTEGER_KEYWORDS = new Set(['minLength', 'maxLength', 'minItems', 'maxItems']);
 
@@ -43,8 +54,8 @@ const jsonFieldText = (v) => (v === undefined ? '' : JSON.stringify(v));
 
 /**
  * The detail form of one property: its constraints (on the node that carries the type) and its
- * annotations (on the property node). `default` is shown as what it is: information for clients,
- * never applied.
+ * annotations (on the property node). `default` is what a create stores for an absent top-level
+ * property (engine-side; the form only edits the keyword).
  */
 export const SchemaNodeDetails = {
   props: { flow: { type: Object, required: true }, path: { type: Array, required: true } },
@@ -58,7 +69,7 @@ export const SchemaNodeDetails = {
     function setConstraint(keyword, text) {
       let v;
       if (text === '') v = undefined;
-      else if (keyword === 'pattern') v = text;
+      else if (TEXT_KEYWORDS.has(keyword)) v = text.trim();
       else {
         v = Number(text);
         if (!Number.isFinite(v) || (INTEGER_KEYWORDS.has(keyword) && (!Number.isInteger(v) || v < 0))) {
@@ -82,6 +93,31 @@ export const SchemaNodeDetails = {
     function setText(keyword, text) {
       edit(props.flow, (doc) => setKeyword(doc, props.path, keyword, text === '' ? undefined : text));
     }
+    // A vector's element kind, dimension and default metric (on the value node, like the type).
+    function setVector(keyword, text) {
+      let v = text === '' ? undefined : text;
+      if (keyword === 'dimension' && v !== undefined) {
+        v = Number(text);
+        if (!Number.isInteger(v) || v < 1 || v > MAX_VECTOR_DIMENSION) {
+          bad.dimension = true;
+          return;
+        }
+      }
+      if (keyword === 'embedder' && v !== undefined && !/^[A-Za-z0-9._/:@?=-]{1,128}$/.test(v)) {
+        bad.embedder = true;
+        return;
+      }
+      if (keyword === 'element' && v === undefined) v = 'f32';
+      bad[keyword] = false;
+      edit(props.flow, (doc) => setKeyword(doc, valuePath(), keyword, v));
+    }
+    // `default` and `defaultFunction` exclude each other (the engine refuses both on one node).
+    function setDefaultFunction(name) {
+      edit(props.flow, (doc) => {
+        setKeyword(doc, props.path, 'defaultFunction', name === '' ? undefined : name);
+        if (name !== '') setKeyword(doc, props.path, 'default', undefined);
+      });
+    }
     function setDeprecated(on) {
       edit(props.flow, (doc) => setKeyword(doc, props.path, 'deprecated', on ? true : undefined));
     }
@@ -94,20 +130,49 @@ export const SchemaNodeDetails = {
       return v === true ? 'true' : v === false ? 'false' : 'default';
     };
     return {
-      bad, node, d, value, CONSTRAINTS, CONSTRAINT_LABELS, jsonFieldText, additional,
-      setConstraint, setJson, setText, setDeprecated, setAdditional,
+      bad, node, d, value, CONSTRAINTS, CONSTRAINT_LABELS, TEXT_KEYWORDS, BOUND_EXAMPLE, jsonFieldText, additional,
+      setConstraint, setJson, setText, setDeprecated, setAdditional, setDefaultFunction, setVector,
+      VECTOR_ELEMENTS, VECTOR_METRICS, MAX_VECTOR_DIMENSION,
+      functions: () => DEFAULT_FUNCTIONS[d().base] || [],
+      topLevel: () => isTopLevelProperty(props.path),
     };
   },
   template: `
   <div class="schema-details">
+    <fieldset v-if="d().base === 'vector'">
+      <legend>Vector</legend>
+      <label><span>element</span>
+        <select :value="value().element ?? 'f32'" @change="setVector('element', $event.target.value)">
+          <option v-for="e in VECTOR_ELEMENTS" :key="e" :value="e">{{ e }}</option>
+        </select></label>
+      <label><span>dimension</span>
+        <input type="number" min="1" :max="MAX_VECTOR_DIMENSION" step="1" :class="{ invalid: bad.dimension }"
+               :value="value().dimension ?? ''" placeholder="any" @change="setVector('dimension', $event.target.value)"></label>
+      <label><span>metric</span>
+        <select :value="value().metric ?? ''" @change="setVector('metric', $event.target.value)">
+          <option value="">none (cosine)</option>
+          <option v-for="m in VECTOR_METRICS" :key="m" :value="m">{{ m }}</option>
+        </select></label>
+      <label v-if="topLevel()"><span>embedder</span>
+        <input type="text" :class="{ invalid: bad.embedder }" :value="value().embedder ?? ''" placeholder="none"
+               spellcheck="false" @change="setVector('embedder', $event.target.value.trim())"></label>
+      <p class="hint wide">element: how components are stored: f32 exact, f16 half precision, i8 one byte per component plus a scale,
+        bit one bit per component (the sign). A list of numbers or a vector of another element written to the property is converted
+        to it (quantized). dimension: the number of components every value must have (empty: any). metric: the default of
+        <code>similarity</code> and <code>nearest</code> on this property; <code>hamming</code> needs bit vectors.
+        embedder (a label's top-level property only): the model identity of the embedder that produced the vectors, as
+        <code>g.embedders()</code> lists it under <code>model</code> (<code>hash-ngram/1</code>); <code>embed_property</code> fills it in,
+        and a text query (<code>nearest("emb", "graph indexes", 5)</code>) embeds its text with that model.</p>
+    </fieldset>
     <fieldset v-if="CONSTRAINTS[d().base] && CONSTRAINTS[d().base].length">
       <legend>Constraints</legend>
       <label v-for="k in CONSTRAINTS[d().base]" :key="k">
         <span>{{ CONSTRAINT_LABELS[k] }}</span>
-        <input :type="k === 'pattern' ? 'text' : 'number'" :class="{ invalid: bad[k] }" :value="value()[k] ?? ''"
-               :placeholder="k === 'pattern' ? '^[A-Z].*$' : ''" @change="setConstraint(k, $event.target.value)">
+        <input :type="TEXT_KEYWORDS.has(k) ? 'text' : 'number'" :class="{ invalid: bad[k], mono: TEXT_KEYWORDS.has(k) && k !== 'pattern' }" :value="value()[k] ?? ''"
+               :placeholder="k === 'pattern' ? '^[A-Z].*$' : BOUND_EXAMPLE[d().base] || ''" @change="setConstraint(k, $event.target.value)">
       </label>
       <p v-if="d().base === 'string'" class="hint">A pattern is not anchored: write <code>^…$</code> to match the whole value.</p>
+      <p v-if="BOUND_EXAMPLE[d().base]" class="hint">Bounds are values of the type, written as their ISO 8601 text and compared as values (a datetime by its instant); the engine checks them when the schema is applied.</p>
     </fieldset>
     <fieldset>
       <legend>Values</legend>
@@ -130,9 +195,18 @@ export const SchemaNodeDetails = {
       <label class="wide"><span>description</span><textarea rows="2" :value="node().description ?? ''" @change="setText('description', $event.target.value)"></textarea></label>
       <label><span>default (JSON)</span>
         <input type="text" :class="{ invalid: bad.default }" :value="jsonFieldText(node().default)"
+               :disabled="!!node().defaultFunction" :title="node().defaultFunction ? 'Clear the default function to set a fixed default' : ''"
                @change="setJson('default', $event.target.value, false)"></label>
-      <p class="hint wide">Information for clients only: never applied on write or read, and changing it changes no data.
-        A required key with a default is still required. The backfill script uses it as the value to fill in.</p>
+      <label v-if="topLevel() && (functions().length || node().defaultFunction)"><span>default function</span>
+        <select :value="node().defaultFunction ?? ''" @change="setDefaultFunction($event.target.value)">
+          <option value="">none</option>
+          <option v-for="f in functions()" :key="f" :value="f">{{ f }}</option>
+          <option v-if="node().defaultFunction && !functions().includes(node().defaultFunction)" :value="node().defaultFunction">{{ node().defaultFunction }} (does not fit the type)</option>
+        </select></label>
+      <p class="hint wide">On a top-level property in mode open or closed: stored when a vertex or edge is created without it
+        (also satisfies required). Never on read, never for existing data (the backfill script fills those); null is never stored.
+        A default function computes the value instead: <code>uuidv4</code>/<code>uuidv7</code> a new uuid per element,
+        <code>now</code> (datetime) and <code>today</code> (date) the start of the unit, the same for every element it creates.</p>
       <label><span>examples (JSON array)</span>
         <input type="text" :class="{ invalid: bad.examples }" :value="jsonFieldText(node().examples)"
                @change="setJson('examples', $event.target.value, false)"></label>
@@ -178,32 +252,45 @@ export const SchemaObjectTable = {
       }
     }
     return {
-      open, expanded, draftName, props_, propPath, nested, isExpanded, add, rename,
+      open, expanded, draftName, props_, propPath, nested, isExpanded, add, rename, TRASH_ICON,
       BASE_TYPES,
       info: (key) => describe(props_()[key]),
       type: (key) => typeText(props_()[key], { collapsed: true }),
       itemsBase: (key) => describe(getAt(doc(), [...propPath(key), ...describe(props_()[key]).value, 'items']) || {}).base,
-      summary: (key) => constraintSummary(props_()[key]),
+      summary: (key) => {
+        const n = props_()[key];
+        const dflt = isTopLevelProperty(propPath(key)) ? defaultSummary(n) : null;
+        return dflt ? [...constraintSummary(n), dflt] : constraintSummary(n);
+      },
       required: (key) => isRequired(doc(), props.path, key),
       fieldCount: (key) => Object.keys(propertiesOf(getAt(doc(), nested(key)) || {})).length,
       setType: (key, base) => edit(props.flow, (d) => setBaseType(d, propPath(key), base)),
       setItems: (key, base) => edit(props.flow, (d) => setBaseType(d, [...propPath(key), ...describe(getAt(d, propPath(key))).value, 'items'], base)),
       setNull: (key, on) => edit(props.flow, (d) => setNullable(d, propPath(key), on)),
       setReq: (key, on) => edit(props.flow, (d) => setRequired(d, props.path, key, on)),
-      remove: (key) => edit(props.flow, (d) => removeProperty(d, props.path, key)),
+      // A property's whole declaration goes with it (type, constraints, annotations, nested fields).
+      remove: (key) => {
+        if (!window.confirm(`Delete property "${key}" from the schema draft? Its type, constraints and annotations are removed with it.`)) return;
+        edit(props.flow, (d) => removeProperty(d, props.path, key));
+      },
+      // A click on the row outside its fields and buttons opens or closes the detail form.
+      rowClick: (key, event) => {
+        if (event.target.closest('input, select, textarea, button, a, label')) return;
+        open[key] = !open[key];
+      },
     };
   },
   template: `
   <table class="schema-table">
     <thead><tr>
       <th>Property</th><th>Type</th>
-      <th title="The key must be present (JSON Schema required)">Req.</th>
-      <th title="null is admitted (the type includes null)">Null</th>
+      <th title="Required: every element of the label must have this key. Says nothing about its value: with Null checked as well the key must be there but its value may be null.">Req.</th>
+      <th title="Nullable: the value may be null (the type includes null). Says nothing about whether the key must be there: that is Req. An absent key and a null value are different: property(k, null) stores the key with null.">Null</th>
       <th>Constraints</th><th class="actions"><span class="sr-only">Actions</span></th>
     </tr></thead>
     <tbody>
       <template v-for="(node, key) in props_()" :key="key">
-        <tr :class="{ open: open[key] }">
+        <tr class="prop-row" :class="{ open: open[key] }" :title="open[key] ? 'Click to close the details' : ''" @click="rowClick(key, $event)">
           <td><input type="text" class="cell-input name" :value="key" :aria-label="'Name of property ' + key" spellcheck="false"
                      @change="rename(key, $event.target.value)" @keydown.enter="$event.target.blur()"></td>
           <td class="type">
@@ -227,14 +314,16 @@ export const SchemaObjectTable = {
               <template v-if="summary(key).length"><code v-for="c in summary(key)" :key="c" class="schema-chip">{{ c }}</code></template>
               <span v-else class="faint">add…</span>
               <span v-if="node && (node.description || node.default !== undefined)" class="faint" title="Has annotations"> ✎</span>
+              <span class="faint chevron" aria-hidden="true">{{ open[key] ? ' ▴' : ' ▾' }}</span>
             </button>
           </td>
           <td class="actions">
-            <button class="icon-btn" :title="'Remove property ' + key" :aria-label="'Remove property ' + key" @click="remove(key)">×</button>
+            <button class="icon-btn danger-hover" :title="'Delete property ' + key" :aria-label="'Delete property ' + key" @click="remove(key)" v-html="TRASH_ICON"></button>
           </td>
         </tr>
         <tr v-if="open[key]" class="details-row"><td colspan="6">
           <schema-node-details :flow="flow" :path="propPath(key)"></schema-node-details>
+          <div class="details-close"><button class="btn small" @click="open[key] = false">▴ Close</button></div>
         </td></tr>
         <tr v-if="nested(key)" class="nested-row"><td colspan="6">
           <button class="link-btn nested-toggle" :aria-expanded="String(isExpanded(key))" @click="expanded[key] = !isExpanded(key)">
@@ -279,7 +368,10 @@ const SchemaLabel = {
       entry, schemaPath, vertexLabels, labelOptions, additional,
       connections: () => (Array.isArray(entry().connections) ? entry().connections : []),
       rename: (to) => edit(props.flow, (d) => renameLabel(d, props.kind, props.name, to)),
-      remove: () => edit(props.flow, (d) => removeLabel(d, props.kind, props.name)),
+      remove: () => {
+        if (!window.confirm(`Delete ${props.kind} label "${props.name}" from the schema draft? Its properties${props.kind === 'edge' ? ' and connections' : ''} are removed with it.`)) return;
+        edit(props.flow, (d) => removeLabel(d, props.kind, props.name));
+      },
       setAdditional: (choice) => edit(props.flow, (d) => {
         const s = getAt(d, schemaPath());
         if (!isPlainObject(s)) d[section()][props.name].schema = { type: 'object', properties: {} };
@@ -288,6 +380,7 @@ const SchemaLabel = {
       addConn: () => edit(props.flow, (d) => addConnection(d, props.name)),
       setConn: (i, side, v) => edit(props.flow, (d) => setConnection(d, props.name, i, side, v)),
       removeConn: (i) => edit(props.flow, (d) => removeConnection(d, props.name, i)),
+      TRASH_ICON,
     };
   },
   template: `
@@ -304,7 +397,7 @@ const SchemaLabel = {
         </select>
       </label>
       <span class="spacer"></span>
-      <button class="icon-btn" :title="'Remove ' + kind + ' label ' + name" :aria-label="'Remove ' + kind + ' label ' + name" @click="remove">×</button>
+      <button class="icon-btn danger-hover" :title="'Delete ' + kind + ' label ' + name" :aria-label="'Delete ' + kind + ' label ' + name" @click="remove" v-html="TRASH_ICON"></button>
     </div>
     <div v-if="kind === 'edge'" class="schema-connections">
       <span class="faint">connections</span>
@@ -321,7 +414,7 @@ const SchemaLabel = {
           <option v-if="c.to !== '*' && !labelOptions().includes(c.to)" :value="c.to">{{ c.to }}{{ vertexLabels().includes(c.to) ? '' : ' (undeclared)' }}</option>
           <option v-for="l in labelOptions()" :key="l" :value="l">{{ l }}</option>
         </select>
-        <button class="icon-btn" :aria-label="'Remove connection ' + (i + 1)" title="Remove this connection" @click="removeConn(i)">×</button>
+        <button class="icon-btn danger-hover" :aria-label="'Delete connection ' + (i + 1)" title="Delete this connection" @click="removeConn(i)" v-html="TRASH_ICON"></button>
       </span>
       <button class="btn small" @click="addConn">+ connection</button>
     </div>

@@ -2,9 +2,10 @@
 traversal engine). Shipped in the wheel by maturin together with a `py.typed` marker.
 """
 
+import datetime
 import os
 import uuid
-from typing import Any, Literal, Mapping, Optional, Union
+from typing import Any, Callable, Literal, Mapping, Optional, Sequence, Union
 
 __all__ = [
     "Graph",
@@ -13,14 +14,202 @@ __all__ = [
     "Store",
     "Vertex",
     "Edge",
+    "Interval",
+    "Vector",
+    "Embedder",
+    "Model2Vec",
     "GraphersalError",
     "PermissionDeniedError",
     "CommitRejectedError",
+    "EmbedPropertyError",
     "ReturnedClosureError",
 ]
 
-#: A value a script parameter may take (a ``Vertex``/``Edge`` by its id and label).
-_ParamValue = Union[int, float, str, bool, None, uuid.UUID, "Vertex", "Edge"]
+#: A value a script parameter may take (a ``Vertex``/``Edge`` by its id and label). The date and
+#: time values map to the engine's ``datetime`` (an aware ``datetime.datetime``),
+#: ``localdatetime`` (a naive one), ``date``, ``time`` (a naive ``datetime.time``) and
+#: ``duration`` (a ``timedelta`` or an ``Interval``). A one-dimensional ``float32``/``float64``
+#: buffer (a ``numpy.ndarray``) is accepted as an f32 ``Vector`` too.
+_ParamValue = Union[
+    int,
+    float,
+    str,
+    bool,
+    None,
+    uuid.UUID,
+    datetime.datetime,
+    datetime.date,
+    datetime.time,
+    datetime.timedelta,
+    "Interval",
+    "Vector",
+    "Vertex",
+    "Edge",
+]
+
+class Interval:
+    """A ``duration`` with months (PostgreSQL ``interval``), which ``datetime.timedelta`` cannot
+    hold because a month has no fixed length. A query returns a duration without months as a
+    ``timedelta`` and one with months as an ``Interval``; both are accepted as parameters.
+    Immutable; equal when all three fields are equal (``Interval("P1M") != Interval(0, 30)``, as
+    in the engine). ``repr`` is ``Interval('P1Y2M')``, ``str`` the ISO 8601 text."""
+
+    def __init__(self, months: Union[int, str], days: int = 0, micros: int = 0) -> None:
+        """``Interval(months, days=0, micros=0)`` (int32 months and days, int64 microseconds) or
+        ``Interval("P1Y2M3DT4H")`` from ISO 8601 text."""
+    @property
+    def months(self) -> int:
+        """The months (a year is 12)."""
+    @property
+    def days(self) -> int:
+        """The days (a day is not always 24 hours in a time zone)."""
+    @property
+    def micros(self) -> int:
+        """The time part in microseconds."""
+    def to_iso(self) -> str:
+        """The ISO 8601 text (``P1Y2M3DT4H``), the engine's canonical form."""
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+
+class Vector:
+    """A vector (an embedding): a fixed-length list of numbers stored as one value, with the
+    element kind ``"f32"`` (default), ``"f16"``, ``"i8"`` (symmetric scalar quantization: one
+    code per component and one scale per vector) or ``"bit"`` (one sign bit per component). A
+    vector property read back is a ``Vector``; a ``Vector`` passed as a parameter is a vector in
+    the script (``g.v().has("emb", q)``). Immutable; equal when element, dimension and
+    components are equal. Embeddings are computed outside the engine (book page "Vectors")."""
+
+    def __init__(self, values: Any, element: Literal["f32", "f16", "i8", "bit"] = "f32") -> None:
+        """``Vector(values, element="f32")``: ``values`` is a list (or tuple) of numbers or any
+        one-dimensional ``float32``/``float64`` buffer (a ``numpy.ndarray``, ``array.array``),
+        read without a ``numpy`` dependency. Another element quantizes the values. A NaN, an
+        infinity, an empty list or more than 65536 components raise ``ValueError``."""
+    @property
+    def element(self) -> str:
+        """The element kind: ``"f32"``, ``"f16"``, ``"i8"`` or ``"bit"``."""
+    @property
+    def dimension(self) -> int:
+        """The number of components (also ``len(v)``)."""
+    def tolist(self) -> list[float]:
+        """The components as floats (dequantized: an ``i8`` component is ``code * scale``, a
+        ``bit`` one ``1.0`` or ``-1.0``); ``numpy.array(v.tolist(), dtype="float32")`` gives an
+        array."""
+    def quantize(self, element: Literal["f32", "f16", "i8", "bit"]) -> "Vector":
+        """This vector in another element kind (``quantize("f32")`` dequantizes)."""
+    def __len__(self) -> int: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+
+#: What an ``Embedder``'s callable returns for N texts: N rows (each a list of floats, a
+#: one-dimensional ``float32``/``float64`` buffer or a ``Vector``) or ONE two-dimensional
+#: ``float32``/``float64`` buffer of shape ``(N, dimension)`` (a ``numpy.ndarray``).
+_EmbedOutput = Any
+
+class Embedder:
+    """An embedder: turns texts into vectors for the ``embed`` step, ``embed(text)``,
+    ``Graph.embed_property`` and text queries (``nearest("emb", "a question", 5)``). Register it
+    with ``Graph(embedders=[..])`` or ``graph.register_embedder``. Immutable."""
+
+    def __init__(
+        self,
+        name: str,
+        fn: Callable[[list[str]], _EmbedOutput],
+        *,
+        dimension: int,
+        element: Literal["f32", "f16", "i8", "bit"] = "f32",
+        metric: Literal["cosine", "dot", "l2", "hamming"] = "cosine",
+        max_batch: int = 64,
+        deterministic: bool = False,
+        local: bool = True,
+        model: Optional[str] = None,
+    ) -> None:
+        """``fn(texts)`` gets a ``list[str]`` of at most ``max_batch`` texts and returns one row
+        per text (see ``_EmbedOutput``). A wrong number of rows or of values per row raises
+        ``GraphersalError`` ("returned a wrong answer"); an exception ``fn`` raises (also
+        ``KeyboardInterrupt``) fails the call with its type and message. ``model`` (default:
+        ``name``) is the model identity the schema records for the vectors the embedder
+        produces: keep it stable across runs and hosts and change it whenever the model
+        changes. An invalid name, a reserved one (``"hash-ngram"``, ``"hash-ngram/*"``), a
+        dimension outside 1..65536 or ``max_batch`` 0 raise ``ValueError``."""
+    @property
+    def name(self) -> str:
+        """The registry name."""
+    @property
+    def model(self) -> str:
+        """The model identity the schema records."""
+    @property
+    def dimension(self) -> int:
+        """The number of components of every vector."""
+    @property
+    def element(self) -> str:
+        """The element kind of the vectors."""
+    @property
+    def metric(self) -> str:
+        """The metric the vectors are meant for."""
+    @property
+    def max_batch(self) -> int:
+        """The most texts per call."""
+    @property
+    def deterministic(self) -> bool:
+        """Whether the same text always gives the same bits."""
+    @property
+    def local(self) -> bool:
+        """Whether the embedder runs locally (sends no text anywhere)."""
+    def embed(self, texts: Sequence[str]) -> list[Vector]:
+        """The vectors of ``texts``, checked like inside the engine; raises
+        ``GraphersalError``."""
+
+class Model2Vec(Embedder):
+    """A Model2Vec static embedding model loaded from a LOCAL directory; the library never
+    downloads (fetch the files first, e.g. ``huggingface_hub.snapshot_download``)."""
+
+    def __init__(
+        self,
+        name: str,
+        path: Union[str, os.PathLike[str]],
+        *,
+        model: Optional[str] = None,
+        max_tokens: int = 512,
+        normalize: Optional[bool] = None,
+        max_batch: int = 256,
+    ) -> None:
+        """``path`` holds ``config.json``, ``tokenizer.json`` and ``model.safetensors`` (or the
+        sentence-transformers layout). ``model`` is the Hugging Face repository the files come
+        from (``"minishlab/potion-base-8M"``): the model identity becomes
+        ``model2vec/<model>@<12 hex>``, the same as ``graphersal embed-model download`` of the
+        same files. Without it the directory's ``graphersal-embed-model.json`` names it, else
+        the identity is ``model2vec@<12 hex>``; a ``model`` differing from that file raises
+        ``GraphersalError``, as does a directory holding no readable model. ``normalize``
+        overrides the config's L2 normalization (and becomes part of the identity). Loading
+        releases the GIL."""
+    # The members of ``Embedder``, with what they are for a Model2Vec.
+    @property
+    def name(self) -> str:
+        """The registry name."""
+    @property
+    def model(self) -> str:
+        """``model2vec/<repo>@<12 hex>`` or ``model2vec@<12 hex>`` (a hash of the three model
+        files, never a path: a copied directory keeps it)."""
+    @property
+    def dimension(self) -> int:
+        """The model's dimension."""
+    @property
+    def element(self) -> str:
+        """``"f32"``."""
+    @property
+    def metric(self) -> str:
+        """``"cosine"``."""
+    @property
+    def max_batch(self) -> int:
+        """The most texts per call (``max_batch=``)."""
+    @property
+    def deterministic(self) -> bool:
+        """``False``: the bits may differ between Graphersal builds."""
+    @property
+    def local(self) -> bool:
+        """``True``: the model runs in the process."""
+    def embed(self, texts: Sequence[str]) -> list[Vector]:
+        """The vectors of ``texts``."""
 
 class Vertex:
     """A vertex a query returned (detached: id, labels and a snapshot of its properties), like
@@ -74,7 +263,7 @@ class Edge:
 _Action = Literal["read", "create", "update", "delete", "execute", "custom", "*"]
 
 #: The name of a resource kind of an ``AccessPolicy`` rule (``"*"``: every one).
-_Resource = Literal["data", "schema", "file", "option", "definition", "custom", "*"]
+_Resource = Literal["data", "schema", "file", "option", "definition", "custom", "embedder", "*"]
 
 class GraphersalError(Exception):
     """Raised for any script/engine error: parse errors, traversal failures, GraphSON/GraphML import
@@ -94,6 +283,13 @@ class PermissionDeniedError(GraphersalError):
 class CommitRejectedError(GraphersalError):
     """A commit hook of the graph vetoed the commit; everything the unit changed was rolled
     back. Only raised for graphs whose hooks were registered on the Rust side."""
+
+class EmbedPropertyError(GraphersalError):
+    """``Graph.embed_property`` failed. The pages before the failure stay committed, the
+    failing one was rolled back; a second run continues where it stopped."""
+
+    #: The job's report up to the failure (the dict ``embed_property`` returns).
+    report: dict[str, Any]
 
 class ReturnedClosureError(GraphersalError):
     """A script run as one unit (``atomic=True``, ``Graph.dry_run``) returned a closure or
@@ -122,7 +318,7 @@ class AccessPolicy:
     @staticmethod
     def read_only() -> AccessPolicy:
         """``"read"`` on ``"data"``, ``"schema"`` and ``"definition"``, ``"execute"`` on
-        ``"definition"`` (calling a saved query)."""
+        ``"definition"`` (calling a saved query) and on ``"embedder"`` (running an embedder)."""
     def allow(self, action: _Action, resource: _Resource) -> AccessPolicy:
         """A copy that also allows ``action`` on ``resource``."""
     def deny(self, action: _Action, resource: _Resource) -> AccessPolicy:
@@ -151,8 +347,15 @@ class Graph:
         *,
         memory_limit: Union[int, Literal["auto"], None] = None,
         memory_headroom: Optional[int] = None,
+        embedders: Optional[Sequence[Embedder]] = None,
+        default_embedder: Optional[str] = None,
     ) -> None:
         """A new, empty graph.
+
+        ``embedders``: the ``Embedder``s (also ``Model2Vec``) its scripts and
+        ``embed_property`` call, beside the built-in ``"hash-ngram/1"``; ``default_embedder``
+        names the one used when a call names none (default ``"hash-ngram/1"``). A duplicate or
+        reserved name raises ``ValueError``. Every constructor and loader takes both keywords.
 
         ``memory_limit``: the memory budget of every traversal on this graph, in bytes, or
         ``"auto"`` (the cgroup memory limit of the process minus ``memory_headroom`` bytes;
@@ -167,6 +370,8 @@ class Graph:
         *,
         memory_limit: Union[int, Literal["auto"], None] = None,
         memory_headroom: Optional[int] = None,
+        embedders: Optional[Sequence[Embedder]] = None,
+        default_embedder: Optional[str] = None,
     ) -> Graph:
         """The standard TinkerPop "modern" toy graph (6 vertices, 6 edges); the keywords are
         those of ``Graph()``."""
@@ -178,6 +383,8 @@ class Graph:
         mode: Optional[Literal["none", "open", "closed"]] = None,
         memory_limit: Union[int, Literal["auto"], None] = None,
         memory_headroom: Optional[int] = None,
+        embedders: Optional[Sequence[Embedder]] = None,
+        default_embedder: Optional[str] = None,
     ) -> Graph:
         """Loads a graph from a GraphML file (see also ``from_graphson``). GraphML carries no
         schema: ``schema`` (a mapping or JSON text in the schema format; ``mode`` replaces its
@@ -193,6 +400,8 @@ class Graph:
         mode: Optional[Literal["none", "open", "closed"]] = None,
         memory_limit: Union[int, Literal["auto"], None] = None,
         memory_headroom: Optional[int] = None,
+        embedders: Optional[Sequence[Embedder]] = None,
+        default_embedder: Optional[str] = None,
     ) -> Graph:
         """Loads a graph from a GraphSON 3.0 file (one vertex per line, TinkerPop's default, or
         one ``{"vertices": [...]}`` document; 2.0 and untyped 1.0 read too). Skipped data
@@ -221,6 +430,8 @@ class Graph:
         *,
         memory_limit: Union[int, Literal["auto"], None] = None,
         memory_headroom: Optional[int] = None,
+        embedders: Optional[Sequence[Embedder]] = None,
+        default_embedder: Optional[str] = None,
     ) -> Graph:
         """Reads a packed snapshot written by ``save`` (no schema validation; damage raises
         ``GraphersalError``). A numeric ``memory_limit`` also refuses a snapshot whose size
@@ -242,6 +453,8 @@ class Graph:
         commit_seq: Optional[int] = None,
         time: Optional[int] = None,
         mark: Optional[str] = None,
+        embedders: Optional[Sequence[Embedder]] = None,
+        default_embedder: Optional[str] = None,
     ) -> tuple[Graph, dict[str, Any]]:
         """Loads ``snapshot`` (or an empty graph) and replays ``journals`` up to the end or the
         one given target; returns ``(graph, report)``. The graph has no journal attached."""
@@ -333,6 +546,55 @@ class Graph:
         none."""
     def recompress(self, name: str, *, policy: Optional[AccessPolicy] = None) -> None:
         """Rebuilds the rule's dictionary from the current values and re-encodes them."""
+    def create_index(
+        self,
+        label: str,
+        key: str,
+        element: str = "vertex",
+        name: Optional[str] = None,
+        type: str = "memory-ordered",
+        *,
+        transform: Optional[str] = None,
+        policy: Optional[AccessPolicy] = None,
+    ) -> None:
+        """Declares (or replaces) a property index: the ``element``s labelled ``label``,
+        ordered by their top-level property ``key`` (name: ``<label>_<key>`` by default, with
+        ``_to_lower`` appended for that transform) in an index of ``type``
+        (``"memory-ordered"``, the only type this version knows). ``transform="to_lower"``
+        indexes the lowered text of string values for ``has(key, __.to_lower().is(..))``. An
+        unknown type or transform, or a key the schema declares as values the index cannot
+        hold, is refused."""
+    def indexes(self, *, policy: Optional[AccessPolicy] = None) -> list[dict[str, Any]]:
+        """The property indexes with their type, whether they are served (``reason`` when
+        not) and their current stats."""
+    def drop_index(self, name: str, *, policy: Optional[AccessPolicy] = None) -> bool:
+        """Drops the property index; ``False`` when there is none."""
+    def register_embedder(self, embedder: Embedder, *, default: bool = False) -> None:
+        """Adds ``embedder`` to this graph's embedders (``default=True`` makes it the default).
+        A running execution keeps the embedders it started with. A name already registered,
+        or a reserved one, raises ``ValueError``."""
+    def embedders(self) -> list[dict[str, Any]]:
+        """This graph's embedders, the default first: ``name``, ``model``, ``dimension``,
+        ``element``, ``metric``, ``max_batch``, ``deterministic``, ``local``, ``default``."""
+    def embed_property(
+        self,
+        *,
+        label: str,
+        source: str,
+        target: str,
+        element: Literal["vertex", "edge"] = "vertex",
+        embedder: Optional[str] = None,
+        only_missing: bool = True,
+        batch: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Embeds the text property ``source`` of every ``element`` labelled ``label`` into its
+        vector property ``target``, page by page (the embedder runs without the graph's lock;
+        each page is one unit). Needs an attached schema (mode ``open``/``closed``), where the
+        job records the embedder's model for ``target``. Returns the report (``embedded``,
+        ``skipped_no_text``, ``not_text``, ``skipped_changed``, ``skipped_removed``, ``units``,
+        ``schema_changed``, ``elapsed_ms``, ``embedder``, ``model``); a failure raises
+        ``EmbedPropertyError`` with ``report``. Releases the GIL; Ctrl+C cancels between pages
+        (the ``KeyboardInterrupt`` carries ``report`` too)."""
     def call_query(
         self,
         name: str,
@@ -396,28 +658,66 @@ class DryRunResult:
 class Store:
     """One graph kept in one directory (the Store of the book's "Persistence" part): every commit
     of ``store.graph`` is written to the store's write-ahead log before it returns. Open
-    read-write with its lock until ``close()`` (also a context manager)."""
+    read-write with its lock until ``close()`` (also a context manager). The
+    ``embedders``/``default_embedder`` keywords of every opener give ``store.graph`` its
+    embedders (as ``Graph()``); every ``store.graph`` shares them."""
 
     @staticmethod
-    def create(path: str, *, on_damage: str = "maintenance") -> Store:
+    def create(
+        path: str,
+        *,
+        on_damage: str = "maintenance",
+        embedders: Optional[Sequence[Embedder]] = None,
+        default_embedder: Optional[str] = None,
+    ) -> Store:
         """Creates a store for an empty graph in ``path`` (missing or empty) and opens it.
         ``on_damage`` (``"maintenance"`` or ``"continue"``) is the damage policy, fixed for the
         store's life."""
     @staticmethod
-    def open(path: str) -> Store:
+    def open(
+        path: str,
+        *,
+        embedders: Optional[Sequence[Embedder]] = None,
+        default_embedder: Optional[str] = None,
+    ) -> Store:
         """Opens the store in ``path`` read-write and runs its recovery; a second writer raises."""
     @staticmethod
-    def create_file(path: str, *, on_damage: str = "maintenance") -> Store:
+    def create_file(
+        path: str,
+        *,
+        on_damage: str = "maintenance",
+        embedders: Optional[Sequence[Embedder]] = None,
+        default_embedder: Optional[str] = None,
+    ) -> Store:
         """Creates a single-file store (the whole store in the one file ``path``) and opens it;
         ``Store.create`` of a path ending in ``.gstore`` does the same."""
     @staticmethod
-    def open_file(path: str) -> Store:
+    def open_file(
+        path: str,
+        *,
+        embedders: Optional[Sequence[Embedder]] = None,
+        default_embedder: Optional[str] = None,
+    ) -> Store:
         """Opens the single-file store ``path`` read-write (``Store.open`` of an existing file
         does the same)."""
     @staticmethod
     def convert(source: str, target: str, *, single_file: bool = False) -> dict[str, Any]:
         """Copies the closed store in ``source`` into ``target`` (a new directory, or a single
         file: a ``.gstore`` path or ``single_file=True``), verified: ``{"files", "bytes"}``."""
+    @staticmethod
+    def upgrade(
+        source: str,
+        target: str | None = None,
+        *,
+        in_place: bool = False,
+        single_file: bool = False,
+    ) -> dict[str, Any]:
+        """Converts a store (or backup, or ``.gstore`` file) written by an older Graphersal
+        (0.1.x) to the current format, without the older Graphersal: into a new store in
+        ``target`` (``source`` unchanged), or ``in_place=True``. Everything is carried; the
+        source is verified first (a damaged one raises with ``err.cause ==
+        "damaged_source"``). ``{"from_version", "to_version", "already_current", "in_place",
+        "backup", "files", "bytes"}``."""
     def prune(self, up_to: int) -> dict[str, Any]:
         """Removes snapshots and WAL only needed for targets before ``up_to`` (the last two
         snapshots stay): ``{"kept_from", "snapshots_removed", "segments_removed",
@@ -494,7 +794,12 @@ class Store:
     def frozen_by_damage(self) -> bool:
         """Whether the store turned read-only because damage was found while it is open."""
     @staticmethod
-    def open_backup(path: str) -> Store:
+    def open_backup(
+        path: str,
+        *,
+        embedders: Optional[Sequence[Embedder]] = None,
+        default_embedder: Optional[str] = None,
+    ) -> Store:
         """Opens a backup read-only (listing, verify, fork work; writes raise)."""
     @staticmethod
     def restore_backup(path: str) -> dict[str, Any]:

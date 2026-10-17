@@ -1029,7 +1029,7 @@ fn make_older_format(dir: &Arc<dyn StoreDir>) {
 fn assert_older<T: std::fmt::Debug>(result: Result<T, PersistError>, what: &str) {
     match result {
         Err(err @ PersistError::OlderFormat { found: 1, .. }) => {
-            assert_eq!(graphersal::persist::STORE_FORMAT_VERSION, 2);
+            assert_eq!(graphersal::persist::STORE_FORMAT_VERSION, 3);
             let text = graphersal::error::format_diagnostic(&err);
             assert!(text.contains("older format version 1"), "{what}: {text}");
             for part in [

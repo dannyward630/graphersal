@@ -25,7 +25,7 @@ use super::super::segment::{
 use super::super::snapshot::ReadOptions;
 use super::super::wal::{
     FRAME_BYTES, RECORD_CHECKPOINT, RECORD_COMMIT, RECORD_MARK, SYNC_MARKER, WAL_HEADER_BYTES,
-    WalHeader, decode_commit, decode_frame_header,
+    WalHeader, decode_commit_in, decode_frame_header,
 };
 use super::files::{
     DamagePolicy, DirPath, GraphFile, LineageEntry, STORE_VERSION, list_snapshots, list_wal,
@@ -470,6 +470,7 @@ fn chunk_at<'b>(bytes: &'b [u8], row: &ChunkRow) -> Result<RawChunk<'b>, String>
         count: u32::from_le_bytes([head[9], head[10], head[11], head[12]]),
         crc: row.chunk.crc,
         stored,
+        version: segment::header_version(bytes).map_err(|err| err.reason)?,
     })
 }
 
@@ -570,12 +571,14 @@ fn scan_snapshot(
         .definitions
         .iter()
         .map(|record| {
-            record.decode(max_depth).map_err(|err| {
-                format!(
-                    "definition '{}' of kind {}: {} (payload byte {})",
-                    record.name, record.kind, err.reason, err.offset
-                )
-            })
+            record
+                .decode_in(max_depth, manifest.fixed.version.0)
+                .map_err(|err| {
+                    format!(
+                        "definition '{}' of kind {}: {} (payload byte {})",
+                        record.name, record.kind, err.reason, err.offset
+                    )
+                })
         })
         .collect();
     let (definitions, definitions_damage) = match decoded {
@@ -761,7 +764,8 @@ impl WalScan {
             let payload = bytes
                 .get(commit.offset + FRAME_BYTES..commit.offset + FRAME_BYTES + commit.len)
                 .ok_or("a WAL segment shrank while it was read")?;
-            f(decode_commit(payload, max_depth).map_err(|e| e.reason)?);
+            let version = WalHeader::records_version(bytes);
+            f(decode_commit_in(payload, max_depth, version).map_err(|e| e.reason)?);
             last = commit.seq;
         }
         Ok(())
@@ -894,6 +898,7 @@ fn scan_wal(
                 damage.push(item);
             }
         }
+        let version = WalHeader::records_version(&bytes);
         let segment = scan.segments.len();
         scan.segments.push((first, path));
         let mut at = WAL_HEADER_BYTES;
@@ -902,7 +907,7 @@ fn scan_wal(
                 Frame::Record { len, seq, kind } => {
                     if kind == RECORD_COMMIT {
                         let payload = &bytes[at + FRAME_BYTES..at + FRAME_BYTES + len];
-                        match decode_commit(payload, max_depth) {
+                        match decode_commit_in(payload, max_depth, version) {
                             Ok(changes) if changes.commit_seq() == seq => {
                                 scan.events.push(WalEvent::Commit(CommitPos {
                                     seq,

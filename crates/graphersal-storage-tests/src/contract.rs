@@ -59,7 +59,7 @@ pub fn vertex<S: GraphStorage>(
     properties: PropertyMap,
 ) -> S::VertexId {
     storage
-        .add_vertex(id.map(CompactString::new), label_vec(labels), properties)
+        .insert_vertex(id.map(CompactString::new), label_vec(labels), properties)
         .unwrap_or_else(|err| panic!("add_vertex({id:?}, {labels:?}) failed: {err}"))
 }
 
@@ -73,7 +73,7 @@ pub fn edge<S: GraphStorage>(
     properties: PropertyMap,
 ) -> S::EdgeId {
     storage
-        .add_edge(
+        .insert_edge(
             id.map(CompactString::new),
             label.map(CompactString::new),
             from,
@@ -335,7 +335,7 @@ pub fn explicit_numeric_vertex_id_bumps_the_sequence<S: GraphStorage>(storage: &
 pub fn duplicate_vertex_id_is_rejected<S: GraphStorage>(storage: &mut S) {
     vertex(storage, Some("x"), &["a"], PropertyMap::default());
     let err = storage
-        .add_vertex(Some("x".into()), label_vec(&["b"]), PropertyMap::default())
+        .insert_vertex(Some("x".into()), label_vec(&["b"]), PropertyMap::default())
         .expect_err("a duplicate vertex id must be rejected");
     assert!(
         matches!(err, GraphError::VertexIdUniqueConstraint { .. }),
@@ -359,7 +359,7 @@ pub fn edge_ids_are_preserved_unique_and_bump_the_sequence<S: GraphStorage>(stor
     assert_eq!(storage.edge_id(e), Some("e1"));
     assert_eq!(storage.get_edge_by_id("e1"), Some(e));
     let err = storage
-        .add_edge(
+        .insert_edge(
             Some("e1".into()),
             Some("l".into()),
             a,
@@ -485,10 +485,10 @@ pub fn add_and_remove_vertex_label<S: GraphStorage>(storage: &mut S) {
 }
 
 /// A label containing `::` is rejected with `InvalidLabel` (GraphML reserves it as a delimiter),
-/// by `add_vertex` and by `add_vertex_label`, and nothing is stored.
+/// by `insert_vertex` and by `add_vertex_label`, and nothing is stored.
 pub fn label_with_the_reserved_delimiter_is_rejected<S: GraphStorage>(storage: &mut S) {
     let err = storage
-        .add_vertex(None, label_vec(&["a::b"]), PropertyMap::default())
+        .insert_vertex(None, label_vec(&["a::b"]), PropertyMap::default())
         .expect_err("reserved delimiter");
     assert!(
         matches!(err, GraphError::InvalidLabel { .. }),
@@ -649,7 +649,7 @@ pub fn edge_to_a_dropped_vertex_is_an_error_not_a_panic<S: GraphStorage>(storage
     storage.drop_vertex(b).expect("drop_vertex");
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         storage
-            .add_edge(None, Some("l".into()), a, b, PropertyMap::default())
+            .insert_edge(None, Some("l".into()), a, b, PropertyMap::default())
             .map(|_| ())
     }));
     match outcome {
@@ -755,7 +755,7 @@ pub fn stale_handle_never_aliases<S: GraphStorage>(storage: &mut S) {
         })
     ));
     assert!(matches!(
-        storage.add_edge(None, None, stale_vertex, b, PropertyMap::default()),
+        storage.insert_edge(None, None, stale_vertex, b, PropertyMap::default()),
         Err(GraphError::ElementRemoved { .. })
     ));
     storage.drop_vertex(stale_vertex).expect("idempotent");
@@ -1153,8 +1153,9 @@ pub fn jpath_removals_shift_and_ignore_missing<S: GraphStorage>(storage: &mut S)
     assert_consistent(storage);
 }
 
-/// A vertex or an edge can never be stored as a property value, at any depth, by `add_vertex`,
-/// `add_edge`, `set_*_property` and the path writes (`InvalidPropertyValue`), and nothing is stored.
+/// A vertex or an edge can never be stored as a property value, at any depth, by
+/// `insert_vertex`, `insert_edge`, `set_*_property` and the path writes (`InvalidPropertyValue`),
+/// and nothing is stored.
 pub fn graph_elements_are_rejected_as_property_values<S: GraphStorage>(storage: &mut S) {
     let vertex_value = || {
         ElementProperty::Vertex(Box::new(VertexValue::new(
@@ -1181,14 +1182,14 @@ pub fn graph_elements_are_rejected_as_property_values<S: GraphStorage>(storage: 
     let e = edge(storage, None, Some("l"), v, w, PropertyMap::default());
     for (what, bad) in bad_values {
         let err = storage
-            .add_vertex(None, vec![], props(&[("p", bad.clone())]))
+            .insert_vertex(None, vec![], props(&[("p", bad.clone())]))
             .expect_err(what);
         assert!(
             matches!(err, GraphError::InvalidPropertyValue { .. }),
             "add_vertex {what}: {err:?}"
         );
         let err = storage
-            .add_edge(None, Some("l".into()), v, w, props(&[("p", bad.clone())]))
+            .insert_edge(None, Some("l".into()), v, w, props(&[("p", bad.clone())]))
             .expect_err(what);
         assert!(
             matches!(err, GraphError::InvalidPropertyValue { .. }),
@@ -1219,12 +1220,12 @@ pub fn graph_elements_are_rejected_as_property_values<S: GraphStorage>(storage: 
     assert_eq!(
         storage.vertex_count(),
         2,
-        "a rejected add_vertex left a vertex behind"
+        "a rejected insert_vertex left a vertex behind"
     );
     assert_eq!(
         storage.edge_count(),
         1,
-        "a rejected add_edge left an edge behind"
+        "a rejected insert_edge left an edge behind"
     );
     assert!(storage.vertex_properties(v).is_some_and(|p| p.is_empty()));
     assert_consistent(storage);
@@ -1447,21 +1448,21 @@ pub fn schema_modes_enforce_declared_properties<S: GraphStorage>(storage: &mut S
     let ok = vertex(storage, None, &["Person"], props(&[("name", "ann".into())]));
     assert!(
         matches!(
-            storage.add_vertex(None, label_vec(&["Person"]), PropertyMap::default()),
+            storage.insert_vertex(None, label_vec(&["Person"]), PropertyMap::default()),
             Err(GraphError::Schema(_))
         ),
         "missing required property"
     );
     assert!(
         matches!(
-            storage.add_vertex(None, label_vec(&["Person"]), props(&[("name", 5.into())])),
+            storage.insert_vertex(None, label_vec(&["Person"]), props(&[("name", 5.into())])),
             Err(GraphError::Schema(_))
         ),
         "wrong property type"
     );
     assert!(
         matches!(
-            storage.add_vertex(None, label_vec(&["Undeclared"]), PropertyMap::default()),
+            storage.insert_vertex(None, label_vec(&["Undeclared"]), PropertyMap::default()),
             Err(GraphError::Schema(_))
         ),
         "undeclared label in Closed mode"
@@ -1499,6 +1500,104 @@ pub fn schema_modes_enforce_declared_properties<S: GraphStorage>(storage: &mut S
     assert_consistent(storage);
 }
 
+/// With a stored `Open` schema declaring literal `default`s: `add_vertex`/`add_edge` (the
+/// create path) fill a missing property with its default and keep an explicit value, while the
+/// primitive `insert_vertex`/`insert_edge` store exactly what they are given (a required
+/// property with a default is still required there). Skipped (passes) when `set_schema` is
+/// `GraphError::Unsupported`.
+pub fn add_applies_schema_defaults_insert_does_not<S: GraphStorage>(storage: &mut S) {
+    let schema = GraphSchema::from_json(
+        r#"{"mode": "open",
+            "vertices": {"Person": {"schema": {"type": "object",
+                "properties": {"level": {"type": "integer", "default": 1}},
+                "required": ["level"]}}},
+            "edges": {"knows": {"connections": [{"from": "Person", "to": "Person"}],
+                "schema": {"type": "object",
+                    "properties": {"weight": {"type": "number", "default": 0.5}}}}}}"#,
+    )
+    .expect("a valid schema");
+    let result = storage.set_schema(schema);
+    if schema_unsupported(&result) {
+        return;
+    }
+    result.expect("an empty graph satisfies any schema");
+    let level = |storage: &S, v: S::VertexId| {
+        storage
+            .vertex_properties(v)
+            .and_then(|p| p.get("level").cloned())
+    };
+
+    let added = storage
+        .add_vertex(None, label_vec(&["Person"]), PropertyMap::default())
+        .expect("add_vertex fills the required property from its default");
+    assert_eq!(
+        level(storage, added),
+        Some(1.into()),
+        "the default is stored"
+    );
+    let explicit = storage
+        .add_vertex(None, label_vec(&["Person"]), props(&[("level", 5.into())]))
+        .expect("add_vertex with an explicit value");
+    assert_eq!(
+        level(storage, explicit),
+        Some(5.into()),
+        "an explicit value wins"
+    );
+
+    assert!(
+        matches!(
+            storage.insert_vertex(None, label_vec(&["Person"]), PropertyMap::default()),
+            Err(GraphError::Schema(_))
+        ),
+        "insert_vertex applies no default, so the required property is missing"
+    );
+    let inserted = storage
+        .insert_vertex(None, label_vec(&["Person"]), props(&[("level", 7.into())]))
+        .expect("insert_vertex with the required property");
+    assert_eq!(
+        storage.vertex_properties(inserted).map(|p| p.len()),
+        Some(1),
+        "insert_vertex stores exactly the given properties"
+    );
+
+    let edge = storage
+        .add_edge(
+            None,
+            Some("knows".into()),
+            added,
+            explicit,
+            PropertyMap::default(),
+        )
+        .expect("add_edge");
+    assert_eq!(
+        storage
+            .edge_properties(edge)
+            .and_then(|p| p.get("weight").cloned()),
+        Some(0.5.into()),
+        "add_edge stores the edge default"
+    );
+    let raw_edge = storage
+        .insert_edge(
+            None,
+            Some("knows".into()),
+            added,
+            inserted,
+            PropertyMap::default(),
+        )
+        .expect("insert_edge");
+    assert_eq!(
+        storage.edge_properties(raw_edge).map(|p| p.len()),
+        Some(0),
+        "insert_edge stores exactly the given properties"
+    );
+    assert_eq!(
+        storage.vertex_count(),
+        3,
+        "the rejected insert left nothing"
+    );
+    assert_consistent(storage);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Read-only storages
 // ---------------------------------------------------------------------------------------------
@@ -1515,14 +1614,14 @@ pub fn read_only_rejects_writes<S: GraphStorage>(
     let (vertices, edges) = (storage.vertex_count(), storage.edge_count());
     assert!(
         storage
-            .add_vertex(None, vec![], PropertyMap::default())
+            .insert_vertex(None, vec![], PropertyMap::default())
             .is_err()
     );
     assert!(storage.add_vertex_label(vertex, "x".into()).is_err());
     assert!(storage.remove_vertex_label(vertex, "x").is_err());
     assert!(
         storage
-            .add_edge(None, None, vertex, vertex, PropertyMap::default())
+            .insert_edge(None, None, vertex, vertex, PropertyMap::default())
             .is_err()
     );
     assert!(

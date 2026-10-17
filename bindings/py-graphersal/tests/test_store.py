@@ -1,6 +1,9 @@
 """`graphersal.Store`: one graph in one directory, commits durable, reopen, checkpoint, marks,
 verify, fork, backup."""
 
+import pathlib
+import shutil
+
 import pytest
 
 import graphersal
@@ -199,3 +202,32 @@ def test_a_refused_store_operation_names_its_cause(tmp_path):
     with pytest.raises(graphersal.GraphersalError) as other:
         graphersal.Store.open(str(tmp_path / "missing"))
     assert other.value.cause is None
+
+
+FIXTURES = pathlib.Path(__file__).resolve().parents[3] / "crates/graphersal/tests/data/v0.1.0"
+
+
+def test_a_store_of_graphersal_0_1_is_upgraded(tmp_path):
+    old = tmp_path / "old"
+    shutil.copytree(FIXTURES / "store", old)
+    with pytest.raises(graphersal.GraphersalError) as refused:
+        graphersal.Store.open(str(old))
+    assert "graphersal store upgrade" in refused.value.help
+    with pytest.raises(ValueError):
+        graphersal.Store.upgrade(str(old))
+    report = graphersal.Store.upgrade(str(old), str(tmp_path / "new"))
+    assert report["from_version"] == 2 and not report["in_place"]
+    assert report["files"] > 10 and report["backup"] is None
+    with graphersal.Store.open(str(tmp_path / "new")) as store:
+        assert "grace" in names(store.graph)
+        assert [m["name"] for m in store.marks()] == ["first", "before-rollback", "last"]
+    # In place, then nothing to do; a copy of a current store is refused with its cause.
+    assert graphersal.Store.upgrade(str(old), in_place=True)["in_place"]
+    assert graphersal.Store.upgrade(str(old), in_place=True)["already_current"]
+    with pytest.raises(graphersal.GraphersalError) as current:
+        graphersal.Store.upgrade(str(old), str(tmp_path / "again"))
+    assert current.value.cause == "already_current"
+    # A backup stays a backup.
+    shutil.copytree(FIXTURES / "backup", tmp_path / "old_backup")
+    backup = graphersal.Store.upgrade(str(tmp_path / "old_backup"), str(tmp_path / "backup"))
+    assert backup["backup"]["commit_seq"] == 7

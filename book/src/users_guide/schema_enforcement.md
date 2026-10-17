@@ -130,40 +130,81 @@ schema. The format is described by the meta-schema `graphersal-schema-v1.json`
 | `"number"` | `float64` | An `int64` written to it is coerced when exactly representable; a stored `int64` does not conform. |
 | `"string"` | `string` | |
 | `"string"` + `"format": "uuid"` | `uuid` | A canonical UUID string is coerced on write; a stored string does not conform. |
+| `"string"` + `"format": "date-time"` | `datetime` | An instant with its UTC offset (`2024-05-01T09:30:00+02:00`). |
+| `"string"` + `"format": "date"` | `date` | A calendar day (`2024-05-01`). |
+| `"string"` + `"format": "local-date-time"` | `localdatetime` | A date and time without a zone (`2024-05-01T09:30:00`). A Graphersal format name: JSON Schema has none. |
+| `"string"` + `"format": "time"` | `time` | A time of day **without** an offset (`09:30:00`). JSON Schema's own `time` requires an offset; Graphersal's is local. |
+| `"string"` + `"format": "duration"` | `duration` | ISO 8601 (`P1Y2M3DT4H`): months, days and microseconds. |
 | `"boolean"`, `"null"` | `boolean`, `null` | |
 | `"array"` + `items` | `array<T>` | `items` is a full schema (constraints and nullability apply to the items); without `items` any item. |
+| `"array"` + `"format": "vector"` (+ `element`, `dimension`, `metric`) | `vector<f32, 768>` | A vector of the declared element (`f32` default, `f16`, `i8`, `bit`) and dimension (optional). A list of numbers is coerced on write, a vector of another element quantized; a stored list does not conform. `items` is not allowed next to it; `metric` is an annotation; `embedder` (a label's top-level property only) records the model identity of the embedder that produced the vectors (`"hash-ngram/1"`), which `embed_property()` fills in and checks and the text queries of `nearest()`/`similarity()` read; a plain write does not check it. Book page [Vectors](vectors.md#which-model-produced-a-property). |
 | `"object"` + `properties` | `object` | With `required` and `additionalProperties`. |
 | `["integer", "null"]` | `union<int64\|null>` | A type array: any of the listed types. |
 | `anyOf: [..]` | `union<..>` | At least one member accepts the value (Pydantic's `Optional[X]` is `anyOf: [X, {"type": "null"}]`). |
 | `{}` (no `type`) | any | Admits every value. |
 
-Diagnostics, `Display` and `GType` keep the engine's names (`int64`, `float64`, `uuid`).
+Diagnostics, `Display` and `GType` keep the engine's names (`int64`, `float64`, `uuid`,
+`datetime`, `localdatetime`, ...).
+
+**Dates and times.** In `open` and `closed` mode a property declared with a temporal format
+coerces a **string** on write: any text the type's parser accepts (ISO 8601 / RFC 3339; the
+canonical form and the usual variants such as `2024-05-01 09:30Z` or `09:30`) becomes the
+temporal value, and text it refuses is a coercion failure that names the expected form. A
+`date-time` text must carry its UTC offset or a time zone (`2024-05-01T09:30:00Z`,
+`2024-05-01T09:30[Europe/Berlin]`): `2024-05-01T09:30` is refused, never read as UTC, and the same
+holds for a `formatMinimum`/`formatMaximum` bound and a typed `gx:OffsetDateTime` (only the
+explicit conversion step `as_date()` keeps TinkerPop's "no offset is UTC"). This is
+the explicit declaration at work, like the `uuid` coercion, never a guess from content: an
+undeclared date-like string stays a `string`. A stored string does not conform to a temporal
+format (reads never coerce), and one temporal type never conforms to another (a `date` is not a
+`datetime`). JSON Schema's `format` is an annotation for other validators, which ignore a format
+they do not know, so a schema with `local-date-time` stays usable with them. The part
+[Dates and Times](../dates/index.md) describes the types themselves; its page
+[Dates in a Schema](../dates/schema.md) has examples.
 
 ### Keywords
 
 | Kind | Keywords |
 |---|---|
-| Structure | `type`, `format` (only `uuid`), `items`, `properties`, `required`, `additionalProperties` (`true`/`false`), `anyOf` |
-| Constraints | `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` (numbers), `minLength`, `maxLength`, `pattern` (strings), `minItems`, `maxItems` (arrays), `enum`, `const` (any value) |
-| Annotations (no effect on validation) | `title`, `description`, `$comment`, `examples`, `deprecated`, `default` |
+| Structure | `type`, `format` (`uuid`, `date-time`, `date`, `local-date-time`, `time`, `duration` on a string; `vector` on an array), `element`, `dimension`, `metric`, `embedder` (with `format: "vector"`; `embedder` on a top-level property only), `items`, `properties`, `required`, `additionalProperties` (`true`/`false`), `anyOf` |
+| Constraints | `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` (numbers), `formatMinimum`, `formatMaximum`, `formatExclusiveMinimum`, `formatExclusiveMaximum` (dates and times), `minLength`, `maxLength`, `pattern` (strings), `minItems`, `maxItems` (arrays), `enum`, `const` (any value) |
+| Annotations (no effect on validation) | `title`, `description`, `$comment`, `examples`, `deprecated` |
+| Create-time defaults ([Defaults on create](#defaults-on-create)) | `default` (also an annotation below the top level), `defaultFunction` (`uuidv4`, `uuidv7`, `now`, `today`) |
 | References | `$ref: "#/$defs/Name"` with `$defs` at the label schema's root; inlined when the schema is loaded |
 
 A constraint applies to the values of its own kind and ignores the others (JSON Schema
 semantics): in `{"type": ["integer", "string"], "minimum": 10, "minLength": 3}` the bound checks
 the integers and the length the strings. Next to a declared `type`, a keyword of another kind is
 an error (`minLength` on an `integer` is a mistake, not a no-op). `enum`/`const` compare JSON values
-(`1` equals `1.0`, a `uuid` compares as its canonical string).
+(`1` equals `1.0`, a `uuid` and a date or time compare as their canonical text, so a `datetime`
+matches only the text with its own offset).
+
+`formatMinimum`, `formatMaximum`, `formatExclusiveMinimum` and `formatExclusiveMaximum` bound a
+date or time: the keywords of JSON Schema's format-comparison proposal (ajv-formats implements
+them; other validators ignore unknown keywords). Their value is the text of a value of the node's
+temporal `format`, and they are valid only next to one (`minimum` stays a number keyword):
+
+```json
+{ "type": "string", "format": "date-time", "formatMinimum": "2020-01-01T00:00:00Z" }
+{ "type": "string", "format": "duration", "formatExclusiveMaximum": "P1D" }
+```
+
+A value is compared with its type's ordering: a `datetime` by its instant
+(`2020-01-01T01:00:00+01:00` equals the minimum above), a `duration` by its length (a month counts
+30 days, a day 24 hours, as PostgreSQL orders intervals), the others by their calendar or clock
+value.
 
 Local references are **inlined**: a loaded schema has no `$ref`/`$defs`, and a reference cycle is
-an error (recursive schemas are not supported). Only annotations may sit next to a `$ref`; they
-override the definition's.
+an error (recursive schemas are not supported). Only annotations, `default` and `defaultFunction`
+may sit next to a `$ref`; they override the definition's.
 
 ### What is an error, and why
 
 | Input | Why it is rejected |
 |---|---|
 | An unknown key or keyword, anywhere | A typo must never weaken a schema silently. |
-| `format` other than `uuid` (`date-time`, `date`, `email`, ...) | Dates come with a date type in 0.2.0. Accepting `date-time` as a plain string now would let 0.2.0 silently change what an existing schema accepts. Remove the `format` (the value is a string). |
+| `format` other than `uuid`, `date-time`, `date`, `local-date-time`, `time`, `duration` (`email`, `uri`, ...) | Accepting an unknown format as a plain string now would let a later version silently change what an existing schema accepts. Remove the `format` (the value is a string). |
+| `formatMinimum` (and the other format bounds) without a temporal `format`, or with text that is not of the format's type | A bound needs the type it compares in; the hint shows an example of the type's text. |
 | `additionalProperties: {schema}` (a map of T, Pydantic `dict[str, T]`) | No map type yet. Use `{"type": "object", "additionalProperties": true}`. |
 | `oneOf`, `allOf`, `not`, `if`/`then`/`else` | Not implemented; `anyOf` covers `oneOf` when the members cannot both match. |
 | `prefixItems`, `contains`, tuples (`items: [..]`) | An array has one item schema. |
@@ -176,24 +217,95 @@ override the definition's.
 Every error is `SchemaError::InvalidSchema { path, reason, hint }`, `path` a JSON Pointer into
 the input (`/vertices/person/schema/properties/age/minimum`), and its help names the fix.
 
-### `default` is not applied
+### Defaults on create
 
-`default` is an **annotation only**, and it stays one:
+`default` has SQL `DEFAULT` semantics: when a vertex or edge is **created** without a property
+whose schema declares a `default`, the default is **stored**, as if the query had written it.
 
-- it is **never applied on write**: an element created without the property does not get it;
-- it is **never substituted on read**: `values("age")`, `valueMap()`, the display and every export
-  show nothing for an absent property;
-- **changing a default changes no data** (the diff classifies it as a compatible annotation change);
-- a `required` property with a `default` is still required: the default does not fill it.
+```rhai,graph=empty,script
+g.set_schema(#{mode: "open", vertices: #{person: #{schema: #{type: "object", properties: #{
+    name: #{type: "string"},
+    active: #{type: "boolean", default: true},
+    uid: #{type: "string", format: "uuid", defaultFunction: "uuidv7"}}}}}});
+g.addV("person").property("name", "alice").iterate();
+g.V().valueMap("name", "active").toList()   // [#{"active": [true], "name": ["alice"]}]
+```
 
-Why, although it may look surprising: this is JSON Schema's own meaning of `default` ("may be used
-by a user interface", not by a validator); Pydantic writes `default` on every optional field
-(`"default": null`), so applying it would materialise values nobody asked for; and a default that
-re-valued data whenever the schema changes would be "magic" no one can audit. Clients and editors
-may use it (the playground's schema editor prefills a form with it). Should create-time defaults
-(SQL `DEFAULT` semantics: stored physically, only for new elements) ever be supported, they get a
-**separate keyword**, because giving `default` that meaning later would silently change existing
-schemas.
+- **Only on create**: `addV()`/`addE()` (also with their folded `property()` steps),
+  `mergeV()`/`mergeE()` when they create (never on a match), the playground's create dialog, and
+  `GraphStorage::add_vertex`/`add_edge` in Rust (and their `_with` forms). The default is filled in **before** the
+  new element is coerced and validated, so a `required` property with a default is satisfied, and
+  a canonical string default of a `uuid` property is stored as a `uuid`.
+- **Only what is missing**: a value the create writes wins, also an explicit `null`
+  (`property("k", ())` stores `null`). A `property()` that is not folded into the creation (a
+  traversal value, say) overwrites the default afterwards.
+- **`default: null` is never stored.** Pydantic writes `"default": null` on every optional field;
+  storing it would fill the data with nulls nobody wrote. Write the `null` explicitly when you
+  want one.
+- **Never on read**: `values("k")`, `valueMap()`, the display and every export show what is
+  stored, nothing is substituted for an absent property.
+- **No backfill**: setting or changing a schema never fills existing elements, and a changed
+  default is never re-applied. To fill existing elements, use the
+  [backfill recipe](#making-a-key-required-backfill-first-in-one-transaction).
+- **Stored data is reproduced, not re-created**: GraphML/GraphSON imports, `apply_change_set`,
+  replay, recovery and snapshot loads store exactly what they carry: they go through the storage
+  primitive `GraphStorage::insert_vertex`/`insert_edge`, which applies no default (call it
+  yourself to store an element exactly as given, like a load).
+- **Modes `open` and `closed` only**: mode `none` stores the schema without enforcing anything,
+  and applies no default either.
+- **Top-level properties only**: a `default` inside an object value's schema (`address.city`)
+  stays an annotation; nothing fills in keys of a value the create supplies.
+- **Multi-label vertices**: the first label, in label order, that declares a key decides, as for
+  coercion: its default is stored, or nothing when that label declares the key without one.
+
+A default must be a valid value of its property (after the write coercion): `set_schema`,
+`patch_schema` and `validate_schema` reject `{"type": "integer", "default": "x"}` or a default
+below the property's `minimum` with an `InvalidSchema` error. Only the defaults that are applied
+are checked: a `default: null` and a nested `default` are not.
+
+**`defaultFunction`** computes the value instead (like PostgreSQL's
+`gen_random_uuid()`/`uuidv7()`/`now()`/`current_date`):
+
+| `defaultFunction` | Value | The property must admit |
+|---|---|---|
+| `uuidv4` | a random version-4 UUID, new for every element | `{"type": "string", "format": "uuid"}` |
+| `uuidv7` | a time-ordered version-7 UUID (RFC 9562: 48 bits of Unix milliseconds, then random bits; increasing within a process), new for every element | `{"type": "string", "format": "uuid"}` |
+| `now` | the `datetime` of the unit's start: ONE value for every element created in the same unit | `{"type": "string", "format": "date-time"}` |
+| `today` | the UTC `date` of that same time | `{"type": "string", "format": "date"}` |
+
+`set_schema`, `patch_schema` and `validate_schema` reject a function on a property that does not
+admit its value (`now` on a `string` or a `date`, `uuidv4` on an `integer`) with an
+`InvalidSchema` error whose hint names the declaration it needs. A property has either `default`
+or `defaultFunction`, never both, and `defaultFunction` sits only on a label's top-level property
+(a saved query's parameter schema rejects it). The generated value is stored as a plain value:
+the change set and the journal record it, so replay and recovery reproduce the same UUID or time.
+
+**Which time `now` stores** (PostgreSQL's `now()`: the start of the transaction):
+
+- **In a script** it is the time the DSL's `now()` returns in the same evaluation: one clock per
+  evaluation, so `let t = now(); g.addV("event").iterate();` stores exactly `t`, and every element
+  the script creates gets the same time. A host pins that clock with `script::pin_now` (the
+  playground and the CLI use the system clock).
+- **In Rust** it is the start of the storage's outermost open unit
+  (`GraphStorage::unit_started_at`): the traversal's own unit, or the explicit
+  `transaction(|g| ..)` around several traversals. `GraphTraversalSource::with_now(t)` pins it for
+  one traversal (deterministic tests). `GraphStorage::add_vertex`/`add_edge` take the unit's
+  start (`CreateContext::for_storage`); `add_vertex_with`/`add_edge_with` take a `CreateContext`
+  (`CreateContext::at(t)` pins).
+- A later unit never gets an earlier time than a previous one of the same graph (the system clock
+  is raised to the previous unit's start and the last commit time).
+
+```rhai,graph=empty,script
+g.set_schema(#{mode: "open", vertices: #{event: #{schema: #{type: "object", properties: #{
+    at: #{type: "string", format: "date-time", defaultFunction: "now"},
+    day: #{type: "string", format: "date", defaultFunction: "today"}}}}}});
+let t = now();
+g.inject(1, 2, 3).addV("event").iterate();
+g.V().values("at").dedup().toList() == [t]   // true: three events, one time
+```
+
+A change of a `default` or `defaultFunction` is listed by `diff_schema` as `default_changed`, and
+it is always backward compatible: it changes only what future creates store.
 
 ## Required and nullable
 
@@ -221,10 +333,11 @@ rejected before anything is written. Removing a required property is rejected in
 
 | | `none` | `open` | `closed` |
 |---|---|---|---|
-| Coercion on write (canonical string to `uuid`, `int64` to `float64`) | no | declared properties | declared properties |
+| Coercion on write (canonical string to `uuid`, date and time text to its declared type, `int64` to `float64`) | no | declared properties | declared properties |
 | Types, constraints, `required` of declared labels (any depth) | no | yes | yes |
 | Undeclared labels | allowed | allowed, unchecked | rejected (also unlabeled elements) |
 | Default `additionalProperties` of an object node | - | `true` | `false` |
+| [Defaults on create](#defaults-on-create) (`default`, `defaultFunction`) | no | yes | yes |
 | Edge topology (`connections`) | no | no | yes |
 
 `mode` governs undeclared labels and topology, and it is the **default `additionalProperties`** of
@@ -247,7 +360,10 @@ violation. Stored values are not coerced by a label change (reads never coerce);
 coerce by the new label's declarations.
 
 `none` describes without enforcing; the GraphML import still restores the declared logical types
-from it (`uuid`, `array`, `object`; see [UUID Values](uuid_values.md)).
+from it (`uuid`, the date and time types, `array`, `object`; see [UUID Values](uuid_values.md)).
+A date or time is written to GraphML as its canonical text under a `string` key and read back
+as a temporal value where the target schema declares its format (text that is not of the type
+fails the import with `InvalidAttributeValue`); without a declaration it stays a string.
 
 ## Edge topology (`closed`)
 
@@ -400,7 +516,8 @@ graph.transaction(|g| -> TraverserResult<()> {
 (`schema_api_tests::backfill_then_require_in_one_transaction` runs this recipe.)
 
 The same in a script run as one unit (`atomic=True` in Python, every playground run): patch to
-optional, backfill, patch to required. A schema `default` does not backfill anything.
+optional, backfill, patch to required. A schema `default` does not backfill anything: it is stored
+only for elements created after it is set ([Defaults on create](#defaults-on-create)).
 
 ## Changing a schema: patch and diff
 
@@ -424,7 +541,9 @@ in a `before_commit` hook.
 | Change | Compatible when |
 |---|---|
 | `mode` | it gets less strict (`closed` → `open` → `none`); `open` → `closed` is incompatible |
-| `meta`, annotations (`title`, `description`, `default`, ...) | always |
+| `meta`, annotations (`title`, `description`, ...) | always |
+| `default`, `defaultFunction` (added, changed, removed; kind `default_changed`) | always: it changes only what future creates store |
+| `embedder` of a vector (kind `embedder_changed`) | when it is declared where there was none; changing or removing it is incompatible: the stored vectors and a text query embedded by another model are not comparable, and a text query needs the model |
 | label added | the old mode was `closed` (no client could write it), or its schema requires no key and admits undeclared keys (an open graph) |
 | label removed | never |
 | connection added/removed | the label's connections still allow every old pair (an empty list allows all), or the new mode is not `closed` (topology binds only there) |
@@ -433,7 +552,8 @@ in a `before_commit` hook.
 | key made required / optional | never / always |
 | `additionalProperties` | `false` → `true` |
 | type | the new type admits every kind the old one did (`"integer"` → `["integer", "null"]`) |
-| `minimum`, `maxLength`, `minItems`, ... | removed or relaxed |
+| `minimum`, `maxLength`, `minItems`, `formatMinimum`, ... | removed or relaxed (a later `formatMaximum`, an earlier `formatMinimum`) |
+| `format` | never (`date` → `date-time` is another type, so are adding and removing a format) |
 | `pattern`, `const` | removed |
 | `enum` | removed, or a superset |
 
@@ -449,7 +569,8 @@ apply the schema until it is fixed.
 ## Inference
 
 `infer_schema()` (and the step) report what the data holds, at every position: the kinds seen
-(a type array, or `anyOf` when a `string` and a `uuid` share a position), `items` of arrays,
+(a type array, or `anyOf` when a `string`, a `uuid` and the date and time types share a position:
+a `datetime` is `{"type": "string", "format": "date-time"}`), `items` of arrays,
 `properties` of objects, and `required` only for keys every object at that position has, at any
 depth (also inside arrays and next to other kinds). Every label of a vertex is declared;
 connections use the endpoints' first labels. The result has mode `none` and is **valid for the data
@@ -462,7 +583,7 @@ are not part of the format.
 
 | Format | Shows |
 |---|---|
-| `table`, `markdown` | one row per property path (`address.zip`, `roles[].name`), type, required, nullable, constraints (`0..150`, `length 1..80`, `pattern ^x$`), notes (description, `default` marked as annotation) |
+| `table`, `markdown` | one row per property path (`address.zip`, `roles[].name`), type, required, nullable, constraints (`0..150`, `length 1..80`, `pattern ^x$`), notes (description, `default`, marked `(annotation)` where it is not applied: `null` or below the top level, `defaultFunction`) |
 | `tree` | the labels and their properties as a tree |
 | `json` | the canonical format |
 | `jsonschema` | one standalone JSON Schema per label (`$defs`: `vertex:person`, `edge:knows`), the mode's default `additionalProperties` written out |
@@ -483,16 +604,22 @@ cloud inventory:
 ## Pasting a Pydantic model
 
 `Model.model_json_schema()` loads as a label schema as it is (`$defs`/`$ref`, `anyOf` with null,
-`title`, `description`, `default`, `enum`, `const`, `exclusive*`, `additionalProperties: false`),
-except for two things to remove first:
+`title`, `description`, `default`, `enum`, `const`, `exclusive*`, `additionalProperties: false`,
+and the date and time fields: `datetime` (`"format": "date-time"`), `date`, `time` and
+`timedelta` (`"format": "duration"`)), except for one thing to remove first:
 
-- `datetime`/`date`/`time` fields (`"format": "date-time"`, ...): no date type before 0.2.0; drop
-  the `format` (a plain string) or the field.
 - `dict[str, T]` fields (`"additionalProperties": {..}`): no map type; write
   `{"type": "object", "additionalProperties": true}`.
 
+A Pydantic `time` field is a time of day: Graphersal's `time` has no offset, so a text with one
+(`10:00:00+02:00`) is refused by the coercion (declare a `date-time` for an instant).
+
 Tuples (`prefixItems`) and `Decimal` (`anyOf` with a string pattern for some versions) are not
 supported either. The top level of the model must be an object (`"type": "object"`).
+
+A field's non-null `default` (`active: bool = True`) becomes a [default on
+create](#defaults-on-create) in mode `open`/`closed`; the `"default": null` Pydantic writes on every
+optional field stores nothing.
 
 ## A failing query changes nothing
 

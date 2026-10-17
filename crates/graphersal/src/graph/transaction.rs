@@ -32,7 +32,7 @@ const CLOSURE_FAILED: &str = "the transaction closure returned an error";
 ///
 /// **Deviation from TinkerPop:** TinkerPop opens explicit transactions with `g.tx()` and
 /// finishes them with `commit()`/`rollback()`; Graphersal has no `tx()` (neither in Rust nor in
-/// the DSL in 0.1.0) and uses these closures instead. See
+/// the DSL) and uses these closures instead. See
 /// `book/src/users_guide/transactions.md` and `book/src/for_developers/tinkerpop_deviations.md`.
 pub trait Transactional: GraphStorage {
     /// Runs `body` as ONE unit of atomicity (an explicit transaction): everything it changes

@@ -45,8 +45,30 @@ export const modKey = isMac ? '⌘' : 'Ctrl';
 /** Readable rendering of an arbitrary cell value. */
 export function formatValue(v) {
   if (v === null || v === undefined) return 'null';
+  if (isVectorCell(v)) return `${vectorSummary(v)} ${vectorPreview(v)}`;
   if (typeof v === 'object') return JSON.stringify(v);
   return String(v);
+}
+
+/**
+ * Whether a result cell is a vector: the engine puts `{"@type": "graphersal:Vector", element,
+ * dimension, preview}` into a table instead of its values (crates/graphersal-session
+ * `display.rs` `table_cell`; the JSON view keeps the values).
+ */
+export function isVectorCell(v) {
+  return v !== null && typeof v === 'object' && !Array.isArray(v) && v['@type'] === 'graphersal:Vector';
+}
+
+/** `vector[768 f32]` of a vector cell. */
+export function vectorSummary(v) {
+  return `vector[${v.dimension} ${v.element}]`;
+}
+
+/** The first values of a vector cell: `[0.1, -0.2, …]`. */
+export function vectorPreview(v) {
+  const shown = Array.isArray(v.preview) ? v.preview : [];
+  const more = v.dimension > shown.length ? ', …' : '';
+  return `[${shown.join(', ')}${more}]`;
 }
 
 export function formatMs(ms) {

@@ -4,11 +4,14 @@ use std::borrow::Cow;
 
 use crate::error::{DiagnosticError, SchemaError};
 use crate::graph::schema::{
-    Annotations, Constraints, EdgeConnection, EdgeSchema, GraphSchema, JsonType, PropertySchema,
-    SCHEMA_FORMAT_URL, SchemaFormat, SchemaMode, SchemaPattern, VertexSchema,
+    Annotations, Constraints, DefaultFunction, EdgeConnection, EdgeSchema, GraphSchema, JsonType,
+    PropertySchema, SCHEMA_FORMAT_URL, SchemaFormat, SchemaMode, SchemaPattern, VectorSchema,
+    VertexSchema,
 };
 use crate::value::physical::{PhysicalValue, lift_untyped, lower, read_json, to_json_text};
-use crate::value::{ElementProperty, Number, PropertyMap};
+use crate::value::temporal::{Temporal, TemporalKind};
+use crate::value::vector::MAX_VECTOR_DIMENSION;
+use crate::value::{ElementProperty, Number, PropertyMap, VectorElement, VectorMetric};
 
 /// How deeply a schema document may nest (arrays and objects), and how deeply `$ref`s may
 /// expand. A schema can come from an untrusted source; this keeps it from exhausting the stack.
@@ -20,9 +23,20 @@ pub(crate) const MAX_SCHEMA_NODES: usize = 100_000;
 
 /// The keywords a property node accepts.
 const NODE_KEYWORDS: &str = "type, format, items, properties, required, additionalProperties, \
-     anyOf, enum, const, minimum, maximum, exclusiveMinimum, exclusiveMaximum, minLength, \
+     anyOf, enum, const, minimum, maximum, exclusiveMinimum, exclusiveMaximum, formatMinimum, \
+     formatMaximum, formatExclusiveMinimum, formatExclusiveMaximum, element, dimension, \
+     metric, embedder (with format vector), minLength, \
      maxLength, pattern, minItems, maxItems, title, description, $comment, examples, \
-     deprecated, default, $ref (and $defs, $schema, $id at a label schema's root)";
+     deprecated, default, defaultFunction, $ref (and $defs, $schema, $id at a label schema's root)";
+
+/// The `format` of a vector node (on `array`, not one of the string formats).
+pub(crate) const VECTOR_FORMAT: &str = "vector";
+
+/// The advice of a misplaced vector keyword.
+const VECTOR_HINT: &str = "A vector property is {\"type\": \"array\", \"format\": \"vector\", \
+     \"element\": \"f32\", \"dimension\": 768} (element f32, f16, i8 or bit, default f32; \
+     dimension optional; metric an optional annotation: cosine, dot, l2, hamming; embedder the \
+     model identity of the embedder that produced the vectors, e.g. \"hash-ngram/1\").";
 
 /// The general advice appended to every schema format error.
 pub(crate) const FORMAT_HELP: &str = "The schema format is an envelope ($schema, meta, mode, \
@@ -166,6 +180,38 @@ fn boolean(value: &PhysicalValue<'_>, at: &Pointer, what: &str) -> Result<bool, 
             "",
         )),
     }
+}
+
+/// The value of `defaultFunction`: one of the closed set of functions.
+fn default_function(
+    value: &PhysicalValue<'_>,
+    at: &Pointer,
+) -> Result<DefaultFunction, SchemaError> {
+    let name = string(value, at, "defaultFunction")?;
+    if let Some(function) = DefaultFunction::from_name(name) {
+        return Ok(function);
+    }
+    Err(invalid(
+        at,
+        format!("unknown defaultFunction '{name}'"),
+        "The supported functions are uuidv4 (random) and uuidv7 (time-ordered) on a \
+         {\"type\": \"string\", \"format\": \"uuid\"} property, now (the unit's start) on a \
+         {\"type\": \"string\", \"format\": \"date-time\"} property and today (its UTC date) \
+         on a {\"type\": \"string\", \"format\": \"date\"} property.",
+    ))
+}
+
+/// A node has at most one of `default` and `defaultFunction`.
+fn check_one_default(annotations: &Annotations, at: &Pointer) -> Result<(), SchemaError> {
+    if annotations.default.is_some() && annotations.default_function.is_some() {
+        return Err(invalid(
+            at,
+            "default and defaultFunction on the same property",
+            "Keep one: default stores a fixed value, defaultFunction computes one for every \
+             created element.",
+        ));
+    }
+    Ok(())
 }
 
 /// A JSON value the schema keeps verbatim (`enum`, `const`, `default`, `examples`, `meta`).
@@ -498,6 +544,7 @@ fn parse_label_schema(
         || schema.any_of.is_some()
         || schema.items.is_some()
         || schema.format.is_some()
+        || schema.vector.is_some()
         || schema.constraints.as_deref().is_some_and(|c| !c.is_empty())
     {
         return Err(invalid(
@@ -552,7 +599,7 @@ fn rejected_keyword(key: &str) -> Option<&'static str> {
         }
         "readOnly" | "writeOnly" | "contentEncoding" | "contentMediaType" | "contentSchema" => {
             "this annotation is not supported; the accepted annotations are title, description, \
-             $comment, examples, deprecated and default"
+             $comment, examples, deprecated, default and defaultFunction"
         }
         "nullable" => {
             "nullable is not JSON Schema; allow null with \"type\": [\"string\", \"null\"] (and \
@@ -618,6 +665,15 @@ impl NodeParser<'_, '_> {
         let mut annotations = Annotations::default();
         // Kind-specific keywords seen, to check them against `type` afterwards.
         let mut uses: Vec<(&str, JsonType)> = Vec::new();
+        // `formatMinimum`, ...: their text is read once the node's `format` is known.
+        let mut format_bounds: Vec<(&'static str, String)> = Vec::new();
+        // `format: "vector"` and its keywords `element`, `dimension`, `metric`.
+        let mut vector_format = false;
+        let mut vector_keywords: Vec<&'static str> = Vec::new();
+        let mut element = None;
+        let mut dimension = None;
+        let mut metric = None;
+        let mut embedder = None;
         for (key, field) in fields {
             let at = at.child(key.as_ref());
             let key = key.as_ref();
@@ -625,20 +681,86 @@ impl NodeParser<'_, '_> {
                 "type" => node.types = Some(parse_types(field, &at)?),
                 "format" => {
                     let name = string(field, &at, "format")?;
-                    node.format = Some(match name {
-                        "uuid" => SchemaFormat::Uuid,
-                        other => {
-                            return Err(invalid(
-                                &at,
-                                format!("unsupported format '{other}'"),
-                                "Only \"format\": \"uuid\" is supported. Dates and times \
-                                 (date-time, date, time) come with the date type in 0.2.0: \
-                                 until then remove the format (the value is a plain string), \
-                                 so a later version cannot change what this schema accepts.",
-                            ));
-                        }
-                    });
+                    if name == VECTOR_FORMAT {
+                        vector_format = true;
+                        uses.push(("format", JsonType::Array));
+                        continue;
+                    }
+                    node.format = Some(SchemaFormat::from_name(name).ok_or_else(|| {
+                        invalid(
+                            &at,
+                            format!("unsupported format '{name}'"),
+                            "The supported formats are uuid, date-time (an instant with its \
+                             offset), date, local-date-time (a date and time without a zone), \
+                             time (a time of day without a zone) and duration on a string, and \
+                             vector on an array. Remove any other format (the value is a plain \
+                             string), so a later version cannot change what this schema \
+                             accepts.",
+                        )
+                    })?);
                     uses.push(("format", JsonType::String));
+                }
+                "element" => {
+                    let name = string(field, &at, key)?;
+                    element = Some(VectorElement::from_name(name).ok_or_else(|| {
+                        invalid(
+                            &at,
+                            format!("unknown vector element '{name}'"),
+                            "The vector elements are f32, f16, i8 and bit: \
+                             {\"type\": \"array\", \"format\": \"vector\", \"element\": \"i8\"}.",
+                        )
+                    })?);
+                    vector_keywords.push("element");
+                    uses.push(("element", JsonType::Array));
+                }
+                "dimension" => {
+                    let n = count(field, &at, key)?;
+                    if n == 0 || n > MAX_VECTOR_DIMENSION as u64 {
+                        return Err(invalid(
+                            &at,
+                            format!("dimension must be between 1 and {MAX_VECTOR_DIMENSION}"),
+                            "Write the number of components of the vectors: \
+                             \"dimension\": 768.",
+                        ));
+                    }
+                    dimension = Some(n as u32);
+                    vector_keywords.push("dimension");
+                    uses.push(("dimension", JsonType::Array));
+                }
+                "metric" => {
+                    let name = string(field, &at, key)?;
+                    metric = Some(VectorMetric::from_name(name).ok_or_else(|| {
+                        invalid(
+                            &at,
+                            format!("unknown vector metric '{name}'"),
+                            "The metrics are cosine, dot, l2 and hamming.",
+                        )
+                    })?);
+                    vector_keywords.push("metric");
+                    uses.push(("metric", JsonType::Array));
+                }
+                "embedder" => {
+                    let model = string(field, &at, key)?;
+                    if let Err(reason) = crate::value::vector::embed::check_model_identity(model) {
+                        return Err(invalid(
+                            &at,
+                            reason,
+                            "embedder is the model identity of the embedder that produced the \
+                             vectors, as g.embedders() lists it under model: \
+                             \"embedder\": \"hash-ngram/1\".",
+                        ));
+                    }
+                    embedder = Some(model.to_string());
+                    vector_keywords.push("embedder");
+                    uses.push(("embedder", JsonType::Array));
+                }
+                "formatMinimum"
+                | "formatMaximum"
+                | "formatExclusiveMinimum"
+                | "formatExclusiveMaximum" => {
+                    let text = string(field, &at, key)?;
+                    format_bounds.push((key_static(key), text.to_string()));
+                    uses.push((key_static(key), JsonType::String));
                 }
                 "items" => {
                     if let PhysicalValue::Array(_) = field {
@@ -797,6 +919,9 @@ impl NodeParser<'_, '_> {
                 }
                 "deprecated" => annotations.deprecated = Some(boolean(field, &at, key)?),
                 "default" => annotations.default = Some(json_value(field)),
+                "defaultFunction" => {
+                    annotations.default_function = Some(default_function(field, &at)?)
+                }
                 "$defs" | "$schema" | "$id" if root => {
                     if key != "$defs" {
                         string(field, &at, key)?;
@@ -851,7 +976,73 @@ impl NodeParser<'_, '_> {
                 "format needs \"type\": \"string\" on the same node",
                 "Write {\"type\": \"string\", \"format\": \"uuid\"}.",
             ));
+        } else if vector_format {
+            return Err(invalid(
+                &at.child("format"),
+                "format vector needs \"type\": \"array\" on the same node",
+                VECTOR_HINT,
+            ));
         }
+        if let Some(keyword) = vector_keywords.first().filter(|_| !vector_format) {
+            return Err(invalid(
+                &at.child(*keyword),
+                format!("{keyword} needs \"format\": \"vector\" on the same node"),
+                VECTOR_HINT,
+            ));
+        }
+        if vector_format {
+            if node.items.is_some() {
+                return Err(invalid(
+                    &at.child("items"),
+                    "items is not allowed next to format vector",
+                    "A vector's components are numbers of its element kind; remove items. \
+                     Write {\"type\": \"array\", \"format\": \"vector\", \"element\": \"f32\", \
+                     \"dimension\": 768}.",
+                ));
+            }
+            node.vector = Some(VectorSchema {
+                element: element.unwrap_or(VectorElement::F32),
+                dimension,
+                metric,
+                embedder,
+            });
+        }
+        for (keyword, text) in format_bounds {
+            let bound_at = at.child(keyword);
+            let Some(kind) = node.format.and_then(SchemaFormat::temporal_kind) else {
+                return Err(invalid(
+                    &bound_at,
+                    format!("{keyword} needs a date or time format on the same node"),
+                    format!(
+                        "{keyword} bounds a value of a temporal format: write {{\"type\": \
+                         \"string\", \"format\": \"date-time\", \"{keyword}\": \
+                         \"2020-01-01T00:00:00Z\"}} (or the format date, local-date-time, time \
+                         or duration with a value of that type). For numbers use minimum and \
+                         maximum."
+                    ),
+                ));
+            };
+            let bound = Temporal::parse_strict(kind, &text).map_err(|err| {
+                invalid(
+                    &bound_at,
+                    format!("{keyword} is not a {kind}: {err}"),
+                    format!(
+                        "The bound is the text of a value of the node's format ({}), for \
+                         example \"{}\".",
+                        kind.name(),
+                        example_text(kind)
+                    ),
+                )
+            })?;
+            let slot = match keyword {
+                "formatMinimum" => &mut constraints.format_minimum,
+                "formatMaximum" => &mut constraints.format_maximum,
+                "formatExclusiveMinimum" => &mut constraints.format_exclusive_minimum,
+                _ => &mut constraints.format_exclusive_maximum,
+            };
+            *slot = Some(bound);
+        }
+        check_one_default(&annotations, at)?;
         node.constraints = (!constraints.is_empty()).then(|| Box::new(constraints));
         node.annotations = (!annotations.is_empty()).then(|| Box::new(annotations));
         Ok(node)
@@ -911,13 +1102,20 @@ impl NodeParser<'_, '_> {
             }
             if !matches!(
                 key.as_ref(),
-                "title" | "description" | "$comment" | "examples" | "deprecated" | "default"
+                "title"
+                    | "description"
+                    | "$comment"
+                    | "examples"
+                    | "deprecated"
+                    | "default"
+                    | "defaultFunction"
             ) {
                 return Err(invalid(
                     &at.child(key.as_ref()),
                     format!("'{key}' next to $ref is not supported"),
                     "Only annotations (title, description, $comment, examples, deprecated, \
-                     default) may sit next to $ref; put other keywords into the definition.",
+                     default, defaultFunction) may sit next to $ref; put other keywords into \
+                     the definition.",
                 ));
             }
             siblings.push((key.clone(), field.clone()));
@@ -932,7 +1130,11 @@ impl NodeParser<'_, '_> {
                 annotations.comment = extra.comment.or(annotations.comment);
                 annotations.examples = extra.examples.or(annotations.examples);
                 annotations.deprecated = extra.deprecated.or(annotations.deprecated);
-                annotations.default = extra.default.or(annotations.default);
+                // A `default`/`defaultFunction` next to `$ref` replaces both of the definition's.
+                if extra.default.is_some() || extra.default_function.is_some() {
+                    annotations.default = extra.default;
+                    annotations.default_function = extra.default_function;
+                }
                 node.annotations = Some(Box::new(annotations));
             }
         }
@@ -951,7 +1153,22 @@ fn key_static(key: &str) -> &'static str {
         "maxLength" => "maxLength",
         "pattern" => "pattern",
         "minItems" => "minItems",
+        "formatMinimum" => "formatMinimum",
+        "formatMaximum" => "formatMaximum",
+        "formatExclusiveMinimum" => "formatExclusiveMinimum",
+        "formatExclusiveMaximum" => "formatExclusiveMaximum",
         _ => "maxItems",
+    }
+}
+
+/// A value of a temporal type as an example in a diagnostic.
+fn example_text(kind: TemporalKind) -> &'static str {
+    match kind {
+        TemporalKind::DateTime => "2024-05-01T09:30:00+02:00",
+        TemporalKind::Date => "2024-05-01",
+        TemporalKind::LocalDateTime => "2024-05-01T09:30:00",
+        TemporalKind::Time => "09:30:00",
+        TemporalKind::Duration => "P1DT2H",
     }
 }
 
@@ -977,13 +1194,30 @@ fn parse_types(value: &PhysicalValue<'_>, at: &Pointer) -> Result<Vec<JsonType>,
                 "int64" | "long" | "int" => "int64 is written \"integer\" in a schema.",
                 "float64" | "double" | "float" => "float64 is written \"number\" in a schema.",
                 "uuid" => "uuid is written {\"type\": \"string\", \"format\": \"uuid\"}.",
+                "datetime" | "date-time" | "timestamp" => {
+                    "datetime is written {\"type\": \"string\", \"format\": \"date-time\"}."
+                }
+                "date" => "date is written {\"type\": \"string\", \"format\": \"date\"}.",
+                "localdatetime" | "local-date-time" => {
+                    "localdatetime is written {\"type\": \"string\", \"format\": \
+                     \"local-date-time\"}."
+                }
+                "time" => "time is written {\"type\": \"string\", \"format\": \"time\"}.",
+                "duration" | "interval" => {
+                    "duration is written {\"type\": \"string\", \"format\": \"duration\"}."
+                }
+                "vector" | "embedding" => {
+                    "a vector is written {\"type\": \"array\", \"format\": \"vector\", \
+                     \"element\": \"f32\", \"dimension\": 768}."
+                }
                 "union" => {
                     "A union is written anyOf: [{..}, {..}] (or a type array for \
                             plain types: \"type\": [\"string\", \"null\"])."
                 }
                 _ => {
                     "The types are null, boolean, integer (int64), number (float64), string \
-                      (uuid with \"format\": \"uuid\"), array and object."
+                      (uuid, datetime, date, localdatetime, time and duration with a \"format\"), \
+                      array and object."
                 }
             };
             invalid(at, format!("unknown type '{name}'"), hint)
@@ -1049,6 +1283,19 @@ impl PropertySchema {
         if let Some(format) = self.format {
             map.insert("format", ElementProperty::from(format.as_str()));
         }
+        if let Some(vector) = &self.vector {
+            map.insert("format", ElementProperty::from(VECTOR_FORMAT));
+            map.insert("element", ElementProperty::from(vector.element.name()));
+            if let Some(dimension) = vector.dimension {
+                map.insert("dimension", count_value(u64::from(dimension)));
+            }
+            if let Some(metric) = vector.metric {
+                map.insert("metric", ElementProperty::from(metric.name()));
+            }
+            if let Some(embedder) = &vector.embedder {
+                map.insert("embedder", ElementProperty::from(embedder.as_str()));
+            }
+        }
         if let Some(c) = self.constraints.as_deref() {
             if let Some(values) = &c.enum_values {
                 map.insert("enum", ElementProperty::Array(values.clone()));
@@ -1065,6 +1312,17 @@ impl PropertySchema {
             for (key, bound) in numbers {
                 if let Some(bound) = bound {
                     map.insert(key, ElementProperty::Number(bound.clone()));
+                }
+            }
+            let temporals = [
+                ("formatMinimum", &c.format_minimum),
+                ("formatExclusiveMinimum", &c.format_exclusive_minimum),
+                ("formatMaximum", &c.format_maximum),
+                ("formatExclusiveMaximum", &c.format_exclusive_maximum),
+            ];
+            for (key, bound) in temporals {
+                if let Some(bound) = bound {
+                    map.insert(key, ElementProperty::from(bound.to_string().as_str()));
                 }
             }
             let counts = [("minLength", c.min_length), ("maxLength", c.max_length)];
@@ -1115,6 +1373,9 @@ impl PropertySchema {
         if let Some(a) = annotations {
             if let Some(default) = &a.default {
                 map.insert("default", default.clone());
+            }
+            if let Some(function) = a.default_function {
+                map.insert("defaultFunction", ElementProperty::from(function.as_str()));
             }
             if let Some(examples) = &a.examples {
                 map.insert("examples", ElementProperty::Array(examples.clone()));

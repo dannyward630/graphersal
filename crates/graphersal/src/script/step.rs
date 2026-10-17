@@ -22,6 +22,17 @@ pub(super) enum ScriptListArg {
     Traversal(ScriptGraphTraversalSource),
 }
 
+/// The query vector of a DSL `similarity()` / `nearest()`: a constant vector (a list of numbers
+/// is made one when the step is built), a child traversal whose first result is the query, or a
+/// text embedded by the model the attached schema declares for the property.
+#[derive(Debug, Clone)]
+pub(super) enum ScriptVectorQuery {
+    Value(crate::value::Vector),
+    Traversal(ScriptGraphTraversalSource),
+    /// A text, embedded with the embedder of the model the schema declares for the property.
+    Text(String),
+}
+
 /// Which token `property(T.x, v)` names in the DSL.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum PropertyTokenKey {
@@ -199,6 +210,9 @@ pub(super) enum Step {
     /// `hasValue(P<V>)` (D1): the vanilla `hasValue(P<Object>)` predicate overload.
     HasValueP(ArgP),
     Has(PropKey, ElementProperty),
+    /// `has(key, traversal)`: TinkerPop's `has(String, Traversal)`, i.e.
+    /// `filter(values(key).traversal)`.
+    HasTraversal(PropKey, ScriptGraphTraversalSource),
     /// `has(key)` (element-level existence: keeps the element/property carrying `key`,
     /// regardless of value) — distinct from `HasKey`/`hasKey()`, which in vanilla TinkerPop is a
     /// property-level filter used after `properties()`. See `step_has_property.rs`'s doc comment.
@@ -276,6 +290,51 @@ pub(super) enum Step {
     AsBool(CastPolicy),
     AsNumber(Option<GType>, CastPolicy),
     Cast(GType, CastPolicy),
+    /// `as_date()` / `as_date(GType.X)`.
+    AsDate(Option<GType>),
+    /// `as_duration()`.
+    AsDuration,
+    /// `as_vector()`.
+    AsVector,
+    /// `quantize(kind)`.
+    Quantize(crate::value::VectorElement),
+    /// `similarity([key,] q[, metric])`: no key compares the incoming vector value.
+    Similarity(
+        Option<PropKey>,
+        ScriptVectorQuery,
+        Option<crate::value::VectorMetric>,
+    ),
+    /// `nearest(key, q, k[, #{metric}])`.
+    Nearest(
+        PropKey,
+        ScriptVectorQuery,
+        usize,
+        Option<crate::value::VectorMetric>,
+    ),
+    /// `vector_mean()`.
+    VectorMean,
+    /// `embed([key][, #{embedder}])`: no key embeds the incoming string.
+    Embed(Option<PropKey>, Option<CompactString>),
+    /// `date_add(DT, n[, zone])`.
+    DateAdd(crate::value::dt::DT, i64, Option<CompactString>),
+    /// `date_add(duration[, zone])`.
+    DateAddDuration(crate::value::temporal::Duration, Option<CompactString>),
+    /// `date_diff(value | traversal[, DT[, zone]])`.
+    DateDiff(
+        ScriptListArg,
+        Option<crate::value::dt::DT>,
+        Option<CompactString>,
+    ),
+    /// `age(value | traversal[, zone])`.
+    Age(ScriptListArg, Option<CompactString>),
+    /// `date_trunc(DT[, zone])`.
+    DateTrunc(crate::value::dt::DT, Option<CompactString>),
+    /// `date_part(DT[, zone])`.
+    DatePart(crate::value::dt::DT, Option<CompactString>),
+    /// `at_zone(zone)`.
+    AtZone(CompactString),
+    /// `as_local([zone])`.
+    AsLocal(Option<CompactString>),
     As(Vec<CompactString>),
     From(Vec<CompactString>),
     To(Vec<CompactString>),

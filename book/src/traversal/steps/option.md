@@ -15,7 +15,7 @@ option(arg1: Merge, arg2: any, arg3: Cardinality)
 ## Example
 
 ```rhai,graph=modern
-g.v().has_label("person").choose(__.values("age")).option(29, __.constant("marko's age")).option(Pick.none, __.constant("other")).to_list()   // ["marko's age", "other", "other", "other"]
+g.v(1, 2).choose(__.values("age")).option(29, __.constant("a")).option(Pick.none, __.constant("b")).to_list()   // ["a", "b"]
 ```
 
 ## See also

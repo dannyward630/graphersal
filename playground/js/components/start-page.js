@@ -124,6 +124,7 @@ export const StartPage = {
   <div class="start">
     <header class="topbar">
       <a class="brand" href="#/">Graphersal <small>Playground</small></a>
+      <span v-if="state.versionLabel" class="version-label hide-narrow" :title="state.versionLabel.title">{{ state.versionLabel.text }}</span>
       <span class="spacer"></span>
       <button class="icon-btn" @click="cycleTheme" :title="'Theme: ' + state.theme + ' (Alt+T)'" aria-label="Toggle theme">
         <span v-if="state.theme === 'dark'">☾</span><span v-else-if="state.theme === 'light'">☀</span><span v-else>◐</span>
@@ -221,7 +222,7 @@ export const StartPage = {
                 :title="state.graph ? 'Add the definitions of a catalog file (JSON, saved with Save catalog) to the current graph' : 'Choose a graph first'">
           <span class="card-icon" aria-hidden="true">★</span>
           <h3>Load catalog</h3>
-          <p>The catalog (saved queries and compression rules, later indexes) travels in its own
+          <p>The catalog (saved queries, compression rules and property indexes) travels in its own
           <code>.json</code> file, like the schema. Load it into the current graph; a graph file loaded
           afterwards keeps it. A snapshot (<code>.gsnap</code>) brings its own.</p>
           <div class="card-foot">
@@ -254,7 +255,7 @@ export const StartPage = {
                         title="Load without a schema">Remove</button>
               </span>
               <span class="hint">Optional. Set on the new graph before the data is imported: it is enforced (open/closed
-              violations fail the load, nothing changes) and GraphML's typed values (uuid, array, object) come back.
+              violations fail the load, nothing changes) and GraphML's typed values (uuid, dates and times, array, object) come back.
               Without it the graph has no schema (the previous graph's schema is not kept).</span>
             </div>
             <div v-if="pick.error" class="error-view error-box" role="alert">

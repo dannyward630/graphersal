@@ -2,6 +2,7 @@
 
 use crate::graph::schema::nested::{compare_numbers, json_equal, number_text};
 use crate::graph::schema::{ElementKind, GraphSchema, PropertySchema, SchemaMode};
+use crate::value::temporal::Temporal;
 use crate::value::{ElementProperty, Number, PropertyMap};
 use std::cmp::Ordering;
 
@@ -35,8 +36,17 @@ pub enum SchemaChangeKind {
     ConstraintChanged,
     /// `additionalProperties` changed.
     AdditionalPropertiesChanged,
-    /// An annotation (`title`, `description`, `default`, ...) changed.
+    /// An annotation (`title`, `description`, `examples`, ...) changed.
     AnnotationChanged,
+    /// `default` or `defaultFunction` changed (added, changed, removed): what a create stores
+    /// for an absent property. Always compatible: no existing data or valid write is affected.
+    DefaultChanged,
+    /// A vector's `embedder` (the model identity of the embedder that produced its vectors)
+    /// changed. Declaring it where there was none is compatible (no value or write is affected;
+    /// `embed_property` does it); changing it is not (the stored vectors and a text query
+    /// embedded by the new model are not comparable), and removing it is not either (a text
+    /// query on the property no longer finds its embedder).
+    EmbedderChanged,
 }
 
 impl SchemaChangeKind {
@@ -57,6 +67,8 @@ impl SchemaChangeKind {
             SchemaChangeKind::ConstraintChanged => "constraint_changed",
             SchemaChangeKind::AdditionalPropertiesChanged => "additional_properties_changed",
             SchemaChangeKind::AnnotationChanged => "annotation_changed",
+            SchemaChangeKind::DefaultChanged => "default_changed",
+            SchemaChangeKind::EmbedderChanged => "embedder_changed",
         }
     }
 }
@@ -219,6 +231,14 @@ struct Differ {
     label: Option<String>,
 }
 
+/// The type part of a node's vector declaration (element and dimension; `metric` is an
+/// annotation and changes nothing).
+fn vector_type(node: &PropertySchema) -> Option<(crate::value::VectorElement, Option<u32>)> {
+    node.vector
+        .as_ref()
+        .map(|vector| (vector.element, vector.dimension))
+}
+
 /// Whether a node admits every value (no type, no `anyOf`, no constraints, no keys).
 fn accepts_any(node: &PropertySchema) -> bool {
     node.types.is_none()
@@ -227,6 +247,7 @@ fn accepts_any(node: &PropertySchema) -> bool {
         && node.properties.is_empty()
         && node.required.is_empty()
         && node.items.is_none()
+        && node.vector.is_none()
 }
 
 impl Differ {
@@ -352,9 +373,25 @@ impl Differ {
         if old == new {
             return;
         }
-        let same_type = old.types == new.types && old.format == new.format;
+        let same_vector = vector_type(old) == vector_type(new);
+        let same_type = old.types == new.types && old.format == new.format && same_vector;
         let same_any_of = old.any_of == new.any_of;
-        if !same_type || !same_any_of {
+        if old.types == new.types && old.format == new.format && !same_vector && same_any_of {
+            // A vector declaration added, removed or changed: incompatible (the stored vectors,
+            // or the stored lists, no longer conform), except dropping a dimension (any
+            // dimension then, a relaxation).
+            let ok = match (vector_type(old), vector_type(new)) {
+                (Some((a, _)), Some((b, None))) => a == b,
+                _ => false,
+            };
+            self.push(
+                SchemaChangeKind::TypeChanged,
+                Some(path.clone()),
+                Some(old.type_name()),
+                Some(new.type_name()),
+                ok,
+            );
+        } else if !same_type || !same_any_of {
             match (&old.any_of, &new.any_of) {
                 (Some(a), Some(b)) if a.len() == b.len() && same_type => {
                     for (index, (a, b)) in a.iter().zip(b).enumerate() {
@@ -380,7 +417,51 @@ impl Differ {
             }
         }
         self.constraints(&path, old, new);
-        if old.annotations != new.annotations {
+        // A vector's `embedder`: declaring one is compatible, changing or removing it is not.
+        let embedder =
+            |node: &PropertySchema| node.vector.as_ref().and_then(|v| v.embedder.clone());
+        let (a, b) = (embedder(old), embedder(new));
+        if a != b && old.vector.is_some() && new.vector.is_some() {
+            let ok = a.is_none();
+            self.push(
+                SchemaChangeKind::EmbedderChanged,
+                Some(path.clone()),
+                a,
+                b,
+                ok,
+            );
+        }
+        // `default`/`defaultFunction` change what a create stores (compatible: no existing data
+        // or valid write is affected), the other annotations change nothing.
+        let empty = crate::graph::schema::Annotations::default();
+        let a = old.annotations.as_deref().unwrap_or(&empty);
+        let b = new.annotations.as_deref().unwrap_or(&empty);
+        if a.default != b.default || a.default_function != b.default_function {
+            let show = |annotations: &crate::graph::schema::Annotations| match (
+                &annotations.default,
+                annotations.default_function,
+            ) {
+                (_, Some(function)) => Some(format!("defaultFunction {}", function.as_str())),
+                (Some(value), None) => Some(format!(
+                    "default {}",
+                    crate::traversal::step::barrier_steps::numeric::preview(value)
+                )),
+                (None, None) => None,
+            };
+            self.push(
+                SchemaChangeKind::DefaultChanged,
+                Some(path.clone()),
+                show(a),
+                show(b),
+                true,
+            );
+        }
+        if a.title != b.title
+            || a.description != b.description
+            || a.comment != b.comment
+            || a.examples != b.examples
+            || a.deprecated != b.deprecated
+        {
             self.push(
                 SchemaChangeKind::AnnotationChanged,
                 Some(path.clone()),
@@ -534,6 +615,54 @@ impl Differ {
                 name,
                 x.as_ref().map(number_text),
                 y.as_ref().map(number_text),
+                ok,
+            );
+        }
+        let temporal_bounds: [(&str, &Option<Temporal>, &Option<Temporal>, Ordering); 4] = [
+            (
+                "formatMinimum",
+                &a.format_minimum,
+                &b.format_minimum,
+                Ordering::Less,
+            ),
+            (
+                "formatExclusiveMinimum",
+                &a.format_exclusive_minimum,
+                &b.format_exclusive_minimum,
+                Ordering::Less,
+            ),
+            (
+                "formatMaximum",
+                &a.format_maximum,
+                &b.format_maximum,
+                Ordering::Greater,
+            ),
+            (
+                "formatExclusiveMaximum",
+                &a.format_exclusive_maximum,
+                &b.format_exclusive_maximum,
+                Ordering::Greater,
+            ),
+        ];
+        for (name, x, y, relaxed) in temporal_bounds {
+            if x == y {
+                continue;
+            }
+            // Relaxed: removed, or moved outward within the same type (a bound of another type
+            // comes with a format change, itself incompatible).
+            let ok = match (x, y) {
+                (_, None) => true,
+                (None, Some(_)) => false,
+                (Some(x), Some(y)) => {
+                    x.kind() == y.kind()
+                        && matches!(y.cmp(x), o if o == relaxed || o == Ordering::Equal)
+                }
+            };
+            self.bound_change(
+                path,
+                name,
+                x.as_ref().map(ToString::to_string),
+                y.as_ref().map(ToString::to_string),
                 ok,
             );
         }

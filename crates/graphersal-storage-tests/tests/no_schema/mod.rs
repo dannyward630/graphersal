@@ -90,13 +90,13 @@ impl<G: GraphStorage> GraphStorage for NoSchema<G> {
         self.0.statistics()
     }
 
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         properties: PropertyMap,
     ) -> Result<Self::VertexId, GraphError> {
-        self.0.add_vertex(id, labels, properties)
+        self.0.insert_vertex(id, labels, properties)
     }
 
     fn add_vertex_label(
@@ -123,7 +123,7 @@ impl<G: GraphStorage> GraphStorage for NoSchema<G> {
         self.0.set_edge_label(edge, label)
     }
 
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -131,7 +131,7 @@ impl<G: GraphStorage> GraphStorage for NoSchema<G> {
         to: Self::VertexId,
         properties: PropertyMap,
     ) -> Result<Self::EdgeId, GraphError> {
-        self.0.add_edge(id, label, from, to, properties)
+        self.0.insert_edge(id, label, from, to, properties)
     }
 
     fn set_vertex_property(

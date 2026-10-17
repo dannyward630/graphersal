@@ -25,6 +25,12 @@ pub(crate) mod GTypeModule {
     pub const NUMBER: GType = GType::NUMBER;
     pub const STRING: GType = GType::STRING;
     pub const UUID: GType = GType::UUID;
+    pub const DATETIME: GType = GType::DATETIME;
+    pub const DURATION: GType = GType::DURATION;
+    pub const DATE: GType = GType::DATE;
+    pub const LOCALDATETIME: GType = GType::LOCALDATETIME;
+    pub const TIME: GType = GType::TIME;
+    pub const VECTOR: GType = GType::VECTOR;
     pub const LIST: GType = GType::LIST;
     pub const MAP: GType = GType::MAP;
     pub const VERTEX: GType = GType::VERTEX;

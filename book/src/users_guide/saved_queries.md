@@ -96,16 +96,20 @@ A parameter is declared as `#{schema: <schema node>, default: <value>}`, or as a
 - The **schema** uses the node format of the [graph schema](schema_enforcement.md): `type`,
   `enum`, `minimum`, `maximum`, `pattern`, `minLength`, `items`, ..., and the annotations
   `title`, `description`, `examples`.
-- The **default** sits beside the schema, not inside it: a data schema's `default` is an
-  annotation only, while a parameter default IS substituted when the argument is left out. A
-  parameter without a default is required.
+- The **default** sits beside the schema, not inside it: a `default` keyword inside the
+  parameter's schema is an annotation (a data schema's `default` applies only when a vertex or
+  edge is created), while a parameter default IS substituted when the argument is left out. A
+  parameter without a default is required. A `defaultFunction` (`uuidv4`, `now`, ...) anywhere
+  in a parameter's schema is an error: it fills a property of a created element and means
+  nothing for an argument.
 
 Arguments are **named**: `g.query("x", #{limit: 5})`, or `g.query("x")` when every parameter has
-a default. An argument is a data value (a string, a number, a boolean, a UUID, a list, a map;
-never a traversal or a closure), bound to the function's parameter like a prepared-statement
-parameter, never spliced into text. It is checked against its schema before the body runs; the
-only conversion is the schema's write coercion (an `int64` where a `float64` is declared, a
-canonical UUID string where a `uuid` is declared). `()` is a value (null), not an omitted
+a default. An argument is a data value (a string, a number, a boolean, a UUID, a date or time, a
+list, a map; never a traversal or a closure), bound to the function's parameter like a
+prepared-statement parameter, never spliced into text. It is checked against its schema before
+the body runs; the only conversion is the schema's write coercion (an `int64` where a `float64` is
+declared, a canonical UUID string where a `uuid` is declared, the ISO 8601 text of a declared
+[date or time format](../dates/schema.md) such as `date-time`). `()` is a value (null), not an omitted
 argument.
 
 ```
@@ -306,12 +310,13 @@ compiling it (the core has no Rhai); the DSL compiles it on definition and on ev
 
 ## Host-defined catalog kinds
 
-Saved queries are one kind of catalog definition; compression rules are another. An application
+Saved queries are one kind of catalog definition; [property indexes](property_indexes.md) and
+compression rules are others. An application
 built on the library (a server, say) can keep its own entities in the same catalog, so they are
 stored, journaled, rolled back, forked and backed up with the graph: definition kinds 128 to 255
 are reserved for hosts and never assigned by the library (`DefinitionKind::host(n)` refuses a
-kind below 128; `DefinitionKind::HOST_FIRST`/`HOST_LAST`, `is_host()`). Kind 2 stays reserved for
-a future library property index.
+kind below 128; `DefinitionKind::HOST_FIRST`/`HOST_LAST`, `is_host()`). Kind 2 is the library's
+property index.
 
 ```rust,ignore
 use graphersal::catalog::{decode_payload, encode_payload};

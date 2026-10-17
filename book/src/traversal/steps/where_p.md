@@ -3,7 +3,7 @@
 
 `where_p` · category: [Filters](../../traversal/step_reference.md#filters)
 
-Graphersal form of where(predicate): compares the current object with a labelled one, modulated by by().
+Graphersal form of where(predicate), modulated by by().
 
 ## Forms
 

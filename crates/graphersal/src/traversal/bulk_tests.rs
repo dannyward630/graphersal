@@ -51,7 +51,7 @@ fn dense() -> Graph {
             element.insert("name", format!("n{layer}{i}").as_str().into());
             element.insert("age", ElementProperty::Number((10 * layer + i + 1).into()));
             vertices.push(
-                tg.add_vertex(
+                tg.insert_vertex(
                     Some(format!("l{layer}_{i}").into()),
                     vec!["n".into()],
                     element,
@@ -64,7 +64,7 @@ fn dense() -> Graph {
     for pair in layers.windows(2) {
         for from in &pair[0] {
             for to in &pair[1] {
-                tg.add_edge(
+                tg.insert_edge(
                     None,
                     Some("next".into()),
                     *from,
@@ -83,15 +83,15 @@ fn sparse(n: usize) -> Graph {
     let mut tg = TraversalGraph::new();
     for i in 0..n {
         let mut add = |id: String, label: &str| {
-            tg.add_vertex(Some(id.into()), vec![label.into()], PropertyMap::default())
+            tg.insert_vertex(Some(id.into()), vec![label.into()], PropertyMap::default())
                 .unwrap()
         };
         let a = add(format!("a{i}"), "a");
         let b = add(format!("b{i}"), "b");
         let c = add(format!("c{i}"), "c");
-        tg.add_edge(None, Some("e".into()), a, b, PropertyMap::default())
+        tg.insert_edge(None, Some("e".into()), a, b, PropertyMap::default())
             .unwrap();
-        tg.add_edge(None, Some("e".into()), b, c, PropertyMap::default())
+        tg.insert_edge(None, Some("e".into()), b, c, PropertyMap::default())
             .unwrap();
     }
     Graph::new(tg)
@@ -101,30 +101,30 @@ fn sparse(n: usize) -> Graph {
 fn star(n: usize) -> Graph {
     let mut tg = TraversalGraph::new();
     let hub = tg
-        .add_vertex(
+        .insert_vertex(
             Some("hub".into()),
             vec!["hub".into()],
             PropertyMap::default(),
         )
         .unwrap();
     let sink = tg
-        .add_vertex(
+        .insert_vertex(
             Some("sink".into()),
             vec!["sink".into()],
             PropertyMap::default(),
         )
         .unwrap();
-    tg.add_edge(None, Some("e".into()), hub, sink, PropertyMap::default())
+    tg.insert_edge(None, Some("e".into()), hub, sink, PropertyMap::default())
         .unwrap();
     for i in 0..n {
         let a = tg
-            .add_vertex(
+            .insert_vertex(
                 Some(format!("a{i}").into()),
                 vec!["a".into()],
                 PropertyMap::default(),
             )
             .unwrap();
-        tg.add_edge(None, Some("e".into()), a, hub, PropertyMap::default())
+        tg.insert_edge(None, Some("e".into()), a, hub, PropertyMap::default())
             .unwrap();
     }
     Graph::new(tg)

@@ -5,9 +5,9 @@ application) can bring its own in-memory storage instead: any type that implemen
 `GraphStorage` trait. The engine, the Rhai DSL, saved queries, the session of the playground and
 the dev server (`graphersal-session`) and the persist Store then work over it.
 
-> **EXPERIMENTAL in 0.1.x.** `GraphStorage`, `PersistentStorage`, `AnyGraph` and the conformance
-> crate `graphersal-storage-tests` may change in any 0.1.x release. Pin the exact versions
-> (`graphersal = "=0.1.0"`, `graphersal-storage-tests = "=0.1.0"`). `graphersal-session` is
+> **EXPERIMENTAL in 0.2.x.** `GraphStorage`, `PersistentStorage`, `AnyGraph` and the conformance
+> crate `graphersal-storage-tests` may change in any 0.2.x release. Pin the exact versions
+> (`graphersal = "=0.2.0"`, `graphersal-storage-tests = "=0.2.0"`). `graphersal-session` is
 > internal and has no stability guarantees at all.
 
 ## How it fits together
@@ -29,12 +29,17 @@ a parameter means `Graph<TraversalGraph>`.
 
 ## What a host implements
 
-1. **`GraphStorage`** (required). Only the read methods, the element-creating and
+1. **`GraphStorage`** (required). Only the read methods, the element-inserting and
    element-removing methods and the property writes are required; everything else has a default
    that is correct for a simple, non-transactional storage. The trait's rustdoc ("A guide for
    storage implementers") is the reference: handles that never alias, the write checks and their
    public helpers, units of atomicity, capabilities, change capture, statistics, schema and the
-   catalog.
+   catalog. The schema's [defaults on create](../users_guide/schema_enforcement.md#defaults-on-create)
+   come for free: you implement the primitive `insert_vertex`/`insert_edge` (store exactly this;
+   imports, change sets, replay and copies call it), and the queries create through the provided
+   `add_vertex`/`add_edge` (`add_vertex_with`/`add_edge_with` with a pinned time), which fill the
+   defaults in from `get_schema()` and then call your `insert_vertex`/`insert_edge` (override
+   `add_vertex_with`/`add_edge_with` only to avoid that schema copy).
 2. **`Default`** (required by the DSL and the session). A whole script runs as one unit by moving
    the storage out of the shared lock while the write lock is held (`std::mem::take`), which
    leaves an empty instance behind. The session also builds every new graph (a sample, a file

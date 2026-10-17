@@ -385,6 +385,21 @@ export class HttpEngine extends Engine {
     return this.request('POST', 'compression/recompress', JSON.stringify({ name }));
   }
 
+  // Property indexes (`/api/indexes*`): a create or drop is a commit and shows in the change
+  // feed like any other.
+
+  async listIndexes() {
+    return this.request('GET', 'indexes');
+  }
+
+  async createIndex(spec) {
+    return this.request('POST', 'indexes/create', JSON.stringify(spec));
+  }
+
+  async dropIndex(name) {
+    return this.request('POST', 'indexes/drop', JSON.stringify({ name }));
+  }
+
   async listSampleGraphs() {
     return [];
   }
@@ -412,6 +427,10 @@ export class HttpEngine extends Engine {
 
   async schema() {
     return this.request('GET', 'schema');
+  }
+
+  async schemaViewOf(schema) {
+    return this.request('POST', 'schema/view', asJson(schema));
   }
 
   async getSchema() {

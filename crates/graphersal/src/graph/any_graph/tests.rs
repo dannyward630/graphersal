@@ -289,13 +289,13 @@ impl GraphStorage for Foreign {
     fn edge_endpoints(&self, edge: EdgeHandle) -> Option<(VertexHandle, VertexHandle)> {
         self.0.edge_endpoints(edge)
     }
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         properties: PropertyMap,
     ) -> Result<VertexHandle, GraphError> {
-        self.0.add_vertex(id, labels, properties)
+        self.0.insert_vertex(id, labels, properties)
     }
     fn add_vertex_label(
         &mut self,
@@ -307,7 +307,7 @@ impl GraphStorage for Foreign {
     fn remove_vertex_label(&mut self, node: VertexHandle, label: &str) -> Result<bool, GraphError> {
         self.0.remove_vertex_label(node, label)
     }
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -315,7 +315,7 @@ impl GraphStorage for Foreign {
         to: VertexHandle,
         properties: PropertyMap,
     ) -> Result<EdgeHandle, GraphError> {
-        self.0.add_edge(id, label, from, to, properties)
+        self.0.insert_edge(id, label, from, to, properties)
     }
     fn set_vertex_property(
         &mut self,
@@ -417,4 +417,37 @@ fn a_foreign_storage_cannot_write_a_snapshot() {
         Err(PersistError::Graph(GraphError::Unsupported { .. }))
     ));
     assert!(bytes.is_empty());
+}
+
+#[test]
+fn a_foreign_storage_keeps_index_definitions_but_does_not_serve_them() {
+    use crate::graph::property_index::PropertyIndexDefinition;
+    let any = Arc::new(Graph::new(Foreign::default())).into_any_graph();
+    let index = Definition::property_index(
+        "person_age",
+        PropertyIndexDefinition::new(ElementKind::Vertex, "person", "age"),
+    );
+    // The definition is stored like any other (a catalog file loaded into it) ...
+    any.set_definitions(vec![index.clone()]).unwrap();
+    assert_eq!(
+        any.definitions(Some(DefinitionKind::PROPERTY_INDEX)),
+        vec![index]
+    );
+    // ... but nothing serves it, and declaring one through the API is refused.
+    assert!(any.property_indexes().is_empty());
+    assert!(!any.capabilities().property_indexes);
+    let mut foreign = Foreign::default();
+    let err = crate::GraphTraversalSource::new(&mut foreign)
+        .create_index(
+            "x",
+            PropertyIndexDefinition::new(ElementKind::Vertex, "person", "age"),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            &*err,
+            crate::error::TraverserError::Graph(GraphError::Unsupported { .. })
+        ),
+        "{err:?}"
+    );
 }

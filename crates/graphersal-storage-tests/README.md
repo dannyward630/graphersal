@@ -4,7 +4,7 @@ Conformance tests for implementations of the [`graphersal`](https://crates.io/cr
 `GraphStorage` trait.
 
 > **EXPERIMENTAL.** Like the `GraphStorage` trait itself, this suite may change in any minor
-> release before 1.0 (also in a 0.1.x release): items may be added, renamed or tightened when the
+> release before 1.0 (also in a 0.2.x release): items may be added, renamed or tightened when the
 > trait changes. Pin the exact version, the same as `graphersal`'s.
 
 ## Usage
@@ -13,7 +13,7 @@ In the crate that implements `GraphStorage`:
 
 ```toml
 [dev-dependencies]
-graphersal-storage-tests = "=0.1.0"
+graphersal-storage-tests = "=0.2.0"
 ```
 
 ```rust
@@ -33,10 +33,11 @@ The suite uses only `graphersal`'s public API, so everything it checks can be im
 check_label, normalize_vertex_labels, write_path, ...}`).
 
 - **Schemas are optional.** The schema items (`schema_application_failure_leaves_graph_and_schema_unchanged`,
-  `schema_modes_enforce_declared_properties`, and the schema write in `rollback_restores_everything`) check
-  enforcement only for a storage that supports schemas: when `set_schema` returns `GraphError::Unsupported` (the
-  trait default) they return early and pass. Schema enforcement is not reusable outside `graphersal` yet, so a
-  storage in another crate keeps that default. `conformance_core!` is `conformance!` without the schema items,
+  `schema_modes_enforce_declared_properties`, `add_applies_schema_defaults_insert_does_not` (the create path
+  `add_vertex`/`add_edge` fills schema defaults, the primitive `insert_vertex`/`insert_edge` does not), and the
+  schema write in `rollback_restores_everything`) check enforcement only for a storage that supports schemas:
+  when `set_schema` returns `GraphError::Unsupported` (the trait default) they return early and pass. Schema
+  enforcement is not reusable outside `graphersal` yet, so a storage in another crate keeps that default. `conformance_core!` is `conformance!` without the schema items,
   for a storage that accepts schemas but deliberately does not enforce them.
 - The items are public functions in `contract` (`fn item<S: GraphStorage>(storage: &mut S)`), the invariant checker is
   `contract::assert_consistent`, and `contract::read_only_rejects_writes` covers read-only storages (it needs a
@@ -104,7 +105,7 @@ let graph = std::sync::Arc::new(Graph::new(Forwarding::new(TraversalGraph::tinke
 - Removing the primary label makes the next label primary (order is kept).
 - Re-adding or re-removing a label is `Ok(false)`, not an error.
 - A read-only `&TraversalGraph` rejects writes with `InvalidElementState` (the tests only require an `Err`).
-- `add_edge` to a dropped vertex must return `Err` (the trait documents no error; a panic is never acceptable).
+- `insert_edge` to a dropped vertex must return `Err` (the trait documents no error; a panic is never acceptable).
 
 ## Violations found and fixed
 

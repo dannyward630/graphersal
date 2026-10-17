@@ -3,7 +3,7 @@
 //! For implementers of their own storage backend (a server keeping its graph elsewhere, a test
 //! double, a wrapper adding behaviour). `use graphersal::storage::*;` together with
 //! `use graphersal::prelude::*;` is all an implementation needs. The trait is EXPERIMENTAL in
-//! 0.1.x; its trait-level documentation is the implementer's guide, and the crate
+//! 0.2.x; its trait-level documentation is the implementer's guide, and the crate
 //! `graphersal-storage-tests` is its conformance suite. A shared graph is a [`Graph<S>`](Graph);
 //! the front ends hold it as the sealed, object-safe [`AnyGraph`] (see [`IntoAnyGraph`]).
 //!
@@ -65,7 +65,7 @@
 //!     // The contract's write checks are public helpers (`check_properties`,
 //!     // `normalize_vertex_labels`, `write_path`, ...): run them first, so a bad value gets the
 //!     // error every storage gives (`InvalidPropertyValue`, `InvalidLabel`), then refuse more.
-//!     fn add_vertex(
+//!     fn insert_vertex(
 //!         &mut self,
 //!         _id: Option<CompactString>,
 //!         labels: Vec<CompactString>,
@@ -81,7 +81,7 @@
 //!     fn remove_vertex_label(&mut self, _node: u32, _label: &str) -> Result<bool, GraphError> {
 //!         Err(refused())
 //!     }
-//!     fn add_edge(
+//!     fn insert_edge(
 //!         &mut self,
 //!         _id: Option<CompactString>,
 //!         _label: Option<CompactString>,
@@ -158,7 +158,7 @@
 //! assert_eq!(g.v(None::<()>).count().next().unwrap(), Some(ElementProperty::from(0_i64)));
 //! assert!(GraphTraversalSource::new(Empty).add_v("person").next().is_err());
 //! assert!(matches!(
-//!     Empty.add_vertex(None, vec!["a::b".into()], PropertyMap::default()),
+//!     Empty.insert_vertex(None, vec!["a::b".into()], PropertyMap::default()),
 //!     Err(GraphError::InvalidLabel { .. })
 //! ));
 //! ```
@@ -167,6 +167,10 @@ pub use crate::error::GraphError;
 #[cfg(feature = "persist")]
 pub use crate::graph::PersistentStorage;
 pub use crate::graph::compression::CompressionStats;
+pub use crate::graph::property_index::{
+    PropertyIndexInfo, PropertyIndexRange, PropertyIndexStats, PropertyIndexTransform,
+};
+pub use crate::graph::schema::defaults::CreateContext;
 pub use crate::graph::schema::{ElementKind, GraphSchema, PropertySchema, SchemaInferer};
 pub use crate::graph::write_checks::{
     check_label, check_properties, check_property_value, normalize_vertex_labels,

@@ -7,6 +7,7 @@ use crate::error::GraphError;
 use crate::graph::change::{ChangeSet, CommitMetadata};
 use crate::graph::definition::{Definition, DefinitionKind};
 use crate::graph::hooks::{Mark, RollbackReason};
+use crate::graph::schema::defaults::CreateContext;
 use crate::graph::schema::{GraphSchema, PropertySchema, SchemaInferer};
 use crate::graph::undo::UndoEntry;
 use crate::graph::{
@@ -121,7 +122,7 @@ pub(crate) fn stored_edge_label<S: GraphStorage>(
 /// no capabilities, hooks refused), so a host storage gets the view the read terminals use
 /// without writing it.
 ///
-/// **EXPERIMENTAL in 0.1.x:** methods and associated types may change in any 0.1.x release
+/// **EXPERIMENTAL in 0.2.x:** methods and associated types may change in any 0.2.x release
 /// (`book/src/users_guide/transactions.md`: a layered storage and borrow-free read methods
 /// are still to come). The crate `graphersal-storage-tests` (published, EXPERIMENTAL like this
 /// trait) holds the conformance suite an implementation should pass:
@@ -137,9 +138,21 @@ pub(crate) fn stored_edge_label<S: GraphStorage>(
 ///
 /// # A guide for storage implementers
 ///
-/// Only the read methods, the element-creating and element-removing methods and the property
+/// Only the read methods, the element-inserting and element-removing methods and the property
 /// writes are required. Everything else has a default that is correct for a simple,
 /// non-transactional storage, so a new storage starts small and opts into more by overriding.
+///
+/// ## Inserting vs. adding
+///
+/// A storage implements the primitive [`Self::insert_vertex`] / [`Self::insert_edge`]: store
+/// exactly this element (coerced and validated against the stored schema, nothing added).
+/// Imports, change sets, replay and recovery, subgraph copies and loads call it, so they
+/// reproduce stored data and never generate a value. The provided [`Self::add_vertex`] /
+/// [`Self::add_edge`] (same arguments) create an element the way a query does, like SQL's
+/// `INSERT`: they fill the schema's create-time defaults (`default`, `defaultFunction`) first
+/// and then call the primitive; [`Self::add_vertex_with`] / [`Self::add_edge_with`] take an
+/// explicit [`CreateContext`] (the time `now`/`today` store) and are the one override point per
+/// kind (e.g. to borrow the schema instead of copying it through [`Self::get_schema`]).
 ///
 /// ## Handles
 ///
@@ -156,8 +169,8 @@ pub(crate) fn stored_edge_label<S: GraphStorage>(
 /// ## Write checks and errors
 ///
 /// Every write refuses a property value holding a vertex, an edge or a map with a non-string key
-/// ([`GraphError::InvalidPropertyValue`]), and `add_vertex`/`add_vertex_label` a label with
-/// `"::"` ([`GraphError::InvalidLabel`], duplicates in `add_vertex` collapse). The path writes
+/// ([`GraphError::InvalidPropertyValue`]), and `insert_vertex`/`add_vertex_label` a label with
+/// `"::"` ([`GraphError::InvalidLabel`], duplicates in `insert_vertex` collapse). The path writes
 /// follow the JSONPath write rules and fail with [`GraphError::InvalidPropertyPath`]. These are
 /// public helpers in [`crate::storage`] (`check_property_value`, `check_properties`,
 /// `check_label`, `normalize_vertex_labels`, `path_property_name`, `write_path`,
@@ -486,13 +499,85 @@ pub trait GraphStorage: Send + Sync {
         None
     }
 
+    /// The property indexes this storage maintains and serves (book page "Property Indexes"),
+    /// with their current stats: one entry per index the lookups below answer. The optimizer
+    /// reads it once per run to pick an index, so it must be cheap (no walk over the data).
+    /// Default: none (a storage without property indexes keeps index definitions in its catalog
+    /// like any other definition, but never serves them).
+    fn property_indexes(&self) -> Vec<crate::graph::PropertyIndexInfo> {
+        Vec::new()
+    }
+
+    /// The vertices labelled `label` whose top-level property `key` lies in `range`, read from
+    /// the property index on `(vertex, label, key)`; `None` when there is no such index (the
+    /// default). The result may hold MORE vertices than the range does (the caller re-checks
+    /// every condition), never fewer, each vertex once; the order is unspecified.
+    fn vertices_by_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::VertexId> + 'a>> {
+        let _ = (label, key, range);
+        None
+    }
+
+    /// The edge counterpart of [`Self::vertices_by_property_index`].
+    fn edges_by_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::EdgeId> + 'a>> {
+        let _ = (label, key, range);
+        None
+    }
+
+    /// The vertices labelled `label` whose top-level property `key`, transformed by
+    /// `transform` (`to_lower`: the lowered text of a string value), lies in `range`, read from
+    /// the property index on `(vertex, label, key, transform)` (book page "Property Indexes",
+    /// section "Case-insensitive search"); `None` when there is no such index (the default).
+    /// The same contract as [`Self::vertices_by_property_index`]: a superset, each vertex once.
+    /// A storage serving such an index must report its
+    /// [`skipped`](crate::graph::PropertyIndexStats::skipped) count in
+    /// [`Self::property_indexes`].
+    fn vertices_by_transformed_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::VertexId> + 'a>> {
+        let _ = (label, key, transform, range);
+        None
+    }
+
+    /// The edge counterpart of [`Self::vertices_by_transformed_property_index`].
+    fn edges_by_transformed_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::EdgeId> + 'a>> {
+        let _ = (label, key, transform, range);
+        None
+    }
+
     // Mutation methods required for side-effect steps
-    /// Adds a new vertex. `labels` is the vertex's initial label set, in insertion order; an empty
+    /// Stores a new vertex exactly as given: the storage primitive every storage implements
+    /// (the heap level under SQL's `INSERT`). It applies no schema defaults; it coerces and
+    /// validates against the stored schema as every write does. Imports, change sets
+    /// ([`Self::apply_change_set`]), replay and recovery, subgraph copies and loads call it, so
+    /// they reproduce stored data and never generate a value. Creating an element the way a
+    /// query does (with the schema's `default`/`defaultFunction`) is [`Self::add_vertex`].
+    ///
+    /// `labels` is the vertex's initial label set, in insertion order; an empty
     /// vec means no labels. A duplicate label in `labels` is deduplicated, not an error — labels
     /// are a set, not a multiset. Rejects a label containing the literal substring `"::"` (D9):
     /// the GraphSON and GraphML vertex-side multi-label encoding joins labels with `"::"`, so such a label would
     /// be ambiguous with the delimiter on export.
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
@@ -544,8 +629,10 @@ pub trait GraphStorage: Send + Sync {
         })
     }
 
-    /// Adds a directed edge between two vertices.
-    fn add_edge(
+    /// Stores a new directed edge between two vertices exactly as given: the edge counterpart
+    /// of [`Self::insert_vertex`] (the required primitive; no schema defaults). Creating an edge
+    /// the way a query does is [`Self::add_edge`].
+    fn insert_edge(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -553,6 +640,101 @@ pub trait GraphStorage: Send + Sync {
         to: Self::VertexId,
         properties: PropertyMap,
     ) -> Result<Self::EdgeId, GraphError>;
+
+    /// Creates a vertex the way a query does (SQL's `INSERT`): the stored schema's create-time
+    /// defaults first, then [`Self::insert_vertex`]. The same as [`Self::add_vertex_with`] with
+    /// [`CreateContext::for_storage`] (`now`/`today` = the start of the outermost open unit,
+    /// else the system clock). Same arguments as [`Self::insert_vertex`]; on a graph whose
+    /// schema declares no defaults both store the same.
+    ///
+    /// Do not override it: a storage that wants its own create path overrides
+    /// [`Self::add_vertex_with`], which this calls.
+    fn add_vertex(
+        &mut self,
+        id: Option<CompactString>,
+        labels: Vec<CompactString>,
+        properties: PropertyMap,
+    ) -> Result<Self::VertexId, GraphError> {
+        let context = CreateContext::for_storage(self);
+        self.add_vertex_with(id, labels, properties, &context)
+    }
+
+    /// Creates an edge the way a query does: the edge counterpart of [`Self::add_vertex`]
+    /// ([`Self::add_edge_with`] with [`CreateContext::for_storage`]).
+    fn add_edge(
+        &mut self,
+        id: Option<CompactString>,
+        label: Option<CompactString>,
+        from: Self::VertexId,
+        to: Self::VertexId,
+        properties: PropertyMap,
+    ) -> Result<Self::EdgeId, GraphError> {
+        let context = CreateContext::for_storage(self);
+        self.add_edge_with(id, label, from, to, properties, &context)
+    }
+
+    /// Creates a vertex the way a query does (`add_v`, `mergeV` on create) at the time
+    /// `context` carries: first adds the stored schema's create-time defaults
+    /// (`default`/`defaultFunction` of every top-level property the labels declare and
+    /// `properties` lacks, in mode `open` and `closed`; see
+    /// [`Annotations`](crate::graph::schema::Annotations)), then calls [`Self::insert_vertex`],
+    /// which coerces and validates as always. [`Self::insert_vertex`] itself stores exactly what
+    /// it is given: imports, change sets and replay use it, so they never apply defaults.
+    ///
+    /// `context` carries the time `defaultFunction` `now`/`today` store
+    /// ([`CreateContext::now`]): a query passes one per execution (pinned by the script DSL's
+    /// evaluation `now()` or [`GraphTraversalSource::with_now`](crate::GraphTraversalSource::with_now),
+    /// else the unit's start, [`Self::unit_started_at`]); [`Self::add_vertex`] builds one with
+    /// [`CreateContext::for_storage`], [`CreateContext::at`] pins a time. The stored value is a
+    /// plain value, recorded as such in the change set and the journal, so replay is
+    /// deterministic.
+    ///
+    /// This is the one override point of the create path for vertices: the default
+    /// implementation reads the schema through [`Self::get_schema`]; a storage that can borrow
+    /// its schema overrides it to save that copy (and still ends in [`Self::insert_vertex`]).
+    fn add_vertex_with(
+        &mut self,
+        id: Option<CompactString>,
+        labels: Vec<CompactString>,
+        mut properties: PropertyMap,
+        context: &CreateContext,
+    ) -> Result<Self::VertexId, GraphError> {
+        if let Some(schema) = self.get_schema() {
+            // A repeated label changes nothing: the first label declaring a key decides.
+            crate::graph::schema::defaults::fill_defaults(
+                &schema,
+                GraphNodeType::Vertex,
+                &labels,
+                &mut properties,
+                context,
+            );
+        }
+        self.insert_vertex(id, labels, properties)
+    }
+
+    /// Creates an edge the way a query does (`add_e`, `mergeE` on create) at the time `context`
+    /// carries: the edge counterpart of [`Self::add_vertex_with`] (the label's create-time
+    /// defaults, then [`Self::insert_edge`]) and the one override point of the edge create path.
+    fn add_edge_with(
+        &mut self,
+        id: Option<CompactString>,
+        label: Option<CompactString>,
+        from: Self::VertexId,
+        to: Self::VertexId,
+        mut properties: PropertyMap,
+        context: &CreateContext,
+    ) -> Result<Self::EdgeId, GraphError> {
+        if let Some(schema) = self.get_schema() {
+            crate::graph::schema::defaults::fill_defaults(
+                &schema,
+                GraphNodeType::Edge,
+                label.as_slice(),
+                &mut properties,
+                context,
+            );
+        }
+        self.insert_edge(id, label, from, to, properties)
+    }
 
     /// Sets (inserts or overwrites) one property on a vertex.
     fn set_vertex_property(
@@ -872,6 +1054,18 @@ pub trait GraphStorage: Send + Sync {
     /// Default: `0`.
     fn last_commit_seq(&self) -> u64 {
         0
+    }
+
+    /// The start of the outermost open unit, in microseconds since the Unix epoch (UTC):
+    /// the time `defaultFunction` `now`/`today` store for the elements a query creates in it
+    /// ([`CreateContext::for_storage`]), one value for the whole unit (PostgreSQL `now()`).
+    /// `None` outside a unit.
+    ///
+    /// [`TraversalGraph`] takes it once when the outermost unit opens, never earlier than the
+    /// previous unit's start or the last commit time (so later units never get an earlier
+    /// time). Default: `None` (the caller then reads the system clock).
+    fn unit_started_at(&self) -> Option<i64> {
+        None
     }
 
     /// Raises the vertex and edge auto-id sequences to at least `node_sequence` and
@@ -1198,7 +1392,7 @@ impl GraphStorage for TraversalGraph {
     }
 
     #[inline]
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
@@ -1241,6 +1435,43 @@ impl GraphStorage for TraversalGraph {
         }
     }
 
+    fn add_vertex_with(
+        &mut self,
+        id: Option<CompactString>,
+        labels: Vec<CompactString>,
+        mut properties: PropertyMap,
+        context: &CreateContext,
+    ) -> Result<VertexHandle, GraphError> {
+        // Borrows the schema instead of copying it (the trait default reads `get_schema`).
+        crate::graph::schema::defaults::fill_defaults(
+            &self.schema.read(),
+            GraphNodeType::Vertex,
+            &labels,
+            &mut properties,
+            context,
+        );
+        GraphStorage::insert_vertex(self, id, labels, properties)
+    }
+
+    fn add_edge_with(
+        &mut self,
+        id: Option<CompactString>,
+        label: Option<CompactString>,
+        from: VertexHandle,
+        to: VertexHandle,
+        mut properties: PropertyMap,
+        context: &CreateContext,
+    ) -> Result<EdgeHandle, GraphError> {
+        crate::graph::schema::defaults::fill_defaults(
+            &self.schema.read(),
+            GraphNodeType::Edge,
+            label.as_slice(),
+            &mut properties,
+            context,
+        );
+        GraphStorage::insert_edge(self, id, label, from, to, properties)
+    }
+
     #[inline]
     fn add_vertex_label(
         &mut self,
@@ -1266,6 +1497,7 @@ impl GraphStorage for TraversalGraph {
                 )?;
                 self.check_incident_topology(node.index(), &new_labels)?;
                 let recording = self.undo.is_recording();
+                self.pindex_vertex(node, false, None);
                 // Borrows only the `graph` field, so the statistics can be updated alongside.
                 if let Some(vertex) = self
                     .graph
@@ -1282,6 +1514,7 @@ impl GraphStorage for TraversalGraph {
                 self.index.insert_node_label(label, node);
                 // The rules of the new label set apply now (D7).
                 self.compression_normalize_vertex(node);
+                self.pindex_vertex(node, true, None);
                 Ok(true)
             }
             None => Err(GraphError::vertex_removed()),
@@ -1311,6 +1544,7 @@ impl GraphStorage for TraversalGraph {
                 )?;
                 self.check_incident_topology(node.index(), &new_labels)?;
                 let recording = self.undo.is_recording();
+                self.pindex_vertex(node, false, None);
                 // Borrows only the `graph` field, so the statistics can be updated alongside.
                 if let Some(vertex) = self
                     .graph
@@ -1326,6 +1560,7 @@ impl GraphStorage for TraversalGraph {
                 }
                 self.index.remove_node_label(label, node);
                 self.compression_normalize_vertex(node);
+                self.pindex_vertex(node, true, None);
                 Ok(true)
             }
             None => Err(GraphError::vertex_removed()),
@@ -1371,6 +1606,7 @@ impl GraphStorage for TraversalGraph {
             }
         }
         let recording = self.undo.is_recording();
+        self.pindex_edge(edge, false, None);
         let Some(weight) = self.graph.edge_weight_mut(index) else {
             return Err(GraphError::edge_removed());
         };
@@ -1390,11 +1626,12 @@ impl GraphStorage for TraversalGraph {
         self.index.insert_edge_label(label, edge);
         // The compression rules of the new label apply now (D7).
         self.compression_normalize_edge(edge);
+        self.pindex_edge(edge, true, None);
         Ok(true)
     }
 
     #[inline]
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -1477,7 +1714,27 @@ impl GraphStorage for TraversalGraph {
                 self.compression
                     .prepare_vertex_value(&node_ref.1, &key, &mut value);
                 let undo_key = self.undo.is_recording().then(|| key.clone());
+                // The property indexes on `key`: the old entry out, the new one in.
+                let index_key = (!self.property_indexes.is_empty()).then(|| key.clone());
+                if index_key.is_some() {
+                    self.property_indexes.vertex_entries(
+                        false,
+                        node,
+                        &node_ref.1,
+                        &node_ref.2,
+                        Some(&key),
+                    );
+                }
                 let (position, old) = node_ref.2.0.insert_full(key, value);
+                if let Some(index_key) = &index_key {
+                    self.property_indexes.vertex_entries(
+                        true,
+                        node,
+                        &node_ref.1,
+                        &node_ref.2,
+                        Some(index_key),
+                    );
+                }
                 if let Some(key) = undo_key {
                     self.undo.record(UndoEntry::VertexProperty {
                         id: node_ref.0.clone(),
@@ -1519,11 +1776,31 @@ impl GraphStorage for TraversalGraph {
                     .prepare_edge_value(edge_ref.1.as_deref(), &key, &mut value);
                 let undo_key = self.undo.is_recording().then(|| key.clone());
                 let map_was_none = edge_ref.2.is_none();
+                // The property indexes on `key`: the old entry out, the new one in.
+                let index_key = (!self.property_indexes.is_empty()).then(|| key.clone());
+                if index_key.is_some() {
+                    self.property_indexes.edge_entries(
+                        false,
+                        edge,
+                        edge_ref.1.as_deref(),
+                        edge_ref.2.as_ref(),
+                        Some(&key),
+                    );
+                }
                 let (position, old) = edge_ref
                     .2
                     .get_or_insert_with(PropertyMap::default)
                     .0
                     .insert_full(key, value);
+                if let Some(index_key) = &index_key {
+                    self.property_indexes.edge_entries(
+                        true,
+                        edge,
+                        edge_ref.1.as_deref(),
+                        edge_ref.2.as_ref(),
+                        Some(index_key),
+                    );
+                }
                 if let Some(key) = undo_key {
                     self.undo.record(UndoEntry::EdgeProperty {
                         id: edge_ref.0.clone(),
@@ -1553,11 +1830,13 @@ impl GraphStorage for TraversalGraph {
             crate::graph::schema::SchemaMode::None
         ) {
             self.record_vertex_property(node, name);
+            self.pindex_vertex(node, false, Some(name));
             let written = match self.vertex_weight_mut(node) {
                 Some(node_ref) => write_path_in(&mut node_ref.2, path, value),
                 None => Err(GraphError::vertex_removed()),
             };
             self.compression_normalize_vertex_key(node, name);
+            self.pindex_vertex(node, true, Some(name));
             return written;
         }
         let (key, resulting) = {
@@ -1577,10 +1856,12 @@ impl GraphStorage for TraversalGraph {
             (key, resulting)
         };
         self.record_vertex_property(node, &key);
+        self.pindex_vertex(node, false, Some(&key));
         if let Some(vertex) = self.vertex_weight_mut(node) {
             vertex.2.insert(key.clone(), resulting);
         }
         self.compression_normalize_vertex_key(node, &key);
+        self.pindex_vertex(node, true, Some(&key));
         Ok(())
     }
 
@@ -1598,6 +1879,7 @@ impl GraphStorage for TraversalGraph {
             crate::graph::schema::SchemaMode::None
         ) {
             self.record_edge_property(edge, name);
+            self.pindex_edge(edge, false, Some(name));
             let written = match self.edge_weight_mut(edge) {
                 Some(edge_ref) => {
                     let properties = edge_ref.2.get_or_insert_with(PropertyMap::default);
@@ -1606,6 +1888,7 @@ impl GraphStorage for TraversalGraph {
                 None => Err(GraphError::edge_removed()),
             };
             self.compression_normalize_edge_key(edge, name);
+            self.pindex_edge(edge, true, Some(name));
             return written;
         }
         let (key, resulting) = {
@@ -1635,6 +1918,7 @@ impl GraphStorage for TraversalGraph {
             (key, resulting)
         };
         self.record_edge_property(edge, &key);
+        self.pindex_edge(edge, false, Some(&key));
         if let Some(edge_ref) = self.edge_weight_mut(edge) {
             edge_ref
                 .2
@@ -1642,6 +1926,7 @@ impl GraphStorage for TraversalGraph {
                 .insert(key.clone(), resulting);
         }
         self.compression_normalize_edge_key(edge, &key);
+        self.pindex_edge(edge, true, Some(&key));
         Ok(())
     }
 
@@ -1670,13 +1955,24 @@ impl GraphStorage for TraversalGraph {
             {
                 self.record_vertex_property(node, name.as_str());
             }
-            return match self.vertex_weight_mut(node) {
+            let top = match path.segments().first() {
+                Some(crate::value::json_path::JsonPathSegment::Key(name)) => Some(name.clone()),
+                _ => None,
+            };
+            if let Some(top) = &top {
+                self.pindex_vertex(node, false, Some(top));
+            }
+            let removed = match self.vertex_weight_mut(node) {
                 Some(vertex) => {
                     crate::graph::write_checks::remove_path_in(&mut vertex.2, path);
                     Ok(())
                 }
                 None => Err(GraphError::vertex_removed()),
             };
+            if let Some(top) = &top {
+                self.pindex_vertex(node, true, Some(top));
+            }
+            return removed;
         }
         let Some(vertex) = self.vertex_weight(node) else {
             return Err(GraphError::vertex_removed());
@@ -1699,9 +1995,11 @@ impl GraphStorage for TraversalGraph {
                     &resulting,
                 )?;
                 self.record_vertex_property(node, &key);
+                self.pindex_vertex(node, false, Some(&key));
                 if let Some(vertex) = self.vertex_weight_mut(node) {
-                    vertex.2.insert(key, resulting);
+                    vertex.2.insert(key.clone(), resulting);
                 }
+                self.pindex_vertex(node, true, Some(&key));
                 Ok(())
             }
             None => Ok(()),
@@ -1734,7 +2032,14 @@ impl GraphStorage for TraversalGraph {
             {
                 self.record_edge_property(edge, name.as_str());
             }
-            return match self.edge_weight_mut(edge) {
+            let top = match path.segments().first() {
+                Some(crate::value::json_path::JsonPathSegment::Key(name)) => Some(name.clone()),
+                _ => None,
+            };
+            if let Some(top) = &top {
+                self.pindex_edge(edge, false, Some(top));
+            }
+            let removed = match self.edge_weight_mut(edge) {
                 Some(edge_ref) => {
                     if let Some(properties) = edge_ref.2.as_mut() {
                         crate::graph::write_checks::remove_path_in(properties, path);
@@ -1743,6 +2048,10 @@ impl GraphStorage for TraversalGraph {
                 }
                 None => Err(GraphError::edge_removed()),
             };
+            if let Some(top) = &top {
+                self.pindex_edge(edge, true, Some(top));
+            }
+            return removed;
         }
         let Some(edge_ref) = self.edge_weight(edge) else {
             return Err(GraphError::edge_removed());
@@ -1763,12 +2072,14 @@ impl GraphStorage for TraversalGraph {
                     &resulting,
                 )?;
                 self.record_edge_property(edge, &key);
+                self.pindex_edge(edge, false, Some(&key));
                 if let Some(edge_ref) = self.edge_weight_mut(edge) {
                     edge_ref
                         .2
                         .get_or_insert_with(PropertyMap::default)
-                        .insert(key, resulting);
+                        .insert(key.clone(), resulting);
                 }
+                self.pindex_edge(edge, true, Some(&key));
                 Ok(())
             }
             None => Ok(()),
@@ -1800,6 +2111,7 @@ impl GraphStorage for TraversalGraph {
             )?;
         }
         let recording = self.undo.is_recording();
+        self.pindex_vertex(node, false, Some(prop));
         let entry = match self.vertex_weight_mut(node) {
             Some(vertex) => vertex
                 .2
@@ -1843,6 +2155,7 @@ impl GraphStorage for TraversalGraph {
             )?;
         }
         let recording = self.undo.is_recording();
+        self.pindex_edge(edge, false, Some(prop));
         let entry = match self.edge_weight_mut(edge) {
             Some(edge_weight) => edge_weight
                 .2
@@ -1892,6 +2205,48 @@ impl GraphStorage for TraversalGraph {
 
     fn compression_stats(&self, name: &str) -> Option<crate::graph::CompressionStats> {
         TraversalGraph::compression_stats(self, name)
+    }
+
+    fn property_indexes(&self) -> Vec<crate::graph::PropertyIndexInfo> {
+        self.property_index_infos()
+    }
+
+    fn vertices_by_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = VertexHandle> + 'a>> {
+        self.property_index_vertices(label, key, None, range)
+    }
+
+    fn vertices_by_transformed_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = VertexHandle> + 'a>> {
+        self.property_index_vertices(label, key, Some(transform), range)
+    }
+
+    fn edges_by_transformed_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = EdgeHandle> + 'a>> {
+        self.property_index_edges(label, key, Some(transform), range)
+    }
+
+    fn edges_by_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = EdgeHandle> + 'a>> {
+        self.property_index_edges(label, key, None, range)
     }
 
     #[inline]
@@ -1993,6 +2348,10 @@ impl GraphStorage for TraversalGraph {
         self.commit_seq()
     }
 
+    fn unit_started_at(&self) -> Option<i64> {
+        self.undo_unit_started_at()
+    }
+
     /// `max` of each sequence and the given value; nothing is recorded (sequences are never
     /// rolled back). A real raise inside a unit makes its outermost commit a commit even when
     /// nothing else changed (a sequence-only commit), so hooks and the journal keep the raise.
@@ -2047,7 +2406,8 @@ const TRAVERSAL_GRAPH_CAPABILITIES: StorageCapabilities = StorageCapabilities::n
     .with_atomic(true)
     .with_change_capture(true)
     .with_isolation(IsolationLevel::None)
-    .with_writable(true);
+    .with_writable(true)
+    .with_property_indexes(true);
 
 /// The error every write through a read-only `&G` view returns.
 #[inline]
@@ -2160,7 +2520,7 @@ impl<G: GraphStorage> GraphStorage for &G {
     }
 
     #[inline]
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         _id: Option<CompactString>,
         _labels: Vec<CompactString>,
@@ -2197,7 +2557,7 @@ impl<G: GraphStorage> GraphStorage for &G {
     }
 
     #[inline]
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         _id: Option<CompactString>,
         _label: Option<CompactString>,
@@ -2297,6 +2657,53 @@ impl<G: GraphStorage> GraphStorage for &G {
     }
 
     #[inline]
+    fn property_indexes(&self) -> Vec<crate::graph::PropertyIndexInfo> {
+        (**self).property_indexes()
+    }
+
+    #[inline]
+    fn vertices_by_property_index<'b>(
+        &'b self,
+        label: &'b str,
+        key: &'b str,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::VertexId> + 'b>> {
+        (**self).vertices_by_property_index(label, key, range)
+    }
+
+    #[inline]
+    fn edges_by_property_index<'b>(
+        &'b self,
+        label: &'b str,
+        key: &'b str,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::EdgeId> + 'b>> {
+        (**self).edges_by_property_index(label, key, range)
+    }
+
+    #[inline]
+    fn vertices_by_transformed_property_index<'b>(
+        &'b self,
+        label: &'b str,
+        key: &'b str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::VertexId> + 'b>> {
+        (**self).vertices_by_transformed_property_index(label, key, transform, range)
+    }
+
+    #[inline]
+    fn edges_by_transformed_property_index<'b>(
+        &'b self,
+        label: &'b str,
+        key: &'b str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::EdgeId> + 'b>> {
+        (**self).edges_by_transformed_property_index(label, key, transform, range)
+    }
+
+    #[inline]
     fn declared_property_schema(
         &self,
         kind: GraphNodeType,
@@ -2338,6 +2745,10 @@ impl<G: GraphStorage> GraphStorage for &G {
     #[inline]
     fn last_commit_seq(&self) -> u64 {
         (**self).last_commit_seq()
+    }
+
+    fn unit_started_at(&self) -> Option<i64> {
+        (**self).unit_started_at()
     }
 }
 
@@ -2437,13 +2848,37 @@ impl<G: GraphStorage> GraphStorage for Box<G> {
     }
 
     #[inline]
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         properties: PropertyMap,
     ) -> Result<Self::VertexId, GraphError> {
-        (**self).add_vertex(id, labels, properties)
+        (**self).insert_vertex(id, labels, properties)
+    }
+
+    #[inline]
+    fn add_vertex_with(
+        &mut self,
+        id: Option<CompactString>,
+        labels: Vec<CompactString>,
+        properties: PropertyMap,
+        context: &CreateContext,
+    ) -> Result<Self::VertexId, GraphError> {
+        (**self).add_vertex_with(id, labels, properties, context)
+    }
+
+    #[inline]
+    fn add_edge_with(
+        &mut self,
+        id: Option<CompactString>,
+        label: Option<CompactString>,
+        from: Self::VertexId,
+        to: Self::VertexId,
+        properties: PropertyMap,
+        context: &CreateContext,
+    ) -> Result<Self::EdgeId, GraphError> {
+        (**self).add_edge_with(id, label, from, to, properties, context)
     }
 
     #[inline]
@@ -2474,7 +2909,7 @@ impl<G: GraphStorage> GraphStorage for Box<G> {
     }
 
     #[inline]
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -2482,7 +2917,7 @@ impl<G: GraphStorage> GraphStorage for Box<G> {
         to: Self::VertexId,
         properties: PropertyMap,
     ) -> Result<Self::EdgeId, GraphError> {
-        (**self).add_edge(id, label, from, to, properties)
+        (**self).insert_edge(id, label, from, to, properties)
     }
 
     #[inline]
@@ -2599,6 +3034,53 @@ impl<G: GraphStorage> GraphStorage for Box<G> {
     }
 
     #[inline]
+    fn property_indexes(&self) -> Vec<crate::graph::PropertyIndexInfo> {
+        (**self).property_indexes()
+    }
+
+    #[inline]
+    fn vertices_by_property_index<'b>(
+        &'b self,
+        label: &'b str,
+        key: &'b str,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::VertexId> + 'b>> {
+        (**self).vertices_by_property_index(label, key, range)
+    }
+
+    #[inline]
+    fn edges_by_property_index<'b>(
+        &'b self,
+        label: &'b str,
+        key: &'b str,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::EdgeId> + 'b>> {
+        (**self).edges_by_property_index(label, key, range)
+    }
+
+    #[inline]
+    fn vertices_by_transformed_property_index<'b>(
+        &'b self,
+        label: &'b str,
+        key: &'b str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::VertexId> + 'b>> {
+        (**self).vertices_by_transformed_property_index(label, key, transform, range)
+    }
+
+    #[inline]
+    fn edges_by_transformed_property_index<'b>(
+        &'b self,
+        label: &'b str,
+        key: &'b str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::EdgeId> + 'b>> {
+        (**self).edges_by_transformed_property_index(label, key, transform, range)
+    }
+
+    #[inline]
     fn get_schema(&self) -> Option<GraphSchema> {
         (**self).get_schema()
     }
@@ -2679,6 +3161,10 @@ impl<G: GraphStorage> GraphStorage for Box<G> {
     #[inline]
     fn last_commit_seq(&self) -> u64 {
         (**self).last_commit_seq()
+    }
+
+    fn unit_started_at(&self) -> Option<i64> {
+        (**self).unit_started_at()
     }
 
     #[inline]
@@ -2792,13 +3278,37 @@ impl<G: GraphStorage> GraphStorage for &mut G {
     }
 
     #[inline]
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         properties: PropertyMap,
     ) -> Result<Self::VertexId, GraphError> {
-        (**self).add_vertex(id, labels, properties)
+        (**self).insert_vertex(id, labels, properties)
+    }
+
+    #[inline]
+    fn add_vertex_with(
+        &mut self,
+        id: Option<CompactString>,
+        labels: Vec<CompactString>,
+        properties: PropertyMap,
+        context: &CreateContext,
+    ) -> Result<Self::VertexId, GraphError> {
+        (**self).add_vertex_with(id, labels, properties, context)
+    }
+
+    #[inline]
+    fn add_edge_with(
+        &mut self,
+        id: Option<CompactString>,
+        label: Option<CompactString>,
+        from: Self::VertexId,
+        to: Self::VertexId,
+        properties: PropertyMap,
+        context: &CreateContext,
+    ) -> Result<Self::EdgeId, GraphError> {
+        (**self).add_edge_with(id, label, from, to, properties, context)
     }
 
     #[inline]
@@ -2829,7 +3339,7 @@ impl<G: GraphStorage> GraphStorage for &mut G {
     }
 
     #[inline]
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -2837,7 +3347,7 @@ impl<G: GraphStorage> GraphStorage for &mut G {
         to: Self::VertexId,
         properties: PropertyMap,
     ) -> Result<Self::EdgeId, GraphError> {
-        (**self).add_edge(id, label, from, to, properties)
+        (**self).insert_edge(id, label, from, to, properties)
     }
 
     #[inline]
@@ -2954,6 +3464,53 @@ impl<G: GraphStorage> GraphStorage for &mut G {
     }
 
     #[inline]
+    fn property_indexes(&self) -> Vec<crate::graph::PropertyIndexInfo> {
+        (**self).property_indexes()
+    }
+
+    #[inline]
+    fn vertices_by_property_index<'b>(
+        &'b self,
+        label: &'b str,
+        key: &'b str,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::VertexId> + 'b>> {
+        (**self).vertices_by_property_index(label, key, range)
+    }
+
+    #[inline]
+    fn edges_by_property_index<'b>(
+        &'b self,
+        label: &'b str,
+        key: &'b str,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::EdgeId> + 'b>> {
+        (**self).edges_by_property_index(label, key, range)
+    }
+
+    #[inline]
+    fn vertices_by_transformed_property_index<'b>(
+        &'b self,
+        label: &'b str,
+        key: &'b str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::VertexId> + 'b>> {
+        (**self).vertices_by_transformed_property_index(label, key, transform, range)
+    }
+
+    #[inline]
+    fn edges_by_transformed_property_index<'b>(
+        &'b self,
+        label: &'b str,
+        key: &'b str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = Self::EdgeId> + 'b>> {
+        (**self).edges_by_transformed_property_index(label, key, transform, range)
+    }
+
+    #[inline]
     fn get_schema(&self) -> Option<GraphSchema> {
         (**self).get_schema()
     }
@@ -3034,6 +3591,10 @@ impl<G: GraphStorage> GraphStorage for &mut G {
     #[inline]
     fn last_commit_seq(&self) -> u64 {
         (**self).last_commit_seq()
+    }
+
+    fn unit_started_at(&self) -> Option<i64> {
+        (**self).unit_started_at()
     }
 
     #[inline]
@@ -3164,14 +3725,31 @@ impl GraphStorage for Arc<TraversalGraph> {
     }
 
     #[inline]
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         properties: PropertyMap,
     ) -> Result<VertexHandle, GraphError> {
         if let Some(graph) = Arc::get_mut(self) {
-            GraphStorage::add_vertex(graph, id, labels, properties)
+            GraphStorage::insert_vertex(graph, id, labels, properties)
+        } else {
+            Err(GraphError::InvalidElementState {
+                reason: "Cannot mutate shared Arc<TraversalGraph>".to_string(),
+            })
+        }
+    }
+
+    #[inline]
+    fn add_vertex_with(
+        &mut self,
+        id: Option<CompactString>,
+        labels: Vec<CompactString>,
+        properties: PropertyMap,
+        context: &CreateContext,
+    ) -> Result<VertexHandle, GraphError> {
+        if let Some(graph) = Arc::get_mut(self) {
+            GraphStorage::add_vertex_with(graph, id, labels, properties, context)
         } else {
             Err(GraphError::InvalidElementState {
                 reason: "Cannot mutate shared Arc<TraversalGraph>".to_string(),
@@ -3221,7 +3799,7 @@ impl GraphStorage for Arc<TraversalGraph> {
     }
 
     #[inline]
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -3230,7 +3808,26 @@ impl GraphStorage for Arc<TraversalGraph> {
         properties: PropertyMap,
     ) -> Result<EdgeHandle, GraphError> {
         if let Some(graph) = Arc::get_mut(self) {
-            GraphStorage::add_edge(graph, id, label, from, to, properties)
+            GraphStorage::insert_edge(graph, id, label, from, to, properties)
+        } else {
+            Err(GraphError::InvalidElementState {
+                reason: "Cannot mutate shared Arc<TraversalGraph>".to_string(),
+            })
+        }
+    }
+
+    #[inline]
+    fn add_edge_with(
+        &mut self,
+        id: Option<CompactString>,
+        label: Option<CompactString>,
+        from: VertexHandle,
+        to: VertexHandle,
+        properties: PropertyMap,
+        context: &CreateContext,
+    ) -> Result<EdgeHandle, GraphError> {
+        if let Some(graph) = Arc::get_mut(self) {
+            GraphStorage::add_edge_with(graph, id, label, from, to, properties, context)
         } else {
             Err(GraphError::InvalidElementState {
                 reason: "Cannot mutate shared Arc<TraversalGraph>".to_string(),
@@ -3434,6 +4031,56 @@ impl GraphStorage for Arc<TraversalGraph> {
     }
 
     #[inline]
+    fn property_indexes(&self) -> Vec<crate::graph::PropertyIndexInfo> {
+        self.as_ref().property_index_infos()
+    }
+
+    #[inline]
+    fn vertices_by_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = VertexHandle> + 'a>> {
+        self.as_ref()
+            .property_index_vertices(label, key, None, range)
+    }
+
+    #[inline]
+    fn edges_by_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = EdgeHandle> + 'a>> {
+        self.as_ref().property_index_edges(label, key, None, range)
+    }
+
+    #[inline]
+    fn vertices_by_transformed_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = VertexHandle> + 'a>> {
+        self.as_ref()
+            .property_index_vertices(label, key, Some(transform), range)
+    }
+
+    #[inline]
+    fn edges_by_transformed_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        transform: &crate::graph::PropertyIndexTransform,
+        range: &crate::graph::PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = EdgeHandle> + 'a>> {
+        self.as_ref()
+            .property_index_edges(label, key, Some(transform), range)
+    }
+
+    #[inline]
     fn get_schema(&self) -> Option<GraphSchema> {
         self.as_ref().get_schema()
     }
@@ -3548,6 +4195,10 @@ impl GraphStorage for Arc<TraversalGraph> {
         GraphStorage::last_commit_seq(self.as_ref())
     }
 
+    fn unit_started_at(&self) -> Option<i64> {
+        GraphStorage::unit_started_at(self.as_ref())
+    }
+
     #[inline]
     fn raise_id_sequences(
         &mut self,
@@ -3592,20 +4243,20 @@ mod tests {
     fn build_test_graph() -> TraversalGraph {
         let mut tg = TraversalGraph::new();
         let v1 = tg
-            .add_vertex(
+            .insert_vertex(
                 Some("v1".into()),
                 vec!["person".into()],
                 PropertyMap::default(),
             )
             .unwrap();
         let v2 = tg
-            .add_vertex(
+            .insert_vertex(
                 Some("v2".into()),
                 vec!["person".into()],
                 PropertyMap::default(),
             )
             .unwrap();
-        GraphStorage::add_edge(
+        GraphStorage::insert_edge(
             &mut tg,
             Some("e1".into()),
             Some("knows".into()),
@@ -3623,7 +4274,7 @@ mod tests {
         test_generic_storage(&graph);
 
         let v3 = graph
-            .add_vertex(
+            .insert_vertex(
                 Some("v3".into()),
                 vec!["software".into()],
                 PropertyMap::default(),
@@ -3652,21 +4303,21 @@ mod tests {
         let mut tg = TraversalGraph::new();
 
         let v1 = tg
-            .add_vertex(
+            .insert_vertex(
                 Some("v1".into()),
                 vec!["person".into()],
                 PropertyMap::default(),
             )
             .unwrap();
         let v2 = tg
-            .add_vertex(
+            .insert_vertex(
                 Some("v2".into()),
                 vec!["person".into()],
                 PropertyMap::default(),
             )
             .unwrap();
         let v3 = tg
-            .add_vertex(
+            .insert_vertex(
                 Some("v3".into()),
                 vec!["software".into()],
                 PropertyMap::default(),
@@ -3674,7 +4325,7 @@ mod tests {
             .unwrap();
 
         let e1 = tg
-            .add_edge(
+            .insert_edge(
                 Some("e1".into()),
                 Some("knows".into()),
                 v1,
@@ -3683,7 +4334,7 @@ mod tests {
             )
             .unwrap();
         let e2 = tg
-            .add_edge(
+            .insert_edge(
                 Some("e2".into()),
                 Some("created".into()),
                 v1,
@@ -3807,13 +4458,13 @@ mod tests {
         fn edge_endpoints(&self, edge: EdgeHandle) -> Option<(VertexHandle, VertexHandle)> {
             self.tg.edge_endpoints(edge)
         }
-        fn add_vertex(
+        fn insert_vertex(
             &mut self,
             id: Option<CompactString>,
             labels: Vec<CompactString>,
             properties: PropertyMap,
         ) -> Result<VertexHandle, GraphError> {
-            self.tg.add_vertex(id, labels, properties)
+            self.tg.insert_vertex(id, labels, properties)
         }
         fn add_vertex_label(
             &mut self,
@@ -3829,7 +4480,7 @@ mod tests {
         ) -> Result<bool, GraphError> {
             self.tg.remove_vertex_label(node, label)
         }
-        fn add_edge(
+        fn insert_edge(
             &mut self,
             id: Option<CompactString>,
             label: Option<CompactString>,
@@ -3837,7 +4488,7 @@ mod tests {
             to: VertexHandle,
             properties: PropertyMap,
         ) -> Result<EdgeHandle, GraphError> {
-            self.tg.add_edge(id, label, from, to, properties)
+            self.tg.insert_edge(id, label, from, to, properties)
         }
         fn set_vertex_property(
             &mut self,
@@ -3893,7 +4544,7 @@ mod tests {
             Err(GraphError::Unsupported { .. })
         ));
         let mark = mock.begin_unit();
-        mock.add_vertex(Some("m".into()), vec![], PropertyMap::default())
+        mock.insert_vertex(Some("m".into()), vec![], PropertyMap::default())
             .expect("add");
         mock.commit_unit(mark).expect("commit");
         assert_eq!(GraphStorage::last_commit_seq(&mock), 0);

@@ -9,8 +9,13 @@ for AI agents, and `graphersal store` for graphs kept on disk.
 **[Repository](https://github.com/graphersal/graphersal)**
 
 ```bash
-cargo install graphersal-cli
+cargo install graphersal-cli      # or: cargo binstall graphersal-cli (prebuilt)
 ```
+
+Prebuilt binaries for Linux, macOS and Windows are on the
+[releases page](https://github.com/graphersal/graphersal/releases); checksums, WSL and the note
+on the musl-linked Linux binaries are on
+[Installation](https://graphersal.dev/getting_started/installation.html).
 
 ## One-shot queries
 

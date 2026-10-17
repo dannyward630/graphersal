@@ -81,7 +81,8 @@ Methods of two words have both spellings (`full_name`/`fullName`, `zip_code`/`zi
 A wrong argument (`int(5, 1)`, `chance(1.5)`, `pick([])`, `sample([1], 2)`) is a script error that
 names the method.
 
-Only English data exists for now. Dates come with the date type in a later release.
+Only English data exists for now. `Fake` has no date method; build a random date from a number:
+`date("2024-01-01") + duration("P" + f.int(0, 365) + "D")` ([Dates and Times](../dates/index.md)).
 
 ## Building a graph
 

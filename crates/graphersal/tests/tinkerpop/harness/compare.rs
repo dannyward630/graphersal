@@ -67,6 +67,9 @@ pub enum Resolved {
     Null,
     /// A UUID.
     Uuid(u128),
+    /// `dt[..]`: a datetime, equal to an actual one at the same instant (like the engine and
+    /// TinkerPop compare dates).
+    DateTime(graphersal::temporal::DateTime),
     /// `l[..]`: ordered.
     List(Vec<Resolved>),
     /// `s[..]`: a multiset.
@@ -315,11 +318,11 @@ pub fn resolve(expected: &Expected, lookup: &dyn Lookup) -> Result<Resolved, Str
             ));
         }
         Expected::Merge(m) => return Err(format!("Merge token {m:?} as a result value")),
-        Expected::DateTime(text) => {
-            return Err(format!(
-                "datetime dt[{text}]: no datetime type in Graphersal"
-            ));
-        }
+        Expected::DateTime(text) => Resolved::DateTime(
+            text.trim()
+                .parse()
+                .map_err(|err| format!("dt[{text}] is not a datetime: {err}"))?,
+        ),
         Expected::Uuid(text) => Resolved::Uuid(
             parse_uuid(text).ok_or_else(|| format!("uuid[{text}] is not a canonical UUID"))?,
         ),
@@ -436,6 +439,10 @@ fn matches_at(expected: &Resolved, actual: &ElementProperty, ids: IdMode, id_pos
         (Resolved::Str(s), ElementProperty::String(a)) => a.as_str() == s,
         (Resolved::Null, ElementProperty::Null) => true,
         (Resolved::Uuid(u), ElementProperty::Uuid(a)) => a == u,
+        (
+            Resolved::DateTime(d),
+            ElementProperty::Temporal(graphersal::temporal::Temporal::DateTime(a)),
+        ) => a == d,
         (Resolved::List(items) | Resolved::Path(items), ElementProperty::Array(actual)) => {
             items.len() == actual.len()
                 && items
@@ -604,6 +611,12 @@ fn write_short(out: &mut String, value: &ElementProperty) {
         ElementProperty::Uuid(u) => {
             let _ = write!(out, "uuid[{u:032x}]");
         }
+        ElementProperty::Temporal(graphersal::temporal::Temporal::DateTime(d)) => {
+            let _ = write!(out, "dt[{d}]");
+        }
+        ElementProperty::Temporal(t) => {
+            let _ = write!(out, "{}({t})", t.kind());
+        }
         ElementProperty::Vertex(e) => {
             let _ = write!(out, "v[{}]", e.id());
         }
@@ -653,6 +666,7 @@ pub fn short_expected(value: &Resolved) -> String {
         Resolved::Str(s) => format!("{s:?}"),
         Resolved::Null => "null".to_string(),
         Resolved::Uuid(u) => format!("uuid[{u:032x}]"),
+        Resolved::DateTime(d) => format!("dt[{d}]"),
         Resolved::List(items) => list("[", items, "]"),
         Resolved::Set(items) => list("s[", items, "]"),
         Resolved::Path(items) => list("p[", items, "]"),
@@ -922,11 +936,18 @@ mod tests {
                 .unwrap_err()
                 .contains("BigInteger")
         );
-        assert!(
-            r("dt[2023-08-01T00:00:00Z]")
-                .unwrap_err()
-                .contains("datetime")
-        );
+        let at = |text: &str| -> graphersal::temporal::DateTime { text.parse().unwrap() };
+        assert!(matches!(
+            r("dt[2023-08-01T00:00:00Z]"),
+            Ok(Resolved::DateTime(d)) if d == at("2023-08-01T00:00:00Z")
+        ));
+        // The same instant at another offset matches, as the engine compares dates.
+        assert!(matches(
+            &rr("dt[2023-08-01T00:00:00Z]"),
+            &ElementProperty::Temporal(at("2023-08-01T02:00:00+02:00").into()),
+            K
+        ));
+        assert!(r("dt[not a date]").is_err());
         assert!(r("D[OUT]").is_err());
         assert!(r("t[id]").is_err());
         let edge_map = rr(r#"m[{"t[id]": "d[7].i", "D[IN]": "d[1].i"}]"#);

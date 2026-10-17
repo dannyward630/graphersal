@@ -85,18 +85,20 @@ pub use store::{
     DEFAULT_CHECKPOINT_MERGE_BYTES, DEFAULT_STORE_SEGMENT_BYTES, DEFAULT_WAL_SEGMENT_BYTES, Damage,
     DamageKind, DamagePolicy, DamageReport, Diverged, Donor, ForkReport, FoundDamage, IdRange,
     LineageEntry, OpenReport, PruneReport, RepairReport, RollbackMode, RollbackReport, Store,
-    StoreInfo, StoreOptions, VerifyProblem, VerifyReport,
+    StoreInfo, StoreOptions, UpgradeReport, VerifyProblem, VerifyReport,
 };
 
 /// The file extension of packed snapshots written by the bindings (`graph.gsnap`).
 pub const SNAPSHOT_EXTENSION: &str = "gsnap";
 
-/// The version of the file formats this build writes and reads: packed snapshots, snapshot
-/// manifests and segments, WAL segments (format spec 15). A `.gsnap` of this version is readable
-/// by every build of the same file format version, also across store format versions.
+/// The version of the file formats this build writes: packed snapshots, snapshot manifests and
+/// segments, WAL segments (format spec 15). This build also reads version 1 (Graphersal 0.1.x),
+/// which differs only by the temporal value tags it does not have, so a `.gsnap` written by
+/// 0.1.x loads here; a file of this version is not readable by a build of version 1.
 pub const FORMAT_VERSION: u32 = codec::FORMAT_VERSION;
 
 /// The version of the Store format this build writes and reads: the version word of a store's
 /// `GRAPH` file (format spec 5.1, 15). A store of an older version is refused with
-/// [`PersistError::OlderFormat`], whose help gives the migration through a packed snapshot.
+/// [`PersistError::OlderFormat`]; one of a released older version (2, Graphersal 0.1.x) is
+/// converted by [`Store::upgrade`] / [`Store::upgrade_in_place`] without the older build.
 pub const STORE_FORMAT_VERSION: u32 = store::STORE_VERSION;

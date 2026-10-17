@@ -40,7 +40,7 @@ Ask the agent, for example:
 
 The agent gets the tools `query`, the schema tools (`get_schema`, `infer_schema`, `set_schema`,
 `patch_schema`, `validate_schema`, `diff_schema`, ...), `statistics`, `graph_info`, the saved
-queries and the compression rules, plus the DSL reference as a resource. `--mcp-read-only` lets
+queries, the compression rules and the property indexes, plus the DSL reference as a resource. `--mcp-read-only` lets
 it only read, `--mcp-token` requires a bearer token, and `--mcp-query-tools` offers every saved
 query as a tool of its own.
 

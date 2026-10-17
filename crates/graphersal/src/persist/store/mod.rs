@@ -36,6 +36,7 @@ mod maintenance;
 mod merge;
 mod rollback;
 mod snapshot_dir;
+mod upgrade;
 mod wal_files;
 #[cfg(feature = "persist-zip")]
 mod zip;
@@ -62,6 +63,8 @@ pub use damage::{Damage, DamageKind, DamageReport, Diverged, Donor, IdRange, Rep
 pub use files::{BackupMarker, DamagePolicy, LineageEntry};
 pub use maintenance::{BackupReport, ChangesSince, PruneReport, VerifyProblem, VerifyReport};
 pub use rollback::{AtticEntry, ForkReport, RollbackMode, RollbackReport};
+pub use upgrade::UpgradeReport;
+pub(crate) use upgrade::upgradable_from;
 
 pub(crate) use files::STORE_VERSION;
 use files::{
@@ -643,6 +646,7 @@ impl Store {
     /// written): what maintenance mode would show.
     pub fn damage_report_dir(dir: impl IntoStoreDir) -> Result<DamageReport, PersistError> {
         let dir = DirPath::root(dir.into_store_dir());
+        let dir = upgrade::older_view(&dir).unwrap_or(dir);
         Ok(damage::salvage(&dir, &ReadOptions::new().with_max_value_depth(4096))?.report)
     }
 
@@ -867,7 +871,9 @@ impl Store {
     /// Unpacks a backup ZIP ([`Store::backup_zip`]) into `dir` (which must not exist or be
     /// empty); every entry's CRC is checked. The result is the LIVE store, not a marked backup
     /// (unpacking an archive is the explicit request to restore it): open it with
-    /// [`Store::open`].
+    /// [`Store::open`]. A ZIP of a store of an older released format (Graphersal 0.1.x) is
+    /// upgraded to the current format as it is restored ([`Store::upgrade_in_place`] of the
+    /// unpacked store: verified, everything carried); the archive itself is only read.
     #[cfg(feature = "persist-zip")]
     pub fn restore_zip(
         reader: impl std::io::Read,
@@ -876,12 +882,28 @@ impl Store {
         let dir = DirPath::root(dir.into_store_dir());
         let existed = dir.exists();
         zip::restore(reader, &dir)?;
-        // A backup of an older or newer format (format spec 15): nothing of it is left behind.
-        if let Err(err) = files::refuse_other_version(&dir) {
+        // A backup of a NEWER format (format spec 15): nothing of it is left behind.
+        if let Err(err) = files::refuse_newer_version(&dir) {
             files::undo_new_dir(&dir, existed);
             return Err(err);
         }
-        let mut file = read_graph_file(&dir)?.file;
+        let mut file = match read_graph_file(&dir) {
+            Ok(read) => read.file,
+            // A backup of a released older store format is upgraded through the converter
+            // (verified; format spec 15.1); a pre-release one leaves nothing behind.
+            Err(PersistError::OlderFormat { found, .. }) if upgradable_from(found) => {
+                if let Err(err) = upgrade::upgrade_in_place(&dir) {
+                    files::undo_new_dir(&dir, existed);
+                    return Err(err);
+                }
+                read_graph_file(&dir)?.file
+            }
+            Err(err @ PersistError::OlderFormat { .. }) => {
+                files::undo_new_dir(&dir, existed);
+                return Err(err);
+            }
+            Err(err) => return Err(err),
+        };
         if file.backup.take().is_some() {
             write_graph_file(&dir, &file)?;
         }
@@ -1933,7 +1955,11 @@ impl StoreCore {
 
     fn repair_at(dir: &DirPath, new_dir: &DirPath) -> Result<RepairReport, PersistError> {
         // Never a lossy repair of files a newer Graphersal wrote (format spec 15).
-        files::refuse_other_version(dir)?;
+        files::refuse_newer_version(dir)?;
+        // A store of a released older format is read as upgraded (format spec 15.1): the
+        // repaired store is of the current format.
+        let older = upgrade::older_view(dir);
+        let dir = older.as_ref().unwrap_or(dir);
         if dir.join(files::GRAPH_FILE).exists() || dir.join(files::GRAPH_COPY).exists() {
             match read_graph_file(dir) {
                 Ok(file) => guard_version(dir, file.file.version)?,
@@ -3622,12 +3648,41 @@ fn attach_journal(
         Some((_, path)) => segment_lineage(path)?,
         None => None,
     };
+    // A segment of an older file format version (a store upgraded from it, format spec 15.1)
+    // is never continued: a record of the current version, which may hold value tags that
+    // version does not have, goes into a new segment of the current version (17, writers).
     let continue_last = match segments.last() {
-        Some((first, path)) if last_lineage == Some(graph_id) => {
+        Some((first, path)) if last_lineage == Some((graph_id, super::codec::FORMAT_VERSION)) => {
             let len = path
                 .len()
                 .map_err(|err| PersistError::io("opening the last WAL segment", err))?;
             Some((*first, path.clone(), len))
+        }
+        Some((first, path)) if last_lineage.is_some_and(|(id, _)| id == graph_id) => {
+            let len = path
+                .len()
+                .map_err(|err| PersistError::io("opening the last WAL segment", err))?;
+            if *first == next {
+                // It holds no record (it starts at the next commit): replaced whole by a header
+                // of the current version under the same name, atomically.
+                if len > super::wal::WAL_HEADER_BYTES as u64 {
+                    return Err(PersistError::corrupt(
+                        path.display(),
+                        super::wal::WAL_HEADER_BYTES as u64,
+                        format!("it starts at commit {next}, which is not committed yet"),
+                    ));
+                }
+                let header = super::wal::WalHeader {
+                    graph_id,
+                    first_commit_seq: next,
+                    created_at: crate::graph::undo::now_micros(),
+                };
+                path.write_atomic(&header.encode())
+                    .map_err(|err| PersistError::io("starting a WAL segment", err))?;
+                Some((*first, path.clone(), super::wal::WAL_HEADER_BYTES as u64))
+            } else {
+                None
+            }
         }
         _ => None,
     };
@@ -3849,10 +3904,11 @@ fn remove_tmp(dir: &DirPath) -> Result<usize, PersistError> {
 /// The lineage id in a WAL segment's header (`None`: no valid header). A failed read is an
 /// error, never "another lineage": the caller would otherwise start a new segment over it and
 /// report that follow-on failure instead of the read error.
-fn segment_lineage(path: &DirPath) -> Result<Option<u128>, PersistError> {
+/// With the lineage, the file format version of the header (format spec 9.1, 15).
+fn segment_lineage(path: &DirPath) -> Result<Option<(u128, u32)>, PersistError> {
     let source = open_segment_reader(path, Some(super::wal::WAL_HEADER_BYTES as u64))?;
     match super::wal::JournalReader::open(source, 0, 1) {
-        Ok(reader) => Ok(Some(reader.graph_id())),
+        Ok(reader) => Ok(Some((reader.graph_id(), reader.format_version()))),
         Err(err @ PersistError::Io { .. }) => Err(err),
         Err(_) => Ok(None),
     }
@@ -3981,9 +4037,15 @@ impl Store {
         list_marks(&dir)
     }
 
-    /// Whether `dir` holds a store (a `GRAPH` or `GRAPH.copy` file).
+    /// Whether `dir` holds a store (a `GRAPH` or `GRAPH.copy` file, or a single-file store of a
+    /// newer container version, which every operation then refuses as newer).
     pub fn is_store(dir: impl IntoStoreDir) -> bool {
         let dir = DirPath::root(dir.into_store_dir());
+        // A single-file store of a newer container version is a store, which this build does
+        // not read: the operation refuses it as newer (format spec 15), never "not a store".
+        if files::refuse_newer_container(&dir).is_err() {
+            return true;
+        }
         dir.is_dir()
             && (dir.join(files::GRAPH_FILE).is_file() || dir.join(files::GRAPH_COPY).is_file())
     }

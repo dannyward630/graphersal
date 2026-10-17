@@ -54,6 +54,15 @@ if [[ "$PROFILE" != "dev" ]]; then
   fi
 fi
 
+# What the page shows next to the engine version in its header (js/build-info.js): the commit the
+# module was built from, the release tag when the commit is exactly one, and whether the tree had
+# uncommitted changes to tracked files (untracked files, such as agent worktrees, do not count).
+commit=$(git -C "$ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo "")
+tag=$(git -C "$ROOT" describe --tags --exact-match HEAD 2>/dev/null || echo "")
+dirty=false
+[[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]] && dirty=true
+printf '{"commit": "%s", "tag": "%s", "dirty": %s}\n' "$commit" "$tag" "$dirty" > "$OUT/build-info.json"
+
 raw=$(wc -c < "$wasm" | tr -d ' ')
 gz=$(gzip -9 -c "$wasm" | wc -c | tr -d ' ')
 echo "built $wasm: $raw bytes ($gz bytes gzipped)"

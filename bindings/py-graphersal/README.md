@@ -10,10 +10,16 @@ and embedded into the Python process: no server, no JVM.
 
 You write Gremlin as script text (the same DSL as the playground and the command line tool) and
 run it against a `Graph`; results come back as native Python values
-(`list`/`dict`/`int`/`float`/`str`/`bool`/`None`/`uuid.UUID`, and `graphersal.Vertex` /
-`graphersal.Edge` for vertices and edges). Graph files are GraphSON 3.0 (the
+(`list`/`dict`/`int`/`float`/`str`/`bool`/`None`/`uuid.UUID`, the `datetime` types for dates
+and times, and `graphersal.Vertex` / `graphersal.Edge` for vertices and edges). Graph files are GraphSON 3.0 (the
 primary exchange format for Gremlin users) and GraphML; graphs can also be kept on disk with
 durable commits (the Store).
+
+**Vector search for GraphRAG.** Store the embeddings your model computes (a list or a `numpy`
+float32 array becomes a `graphersal.Vector`; `f32`, or quantized to `f16`, `i8`, `bit`), find the
+passages nearest to a question with `nearest()` and follow the graph from them in the same query:
+the context for your language model in one call. The guide, with a sentence-transformers example:
+[Embeddings and Vector Search](https://graphersal.dev/getting_started/embeddings.html).
 
 ## Installing
 
@@ -89,9 +95,9 @@ graph = graphersal.Graph.from_graphson("path/to/graph.json")
 graph.export_graphson("path/to/out.json")   # TinkerGraph loads it with g.io(path).read()
 ```
 
-GraphSON values carry their types (`uuid`, lists and maps come back as such). Data Graphersal
-cannot hold yet (dates such as `g:Date`, other unsupported types) is skipped, never converted,
-and named in one `UserWarning`. Multi-valued properties become lists, meta-properties go into the
+GraphSON values carry their types (`uuid`, dates and times, lists and maps come back as such).
+Data Graphersal cannot hold (types without a Graphersal twin) is skipped, never converted, and
+named in one `UserWarning`. Multi-valued properties become lists, meta-properties go into the
 `_meta` property; see the book's GraphSON page for every mapping.
 
 GraphML:
@@ -168,8 +174,9 @@ with graphersal.Store.create("data") as store:            # or Store.open("data"
 A schema is a `dict` (or JSON text) in the library's schema format: an envelope with `mode`
 (`"none"`, `"open"`, `"closed"`), `vertices`, `edges` and a free `meta`, around standard JSON
 Schema 2020-12 label schemas, so a Pydantic `Model.model_json_schema()` can be used as a label's
-schema (drop `date-time` formats and `dict[str, T]` fields first: no date or map type before
-0.2.0). The full reference is the book page "Schemas".
+schema (drop `dict[str, T]` fields first: there is no map-of-T type; the `date-time`, `date`,
+`time` and `duration` formats are supported, and a stored `date-time` needs a UTC offset). The
+full reference is the book page "Schemas".
 
 ```python
 graph = graphersal.Graph.tinkerpop_modern()
@@ -195,8 +202,9 @@ graph.set_schema({})                   # removes it
 
 Every method takes `policy=` like `execute()` (read methods need `("read", "schema")`, `set`/`patch`
 need `("update", "schema")`). A violation raises `GraphersalError` with the aggregated report and a
-`help`. A schema `default` is an annotation only: it is never written into the data nor
-substituted on read. To make a key required that existing elements lack, backfill first in one
+`help`. A schema `default` (or `defaultFunction`: `uuidv4`, `uuidv7`, `now`, `today`) of a top-level property is
+stored when a vertex or edge is created without it (mode `open`/`closed`), never substituted on
+read and never filled into existing elements. To make a key required that existing elements lack, backfill first in one
 atomic script (patch to optional, write the values, patch to required):
 
 ```python
@@ -282,8 +290,8 @@ who_marko_knows = graph.query(
 
 ## Parameterized queries
 
-Pass a `params` dict of `int`, `float`, `str`, `bool`, `None` or `uuid.UUID` values, or a
-`Vertex`/`Edge` a query returned (it stands for its element: `g.V(v)`, `inject(v)`). Each one is
+Pass a `params` dict of `int`, `float`, `str`, `bool`, `None`, `uuid.UUID` or date and time
+values (see [Dates and times](#dates-and-times)), or a `Vertex`/`Edge` a query returned (it stands for its element: `g.V(v)`, `inject(v)`). Each one is
 bound as both a script variable of the same name and an entry of the `params` map, so user input
 never needs to be spliced into the script string:
 
@@ -302,6 +310,201 @@ names = graph.query(
 `list`/`dict` values in `params` are not supported and raise `GraphersalError`, as does an `int`
 outside the int64 range (it is never widened to a float). A key that is not a `str` raises
 `TypeError`.
+
+## Dates and times
+
+The engine's five date and time types (book part "Dates and Times") convert both ways, to the
+microsecond, which is the resolution of both sides:
+
+| Graphersal | Python |
+|---|---|
+| `datetime` (an instant with its UTC offset) | aware `datetime.datetime`, `tzinfo=datetime.timezone(timedelta(seconds=offset))` |
+| `localdatetime` (a wall-clock time) | naive `datetime.datetime` |
+| `date` | `datetime.date` |
+| `time` (a time of day) | naive `datetime.time` |
+| `duration` without months | `datetime.timedelta` |
+| `duration` with months (`P1M`) | `graphersal.Interval` |
+
+```python
+import datetime as dt
+import graphersal
+
+graph = graphersal.Graph()
+graph.execute(
+    'g.add_v("event").property("at", at).property("took", took).iterate()',
+    params={
+        "at": dt.datetime(2023, 8, 2, 9, 30, tzinfo=dt.timezone(dt.timedelta(hours=2))),
+        "took": dt.timedelta(minutes=90),
+    },
+)
+graph.query('g.V().values("at").next()')
+# datetime.datetime(2023, 8, 2, 9, 30, tzinfo=datetime.timezone(datetime.timedelta(seconds=7200)))
+graph.query('g.V().values("at").date_add(DT.month, 1).as_string().next()')
+# '2023-09-02T09:30:00+02:00'
+graph.query('duration("P1Y2M")')
+# Interval('P1Y2M')
+```
+
+- An aware `datetime` with any `tzinfo` (`datetime.timezone`, `zoneinfo.ZoneInfo`) is stored with
+  the UTC offset it has at that instant; the zone name is not kept (it comes back as a
+  `datetime.timezone`). An offset with a fraction of a second is refused.
+- An aware `datetime.time` (with `tzinfo`) is refused: a time of day without a date has no instant.
+  Pass a naive time or an aware `datetime`.
+- A `timedelta` becomes a duration of whole days and the rest, both with the sign of the whole:
+  `timedelta(hours=-1)` is `-PT1H` (Python itself writes it as `days=-1, seconds=82800`); a
+  duration comes back as the equal `timedelta`.
+- `graphersal.Interval(months, days=0, micros=0)` or `graphersal.Interval("P1Y2M3DT4H")` holds a
+  duration with months (a month has no fixed length, so `timedelta` cannot). It is immutable,
+  equal when all three fields are equal (`P1M` is not `P30D`, as in the engine), and has
+  `months`, `days`, `micros` and `to_iso()`.
+- Python's `datetime` holds the years 1 to 9999; a Graphersal date before year 1 raises
+  `GraphersalError` when it is returned (read it as text with `as_string()`).
+- Saved queries (`call_query`) take the same values; they travel as their ISO 8601 text, and the
+  parameter's schema (`#{type: "string", format: "date-time"}`, ...) reads them back.
+
+## Vectors
+
+A vector property (an embedding) is a `graphersal.Vector` both ways. Build one from a list of
+numbers or from any one-dimensional `float32`/`float64` buffer, such as a `numpy` array (read
+through `memoryview`: the extension does not depend on `numpy`). Embeddings are computed outside
+the engine, by your model; the engine stores, quantizes and compares them.
+
+```python
+import numpy as np
+from graphersal import Graph, Vector
+
+g = Graph()
+emb = np.array([0.12, -0.5, 0.33], dtype=np.float32)      # model.encode(text) in practice
+g.execute('g.add_v("doc").property("title", t).property("emb", e).iterate()',
+          params={"t": "Graph databases 101", "e": Vector(emb)})
+
+v = g.query('g.v().values("emb").next()')                # graphersal.Vector
+v.element, v.dimension, v.tolist()                       # ('f32', 3, [0.12, -0.5, 0.33])
+small = Vector(emb, element="i8")                        # quantized: 1 byte per component
+back = np.array(v.tolist(), dtype=np.float32)
+```
+
+- `Vector(values, element="f32")`; the elements are `"f32"`, `"f16"`, `"i8"` and `"bit"`.
+  `v.quantize("i8")` converts, `quantize("f32")` dequantizes. A NaN, an infinity, an empty list
+  or more than 65536 components raise `ValueError`.
+- A vector is immutable, hashable and equal when element, dimension and components are equal.
+- A schema property `{"type": "array", "format": "vector", "element": "i8", "dimension": 384}`
+  turns a written list (or a vector of another element) into the declared vector in mode
+  `open` or `closed`; saved queries (`call_query`) take a `Vector` argument the same way.
+- A parameter may also be a one-dimensional `float32`/`float64` numpy array: it arrives as an
+  f32 vector, so a query embedding goes straight into an exact search:
+
+```python
+q = model.encode("how do graph indexes work?")           # np.ndarray, float32
+g.query('g.v().has_label("doc").nearest("emb", q, 10).values("title").to_list()', params={"q": q})
+g.query('g.v().has_label("doc").similarity("emb", q).to_list()', params={"q": Vector(q)})
+```
+
+## Embedders
+
+An embedder turns text into vectors inside the engine: the step `embed()`, the function
+`embed(text)`, the job `embed_property` and text queries (`nearest("emb", "a question", 5)`)
+call the embedders a graph has registered (book page "Vectors", section "Embeddings").
+The built-in `hash-ngram/1` is always there; Python adds its own two ways.
+
+**Any Python model** becomes an embedder through `graphersal.Embedder(name, fn, *, dimension,
+..)`. `fn` gets a `list[str]` (at most `max_batch` texts) and returns one row per text: a list of
+rows or one 2-D `float32`/`float64` numpy array of shape `(len(texts), dimension)` (read through
+`memoryview`; the extension does not depend on numpy). With
+[sentence-transformers](https://www.sbert.net/):
+
+```python
+import graphersal
+from sentence_transformers import SentenceTransformer
+
+st = SentenceTransformer("all-MiniLM-L6-v2")
+minilm = graphersal.Embedder(
+    "minilm",
+    lambda texts: st.encode(texts),          # numpy float32, shape (len(texts), 384)
+    dimension=384,
+    model="sentence-transformers/all-MiniLM-L6-v2",
+    max_batch=64,
+)
+graph = graphersal.Graph(embedders=[minilm], default_embedder="minilm")
+```
+
+`model` (default: the name) is the **model identity** the schema records for the vectors the
+embedder produces, and what a text query looks up later: keep it stable across runs and hosts,
+and change it whenever the model (or its version) changes. Wrong answers (another number of rows
+or of values) and exceptions of `fn` (also `KeyboardInterrupt`) fail the query with
+`GraphersalError`, the exception's type and message in the text.
+
+**Model2Vec models** load from a local directory through `graphersal.Model2Vec(name, path, *,
+model=None, max_tokens=512, normalize=None, max_batch=256)` (semantic, fast on a CPU, no
+PyTorch). The library never downloads: fetch the files however you like, for example with
+`huggingface_hub`, and pass the model's name together with the directory:
+
+```python
+from huggingface_hub import snapshot_download
+
+path = snapshot_download("minishlab/potion-base-8M")
+potion = graphersal.Model2Vec("potion", path, model="minishlab/potion-base-8M")
+potion.model         # 'model2vec/minishlab/potion-base-8M@<12 hex digits>'
+graph.register_embedder(potion, default=True)
+```
+
+The identity `model2vec/<model>@<12 hex>` hashes the three model files, so it is the same as a
+`graphersal embed-model download minishlab/potion-base-8M` of the same files: a graph embedded
+with the command line finds its model in Python and the other way round. Without `model=` the
+directory's `graphersal-embed-model.json` (written by that download) names the model, else the
+identity is `model2vec@<12 hex>`; a `model=` that differs from that file raises. Loading
+releases the GIL.
+
+**The registry.** Every graph constructor and loader (`Graph()`, `Graph.tinkerpop_modern`,
+`from_graphml`, `from_graphson`, `load`, `recover`) and every `Store` opener take
+`embedders=[..]` and `default_embedder=`; `graph.register_embedder(e, default=False)` adds one
+later (a running execution keeps the embedders it started with); a duplicate or reserved name
+(`hash-ngram`, `hash-ngram/*`) raises `ValueError`. `graph.embedders()` lists them, the default
+first, with their `model`. Scripts see the registry in `execute`, `query`, `dry_run` and
+`atomic=True` runs.
+
+**Embedding a property and searching by text.** `embed_property` needs a schema attached (mode
+`open` or `closed`): it declares the target property as vectors of the embedder's model, which
+is what a text query embeds the question with:
+
+```python
+graph.execute("""
+    for t in ["Cats need fresh water every day.", "Salt the pasta water generously."] {
+        g.add_v("chunk").property("text", t).iterate();
+    }
+""")
+graph.set_schema(graph.infer_schema(), "open")
+report = graph.embed_property(label="chunk", source="text", target="emb")
+# {'embedded': 2, 'units': 1, 'schema_changed': True, 'embedder': 'minilm',
+#  'model': 'sentence-transformers/all-MiniLM-L6-v2', ...}
+
+graph.query('g.v().has_label("chunk").nearest("emb", question, 5).values("text").to_list()',
+            params={"question": "How often should I feed my cat?"})
+```
+
+The job reads the texts under a short read lock, runs the embedder without any lock of the graph
+(other threads keep reading and writing) and writes each page of `batch` elements (default the
+embedder's `max_batch`) as one unit; the GIL is released for the whole job. A second run embeds
+only the elements still missing the property (`only_missing=False` re-embeds all). A failure
+raises `graphersal.EmbedPropertyError`, whose `report` holds the counts up to it (earlier pages
+stay); Ctrl+C cancels the job between pages and the `KeyboardInterrupt` carries the `report` too.
+
+**Threads and the GIL.** A Python embedder runs while a traversal holds the graph's lock (the
+`embed` step) and takes the GIL for the call. No method of the binding waits for the graph's
+lock while it holds the GIL, so a sleeping embedder and other Python threads writing to the
+same graph never wait for each other forever.
+
+**Reference cycles.** A graph keeps its embedders (and so their Python functions) alive, and
+Python's garbage collector cannot see that reference, which is held by the engine. An embedder
+whose function captures its own graph (`Embedder("e", lambda t: use(graph, t), ..)`) therefore
+forms a cycle that is never collected: that graph and its data stay in memory until the process
+ends. Let the function capture the model only, not the graph; this matters only for a program
+that creates and drops many graphs.
+
+**Threads of Model2Vec.** The tokenizer (`tokenizers`, through `rayon`) starts a thread pool of
+one thread per CPU core on the first batch it encodes. `TOKENIZERS_PARALLELISM=false` in the
+environment (set before the first embedding) keeps it on the calling thread, for example in a
+program that forks worker processes after embedding or that limits its CPU use.
 
 ## Error handling
 
@@ -328,7 +531,7 @@ The failures a program handles on purpose have their own subclasses (all of them
 |---|---|
 | `PermissionDeniedError` | the script makes a request (an action on a resource) its `policy` does not allow, or uses a file outside the file root; the denied traversal did not run |
 | `ReturnedClosureError` | a script run as one unit (`atomic=True`, `dry_run`) returns a closure; everything it changed was rolled back |
-| `CommitRejectedError` | a commit hook vetoed the commit (hooks can only be registered from Rust in 0.1.0); everything was rolled back |
+| `CommitRejectedError` | a commit hook vetoed the commit (hooks can only be registered from Rust); everything was rolled back |
 
 ```python
 try:
@@ -414,7 +617,7 @@ JSON-compatible as it is (`json.dumps(changes)` works):
 A failing script raises like `execute` and returns no change set; a returned closure raises
 `ReturnedClosureError`. No commit hook runs. A traversal the script returns without a terminal
 runs inside the dry run, so its result reflects the previewed changes. The change set is data only:
-Python cannot register commit hooks (callbacks on every commit) in 0.1.0.
+Python cannot register commit hooks (callbacks on every commit) yet.
 
 ## Access policy
 
@@ -525,6 +728,7 @@ write lock for the whole script.
   as data through `dry_run`.
 - Positional parameters (`$1`, `$2`, ...).
 - `list`/`dict` values in `params`.
+- Time zone names on values: a `datetime` keeps its UTC offset, not its `ZoneInfo`.
 - Graph file formats other than GraphSON and GraphML (and Graphersal's own snapshots).
 
 ## Building from source

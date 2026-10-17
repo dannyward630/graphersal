@@ -255,8 +255,8 @@ view.
 
 - **Only the seven schema methods.** The editor reaches the engine through `js/schema/api.js`
   (`get`, `set`, `patch`, `validate`, `validatePatch`, `infer`, `diff`, a thin adapter over the
-  engine's `getSchema`, ...), so in 0.2.0 the same UI can run against the server API by passing
-  another object with these methods. Nothing else of the engine is called by the editor; queries it
+  engine's `getSchema`, ...), so the same UI runs against the dev server's API
+  (`js/engine/http-engine.js`, which has these methods too). Nothing else of the engine is called by the editor; queries it
   opens (violations, backfill) run as ordinary query tabs through the store.
 - **Draft.** `js/schema/draft.js` (`SchemaDraft`) holds the stored schema, the inferred one (shown
   when nothing is stored), and the draft. Every edit first copies the working schema into the draft;
@@ -448,6 +448,13 @@ renderers and a fake engine, `tests/tiers.test.mjs` the tier choice).
     a selection fades the rest (reducers), straight edges with arrow heads, edges clickable up to
     20 000 edges (sigma's edge picking is an extra render pass), sigma's y axis mirrored so both
     tiers show the same orientation.
+  - **Wheel zoom in Detailed** is our own (`js/graph/wheel-zoom.js`, a capturing listener that
+    stops Cytoscape's): Cytoscape takes a mouse wheel for an "inaccurate scroll device" and moved
+    about 1 % per notch (measured: 3 notches = +3.5 % with `wheelSensitivity: 0.25`). Now one step
+    of x1.3 per wheel event, at most one per direction every 50 ms (sigma's rule, so the Fast and
+    Detailed tiers feel alike; measured: 3 notches = x2.2), and a trackpad pinch (`ctrlKey`)
+    follows its delta. The renderer's `wheelZooming` flag is set as Cytoscape's own handler does,
+    so large drawings keep the cheap texture while zooming.
 - **View selector** (the panel's tabs; model `js/graph/selection.js`, engine side
   `crates/graphersal-session/src/selection.rs`, Node tests `tests/selection.test.mjs`). **Whole
   graph** draws the graph when it fits the vertex and edge limits; a larger graph shows the label
@@ -708,7 +715,7 @@ async; the engine answers from its Web Worker, so a long query never blocks the 
 | `stop()` | `{restored}`: restarts the engine, restores the graph |
 
 The worker calls the `Playground` class of `crates/graphersal-wasm` (its JS API is internal to the
-playground in 0.1.0; a designed npm package follows in 0.2.0). Structured results cross the
+playground; a designed npm package is planned). Structured results cross the
 boundary as JSON text and are parsed in the worker.
 
 `execute` runs a traversal left without a terminal through the engine's `execute(opts)` terminal,
@@ -780,7 +787,7 @@ same way.
 downloads ONE file per entry: the data as GraphSON 3.0 (`graphersal-graph-YYYYMMDD-HHMMSS.json`)
 or GraphML (`.graphml`), the schema (`graphersal-schema-YYYYMMDD-HHMMSS.json`; neither data
 format carries it), or a packed snapshot (`.gsnap`, data, schema and catalog). The catalog
-(saved queries, compression rules, every kind) is ONE file of its own, in the **Catalog ▾**
+(saved queries, compression rules, property indexes, every kind) is ONE file of its own, in the **Catalog ▾**
 dropdown: **Save catalog (.json)** (`graphersal-catalog-YYYYMMDD-HHMMSS.json`, the catalog JSON) and
 **Load catalog…** (also on the start page), which adds the file's definitions to the current graph
 (a compression rule compresses its values at once); a graph file loaded afterwards keeps them. One
@@ -803,17 +810,26 @@ does (schema first, then the data) and warns about what does not survive (for Gr
 whose type comes back as a string without a declaration, an undeclared `uuid`, `array`/`object`
 values, a key with different types on different labels).
 
-**The Catalog** (the top bar's **Catalog ▾**, `components/catalog.js`; model `js/compression.js`,
-tested in `tests/compression.test.mjs`): one item per catalog kind with its count from the graph
-info's `catalog` (`CATALOG_KINDS`; a new kind such as indexes is one entry and one manager),
+**The Catalog** (the top bar's **Catalog ▾**, `components/catalog.js`; models `js/compression.js`
+and `js/indexes.js`, tested in `tests/compression.test.mjs` and `tests/indexes.test.mjs`): one
+item per catalog kind with its count from the graph info's `catalog` (`CATALOG_KINDS`, plus the
+property indexes appended by `catalogMenuItems` of `js/indexes.js`),
 each opening its manager through `openCatalog(id)` (`state.catalogDialog`, the workspace hosts
 `CatalogDialogs` once), plus **Save catalog (.json)** and **Load catalog…**. The **Saved queries**
 manager lists the queries by folder with Run, Edit, Delete and New; the **Compression** manager
 lists the rules with their stats (values, plain → stored, ratio, saving, dictionary) with Edit,
 Recompress and Drop, and the rule form (name, element, label with the graph's labels from
 `statistics()` as a datalist, path, minimum size, dictionary) shows the engine's field errors in
-place. The Store menu shows the catalog per kind (`definitionsByKind`). The Statistics tab adds the
-compressed strings and dictionaries to its memory part when there are any.
+place; the **Property indexes** manager lists the indexes with their type and stats (entries,
+distinct values, elements per value, memory, "not served" with the engine's `reason`,
+`indexNotServedReason`) with Drop (confirmed), and the create form (element, label with the same
+datalist, key, type from `INDEX_TYPES` with its description as the tooltip, optional name with
+`defaultIndexName` as its placeholder) shows the engine's field errors in place (an unknown type
+under Type, a key the schema declares as a vector, a list or a map under Key; engine
+`listIndexes`/`createIndex`/
+`dropIndex`). The Store menu shows the catalog per kind (`definitionsByKind`). The Statistics tab
+adds the compressed strings and dictionaries, and the property indexes' memory, to its memory
+part when there are any.
 
 **Saved queries** (the **Catalog ▾ ▸ Saved queries** manager, `components/catalog.js`; the dialog
 `components/saved-queries.js`; models in `js/saved-queries.js`): the tree by folder (descriptions

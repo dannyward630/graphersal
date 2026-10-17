@@ -33,7 +33,7 @@ pyo3::create_exception!(
     CommitRejectedError,
     GraphersalError,
     "Raised when a commit hook of the graph vetoed the commit: everything the unit changed was\n\
-     rolled back. Python cannot register commit hooks in 0.1.0, so this is raised only for a\n\
+     rolled back. Python cannot register commit hooks, so this is raised only for a\n\
      graph whose hooks were registered on the Rust side."
 );
 
@@ -44,6 +44,16 @@ pyo3::create_exception!(
     "Raised when a script run as one unit (`atomic=True`, `Graph.dry_run`) returns a closure or\n\
      function pointer (also inside a list or dict). Everything the script changed was rolled\n\
      back. Return data instead: run the closure inside the script and return its result."
+);
+
+pyo3::create_exception!(
+    graphersal,
+    EmbedPropertyError,
+    GraphersalError,
+    "Raised when `Graph.embed_property` fails (an embedder error, a schema refusal, a write\n\
+     failure). Its `report` attribute is the job's report up to the failure (a `dict` with\n\
+     `embedded`, `units`, ...): the pages before it stay committed, the failing one was rolled\n\
+     back, and a second run with `only_missing=True` continues where it stopped."
 );
 
 /// The failures a Python caller can tell apart by exception class.
@@ -185,6 +195,24 @@ fn new_graphersal_error(py: Python<'_>, message: String, help: Option<String>) -
     let _ = err.value(py).setattr("help", help_value);
     // A Store failure sets its cause afterwards (`store.rs`); every other error has none.
     let _ = err.value(py).setattr("cause", py.None());
+    err
+}
+
+/// The `EmbedPropertyError` of a failed `Graph.embed_property`: the rendered diagnostic of the
+/// job's error (its `help`) and the partial `report`.
+pub(crate) fn embed_property_error(py: Python<'_>, diagnostic: &str, report: Py<PyAny>) -> PyErr {
+    let (message, help) = split_message_and_help(diagnostic);
+    let err = PyErr::new::<EmbedPropertyError, _>(message);
+    let help_value: Py<PyAny> = match help {
+        Some(text) => text
+            .into_pyobject(py)
+            .map(|s| s.into_any().unbind())
+            .unwrap_or_else(|_| py.None()),
+        None => py.None(),
+    };
+    let _ = err.value(py).setattr("help", help_value);
+    let _ = err.value(py).setattr("cause", py.None());
+    let _ = err.value(py).setattr("report", report);
     err
 }
 

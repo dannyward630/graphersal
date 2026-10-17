@@ -59,16 +59,22 @@
 //! replays into an IDENTICAL graph without any schema: property values (in element images,
 //! property writes and commit attributes, at any nesting depth) carry an explicit per-value
 //! type tag for every logical type plain JSON cannot hold (CLAUDE.md rule 7 allows explicit
-//! tags; content is never sniffed). Today that is only `uuid`, written in TinkerPop GraphSON
-//! style as `{"@type": "g:UUID", "@value": "<canonical lowercase uuid>"}`. JSON-native types
-//! stay untagged.
+//! tags; content is never sniffed): `uuid`, written in TinkerPop GraphSON style as
+//! `{"@type": "g:UUID", "@value": "<canonical lowercase uuid>"}`, and the date and time types
+//! with their canonical text: `gx:OffsetDateTime`, `gx:LocalDate`, `gx:LocalDateTime`,
+//! `gx:LocalTime`, and for a `duration` `gx:Duration` (microseconds only), `gx:Period` (months
+//! and days only) or `graphersal:Interval` (both), and a vector as
+//! `{"@type": "graphersal:Vector", "@value": {"element": "f32", "data": [..]}}` (exact for every
+//! element kind: an `i8` vector with `scale` and `codes`, a `bit` vector with `dimension` and
+//! `bits` in hex). JSON-native types stay untagged.
 //!
 //! Escaping: a user object that has an `"@type"` key of its own is wrapped as
 //! `{"@type": "graphersal:Object", "@value": {..the object..}}` (its keys are then taken
 //! literally, its values are read as tagged values again), so no user map can be misread as a
-//! tag. On reading, an object with an `"@type"` key must be exactly one of these two forms
-//! (`@type` and `@value` only, a canonical uuid string or an object payload); anything else is
-//! a deserialization error, never a guess. The tags are used for the serialized `ChangeSet`
+//! tag. On reading, an object with an `"@type"` key must be exactly one of these forms
+//! (`@type` and `@value` only, a canonical uuid string, the text of a value of the tag's type
+//! whose parts fit the tag, or an object payload); anything else is a deserialization error,
+//! never a guess. The tags are used for the serialized `ChangeSet`
 //! only; GraphML and the rest of the physical codec are unchanged.
 //!
 //! # Commit hooks
@@ -116,7 +122,7 @@
 //! - Hooks run synchronously, strictly in commit sequence order.
 //! - While at least one hook is registered, the storage builds a [`ChangeSet`] for every
 //!   committed unit (change capture). Without hooks nothing is captured and nothing is paid.
-//! - Hooks cannot be removed in 0.1.0 (a server registers them once, before it publishes the
+//! - Hooks cannot be removed (a server registers them once, before it publishes the
 //!   graph); removal may be added later.
 //!
 //! **Deviation from TinkerPop:** TinkerPop's `EventStrategy` calls a `MutationListener` for

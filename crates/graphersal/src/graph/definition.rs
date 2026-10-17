@@ -52,7 +52,7 @@ const MAX_JSON_DEPTH: usize = 128;
 /// those bare constants. The unit test `reserved_param_names_match_graph_scope` (feature
 /// `script`) builds the scope and fails when the two drift. It lives here, not in `script/`,
 /// so a saved query's parameters are checked the same way without the `script` feature.
-pub(crate) const RESERVED_PARAM_NAMES: [&str; 28] = [
+pub(crate) const RESERVED_PARAM_NAMES: [&str; 29] = [
     "g",
     "__",
     "_g",
@@ -81,6 +81,7 @@ pub(crate) const RESERVED_PARAM_NAMES: [&str; 28] = [
     "CastPolicy",
     "ProfileType",
     "SchemaMode",
+    "DT",
 ];
 
 /// Rhai's keywords and reserved words (Rhai 1.x, `tokenizer.rs`): neither a function nor a
@@ -210,7 +211,8 @@ pub struct DefinitionKind(u8);
 impl DefinitionKind {
     /// Kind `1`: a saved query ([`QueryDefinition`]).
     pub const QUERY: DefinitionKind = DefinitionKind(1);
-    /// Kind `2`: reserved for property index definitions (not decoded by this version).
+    /// Kind `2`: a property index
+    /// ([`PropertyIndexDefinition`](crate::graph::property_index::PropertyIndexDefinition)).
     pub const PROPERTY_INDEX: DefinitionKind = DefinitionKind(2);
     /// Kind `3`: a compression rule
     /// ([`CompressionDefinition`](crate::graph::compression::CompressionDefinition)).
@@ -256,10 +258,10 @@ impl DefinitionKind {
         self.0
     }
 
-    /// Whether this version decodes the payload of this kind ([`Self::QUERY`] and
-    /// [`Self::COMPRESSION`]); every other kind is kept opaque.
+    /// Whether this version decodes the payload of this kind ([`Self::QUERY`],
+    /// [`Self::PROPERTY_INDEX`] and [`Self::COMPRESSION`]); every other kind is kept opaque.
     pub const fn is_known(self) -> bool {
-        self.0 == Self::QUERY.0 || self.0 == Self::COMPRESSION.0
+        self.0 == Self::QUERY.0 || self.0 == Self::PROPERTY_INDEX.0 || self.0 == Self::COMPRESSION.0
     }
 
     /// The name of an assigned kind (`"query"`, `"property_index"`), `None` for an unassigned
@@ -374,6 +376,8 @@ pub enum DefinitionBody {
     Query(QueryDefinition),
     /// A compression rule (kind [`DefinitionKind::COMPRESSION`]).
     Compression(crate::graph::compression::CompressionDefinition),
+    /// A property index (kind [`DefinitionKind::PROPERTY_INDEX`]).
+    PropertyIndex(crate::graph::property_index::PropertyIndexDefinition),
     /// A payload this version does not decode (an unknown kind, or a known kind whose payload
     /// could not be decoded): its bytes exactly as read, written back unchanged.
     Opaque(Vec<u8>),
@@ -451,7 +455,9 @@ impl Definition {
     pub fn as_query(&self) -> Option<&QueryDefinition> {
         match &self.body {
             DefinitionBody::Query(query) => Some(query),
-            DefinitionBody::Compression(_) | DefinitionBody::Opaque(_) => None,
+            DefinitionBody::Compression(_)
+            | DefinitionBody::PropertyIndex(_)
+            | DefinitionBody::Opaque(_) => None,
         }
     }
 
@@ -459,7 +465,9 @@ impl Definition {
     pub fn as_query_mut(&mut self) -> Option<&mut QueryDefinition> {
         match &mut self.body {
             DefinitionBody::Query(query) => Some(query),
-            DefinitionBody::Compression(_) | DefinitionBody::Opaque(_) => None,
+            DefinitionBody::Compression(_)
+            | DefinitionBody::PropertyIndex(_)
+            | DefinitionBody::Opaque(_) => None,
         }
     }
 
@@ -467,7 +475,9 @@ impl Definition {
     pub fn opaque_payload(&self) -> Option<&[u8]> {
         match &self.body {
             DefinitionBody::Opaque(bytes) => Some(bytes),
-            DefinitionBody::Query(_) | DefinitionBody::Compression(_) => None,
+            DefinitionBody::Query(_)
+            | DefinitionBody::Compression(_)
+            | DefinitionBody::PropertyIndex(_) => None,
         }
     }
 
@@ -505,6 +515,16 @@ impl Definition {
                     });
                 }
                 rule.validate(&self.name)
+            }
+            DefinitionBody::PropertyIndex(index) => {
+                if let Some(reason) = identifier_problem(&self.name, MAX_QUERY_NAME_BYTES) {
+                    return Err(DefinitionError::InvalidName {
+                        kind: self.kind.to_string(),
+                        name: self.name.clone(),
+                        reason,
+                    });
+                }
+                index.validate(&self.name)
             }
             DefinitionBody::Opaque(payload) => {
                 let reason = if self.name.is_empty() {
@@ -561,6 +581,14 @@ impl Definition {
                     map.insert("flags", ElementProperty::from(self.flags.0 as i64));
                 }
                 rule.write_fields(&mut map);
+            }
+            DefinitionBody::PropertyIndex(index) => {
+                map.insert("kind", kind_value(self.kind));
+                map.insert("name", ElementProperty::from(self.name.as_str()));
+                if self.flags != DefinitionFlags::NONE {
+                    map.insert("flags", ElementProperty::from(self.flags.0 as i64));
+                }
+                index.write_fields(&mut map);
             }
             DefinitionBody::Opaque(payload) => {
                 map.insert("kind", ElementProperty::from(self.kind.0 as i64));
@@ -630,11 +658,23 @@ impl Definition {
                 body: DefinitionBody::Compression(rule),
             });
         }
+        if kind == DefinitionKind::PROPERTY_INDEX {
+            let index = crate::graph::property_index::PropertyIndexDefinition::read_fields(
+                map,
+                &["kind", "name", "flags"],
+            )?;
+            return Ok(Definition {
+                kind,
+                flags,
+                name,
+                body: DefinitionBody::PropertyIndex(index),
+            });
+        }
         if kind != DefinitionKind::QUERY {
             return Err(malformed(
                 "/kind",
                 format!(
-                    "a definition of {kind} needs its 'payload' (this version decodes queries and compression rules)"
+                    "a definition of {kind} needs its 'payload' (this version decodes queries, property indexes and compression rules)"
                 ),
             ));
         }
@@ -1136,8 +1176,9 @@ fn folder_problem(folder: &str) -> Option<String> {
 /// One parameter of a saved query: its schema (the node format of the graph schema,
 /// [`PropertySchema`]) and an optional default.
 ///
-/// Unlike the annotation-only `default` keyword of a data schema, the default of a parameter
-/// IS substituted when a call omits the argument; a parameter without one is required. A
+/// The default sits beside the schema: a `default` keyword inside the parameter's schema is an
+/// annotation, while the parameter's own default IS substituted when a call omits the argument;
+/// a parameter without one is required. A
 /// default given as a value the schema coerces on write (a canonical uuid string for
 /// `format: "uuid"`, an `int64` for `number`) is stored coerced.
 #[derive(Debug, Clone, PartialEq)]
@@ -1250,8 +1291,16 @@ impl QueryParam {
         Ok(value)
     }
 
-    /// Checks the default (when there is one) against the schema.
+    /// Checks the schema (no `defaultFunction`: it fills a property of a created element and
+    /// has no meaning for an argument) and the default (when there is one) against it.
     fn validate(&self, query: &str, parameter: &str) -> Result<(), String> {
+        if let Some(at) = crate::graph::schema::defaults::default_function_in(&self.schema, "") {
+            return Err(format!(
+                "the schema has a defaultFunction at '{at}', which applies only to a label's \
+                 properties when an element is created; give the parameter a default beside its \
+                 schema instead ({{\"schema\": .., \"default\": ..}})"
+            ));
+        }
         let Some(default) = &self.default else {
             return Ok(());
         };
@@ -1280,7 +1329,9 @@ fn storable(value: &ElementProperty) -> bool {
         | ElementProperty::Compressed(_)
         | ElementProperty::Number(_)
         | ElementProperty::Boolean(_)
-        | ElementProperty::Uuid(_) => true,
+        | ElementProperty::Uuid(_)
+        | ElementProperty::Temporal(_)
+        | ElementProperty::Vector(_) => true,
     }
 }
 

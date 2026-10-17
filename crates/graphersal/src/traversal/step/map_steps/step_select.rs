@@ -220,7 +220,9 @@ impl<'g, S: GraphStorage + 'g> StepSelect<'g, S> {
                 | ElementProperty::Compressed(_)
                 | ElementProperty::Number(_)
                 | ElementProperty::Boolean(_)
-                | ElementProperty::Uuid(_) => Some("scalar value"),
+                | ElementProperty::Uuid(_)
+                | ElementProperty::Temporal(_)
+                | ElementProperty::Vector(_) => Some("scalar value"),
                 ElementProperty::Array(_) => Some("list"),
             },
             TraverserValue::Array(_) => Some("list"),

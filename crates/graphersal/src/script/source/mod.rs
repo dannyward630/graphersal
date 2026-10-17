@@ -4,9 +4,12 @@
 
 use super::*;
 
+mod dates;
 mod filter_map;
 mod navigation;
 mod side_effects;
+mod vectors;
+pub(crate) use vectors::script_embed;
 
 /// Script-facing `GraphSource` factory (`GraphSource::empty()`, `GraphSource::tinkerpop_modern()`,
 /// ...; also reachable as a bare global function, e.g. `tinkerpop_modern()`), registered with Rhai
@@ -33,6 +36,7 @@ impl ScriptGraphSource {
             access: Arc::default(),
             private: true,
             anonymous: false,
+            now: None,
         }
     }
 
@@ -49,6 +53,7 @@ impl ScriptGraphSource {
             access: Arc::default(),
             private: false,
             anonymous: false,
+            now: None,
         }
     }
 
@@ -61,6 +66,7 @@ impl ScriptGraphSource {
             access: Arc::default(),
             private: true,
             anonymous: false,
+            now: None,
         }
     }
 
@@ -74,6 +80,7 @@ impl ScriptGraphSource {
             access: Arc::default(),
             private: true,
             anonymous: false,
+            now: None,
         }
     }
 
@@ -187,6 +194,11 @@ pub struct ScriptGraphTraversalSource {
     /// query cannot be called on it (`__.query(..)` fails with a clear error instead of
     /// looking the query up in the scratch graph).
     pub(super) anonymous: bool,
+    /// The evaluation's `now()` when a creating step (`addV`, `addE`, `mergeV`, `mergeE`) was
+    /// added in a script: the time of `defaultFunction` `now`/`today` for the elements its
+    /// creating steps make, so it equals `now()` of the same evaluation (and a host's
+    /// `pin_now`). `None`: the execution's time (the unit's start).
+    pub(super) now: Option<crate::value::temporal::DateTime>,
 }
 
 impl fmt::Debug for ScriptGraphTraversalSource {
@@ -317,7 +329,8 @@ impl ScriptGraphTraversalSource {
     /// Rhai binding for `GraphStorage::memory_usage()`. Returns a Rhai map with keys
     /// `structure_bytes`, `index_bytes`, `property_bytes`, `total_bytes`, `total_mb` and the
     /// compressed-property counters `compressed_values`, `compressed_plain_bytes`,
-    /// `compressed_stored_bytes`, `compression_dictionary_bytes` when the
+    /// `compressed_stored_bytes`, `compression_dictionary_bytes` and the property indexes'
+    /// `property_index_bytes` when the
     /// backing storage supports introspection (`graphersal::TraversalGraph` always does), or `()`
     /// (Rhai unit) otherwise. This is a plain method call, not a traversal step — it is not
     /// chained with `.to_list()`/`.next()`. Asks for `Read` on `Data`.
@@ -365,6 +378,10 @@ impl ScriptGraphTraversalSource {
         map.insert(
             "compression_dictionary_bytes".into(),
             int(stats.compression_dictionary_bytes),
+        );
+        map.insert(
+            "property_index_bytes".into(),
+            int(stats.property_index_bytes),
         );
         map.insert("total_mb".into(), Dynamic::from_float(stats.total_mb()));
         Ok(Dynamic::from_map(map))
@@ -777,6 +794,12 @@ impl ScriptGraphTraversalSource {
                 rhai::Position::NONE,
             )))
         }
+    }
+
+    /// This source with the time of the evaluation `ctx` belongs to (see the `now` field).
+    pub(crate) fn stamped(mut self, ctx: &NativeCallContext) -> Self {
+        self.now = Some(access::now_of(ctx));
+        self
     }
 
     pub(super) fn add_step(&mut self, step: Step) -> Self {

@@ -435,9 +435,15 @@ pub(super) fn register(registry: &mut Registry) {
 
     register_gtype_tokens!(
         registry;
-        NULL, BOOLEAN, INT, LONG, FLOAT, DOUBLE, NUMBER, STRING, UUID, LIST, MAP, VERTEX, EDGE,
-        PATH, GRAPH,
+        NULL, BOOLEAN, INT, LONG, FLOAT, DOUBLE, NUMBER, STRING, UUID, DATETIME, DURATION, DATE,
+        LOCALDATETIME, TIME, VECTOR, LIST, MAP, VERTEX, EDGE, PATH, GRAPH,
     );
+
+    // Dates and times: the value types, constructors, `now()`/`today()`, and the `DT` token.
+    crate::script::tokens::register_temporal(registry);
+
+    // Vectors: the value type, `vector([..])` / `vector([..], "i8")` and its methods.
+    crate::script::tokens::register_vector(registry);
 
     // Global Predicate Functions
     registry

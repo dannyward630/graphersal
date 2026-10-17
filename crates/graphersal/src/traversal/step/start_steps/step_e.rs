@@ -10,6 +10,8 @@ struct StepE {
     has: Vec<PropertyFilter>,
     count_only: bool,
     group_count_by_label: bool,
+    /// The property index the source reads (set by the `property_index` rule).
+    index: Option<crate::traversal::step::IndexAccess>,
 }
 
 impl fmt::Display for StepE {
@@ -21,6 +23,7 @@ impl fmt::Display for StepE {
             &self.has,
             self.count_only,
             self.group_count_by_label,
+            self.index.as_ref(),
         ))
     }
 }
@@ -40,6 +43,7 @@ impl<'g, S: GraphStorage + 'g> GraphTraversalSource<'g, S> {
             has: Vec::new(),
             count_only: false,
             group_count_by_label: false,
+            index: None,
         };
         self.push_step(GraphStep::Init("e", Box::new(step)))
     }
@@ -67,6 +71,7 @@ impl<'g, S: GraphStorage + 'g> AnonymousTraversal<'g, S> {
             has: Vec::new(),
             count_only: false,
             group_count_by_label: false,
+            index: None,
         };
         self.push_step(GraphStep::Init("e", Box::new(step)))
     }
@@ -103,6 +108,15 @@ impl<'g, S: GraphStorage + 'g> GraphStepInit<'g, S> for StepE {
 
     fn push_property_filter(&mut self, filter: PropertyFilter) -> bool {
         self.has.push(filter);
+        true
+    }
+
+    fn index_access(&self) -> Option<&crate::traversal::step::IndexAccess> {
+        self.index.as_ref()
+    }
+
+    fn set_index_access(&mut self, access: Option<crate::traversal::step::IndexAccess>) -> bool {
+        self.index = access;
         true
     }
 

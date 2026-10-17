@@ -252,6 +252,13 @@ pub enum Resource<'a> {
         /// The option key, such as `evaluationTimeout`.
         key: &'a str,
     },
+    /// An embedder of the registry the host gave its traversals (book page "Vectors"): the
+    /// `embed` step and the DSL function `embed(text)` ask `Execute` on it, for every embedder
+    /// including the built-in `hash-ngram/1`.
+    Embedder {
+        /// The registry name (`"hash-ngram/1"`).
+        name: &'a str,
+    },
     /// A resource of an embedding server (a database, a tenant, ...); never produced by the
     /// library.
     Custom {
@@ -281,6 +288,7 @@ impl<'a> Resource<'a> {
             Resource::Definition { .. } => ResourceKind::Definition,
             Resource::File { .. } => ResourceKind::File,
             Resource::Option { .. } => ResourceKind::Option,
+            Resource::Embedder { .. } => ResourceKind::Embedder,
             Resource::Custom { .. } => ResourceKind::Custom,
         }
     }
@@ -315,6 +323,7 @@ impl fmt::Display for Resource<'_> {
                 write!(f, "File({})", rhai_string(&path.to_string_lossy()))
             }
             Resource::Option { key } => write!(f, "Option({})", rhai_string(key)),
+            Resource::Embedder { name } => write!(f, "Embedder({})", rhai_string(name)),
             Resource::Custom { kind, name } => match name {
                 Some(name) => write!(f, "{kind}({})", rhai_string(name)),
                 None => f.write_str(kind),
@@ -398,17 +407,20 @@ pub enum ResourceKind {
     Definition,
     /// [`Resource::Custom`].
     Custom,
+    /// [`Resource::Embedder`].
+    Embedder,
 }
 
 impl ResourceKind {
     /// Every resource kind, in declaration order.
-    pub const ALL: [ResourceKind; 6] = [
+    pub const ALL: [ResourceKind; 7] = [
         ResourceKind::Data,
         ResourceKind::Schema,
         ResourceKind::File,
         ResourceKind::Option,
         ResourceKind::Definition,
         ResourceKind::Custom,
+        ResourceKind::Embedder,
     ];
 
     /// The name as the Rust API spells it (`"Data"`, ..., `"Custom"`).
@@ -420,6 +432,7 @@ impl ResourceKind {
             ResourceKind::Option => "Option",
             ResourceKind::Definition => "Definition",
             ResourceKind::Custom => "Custom",
+            ResourceKind::Embedder => "Embedder",
         }
     }
 
@@ -431,6 +444,7 @@ impl ResourceKind {
             ResourceKind::Option => 3,
             ResourceKind::Definition => 5,
             ResourceKind::Custom => 4,
+            ResourceKind::Embedder => 6,
         }
     }
 }
@@ -464,6 +478,7 @@ enum ResourceBuf {
     },
     File(PathBuf),
     Option(String),
+    Embedder(String),
     Custom {
         kind: String,
         name: Option<String>,
@@ -493,6 +508,7 @@ impl AccessRequestBuf {
             },
             ResourceBuf::File(path) => Resource::File { path },
             ResourceBuf::Option(key) => Resource::Option { key },
+            ResourceBuf::Embedder(name) => Resource::Embedder { name },
             ResourceBuf::Custom { kind, name } => Resource::Custom {
                 kind,
                 name: name.as_deref(),
@@ -520,6 +536,7 @@ impl From<&AccessRequest<'_>> for AccessRequestBuf {
             },
             Resource::File { path } => ResourceBuf::File(path.to_path_buf()),
             Resource::Option { key } => ResourceBuf::Option(key.to_string()),
+            Resource::Embedder { name } => ResourceBuf::Embedder(name.to_string()),
             Resource::Custom { kind, name } => ResourceBuf::Custom {
                 kind: kind.to_string(),
                 name: name.map(str::to_string),
@@ -613,13 +630,15 @@ impl AccessPolicy {
 
     /// A query service: `Read` on [`ResourceKind::Data`], [`ResourceKind::Schema`] and
     /// [`ResourceKind::Definition`], plus `Execute` on [`ResourceKind::Definition`] (calling a
-    /// saved query, which is read-only itself).
+    /// saved query, which is read-only itself) and on [`ResourceKind::Embedder`] (an embedder
+    /// computes, it writes nothing).
     pub fn read_only() -> Self {
         Self::deny_all()
             .allow(ActionKind::Read, ResourceKind::Data)
             .allow(ActionKind::Read, ResourceKind::Schema)
             .allow(ActionKind::Read, ResourceKind::Definition)
             .allow(ActionKind::Execute, ResourceKind::Definition)
+            .allow(ActionKind::Execute, ResourceKind::Embedder)
     }
 
     /// Builder: also allows `action` on `resource`.

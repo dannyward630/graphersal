@@ -24,6 +24,7 @@ use graphersal::script::{
     try_render_value,
 };
 use graphersal::storage::{AnyGraph, ElementKind};
+use graphersal::vector::Embedders;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
@@ -93,6 +94,10 @@ pub struct SessionPresets {
     /// Budget of a whole run in milliseconds: the Rhai code between the traversals (a `loop
     /// {}`) is stopped once the run is older than this. `None`: no budget.
     pub script_timeout_ms: Option<u64>,
+    /// The embedders every run's `embed` step and `embed(text)` call (and `g.embedders()`
+    /// lists). The default holds only the built-in `hash-ngram/1`; a host that loads models
+    /// registers them here ([`Self::with_embedders`]).
+    pub embedders: Arc<Embedders>,
 }
 
 impl Default for SessionPresets {
@@ -101,6 +106,7 @@ impl Default for SessionPresets {
             limits: ScriptLimits::unlimited(),
             options: Vec::new(),
             script_timeout_ms: None,
+            embedders: Arc::new(Embedders::default()),
         }
     }
 }
@@ -120,6 +126,12 @@ impl SessionPresets {
     /// Adds a preset traversal option (`evaluationTimeout`, `memory.limit`, ...).
     pub fn with_option(mut self, key: impl Into<String>, value: ElementProperty) -> Self {
         self.options.push((key.into(), value));
+        self
+    }
+
+    /// Sets the embedders of every run (the default: only the built-in `hash-ngram/1`).
+    pub fn with_embedders(mut self, embedders: Arc<Embedders>) -> Self {
+        self.embedders = embedders;
         self
     }
 
@@ -273,6 +285,7 @@ impl Session {
             playground_authorizer(),
             &presets.option_slice(),
         );
+        graphersal::script::set_engine_embedders(&mut engine, presets.embedders.clone());
         // A script loop that runs no traversal is stopped here, on Stop or past the script
         // budget; traversals check the token and their own evaluationTimeout themselves.
         let run_cancel = Arc::new(Mutex::new(cancel.clone()));
@@ -473,6 +486,14 @@ impl Session {
         value_json(&validation.to_value())
     }
 
+    /// The schema views (`{mode, source, table, json, mermaid, graph, truncated,
+    /// total_labels}`, [`crate::views::schema_view_of`]) of the schema `json`, e.g. the
+    /// editor's draft, with the graph's label counts. Nothing is stored or checked against data.
+    pub fn schema_view_of(&self, json: &str) -> Result<Value, String> {
+        let schema = GraphSchema::from_json(json).map_err(|err| format_diagnostic(&err))?;
+        Ok(self.graph.schema_view_of(schema))
+    }
+
     /// `validate_schema_patch`: [`Self::validate_schema`] of the stored schema patched.
     pub fn validate_schema_patch(&self, patch: &str) -> Result<Value, String> {
         let patch = SchemaPatch::from_json(patch).map_err(|err| format_diagnostic(&err))?;
@@ -532,8 +553,9 @@ impl Session {
     }
 
     /// `{name, kind, vertexCount, edgeCount, schemaMode, savedQueries, compressionRules,
-    /// catalog, warnings}` of the loaded graph (`savedQueries`, `compressionRules`: how many
-    /// of each its catalog holds; `catalog`: every kind's count by kind name).
+    /// propertyIndexes, catalog, warnings}` of the loaded graph (`savedQueries`,
+    /// `compressionRules`, `propertyIndexes`: how many of each its catalog holds; `catalog`:
+    /// every kind's count by kind name).
     pub fn info(&self) -> Value {
         let g = &self.graph;
         let definitions = g.definitions(None);
@@ -557,6 +579,10 @@ impl Session {
             "compressionRules": definitions
                 .iter()
                 .filter(|d| d.kind() == DefinitionKind::COMPRESSION)
+                .count(),
+            "propertyIndexes": definitions
+                .iter()
+                .filter(|d| d.kind() == DefinitionKind::PROPERTY_INDEX)
                 .count(),
             "catalog": catalog,
             "warnings": self.warnings,
@@ -792,6 +818,7 @@ impl Session {
         scope_options.extend(render_scope_options(&render));
         let any: Arc<dyn AnyGraph> = self.graph.clone();
         let mut scope = graph_scope_with_options(any, &scope_options, authorizer);
+        graphersal::script::set_scope_embedders(&mut scope, self.presets.embedders.clone());
         let hint = trailing_terminal(script);
         let seq_before = self.graph.last_commit_seq();
         // The whole run is one unit (the host option of `book/src/users_guide/transactions.md`):
@@ -2054,7 +2081,7 @@ mod tests {
     #[test]
     fn graphson_load_lists_skipped_data_as_warnings() {
         let mut s = Session::new();
-        let text = r#"{"id":"v","label":"x","properties":{"born":[{"value":{"@type":"g:Date","@value":1}}]}}"#;
+        let text = r#"{"id":"v","label":"x","properties":{"born":[{"value":{"@type":"gx:Year","@value":"2016"}}],"seen":[{"value":{"@type":"g:Date","@value":1}}]}}"#;
         let info = s
             .load_graphson(text.as_bytes(), "dates.json", None)
             .unwrap();
@@ -2065,8 +2092,13 @@ mod tests {
             warnings[0]
                 .as_str()
                 .unwrap()
-                .contains("skipped date/time values (g:Date"),
+                .contains("skipped date/time values (gx:Year, a type Graphersal cannot hold): 1"),
             "{info}"
+        );
+        // A date/time value Graphersal holds is imported, not a warning.
+        assert_eq!(
+            run(&mut s, r#"g.v().has("seen").count().next()"#)["execution"]["results"][0],
+            1
         );
         let info = s.load_sample("modern").unwrap();
         assert_eq!(info["warnings"], json!([]));
@@ -2650,6 +2682,44 @@ mod tests {
         let mut free = modern();
         assert_eq!(run(&mut free, "g.v().to_list()")["ok"], true);
         assert!(free.presets().options.is_empty());
+    }
+
+    /// The host's embedders reach every run: the `embed` step (also inside the MCP read-only
+    /// authorizer), `embed(text)` and `g.embedders()`; the default session has `hash-ngram/1`.
+    #[test]
+    fn the_session_embedders_reach_every_run() {
+        let small = graphersal::vector::HashNgram::with_dimension("acme/small", 8).unwrap();
+        let embedders = Embedders::builder()
+            .with(Arc::new(small))
+            .unwrap()
+            .default_name("acme/small")
+            .unwrap()
+            .build();
+        let mut s =
+            Session::with_presets(SessionPresets::new().with_embedders(Arc::new(embedders)));
+        s.load_sample("modern").unwrap();
+        let shape = run(
+            &mut s,
+            r#"[g.v().embed("name").next().dimension, embed("x").dimension, g.embedders().len()]"#,
+        );
+        assert_eq!(shape["ok"], true, "{shape}");
+        assert_eq!(shape["execution"]["results"], json!([8, 8, 2]), "{shape}");
+        let read_only: Value = serde_json::from_str(&s.execute_with_authorizer(
+            r#"g.v().embed("name").next().dimension"#,
+            &RunOptions::default(),
+            read_only_authorizer(),
+        ))
+        .unwrap();
+        assert_eq!(read_only["ok"], true, "{read_only}");
+        let mut free = modern();
+        let builtin = run(&mut free, r#"g.embedders()[0].name"#);
+        assert!(
+            builtin["display"]["raw"]
+                .as_str()
+                .unwrap()
+                .contains("hash-ngram/1"),
+            "{builtin}"
+        );
     }
 
     #[test]

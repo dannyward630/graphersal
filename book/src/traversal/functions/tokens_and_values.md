@@ -5,6 +5,30 @@
 
 **`containing`**: the same as `P.containing`, without the class name.
 
+**`date`**: A date from ISO 8601 text.
+
+```rhai,graph=modern
+date("2024-02-29").day   // 29
+```
+
+**`datetime` · `DateTime`**: A datetime from ISO 8601 text.
+
+```rhai,graph=modern
+datetime("2023-08-02T09:30Z").hour   // 9
+```
+
+**`duration`**: A duration (PostgreSQL interval).
+
+```rhai,graph=modern
+duration("P1Y2M").months   // 14
+```
+
+**`embed`**: A vector for a text from an embedder (default hash-ngram/1), computed before any traversal runs.
+
+```rhai,graph=modern
+embed("Marko") == embed("marko")   // true
+```
+
 **`empty`**: Creates a new empty graph, private to the script, and returns its traversal source.
 
 ```rhai,graph=modern
@@ -45,6 +69,12 @@ GraphSource::file_tree().v().count().next()   // 37
 g.inject(#{a: #{b: [5, 6]}}).values(jpath("a.b[1]")).to_list()   // [6]
 ```
 
+**`localdatetime` · `localDateTime`**: A date and time without a zone.
+
+```rhai,graph=modern
+localdatetime("2023-08-02T09:30").hour   // 9
+```
+
 **`lt`**: the same as `P.lt`, without the class name.
 
 **`lte`**: the same as `P.lte`, without the class name.
@@ -61,16 +91,34 @@ g.inject(#{a: #{b: [5, 6]}}).values(jpath("a.b[1]")).to_list()   // [6]
 
 **`not_starting_with` · `notStartingWith`**: the same as `P.not_starting_with`, without the class name.
 
+**`now`**: Script start time, the same for every call (PostgreSQL now()).
+
+```rhai,graph=modern
+now() == now()   // true
+```
+
 **`outside`**: the same as `P.outside`, without the class name.
 
 **`regex`**: the same as `TextP.regex`, without the class name.
 
 **`starting_with` · `startingWith`**: the same as `P.starting_with`, without the class name.
 
+**`time`**: A time of day.
+
+```rhai,graph=modern
+time("09:30:15").second   // 15
+```
+
 **`tinkerpop_modern`**: Creates a private copy of TinkerPop's modern sample graph (6 vertices, 6 edges).
 
 ```rhai,graph=modern
 GraphSource::tinkerpop_modern().e().count().next()   // 6
+```
+
+**`today`**: The date of now() in UTC or in the given zone.
+
+```rhai,graph=modern
+type_of(today())   // date
 ```
 
 **`typeOf`**: the same as `P.typeOf`, without the class name.
@@ -79,6 +127,12 @@ GraphSource::tinkerpop_modern().e().count().next()   // 6
 
 ```rhai,graph=modern
 type_of(UUID())   // Uuid
+```
+
+**`vector`**: A vector value (an embedding) from a list of numbers: f32, or quantized to f16, i8 or bit.
+
+```rhai,graph=modern
+vector([0.5, -1.0], "bit").to_list()   // [1.0, -1.0]
 ```
 
 **`within`**: the same as `P.within`, without the class name.
@@ -137,6 +191,24 @@ UUID.from_string("123e4567-e89b-12d3-a456-426614174000").as_string()   // 123e45
 
 ```rhai,graph=modern
 UUID.from_string("123e4567-e89b-12d3-a456-426614174000").as_string().len()   // 36
+```
+
+**`temporal.as_string` · `temporal.asString`**: The canonical ISO 8601 text of a date or time value.
+
+```rhai,graph=modern
+datetime("2023-08-02T09:30+02:00").as_string()   // 2023-08-02T09:30:00+02:00
+```
+
+**`Vector.quantize`**: The vector in another element kind (f32, f16, i8, bit).
+
+```rhai,graph=modern
+vector([0.5, -1.0]).quantize("i8").dimension   // 2
+```
+
+**`Vector.to_list` · `Vector.toList`**: The values of the vector as a list of floats (dequantized).
+
+```rhai,graph=modern
+vector([0.5, 2]).to_list()   // [0.5, 2.0]
 ```
 
 **`Set.of`**: A set value (duplicates dropped) of the given values, e.g. to seed a set side effect.

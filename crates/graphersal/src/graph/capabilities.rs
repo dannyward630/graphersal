@@ -45,6 +45,12 @@ pub struct StorageCapabilities {
     /// The content never changes for the lifetime of the storage (a frozen base, for example
     /// under a future layered overlay).
     pub immutable: bool,
+    /// The storage maintains and serves property indexes (book page "Property Indexes":
+    /// `GraphStorage::property_indexes` and the index lookups). Without it, an index
+    /// definition can still be stored in the catalog, but `create_index` is refused with
+    /// `GraphError::Unsupported`. A read-only view (`&G`) claims nothing but still serves the
+    /// indexes of the storage it views.
+    pub property_indexes: bool,
 }
 
 impl StorageCapabilities {
@@ -58,6 +64,7 @@ impl StorageCapabilities {
             durability: false,
             writable: false,
             immutable: false,
+            property_indexes: false,
         }
     }
 
@@ -94,6 +101,12 @@ impl StorageCapabilities {
     /// Sets [`Self::writable`].
     pub const fn with_writable(mut self, writable: bool) -> Self {
         self.writable = writable;
+        self
+    }
+
+    /// Sets [`Self::property_indexes`].
+    pub const fn with_property_indexes(mut self, property_indexes: bool) -> Self {
+        self.property_indexes = property_indexes;
         self
     }
 

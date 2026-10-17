@@ -125,7 +125,7 @@ fn t1_memory_usage_via_generic_storage_trait() {
         fn edge_endpoints(&self, edge: Self::EdgeId) -> Option<(Self::VertexId, Self::VertexId)> {
             self.0.edge_endpoints(edge)
         }
-        fn add_vertex(
+        fn insert_vertex(
             &mut self,
             _id: Option<compact_str::CompactString>,
             _labels: Vec<compact_str::CompactString>,
@@ -147,7 +147,7 @@ fn t1_memory_usage_via_generic_storage_trait() {
         ) -> Result<bool, graphersal::error::GraphError> {
             unimplemented!("read-only test wrapper")
         }
-        fn add_edge(
+        fn insert_edge(
             &mut self,
             _id: Option<compact_str::CompactString>,
             _label: Option<compact_str::CompactString>,

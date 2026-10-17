@@ -418,3 +418,50 @@ test('flow: an engine error of the check is shown, not thrown', async () => {
   assert.equal(flow.ed.draftOrigin, 'inferred');
   assert.deepEqual(getAt(flow.ed.draft, ['vertices', 'person']), {});
 });
+
+test('defaultSummary shows a fixed default and a default function of a property', async () => {
+  const { defaultSummary } = await import('../js/schema/draft.js');
+  assert.equal(defaultSummary({ type: 'string', format: 'date-time', defaultFunction: 'now' }), 'default now()');
+  assert.equal(defaultSummary({ type: 'integer', default: 5 }), 'default 5');
+  assert.equal(defaultSummary({ type: 'string' }), null);
+});
+
+test('default functions are offered by type and only on top-level properties', async () => {
+  const { DEFAULT_FUNCTIONS, isTopLevelProperty } = await import('../js/schema/draft.js');
+  assert.deepEqual([...DEFAULT_FUNCTIONS.uuid], ['uuidv4', 'uuidv7']);
+  assert.deepEqual([...DEFAULT_FUNCTIONS.datetime], ['now']);
+  assert.deepEqual([...DEFAULT_FUNCTIONS.date], ['today']);
+  assert.equal(DEFAULT_FUNCTIONS.string, undefined);
+  assert.equal(isTopLevelProperty(['vertices', 'event', 'schema', 'properties', 'created']), true);
+  assert.equal(isTopLevelProperty(['vertices', 'event', 'schema', 'properties', 'a', 'properties', 'b']), false);
+});
+
+test('a vector property gets element f32 and keeps its vector keywords until the type changes', async () => {
+  const { setBaseType, setKeyword, typeText, VECTOR_METRICS } = await import('../js/schema/draft.js');
+  const doc = { vertices: { doc: { schema: { type: 'object', properties: { emb: { type: 'string' } } } } } };
+  const path = ['vertices', 'doc', 'schema', 'properties', 'emb'];
+  setBaseType(doc, path, 'vector');
+  setKeyword(doc, path, 'element', 'i8');
+  setKeyword(doc, path, 'dimension', 384);
+  setKeyword(doc, path, 'metric', 'dot');
+  const emb = doc.vertices.doc.schema.properties.emb;
+  assert.deepEqual(emb, { type: 'array', format: 'vector', element: 'i8', dimension: 384, metric: 'dot' });
+  assert.equal(typeText(emb), 'vector<i8, 384>');
+  setBaseType(doc, path, 'string');
+  assert.deepEqual(doc.vertices.doc.schema.properties.emb, { type: 'string' });
+  assert.deepEqual([...VECTOR_METRICS], ['cosine', 'dot', 'l2', 'hamming']);
+});
+
+test('a vector property keeps its embedder until the type changes', async () => {
+  const { setBaseType, setKeyword, typeText } = await import('../js/schema/draft.js');
+  const doc = { vertices: { doc: { schema: { type: 'object', properties: { emb: { type: 'string' } } } } } };
+  const path = ['vertices', 'doc', 'schema', 'properties', 'emb'];
+  setBaseType(doc, path, 'vector');
+  setKeyword(doc, path, 'dimension', 256);
+  setKeyword(doc, path, 'embedder', 'hash-ngram/1');
+  const emb = doc.vertices.doc.schema.properties.emb;
+  assert.equal(emb.embedder, 'hash-ngram/1');
+  assert.equal(typeText(emb), 'vector<f32, 256>');
+  setBaseType(doc, path, 'string');
+  assert.deepEqual(doc.vertices.doc.schema.properties.emb, { type: 'string' });
+});

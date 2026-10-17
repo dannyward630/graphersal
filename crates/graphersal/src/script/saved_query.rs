@@ -368,6 +368,7 @@ fn non_data(value: &Dynamic, levels: usize) -> Option<String> {
         || value.is_bool()
         || value.is_unit()
         || value.is::<ScriptUuid>()
+        || value.is::<ScriptVector>()
         || value.is::<ScriptMap>()
     {
         return None;
@@ -951,6 +952,7 @@ impl ScriptGraphTraversalSource {
             max_value_depth: self.access.max_value_depth,
             read_only: true,
             query_depth: self.access.query_depth + 1,
+            embedders: self.access.embedders.clone(),
         });
         let g = ScriptGraphTraversalSource {
             g: Some(graph.clone()),
@@ -959,14 +961,18 @@ impl ScriptGraphTraversalSource {
             access: access.clone(),
             private: false,
             anonymous: false,
+            now: None,
         };
         let mut scope = eval::scope_with_access(g, access);
+        // The body sees the caller's `now()` (one value per evaluation, `access.rs`).
+        let tag = access::nested_tag(ctx, access::ScriptAccess::of_context(ctx));
         let result = ctx
             .engine()
             .call_fn_with_options::<Dynamic>(
                 rhai::CallFnOptions::new()
                     .eval_ast(false)
-                    .rewind_scope(true),
+                    .rewind_scope(true)
+                    .with_tag(tag),
                 &mut scope,
                 &compiled.ast,
                 name,

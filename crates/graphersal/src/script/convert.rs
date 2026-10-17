@@ -40,7 +40,9 @@ impl ScriptGraphTraversalSource {
         &self,
         storage: S,
     ) -> GraphTraversalSource<'g, S> {
-        let mut graph = GraphTraversalSource::new(storage).restricted(self.restrictions());
+        let mut graph = GraphTraversalSource::new(storage)
+            .restricted(self.restrictions())
+            .with_embedders(self.access.embedders.clone());
         // The host's presets reach every source of the session (`g`, `_g`, `__`, the
         // `GraphSource::x()` constructors), whichever way the source was created; the query's own
         // `with(..)` of a key replaces the preset.
@@ -144,6 +146,9 @@ impl ScriptGraphTraversalSource {
                     graph.has(prop.clone(), element_property.clone())
                 }
                 Step::HasProperty(key) => graph.has_property(key.clone()),
+                Step::HasTraversal(key, arg) => {
+                    graph.has_traversal(key.clone(), arg.ast_convert_to_anonymous())
+                }
                 Step::HasNot(key) => graph.has_not(key.clone()),
                 Step::Discard => graph.discard(),
                 Step::Dedup => graph.dedup(),
@@ -216,6 +221,57 @@ impl ScriptGraphTraversalSource {
                     graph.as_number_with(target.clone(), policy.clone())
                 }
                 Step::Cast(target, policy) => graph.cast_with(target.clone(), policy.clone()),
+                Step::AsDate(None) => graph.as_date(),
+                Step::AsDate(Some(target)) => graph.as_date_to(target.clone()),
+                Step::AsDuration => graph.as_duration(),
+                Step::AsVector => graph.as_vector(),
+                Step::Quantize(element) => graph.quantize(*element),
+                Step::Similarity(key, query, metric) => {
+                    let query = lower_vector_query(query);
+                    match key {
+                        Some(key) => graph.similarity(key.clone(), query, *metric),
+                        None => graph.similarity_value(query, *metric),
+                    }
+                }
+                Step::Nearest(key, query, k, metric) => {
+                    graph.nearest(key.clone(), lower_vector_query(query), *k, *metric)
+                }
+                Step::VectorMean => graph.vector_mean(),
+                Step::Embed(Some(key), embedder) => graph.embed(key.clone(), embedder.as_deref()),
+                Step::Embed(None, embedder) => graph.embed_value(embedder.as_deref()),
+                Step::DateAdd(unit, n, None) => graph.date_add(*unit, *n),
+                Step::DateAdd(unit, n, Some(zone)) => graph.date_add_in(*unit, *n, zone),
+                Step::DateAddDuration(duration, None) => graph.date_add_duration(*duration),
+                Step::DateAddDuration(duration, Some(zone)) => {
+                    graph.date_add_duration_in(*duration, zone)
+                }
+                Step::DateDiff(other, unit, zone) => match (other, unit) {
+                    (ScriptListArg::Value(value), None) => graph.date_diff(value.clone()),
+                    (ScriptListArg::Traversal(gts), None) => {
+                        graph.date_diff_traversal(gts.ast_convert_to_anonymous())
+                    }
+                    (ScriptListArg::Value(value), Some(unit)) => {
+                        graph.date_diff_in(value.clone(), *unit, zone.as_deref())
+                    }
+                    (ScriptListArg::Traversal(gts), Some(unit)) => graph.date_diff_traversal_in(
+                        gts.ast_convert_to_anonymous(),
+                        *unit,
+                        zone.as_deref(),
+                    ),
+                },
+                Step::Age(other, zone) => match other {
+                    ScriptListArg::Value(value) => graph.age(value.clone(), zone.as_deref()),
+                    ScriptListArg::Traversal(gts) => {
+                        graph.age_traversal(gts.ast_convert_to_anonymous(), zone.as_deref())
+                    }
+                },
+                Step::DateTrunc(unit, None) => graph.date_trunc(*unit),
+                Step::DateTrunc(unit, Some(zone)) => graph.date_trunc_in(*unit, zone),
+                Step::DatePart(part, None) => graph.date_part(*part),
+                Step::DatePart(part, Some(zone)) => graph.date_part_in(*part, zone),
+                Step::AtZone(zone) => graph.at_zone(zone),
+                Step::AsLocal(None) => graph.as_local(),
+                Step::AsLocal(Some(zone)) => graph.as_local_in(zone),
                 Step::Substring(a_from, a_to) => graph.substring(*a_from, *a_to),
                 Step::ToUpperScoped(scope) => graph.to_upper_scoped(*scope),
                 Step::ToLowerScoped(scope) => graph.to_lower_scoped(*scope),
@@ -319,7 +375,8 @@ impl ScriptGraphTraversalSource {
                 Step::AddV(labels) => match labels {
                     Some(labels) => graph.add_v(labels.clone()),
                     None => graph.add_v(None),
-                },
+                }
+                .stamp_create_time(self.now),
                 Step::Property(prop, val) => graph.property(prop.clone(), val.clone()),
                 Step::PropertyTraversal(prop, gts) => {
                     graph.property_by(prop.clone(), gts.ast_convert_to_anonymous())
@@ -331,7 +388,9 @@ impl ScriptGraphTraversalSource {
                     key.ast_convert_to_anonymous(),
                     val.ast_convert_to_anonymous(),
                 ),
-                Step::AddVTraversal(gts) => graph.add_v_by(gts.ast_convert_to_anonymous()),
+                Step::AddVTraversal(gts) => graph
+                    .add_v_by(gts.ast_convert_to_anonymous())
+                    .stamp_create_time(self.now),
                 Step::PropertyCardinality(cardinality, prop, val) => {
                     graph.property_with(*cardinality, prop.clone(), val.clone())
                 }
@@ -348,11 +407,15 @@ impl ScriptGraphTraversalSource {
                 // once, as `GraphTraversalSource::merge_v` decides.
                 Step::MergeV(arg) => {
                     let start = root && graph.is_empty();
-                    graph.merge_v_lowered(arg.lower(), start)
+                    graph
+                        .merge_v_lowered(arg.lower(), start)
+                        .stamp_create_time(self.now)
                 }
                 Step::MergeE(arg) => {
                     let start = root && graph.is_empty();
-                    graph.merge_e_lowered(arg.lower(), start)
+                    graph
+                        .merge_e_lowered(arg.lower(), start)
+                        .stamp_create_time(self.now)
                 }
                 Step::MergeOption(token, ScriptMergeArg::Entries(entries), cardinality) => {
                     graph.option_merge_entries(*token, entries.clone(), *cardinality)
@@ -374,8 +437,11 @@ impl ScriptGraphTraversalSource {
                 Step::AddE(label) => match label {
                     Some(label) => graph.add_e(label.clone()),
                     None => graph.add_e(None),
-                },
-                Step::AddETraversal(gts) => graph.add_e_by(gts.ast_convert_to_anonymous()),
+                }
+                .stamp_create_time(self.now),
+                Step::AddETraversal(gts) => graph
+                    .add_e_by(gts.ast_convert_to_anonymous())
+                    .stamp_create_time(self.now),
                 Step::FromTraversal(gts) => graph.from_by(gts.ast_convert_to_anonymous()),
                 Step::ToTraversal(gts) => graph.to_by(gts.ast_convert_to_anonymous()),
                 Step::Drop => graph.drop(),
@@ -394,6 +460,18 @@ impl ScriptGraphTraversalSource {
             };
         }
         graph
+    }
+}
+
+/// Lowers the query vector of `similarity()` / `nearest()`.
+fn lower_vector_query<'g, S: GraphStorage + 'g>(
+    query: &ScriptVectorQuery,
+) -> crate::traversal::step::map_steps::step_similarity::VectorQuery<'g, S> {
+    use crate::traversal::step::map_steps::step_similarity::VectorQuery;
+    match query {
+        ScriptVectorQuery::Value(vector) => VectorQuery::Value(vector.clone()),
+        ScriptVectorQuery::Traversal(gts) => VectorQuery::Traversal(gts.ast_convert_to_anonymous()),
+        ScriptVectorQuery::Text(text) => VectorQuery::from(text.clone()),
     }
 }
 

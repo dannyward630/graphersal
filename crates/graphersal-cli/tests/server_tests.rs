@@ -601,6 +601,36 @@ fn malformed_and_foreign_requests_are_4xx_json() {
     assert_eq!(execute(port, "1 + 1")["ok"], true);
 }
 
+/// The Schema panel draws what its editor shows: the views of a given schema (a draft), with
+/// the graph's label counts, whatever the graph stores.
+#[test]
+fn schema_view_of_a_given_schema_over_http() {
+    let ui = ui_dir("schema-view");
+    let server = start(&["--graph", "modern", "--ui-dir", ui.to_str().unwrap()]);
+    let port = server.port;
+    let draft = r#"{"mode": "none", "vertices": {"city": {"schema": {"type": "object",
+        "properties": {"name": {"type": "string"}}}}, "person": {"schema": {"type": "object"}}},
+        "edges": {"lives in": {"connections": [{"from": "person", "to": "city"}]}}}"#;
+    let view = post(port, "/api/schema/view", draft);
+    assert_eq!(view.status, 200, "{}", view.body);
+    let view = view.json();
+    assert_eq!(view["source"], "given");
+    assert_eq!(view["mode"], "none");
+    let mermaid = view["mermaid"].as_str().unwrap();
+    assert!(mermaid.contains("city {"), "{mermaid}");
+    assert!(
+        mermaid.contains(r#"person ||--o{ city : "lives in""#),
+        "{mermaid}"
+    );
+    let nodes = view["graph"]["nodes"].as_array().unwrap();
+    let person = nodes.iter().find(|n| n["label"] == "person").unwrap();
+    assert_eq!(person["count"], 4, "{person}");
+    // nothing stored
+    assert_eq!(get(port, "/api/schema/stored").body, "null");
+    let bad = post(port, "/api/schema/view", r#"{"vertices": 1}"#);
+    assert_eq!(bad.status, 422, "{}", bad.body);
+}
+
 #[test]
 fn schema_methods_over_http() {
     let ui = ui_dir("schema");
@@ -2353,6 +2383,220 @@ fn compression_rules_over_http() {
 }
 
 #[test]
+fn property_indexes_over_http() {
+    let ui = ui_dir("indexes");
+    let server = start(&["--graph", "modern", "--ui-dir", ui.to_str().unwrap()]);
+    let port = server.port;
+    assert_eq!(get(port, "/api/indexes").json(), serde_json::json!([]));
+    let created = post(
+        port,
+        "/api/indexes/create",
+        r#"{"label": "person", "key": "age"}"#,
+    )
+    .json();
+    assert_eq!(created["ok"], true, "{created}");
+    assert_eq!(created["index"]["name"], "person_age");
+    assert_eq!(created["index"]["stats"]["entries"], 4);
+    // Creating an index is a commit: the change feed records it.
+    assert_eq!(changes(port)["commitSeq"], 1);
+    let refused = post(
+        port,
+        "/api/indexes/create",
+        r#"{"label": "person", "key": "age", "name": "ages"}"#,
+    );
+    assert_eq!(refused.status, 200);
+    assert_eq!(refused.json()["errors"][0]["field"], "key");
+    let listed = get(port, "/api/indexes").json();
+    assert_eq!(listed[0]["served"], true, "{listed}");
+    assert_eq!(get(port, "/api/graph").json()["propertyIndexes"], 1);
+    let memory = &get(port, "/api/statistics").json()["memory"];
+    assert!(
+        memory["property_index_bytes"].as_u64().unwrap() > 0,
+        "{memory}"
+    );
+    let run = execute(
+        port,
+        r#"g.v().has_label("person").has("age", P.gt(30)).values("name").order().to_list()"#,
+    );
+    assert_eq!(
+        run["execution"]["results"],
+        serde_json::json!(["josh", "peter"])
+    );
+    // The catalog file carries the index; loading it brings it back.
+    let file = get(port, "/api/catalog/export").body;
+    assert!(file.contains("\"property_index\""), "{file}");
+    assert_eq!(
+        post(port, "/api/indexes/drop", r#"{"name": "person_age"}"#).json()["dropped"],
+        true
+    );
+    assert_eq!(changes(port)["commitSeq"], 2);
+    assert_eq!(get(port, "/api/graph").json()["propertyIndexes"], 0);
+    let loaded = post(port, "/api/catalog/load?replace=true", &file).json();
+    assert_eq!(loaded["graph"]["propertyIndexes"], 1, "{loaded}");
+    assert_eq!(get(port, "/api/indexes/create").status, 405);
+}
+
+#[test]
+fn mcp_property_index_tools_and_read_only() {
+    let ui = ui_dir("mcp-indexes");
+    let ui_arg = ui.to_str().unwrap().to_string();
+    let server = start(&["--graph", "modern", "--ui-dir", &ui_arg, "--mcp"]);
+    let port = server.port;
+    let mut mcp = McpClient::connect(port, &[]);
+    let names = mcp.tool_names();
+    for name in ["list_indexes", "create_index", "drop_index"] {
+        assert!(names.iter().any(|n| n == name), "{name}: {names:?}");
+    }
+    let (error, text) = mcp.call("list_indexes", serde_json::json!({}));
+    assert!(!error && text.contains("no property indexes"), "{text}");
+    let (error, text) = mcp.call(
+        "create_index",
+        serde_json::json!({"label": "person", "key": "age"}),
+    );
+    assert!(!error && text.contains("person_age"), "{text}");
+    assert_eq!(changes(port)["commitSeq"], 1);
+    let (error, text) = mcp.call("create_index", serde_json::json!({"label": "person"}));
+    assert!(error && text.contains("\"key\""), "{text}");
+    let (error, text) = mcp.call("list_indexes", serde_json::json!({}));
+    assert!(!error && text.contains("\"entries\": 4"), "{text}");
+    let (error, text) = mcp.call(
+        "query",
+        serde_json::json!({"script": r#"g.v().has_label("person").has("age", 29).values("name").profile()"#}),
+    );
+    assert!(
+        !error && text.contains("[index: vertex") && text.contains("property_index"),
+        "{text}"
+    );
+    let (error, text) = mcp.call("drop_index", serde_json::json!({"name": "person_age"}));
+    assert!(!error && text.contains("dropped"), "{text}");
+    let (error, text) = mcp.call("drop_index", serde_json::json!({"name": "person_age"}));
+    assert!(!error && text.contains("no index"), "{text}");
+    drop(server);
+
+    // Read-only: list only; the writing tools are not offered and the query tool's authorizer
+    // denies the DSL's index writes.
+    let server = start(&[
+        "--graph",
+        "modern",
+        "--ui-dir",
+        &ui_arg,
+        "--mcp",
+        "--mcp-read-only",
+    ]);
+    let port = server.port;
+    let mut mcp = McpClient::connect(port, &[]);
+    let names = mcp.tool_names();
+    assert!(names.iter().any(|n| n == "list_indexes"), "{names:?}");
+    for writing in ["create_index", "drop_index"] {
+        assert!(!names.iter().any(|n| n == writing), "{names:?}");
+        let refused = mcp.rpc(
+            "tools/call",
+            serde_json::json!({"name": writing, "arguments": {"label": "person", "key": "age", "name": "x"}}),
+        );
+        assert_eq!(refused["error"]["code"], -32602, "{refused}");
+    }
+    for script in [
+        r#"g.create_index(#{label: "person", key: "age"})"#,
+        r#"g.drop_index("person_age")"#,
+    ] {
+        let (error, text) = mcp.call("query", serde_json::json!({"script": script}));
+        assert!(error, "{script}: {text}");
+        assert!(text.to_lowercase().contains("denied"), "{script}: {text}");
+    }
+    let (error, text) = mcp.call("query", serde_json::json!({"script": "g.indexes()"}));
+    assert!(!error, "{text}");
+    assert_eq!(changes(port)["version"], 0);
+}
+
+#[test]
+fn property_index_types_over_http_and_mcp() {
+    let ui = ui_dir("index-types");
+    let ui_arg = ui.to_str().unwrap().to_string();
+    let server = start(&["--graph", "modern", "--ui-dir", &ui_arg, "--mcp"]);
+    let port = server.port;
+    // HTTP: the type is listed, an unknown one is an error of the field `type`.
+    let created = post(
+        port,
+        "/api/indexes/create",
+        r#"{"label": "person", "key": "age", "type": "memory-ordered"}"#,
+    )
+    .json();
+    assert_eq!(created["ok"], true, "{created}");
+    assert_eq!(created["index"]["type"], "memory-ordered", "{created}");
+    let listed = get(port, "/api/indexes").json();
+    assert_eq!(listed[0]["type"], "memory-ordered", "{listed}");
+    assert_eq!(listed[0]["reason"], Value::Null, "{listed}");
+    let refused = post(
+        port,
+        "/api/indexes/create",
+        r#"{"label": "person", "key": "name", "type": "hash"}"#,
+    )
+    .json();
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert_eq!(refused["errors"][0]["field"], "type", "{refused}");
+    // A key the schema declares as a vector: an error of the field `key`.
+    let set = execute(
+        port,
+        r#"g.set_schema(#{mode: "open", vertices: #{doc: #{schema: #{type: "object",
+             properties: #{emb: #{type: "array", format: "vector", element: "f32"}}}}}})"#,
+    );
+    assert_eq!(set["ok"], true, "{set}");
+    let refused = post(
+        port,
+        "/api/indexes/create",
+        r#"{"label": "doc", "key": "emb"}"#,
+    )
+    .json();
+    assert_eq!(refused["errors"][0]["field"], "key", "{refused}");
+    assert!(
+        refused["errors"][0]["help"]
+            .as_str()
+            .unwrap()
+            .contains("nearest()"),
+        "{refused}"
+    );
+
+    // MCP: initialize -> tools/list (the type enum) -> tools/call.
+    let mut mcp = McpClient::connect(port, &[]);
+    let tools = mcp.rpc("tools/list", serde_json::json!({}));
+    let create = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "create_index")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        create["inputSchema"]["properties"]["type"]["enum"],
+        serde_json::json!(["memory-ordered"]),
+        "{create}"
+    );
+    let (error, text) = mcp.call(
+        "create_index",
+        serde_json::json!({"label": "software", "key": "lang", "type": "memory-ordered"}),
+    );
+    assert!(
+        !error && text.contains("\"type\": \"memory-ordered\""),
+        "{text}"
+    );
+    let (error, text) = mcp.call(
+        "create_index",
+        serde_json::json!({"label": "software", "key": "name", "type": "hash"}),
+    );
+    assert!(error && text.contains("\"type\""), "{text}");
+    let (error, text) = mcp.call(
+        "create_index",
+        serde_json::json!({"label": "doc", "key": "emb"}),
+    );
+    assert!(error && text.contains("vector<f32>"), "{text}");
+    let (error, text) = mcp.call("list_indexes", serde_json::json!({}));
+    assert!(
+        !error && text.matches("\"type\": \"memory-ordered\"").count() == 2,
+        "{text}"
+    );
+}
+
+#[test]
 fn mcp_saved_query_tools_and_resource() {
     let ui = ui_dir("mcp-queries");
     let ui_arg = ui.to_str().unwrap().to_string();
@@ -2518,6 +2762,9 @@ fn mcp_on_a_store_offers_the_graph_tools_only() {
             "define_compression",
             "drop_compression",
             "recompress",
+            "list_indexes",
+            "create_index",
+            "drop_index",
             "get_schema",
             "infer_schema",
             "validate_schema",
@@ -2854,6 +3101,15 @@ fn api_bodies() -> Vec<(&'static str, Value)> {
         ),
         ("/api/compression/recompress", json!({"name": "fz"})),
         ("/api/compression/drop", json!({"name": "fz"})),
+        (
+            "/api/indexes/create",
+            json!({"label": "person", "key": "name", "name": "fz"}),
+        ),
+        (
+            "/api/indexes/create",
+            json!({"label": "", "key": "a\u{0}b", "name": "fz fz", "element": "nope"}),
+        ),
+        ("/api/indexes/drop", json!({"name": "fz"})),
     ]
 }
 
@@ -2888,6 +3144,7 @@ const API_GETS: &[&str] = &[
     "/api/queries?folder=a%2Fb",
     "/api/queries/get?name=%F0%9F%9A%80",
     "/api/catalog/export",
+    "/api/indexes",
     "/%FF%FE",
     "/%2",
     "/api/",
@@ -4165,4 +4422,152 @@ fn the_server_keeps_serving_with_a_closed_stderr() {
     let r = execute(server.port, "g.v().fail_here()");
     assert_eq!(r["ok"], false, "{r}");
     assert_eq!(get(server.port, "/api/info").status, 200);
+}
+
+#[test]
+fn property_index_transforms_over_http_and_mcp() {
+    let ui = ui_dir("index-transforms");
+    let ui_arg = ui.to_str().unwrap().to_string();
+    let server = start(&["--graph", "modern", "--ui-dir", &ui_arg, "--mcp"]);
+    let port = server.port;
+    // HTTP: the transform is stored, listed and names the default; a plain index beside it.
+    let created = post(
+        port,
+        "/api/indexes/create",
+        r#"{"label": "person", "key": "name", "transform": "to_lower"}"#,
+    )
+    .json();
+    assert_eq!(created["ok"], true, "{created}");
+    assert_eq!(
+        created["index"]["name"], "person_name_to_lower",
+        "{created}"
+    );
+    assert_eq!(created["index"]["transform"], "to_lower", "{created}");
+    assert_eq!(created["index"]["stats"]["skipped"], 0, "{created}");
+    let plain = post(
+        port,
+        "/api/indexes/create",
+        r#"{"label": "person", "key": "name"}"#,
+    )
+    .json();
+    assert_eq!(plain["index"]["transform"], Value::Null, "{plain}");
+    let listed = get(port, "/api/indexes").json();
+    assert_eq!(listed.as_array().unwrap().len(), 2, "{listed}");
+    let refused = post(
+        port,
+        "/api/indexes/create",
+        r#"{"label": "person", "key": "name", "transform": "upper"}"#,
+    )
+    .json();
+    assert_eq!(refused["errors"][0]["field"], "transform", "{refused}");
+    let found = execute(
+        port,
+        r#"g.V().hasLabel("person").has("name", __.to_lower().is("marko")).values("name").toList()"#,
+    );
+    assert_eq!(found["ok"], true, "{found}");
+
+    // MCP: initialize -> tools/list (the transform enum) -> tools/call.
+    let mut mcp = McpClient::connect(port, &[]);
+    let tools = mcp.rpc("tools/list", serde_json::json!({}));
+    let create = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "create_index")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        create["inputSchema"]["properties"]["transform"]["enum"],
+        serde_json::json!(["to_lower"]),
+        "{create}"
+    );
+    let (error, text) = mcp.call(
+        "create_index",
+        serde_json::json!({"label": "software", "key": "name", "transform": "to_lower"}),
+    );
+    assert!(
+        !error && text.contains("\"name\": \"software_name_to_lower\""),
+        "{text}"
+    );
+    let (error, text) = mcp.call(
+        "create_index",
+        serde_json::json!({"label": "software", "key": "lang", "transform": "x"}),
+    );
+    assert!(error && text.contains("\"transform\""), "{text}");
+    let (error, text) = mcp.call("list_indexes", serde_json::json!({}));
+    assert!(
+        !error && text.matches("\"transform\": \"to_lower\"").count() == 2,
+        "{text}"
+    );
+}
+
+/// `--embedder` with `--server`: the model is loaded at start, `GET /api/info` lists the
+/// registry and the queries of the session call it (here a tiny synthetic Model2Vec model).
+#[cfg(feature = "model2vec")]
+#[test]
+fn an_embedder_of_the_command_line_serves_the_session() {
+    let dir = std::env::temp_dir().join(format!("graphersal_srv_{}_m2v", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.json"), r#"{"normalize": true}"#).unwrap();
+    std::fs::write(
+        dir.join("tokenizer.json"),
+        r#"{"version": "1.0", "truncation": null, "padding": null, "added_tokens": [],
+            "normalizer": null, "pre_tokenizer": {"type": "Whitespace"},
+            "post_processor": null, "decoder": null,
+            "model": {"type": "WordLevel", "vocab": {"[UNK]": 0, "lop": 1, "ripple": 2},
+                      "unk_token": "[UNK]"}}"#,
+    )
+    .unwrap();
+    let data: Vec<u8> = [0.0f32, 1.0, 1.0, 0.0, 0.5, 0.5]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let mut header = format!(
+        r#"{{"embeddings": {{"dtype": "F32", "shape": [3, 2], "data_offsets": [0, {}]}}}}"#,
+        data.len()
+    );
+    while header.len() % 8 != 0 {
+        header.push(' ');
+    }
+    let mut model = (header.len() as u64).to_le_bytes().to_vec();
+    model.extend_from_slice(header.as_bytes());
+    model.extend_from_slice(&data);
+    std::fs::write(dir.join("model.safetensors"), model).unwrap();
+
+    let spec = format!("tiny={}", dir.display());
+    let server = start(&[
+        "--graph",
+        "modern",
+        "--embedder",
+        &spec,
+        "--default-embedder",
+        "tiny",
+    ]);
+    let port = server.port;
+    let info = get(port, "/api/info").json();
+    let embedders = info["embedders"].as_array().expect("embedders").clone();
+    let tiny = embedders
+        .iter()
+        .find(|e| e["name"] == "tiny")
+        .expect("tiny listed");
+    assert_eq!(tiny["dimension"], 2);
+    assert_eq!(tiny["default"], true);
+    assert!(
+        tiny["model"].as_str().unwrap().starts_with("model2vec@"),
+        "{tiny}"
+    );
+    assert!(
+        embedders
+            .iter()
+            .any(|e| e["name"] == "hash-ngram/1" && e["default"] == false)
+    );
+
+    let r = execute(
+        port,
+        r#"g.v().has_label("software").embed("name").to_list().len()"#,
+    );
+    assert_eq!(r["ok"], true, "{r}");
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
 }

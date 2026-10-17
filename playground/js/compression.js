@@ -14,7 +14,8 @@ export const MAX_MIN_BYTES = 16 * 1024 * 1024;
 
 /**
  * The kinds of the catalog the Catalog dropdown lists, in its order, with what each manager
- * opens. A new kind (an index, ...) is one more entry here and one more manager.
+ * opens. The property indexes come after them: js/indexes.js `catalogMenuItems` appends their
+ * item (and the dropdown uses that list).
  */
 export const CATALOG_KINDS = Object.freeze([
   Object.freeze({ kind: 'query', id: 'queries', title: 'Saved queries', hint: 'Named, parameterized, read-only queries stored in the graph' }),
@@ -51,6 +52,7 @@ export function catalogCountsText(byKind, total) {
   const names = {
     query: ['saved query', 'saved queries'],
     compression: ['compression rule', 'compression rules'],
+    property_index: ['property index', 'property indexes'],
   };
   const order = CATALOG_KINDS.map((k) => k.kind);
   const rank = (kind) => (order.includes(kind) ? order.indexOf(kind) : order.length);

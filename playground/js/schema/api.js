@@ -1,6 +1,6 @@
-// The schema editor's ONLY way to the engine: the seven schema methods, nothing else. In 0.1.0
-// they go to the WebAssembly engine (engine.js `getSchema`, ...); in 0.2.0 the same editor can run
-// against the server API by passing another object with these seven methods.
+// The schema editor's ONLY way to the engine: the seven schema methods, nothing else. They go
+// to the engine of the page (engine.js `getSchema`, ...): the WebAssembly engine, or the dev
+// server's API through http-engine.js, which has the same seven methods.
 //
 // Schemas and patches are plain objects in the schema format (book: "Schemas"). Every method
 // returns a Promise; a rejected one carries the engine's located diagnostic as its message

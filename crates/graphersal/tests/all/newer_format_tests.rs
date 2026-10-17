@@ -6,8 +6,9 @@
 //! a (lossy) repair.
 //!
 //! The newer inputs are built by patching the version word of a valid store's files and
-//! recomputing the header checksum (so they are intact, not damaged), and by the real files of
-//! the 0.2 line in `tests/data/v0.2-preview/` (see its README).
+//! recomputing the header checksum (so they are intact, not damaged): no newer Graphersal
+//! exists to write real ones. "Newer" is one above this build: store format version
+//! `STORE_FORMAT_VERSION + 1`, file format version `FORMAT_VERSION + 1`, container version 2.
 #![cfg(all(feature = "persist", not(target_arch = "wasm32")))]
 
 use std::collections::BTreeMap;
@@ -19,6 +20,13 @@ use graphersal::persist::{
     self, CompactionPolicy, PersistError, ReadOptions, RecoveryTarget, RollbackMode, Store,
     StoreOptions,
 };
+
+/// A store format version one above this build's.
+const NEWER_STORE: u32 = persist::STORE_FORMAT_VERSION + 1;
+/// A file format version one above this build's.
+const NEWER_FILE: u32 = persist::FORMAT_VERSION + 1;
+/// A single-file container version one above this build's (1).
+const NEWER_CONTAINER: u32 = 2;
 
 /// A fresh directory path under the system temp dir, removed on drop.
 struct TempDir(PathBuf);
@@ -224,22 +232,28 @@ fn apply_variant(dir: &Path, variant: &str) {
             .unwrap_or_else(|| panic!("no file for {variant}"))
     };
     match variant {
-        "graph" => bump_graph(dir, 3, false),
-        "graph_copy_only" => bump_graph(dir, 3, true),
-        "manifest" => bump_manifest(&newest(&|p| p.ends_with("manifest") && !in_attic(p)), 2),
+        "graph" => bump_graph(dir, NEWER_STORE, false),
+        "graph_copy_only" => bump_graph(dir, NEWER_STORE, true),
+        "manifest" => bump_manifest(
+            &newest(&|p| p.ends_with("manifest") && !in_attic(p)),
+            NEWER_FILE,
+        ),
         "segment" => bump_header64(
             &newest(&|p| p.extension().is_some_and(|e| e == "seg") && !in_attic(p)),
-            2,
+            NEWER_FILE,
         ),
         "wal" => bump_header64(
             &newest(&|p| p.extension().is_some_and(|e| e == "wal") && !in_attic(p)),
-            2,
+            NEWER_FILE,
         ),
         "attic_wal" => bump_header64(
             &newest(&|p| p.extension().is_some_and(|e| e == "wal") && in_attic(p)),
-            2,
+            NEWER_FILE,
         ),
-        "attic_manifest" => bump_manifest(&newest(&|p| p.ends_with("manifest") && in_attic(p)), 2),
+        "attic_manifest" => bump_manifest(
+            &newest(&|p| p.ends_with("manifest") && in_attic(p)),
+            NEWER_FILE,
+        ),
         other => panic!("unknown variant {other}"),
     }
 }
@@ -337,6 +351,8 @@ fn every_store_operation_refuses_a_newer_store_and_changes_nothing() {
             ("restore_backup", err_of(Store::restore_backup(d))),
             ("prune_backup", err_of(Store::prune_backup(d, 1))),
             ("backup_marker_dir", err_of(Store::backup_marker_dir(d))),
+            ("upgrade", err_of(Store::upgrade(d, new_dir.path()))),
+            ("upgrade_in_place", err_of(Store::upgrade_in_place(d))),
         ];
         for (what, err) in checks {
             assert_newer(what, variant, err);
@@ -392,7 +408,7 @@ fn a_newer_backup_is_refused_as_a_backup_and_as_an_increment_target() {
     // The open store's own backup into a newer backup: refused too.
     let dir = TempDir::new("open-target");
     copy_tree(backup.path(), dir.path());
-    bump_graph(dir.path(), 3, false);
+    bump_graph(dir.path(), NEWER_STORE, false);
     let store = Store::open(store_dir.path(), StoreOptions::new()).unwrap();
     assert_newer("Store::backup", "graph", err_of(store.backup(dir.path())));
     store.close().unwrap();
@@ -400,7 +416,7 @@ fn a_newer_backup_is_refused_as_a_backup_and_as_an_increment_target() {
 
 #[test]
 fn a_newer_file_in_a_current_store_is_not_damage_and_never_repaired() {
-    // GRAPH says version 2, one snapshot segment says file format version 2: before the
+    // GRAPH is current, one snapshot segment is of a newer file format version: before the
     // guard this opened in maintenance mode and offered a repair that lost data.
     let dir = TempDir::new("mixed");
     build_store(dir.path());
@@ -438,7 +454,7 @@ fn a_newer_single_file_container_is_refused() {
     store.close().unwrap();
     // The preamble: magic (8 bytes), container version u32 at 8 (no checksum).
     let mut bytes = fs::read(&file).unwrap();
-    bytes[8..12].copy_from_slice(&2u32.to_le_bytes());
+    bytes[8..12].copy_from_slice(&NEWER_CONTAINER.to_le_bytes());
     fs::write(&file, &bytes).unwrap();
     let before = tree(&file);
     for (what, err) in [
@@ -479,7 +495,7 @@ fn a_newer_packed_snapshot_and_journal_are_refused() {
     let mut packed = Vec::new();
     Store::export_packed_dir(dir.path(), None, &mut packed).unwrap();
     // The packed header: magic, file format version u32 at 8.
-    packed[8..12].copy_from_slice(&2u32.to_le_bytes());
+    packed[8..12].copy_from_slice(&NEWER_FILE.to_le_bytes());
     let err = err_of(persist::read_snapshot(&packed[..], &ReadOptions::default()));
     assert_newer("read_snapshot", "packed", err);
     let target = TempDir::new("from-packed");
@@ -496,113 +512,35 @@ fn a_newer_packed_snapshot_and_journal_are_refused() {
     })
     .pop()
     .unwrap();
-    bump_header64(&wal, 2);
+    bump_header64(&wal, NEWER_FILE);
     let err = err_of(persist::read_journal(fs::File::open(&wal).unwrap()));
     assert_newer("read_journal", "wal", err);
 }
 
-/// The real files of the 0.2 line (`tests/data/v0.2-preview/`, see its README): a store
-/// (`GRAPH` store format version 3), a single-file store, a ZIP backup and a packed snapshot
-/// of file format version 2.
-fn preview(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/data/v0.2-preview")
-        .join(name)
-}
-
+/// An OLDER store (store format version 2, which this build upgrades) that holds a file of a
+/// NEWER file format version: the converter never works on it (no lock, no write), in place or
+/// into a copy, and the repair and damage report refuse it too.
 #[test]
-fn real_files_of_graphersal_0_2_are_refused_cleanly() {
-    // A store directory: copied first, so a write would show and the fixture stays intact.
-    let dir = TempDir::new("real-store");
-    copy_tree(&preview("store"), dir.path());
-    let before = tree(dir.path());
-    let new_dir = TempDir::new("real-new");
-    for (what, err) in [
-        ("open", err_of(Store::open(dir.path(), StoreOptions::new()))),
-        (
-            "open_read_only",
-            err_of(Store::open_read_only(dir.path(), RecoveryTarget::Latest)),
-        ),
-        ("inspect", err_of(Store::inspect(dir.path()))),
-        ("verify_dir", err_of(Store::verify_dir(dir.path()))),
-        (
-            "damage_report_dir",
-            err_of(Store::damage_report_dir(dir.path())),
-        ),
-        (
-            "repair_dir",
-            err_of(Store::repair_dir(dir.path(), new_dir.path())),
-        ),
-        (
-            "backup_dir",
-            err_of(Store::backup_dir(dir.path(), new_dir.path())),
-        ),
-        (
-            "convert",
-            err_of(Store::convert(dir.path(), new_dir.path())),
-        ),
-    ] {
-        if let PersistError::UnsupportedVersion {
-            found, supported, ..
-        } = &err
-        {
-            assert_eq!((*found, *supported), (3, 2), "{what}");
+fn the_upgrade_refuses_an_older_store_with_a_newer_file() {
+    for variant in ["segment", "wal", "manifest", "attic_wal"] {
+        let dir = TempDir::new(variant);
+        build_store(dir.path());
+        bump_graph(dir.path(), 2, false);
+        apply_variant(dir.path(), variant);
+        let _ = fs::remove_file(dir.join("LOCK"));
+        let before = tree(dir.path());
+        let new_dir = TempDir::new("upgraded");
+        let d = dir.path();
+        for (what, err) in [
+            ("upgrade", err_of(Store::upgrade(d, new_dir.path()))),
+            ("upgrade_in_place", err_of(Store::upgrade_in_place(d))),
+            ("repair_dir", err_of(Store::repair_dir(d, new_dir.path()))),
+            ("damage_report_dir", err_of(Store::damage_report_dir(d))),
+        ] {
+            assert_newer(what, variant, err);
         }
-        assert_newer(what, "0.2 store", err);
+        assert_eq!(tree(d), before, "{variant}: unchanged");
+        assert!(!dir.join("LOCK").exists(), "{variant}: no LOCK file");
+        assert!(!new_dir.path().exists(), "{variant}: no copy");
     }
-    assert_eq!(tree(dir.path()), before);
-    assert!(!dir.join("LOCK").exists(), "no LOCK file created");
-    assert!(!new_dir.path().exists());
-
-    // A single-file store.
-    let file_dir = TempDir::new("real-file");
-    fs::create_dir_all(file_dir.path()).unwrap();
-    let file = file_dir.join("graph.gstore");
-    fs::copy(preview("graph.gstore"), &file).unwrap();
-    let before = tree(&file);
-    for (what, err) in [
-        (
-            "open_file",
-            err_of(Store::open_file(&file, StoreOptions::new())),
-        ),
-        (
-            "inspect",
-            err_of(Store::inspect(persist::store_dir_at(&file))),
-        ),
-        (
-            "verify_dir",
-            err_of(Store::verify_dir(persist::store_dir_at(&file))),
-        ),
-        (
-            "damage_report_dir",
-            err_of(Store::damage_report_dir(persist::store_dir_at(&file))),
-        ),
-    ] {
-        assert_newer(what, "0.2 single file", err);
-    }
-    assert_eq!(tree(&file), before);
-
-    // A ZIP backup: unpacked, refused, nothing left behind.
-    #[cfg(feature = "persist-zip")]
-    {
-        let target = TempDir::new("real-zip");
-        let zip = fs::read(preview("backup.zip")).unwrap();
-        let err = err_of(Store::restore_zip(&zip[..], target.path()));
-        assert_newer("restore_zip", "0.2 zip", err);
-        assert!(!target.path().exists(), "nothing of the ZIP is left behind");
-    }
-
-    // A packed snapshot.
-    let packed = fs::read(preview("graph.gsnap")).unwrap();
-    let err = err_of(persist::read_snapshot(&packed[..], &ReadOptions::default()));
-    assert_newer("read_snapshot", "0.2 gsnap", err);
-    let err = err_of(persist::read_snapshot_info(&packed[..]));
-    assert_newer("read_snapshot_info", "0.2 gsnap", err);
-    let from = TempDir::new("real-from-packed");
-    let err = err_of(Store::create_from_packed(
-        from.path(),
-        &packed[..],
-        StoreOptions::new(),
-    ));
-    assert_newer("create_from_packed", "0.2 gsnap", err);
 }

@@ -44,13 +44,19 @@ g.v().has("name", "marko").as("me")
   or another MCP client can query the graph you are looking at. In the playground's AI Chat tab you
   ask about your graph in plain language, and the model of your choice writes and runs the queries
   (experimental).
+- **Values with real types.** Besides numbers, strings, UUIDs and nested JSON: five
+  [date and time types](dates/index.md) modelled on PostgreSQL (time zones from the IANA
+  database, calendar-correct arithmetic, TinkerPop's date steps), and
+  [vectors](users_guide/vectors.md) for embeddings with exact similarity search and quantization
+  ([Embeddings and Vector Search](getting_started/embeddings.md) is the hands-on tour).
 - **Safe by construction.** Every traversal is atomic: it commits completely or leaves nothing
-  behind. Schemas (a subset of JSON Schema) are enforced on write. Limits, timeouts and
-  permissions make it safe to run queries you did not write.
+  behind. Schemas (a subset of JSON Schema) are enforced on write and fill create-time defaults.
+  Limits, timeouts and permissions make it safe to run queries you did not write.
 - **Durable when you need it.** A graph lives in memory, and the Store keeps it on disk: every
   commit is in a write-ahead log, you can go back to any point in time, fork, roll back, back up
   and repair. The file format is a public specification.
-- **Fast and observable.** A rule-based optimizer rewrites each query; `profile()` shows the
+- **Fast and observable.** A rule-based optimizer rewrites each query and answers `has()`
+  filters from declared [property indexes](users_guide/property_indexes.md); `profile()` shows the
   optimized plan with timings, traverser counts and memory per step.
 - **Open for integration.** Rust and Python APIs, saved (named, parameterized) queries stored in
   the graph, change capture with commit hooks, GraphSON and GraphML files, and a storage trait to
@@ -61,8 +67,10 @@ g.v().has("name", "marko").as("me")
 | You want to ... | Read |
 |---|---|
 | try it right now | [Try It in the Browser](getting_started/playground_tour.md) |
+| install the command-line tool, the Python package or the crate | [Installation](getting_started/installation.md) |
 | run queries from a terminal or a script | [The Command Line](getting_started/cli.md) |
 | let an AI agent work with your graph | [Dev Server, MCP and AI Chat](getting_started/server_mcp_ai.md) |
+| search by meaning with embeddings (semantic search, GraphRAG) | [Embeddings and Vector Search](getting_started/embeddings.md) |
 | understand graphs and Gremlin first | [Why a Graph?](concepts/why_graphs.md) |
 | use it from code | [Rust Quick Start](library/rust.md), [Python Quick Start](library/python.md) |
 | look up a step or a rule | [The Gremlin DSL](dsl/writing_queries.md), [Step Reference](traversal/step_reference.md) |

@@ -120,8 +120,9 @@ the same traversal are undone too, exactly as for a plain `property` (see
 [Transactions](transactions.md)). A single-segment path is the plain property. The write mutates the stored
 value in place (no clone of the top-level property) when the graph has no schema; with a schema
 the leaf is coerced at its declared nested type and the whole resulting top-level property is
-validated (see [Schemas and nested paths](#schemas-and-nested-paths)). There is no
-property index to maintain: `has(..)` reads the stored value.
+validated (see [Schemas and nested paths](#schemas-and-nested-paths)). A
+[property index](property_indexes.md) on the top-level property is updated with it (an index holds
+top-level scalar values only).
 
 A write counts one nesting level per path segment below the property, plus the depth of the
 written value: `property(jpath("a.b.c"), [1])` leaves a value three levels deep. The result must
@@ -161,7 +162,7 @@ With a schema active the whole resulting top-level property is validated as desc
 (a required nested key, `min_items`, ...) is refused and leaves the property as it was; a path that
 does not exist never reaches the schema layer. A removal of a whole property (a name or a
 one-segment path) is the plain removal and is not checked against the schema, like `drop()`.
-There is no property index to maintain.
+A property index on the top-level property is updated with it.
 
 `properties(jpath(..)).drop()` stays an error: a path property element is a materialized leaf and
 holds no reference to the vertex or edge it was read from, so `drop()` cannot know what to remove
@@ -256,8 +257,8 @@ value. A path is built with `"meta.tags[-1]".parse::<JsonPath>()`.
 - A plain name builds exactly the step it always built (identical `.profile()` text, same
   optimizer behaviour). A path key builds a separate step with the same name (`has`, `values`, ...)
   and is never fused or pushed into an index: `has(jpath(..)).count()` shows `has(jpath("$.a.b"), v)`
-  then `count()`, with no `count_only`. There are no property indexes in any case (`graph/index.rs`
-  indexes ids and labels only).
+  then `count()`, with no `count_only`. A [property index](property_indexes.md) orders
+  top-level values only, so it never serves a jpath key.
 - Reads descend into the stored property by reference and clone only the leaf, never the whole
   top-level object or array, per traverser. A one-segment path on a vertex keeps the lazy property
   handle.

@@ -632,7 +632,7 @@ fn test_graph_memory_usage(bencher: divan::Bencher, _args: usize) {
 /// bench's own fixture isn't `GraphSource::large_110k()` (that fixture gives every vertex its
 /// own unique per-vertex label, so it has no large shared label bucket to reproduce the defect
 /// against) — instead it builds a bucket at the same order of magnitude as the audit's
-/// audit dataset's "company" label (88,000 members) directly via `add_vertex`, which
+/// audit dataset's "company" label (88,000 members) directly via `insert_vertex`, which
 /// is the shape that actually exercises this bug. `with_inputs` builds a fresh graph per
 /// iteration (untimed) since `drop()` is a mutation — the timed closure only ever measures the
 /// drop itself. A future regression of this exact O(n²)-class shape should show up here as a
@@ -647,7 +647,7 @@ fn test_graph_drop_large_label_bucket(bencher: divan::Bencher, args: usize) {
             let mut graph = graphersal::TraversalGraph::new();
             for _ in 0..BUCKET_SIZE {
                 graph
-                    .add_vertex(
+                    .insert_vertex(
                         None,
                         vec!["bulk".into()],
                         graphersal::prelude::PropertyMap::default(),
@@ -844,7 +844,7 @@ fn glob_tree() -> &'static graphersal::TraversalGraph {
                     str::to_string,
                 );
                 graph
-                    .add_vertex(Some(id.into()), vec![label.into()], props)
+                    .insert_vertex(Some(id.into()), vec![label.into()], props)
                     .unwrap()
             };
         let root = vertex(&mut graph, Some("root"), "directory", "root");
@@ -856,7 +856,7 @@ fn glob_tree() -> &'static graphersal::TraversalGraph {
                     let name = format!("f{f}.{}", EXTENSIONS[f % EXTENSIONS.len()]);
                     let file = vertex(&mut graph, None, "file", &name);
                     graph
-                        .add_edge(
+                        .insert_edge(
                             None,
                             Some("contains".into()),
                             parent,
@@ -871,7 +871,7 @@ fn glob_tree() -> &'static graphersal::TraversalGraph {
                 for s in 0..TREE_FAN_OUT {
                     let dir = vertex(&mut graph, None, "directory", &format!("d{s}"));
                     graph
-                        .add_edge(
+                        .insert_edge(
                             None,
                             Some("contains".into()),
                             parent,
@@ -1137,6 +1137,80 @@ fn out_out_large_lazy_barrier(bencher: divan::Bencher, _args: usize) {
         let g = lock.traversal();
         let _ = g.v(None).out(None).out(None).to_list();
     });
+}
+
+/// A deterministic pseudo-random embedding in -1..1.
+fn embedding(seed: u64, dimension: usize) -> Vec<f32> {
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    (0..dimension)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 40) as f64 / (1u64 << 24) as f64 * 2.0 - 1.0) as f32
+        })
+        .collect()
+}
+
+/// 10 000 vertices `doc` with a 384-dimensional random embedding `emb` stored as `element`.
+fn vector_docs(element: &str) -> graphersal::prelude::Graph {
+    use graphersal::prelude::*;
+    let kind = graphersal::vector::VectorElement::from_name(element).unwrap();
+    let mut graph = TraversalGraph::new();
+    for i in 0..10_000u64 {
+        let emb = Vector::from_f32(embedding(i, 384))
+            .unwrap()
+            .quantize(kind)
+            .unwrap();
+        let mut props = PropertyMap::default();
+        props.insert("emb", ElementProperty::Vector(emb));
+        graph.add_vertex(None, vec!["doc".into()], props).unwrap();
+    }
+    Graph::new(graph)
+}
+
+/// Exact `nearest(.., 10)` over 10k x 384 vectors of each element kind (cosine; hamming for bit;
+/// the query is the f32 embedding, quantized for bit). The book page "Vectors" quotes it.
+#[divan::bench(args = ["f32", "f16", "i8", "bit"])]
+fn nearest_10k_x_384(bencher: divan::Bencher, element: &str) {
+    use graphersal::prelude::*;
+    use graphersal::vector::{VectorElement, VectorMetric};
+    let graph = vector_docs(element);
+    let lock = graph.read();
+    let mut q = Vector::from_f32(embedding(1_000_000, 384)).unwrap();
+    let mut metric = None;
+    if element == "bit" {
+        q = q.quantize(VectorElement::Bit).unwrap();
+        metric = Some(VectorMetric::Hamming);
+    }
+    bencher.bench(|| {
+        let _ = lock
+            .traversal()
+            .v(None)
+            .has_label("doc")
+            .nearest("emb", &q, 10, metric)
+            .to_list();
+    });
+}
+
+/// The built-in embedder `hash-ngram/1` over 1000 texts per call: a short title (5 words) or a
+/// long paragraph (about 1 KB). The book page "Vectors" quotes it.
+#[divan::bench(args = ["short", "long"])]
+fn embed_hash_ngram_1000(bencher: divan::Bencher, size: &str) {
+    use graphersal::vector::{EmbedContext, Embedder, HashNgram};
+    let sentence = "Graph databases store vertices and edges with their properties. ";
+    let texts: Vec<String> = (0..1000)
+        .map(|i| match size {
+            "short" => format!("feeding your cat number {i}"),
+            _ => format!("{} {i}", sentence.repeat(16)),
+        })
+        .collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let embedder = HashNgram::new();
+    let ctx = EmbedContext::new();
+    bencher.bench(|| embedder.embed(&refs, &ctx).map(|v| v.len()));
 }
 
 /// See [`out_out_large_lazy_barrier`]: the same query with the rule disabled.

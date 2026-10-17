@@ -20,6 +20,7 @@ pub(crate) use rules::filter_reorder::FilterReorderRule;
 pub(crate) use rules::group_count_pushdown::GroupCountPushdownRule;
 pub(crate) use rules::has_id_pushdown::HasIdPushdownRule;
 pub(crate) use rules::lazy_barrier::LazyBarrierRule;
+pub(crate) use rules::property_index::PropertyIndexRule;
 pub(crate) use rules::where_unnest::WhereUnnestRule;
 
 /// The stable, user-facing name of every optimizer rule this crate knows, and whether it runs by
@@ -27,7 +28,7 @@ pub(crate) use rules::where_unnest::WhereUnnestRule;
 /// line, and the strings `g.with("optimizer.disabled", [...])`/`g.with("optimizer.enabled", [...])`
 /// accept — `ExecutionOptions::parse` (`traversal/context.rs`) validates against this list.
 /// Independent of the storage type parameter `S`, since a rule's name never depends on it;
-/// [`TraversalOptimizer::registry`] pairs each of these names with the per-`S` constructor. All 9
+/// [`TraversalOptimizer::registry`] pairs each of these names with the per-`S` constructor. All 10
 /// rules that exist today default to on: nothing in this crate ships off-by-default yet, but the
 /// mechanism is ready for a future rule that should (per the spec motivating this list, a
 /// cardinality-aware hop-direction rewrite is expected to be the first).
@@ -37,6 +38,7 @@ pub(crate) const KNOWN_RULES: &[(&str, bool)] = &[
     ("filter_reorder", true),
     ("has_id_pushdown", true),
     ("source_filter_pushdown", true),
+    ("property_index", true),
     ("barrier_pushdown", true),
     ("group_count_pushdown", true),
     ("count_pushdown", true),
@@ -57,6 +59,9 @@ fn new_has_id_pushdown<'g, S: GraphStorage + 'g>() -> Box<dyn OptimizationRule<'
 }
 fn new_source_filter_pushdown<'g, S: GraphStorage + 'g>() -> Box<dyn OptimizationRule<'g, S> + 'g> {
     Box::new(SourceFilterPushdownRule::new())
+}
+fn new_property_index<'g, S: GraphStorage + 'g>() -> Box<dyn OptimizationRule<'g, S> + 'g> {
+    Box::new(PropertyIndexRule::new())
 }
 fn new_barrier_pushdown<'g, S: GraphStorage + 'g>() -> Box<dyn OptimizationRule<'g, S> + 'g> {
     Box::new(BarrierPushdownRule::new())
@@ -92,6 +97,20 @@ pub(crate) struct TraversalOptimizer<'g, S: GraphStorage + 'g> {
     /// instance and its rule set), so this is the one field that needs interior mutability to
     /// record a fired rule from inside that shared borrow.
     fired: RefCell<Vec<&'static str>>,
+    /// The property indexes the storage serves (read once per run, see
+    /// [`Self::for_run`]); empty: no index is used.
+    indexes: Vec<crate::graph::PropertyIndexInfo>,
+    /// How deep the level being optimized is nested (0: the root traversal).
+    depth: std::cell::Cell<u32>,
+}
+
+/// What a rule may know about the run beyond the plan ([`OptimizationRule::apply_in`]).
+pub(crate) struct OptimizerContext<'a> {
+    /// The property indexes the storage serves, with their stats.
+    pub(crate) indexes: &'a [crate::graph::PropertyIndexInfo],
+    /// Whether the level is the root traversal (its source receives no traverser, so no path
+    /// label exists).
+    pub(crate) root: bool,
 }
 
 impl<'g, S: GraphStorage + 'g> Default for TraversalOptimizer<'g, S> {
@@ -100,6 +119,8 @@ impl<'g, S: GraphStorage + 'g> Default for TraversalOptimizer<'g, S> {
             rules: Vec::new(),
             diagnostics: true,
             fired: RefCell::new(Vec::new()),
+            indexes: Vec::new(),
+            depth: std::cell::Cell::new(0),
         }
     }
 }
@@ -122,8 +143,8 @@ impl<'g, S: GraphStorage + 'g> TraversalOptimizer<'g, S> {
     /// all, so resolving it to an actual rule instance needs a name -> constructor mapping that
     /// covers every known rule, not just the ones `default_pipeline()` builds today. A unit test
     /// in this module checks this list's names against [`KNOWN_RULES`], so the two can't drift.
-    pub(crate) fn registry() -> Vec<RegistryEntry<'g, S>> {
-        vec![
+    pub(crate) fn registry() -> [RegistryEntry<'g, S>; KNOWN_RULES.len()] {
+        [
             ("where_unnest", true, new_where_unnest::<'g, S>),
             ("add_property_fold", true, new_add_property_fold::<'g, S>),
             ("filter_reorder", true, new_filter_reorder::<'g, S>),
@@ -133,6 +154,7 @@ impl<'g, S: GraphStorage + 'g> TraversalOptimizer<'g, S> {
                 true,
                 new_source_filter_pushdown::<'g, S>,
             ),
+            ("property_index", true, new_property_index::<'g, S>),
             ("barrier_pushdown", true, new_barrier_pushdown::<'g, S>),
             (
                 "group_count_pushdown",
@@ -165,8 +187,32 @@ impl<'g, S: GraphStorage + 'g> TraversalOptimizer<'g, S> {
     /// against [`KNOWN_RULES`] and rejected a name present in both, so this only has to consult
     /// the sets, not re-check them.
     pub fn default_pipeline_with(options: &ExecutionOptions) -> Self {
+        Self::pipeline_with(options, true)
+    }
+
+    /// The pipeline of one run: [`Self::default_pipeline_with`] with the storage's property
+    /// `indexes`. Without any index the `property_index` rule is left out entirely (it could not
+    /// pick anything, and a source only carries an index access that rule set in this same run),
+    /// so a graph without indexes pays neither its construction nor its walk of the plan; it
+    /// never fires there, so `.profile()`'s list of applied rules is the same either way.
+    pub fn for_run(
+        options: &ExecutionOptions,
+        indexes: Vec<crate::graph::PropertyIndexInfo>,
+    ) -> Self {
+        let mut optimizer = Self::pipeline_with(options, !indexes.is_empty());
+        optimizer.indexes = indexes;
+        optimizer
+    }
+
+    /// The default-on rules honouring `options`; `property_index` only with `with_indexes`.
+    fn pipeline_with(options: &ExecutionOptions, with_indexes: bool) -> Self {
+        let registry = Self::registry();
         let mut optimizer = Self::new();
-        for (name, default_on, ctor) in Self::registry() {
+        optimizer.rules.reserve_exact(registry.len());
+        for (name, default_on, ctor) in registry {
+            if !with_indexes && name == "property_index" {
+                continue;
+            }
             let disabled = options.optimizer_disabled.contains(name);
             let enabled = options.optimizer_enabled.contains(name);
             if (default_on && !disabled) || (!default_on && enabled) {
@@ -189,11 +235,18 @@ impl<'g, S: GraphStorage + 'g> TraversalOptimizer<'g, S> {
     /// wrote it. `None` when no rule changed anything and the executed plan still is that query.
     pub fn apply(&self, steps: &mut Vec<GraphStep<'g, S>>) -> Option<LevelPlan<'g, S>> {
         let mut plan = Plan::from_steps(std::mem::take(steps), self.diagnostics);
+        let depth = self.depth.get();
+        self.depth.set(depth.saturating_add(1));
         for step in plan.steps_mut() {
             step.optimize_nested(self);
         }
+        self.depth.set(depth);
+        let context = OptimizerContext {
+            indexes: &self.indexes,
+            root: depth == 0,
+        };
         for rule in &self.rules {
-            if rule.apply(&mut plan) {
+            if rule.apply_in(&mut plan, &context) {
                 self.fired.borrow_mut().push(rule.name());
             }
         }

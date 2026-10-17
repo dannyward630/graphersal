@@ -1,10 +1,12 @@
 // Schema panel: the schema EDITOR (Tables: nested tables per label, edited in place; JSON: the
-// same schema as text, synchronised both ways) and two drawings of the stored (or inferred)
-// schema: a graph (vertex labels as nodes, edge labels as edges) and a Mermaid diagram.
+// same schema as text, synchronised both ways) and two drawings of the SAME schema (the draft,
+// else the stored, else the inferred one): a graph (vertex labels as nodes, edge labels as
+// edges) and a Mermaid diagram.
 //
 // The editor works on a draft (js/schema/draft.js) and reaches the engine ONLY through the seven
 // schema methods (js/schema/api.js): get/infer to show, diff ("What changes"), validate_patch
-// ("Check against data"), patch ("Apply"). The drawings come from the engine's `schema()` view.
+// ("Check against data"), patch ("Apply"). The drawings come from the engine's `schema()` view
+// (the stored schema unchanged) or `schemaViewOf(working)` (anything else).
 
 import { ref, reactive, computed, watch, onBeforeUnmount, nextTick, markRaw } from 'vue';
 import { state, isDark, toast, schemaChanged, openQueryTab } from '../store.js';
@@ -79,14 +81,18 @@ export const SchemaPanel = {
     const flow = ref(null);
     const schemaFile = ref(null);
     const isDrawing = () => tab.value === 'graph' || tab.value === 'mermaid';
-    let viewsVersion = -1; // the graphVersion the drawings were loaded for
+    // What the drawings were read for: the editor's working schema (its identity and the draft
+    // version) and the graph version (the label counts).
+    let viewsFor = null;
 
     /**
-     * The drawings' view (`schema()`), only when a drawing tab shows it. Without a stored schema
-     * the view infers one, so a view read before stays after a change of the graph (the panel
-     * says "may be outdated") until `force` (first show, refresh, a replaced graph); with a
-     * stored schema it is cheap and follows every change. `force` without a drawing tab drops
-     * the view, so the next drawing shown reads it again.
+     * The drawings' view, only when a drawing tab shows it: always of the schema the Tables and
+     * JSON tabs show (the editor's working schema: the draft, else the stored, else the
+     * inferred one), so the tabs never disagree. The stored schema unchanged is the engine's own
+     * view; anything else goes to the engine as `schemaViewOf(working)` (no inference: the
+     * inferred schema is the one the editor holds). A change of the graph re-reads the label
+     * counts, except for a schema inferred earlier, which waits for refresh ("may be
+     * outdated"). `force` without a drawing tab drops the view, so the next drawing reads it.
      */
     async function loadViews(force = false) {
       if (!state.engine || !state.graph) return;
@@ -94,21 +100,31 @@ export const SchemaPanel = {
         if (force) dropViews();
         return;
       }
-      const current = viewsVersion === state.graphVersion;
-      const cheap = !!(flow.value && flow.value.ed.stored);
-      if (!force && schema.value && (current || !cheap)) return;
-      viewsVersion = state.graphVersion;
+      const f = flow.value;
+      // The editor loads first; the watch on its working schema draws once it has.
+      if (!f || !f.loaded) return;
+      const ed = f.ed;
+      const key = { working: ed.working, version: ed.version, graphVersion: state.graphVersion };
+      const same = viewsFor && viewsFor.working === key.working && viewsFor.version === key.version;
+      const countsCurrent = viewsFor && (viewsFor.graphVersion === key.graphVersion || ed.source === 'inferred');
+      if (!force && schema.value && same && countsCurrent) return;
+      viewsFor = key;
       try {
-        schema.value = markRaw(await state.engine.schema());
+        const view = ed.source === 'stored'
+          ? await state.engine.schema()
+          : await state.engine.schemaViewOf(key.working);
+        if (viewsFor !== key) return; // a newer read is under way
+        schema.value = markRaw(view);
         error.value = null;
       } catch (err) {
-        error.value = err.message;
+        if (viewsFor !== key) return;
+        error.value = `The schema the editor shows cannot be drawn: ${err && err.message ? err.message : err}`;
       }
     }
 
     function dropViews() {
       schema.value = null;
-      viewsVersion = -1;
+      viewsFor = null;
     }
 
     // When the panel reads the schema again: first show, refresh, a change, a replaced graph
@@ -316,6 +332,15 @@ export const SchemaPanel = {
       else s.graphChanged(state.graphEpoch);
     });
     watch(tab, (v) => { storage.set('schema.tab', v); loadViews().then(() => renderMermaid()); });
+    // Every change of the editor's working schema (a draft edit, Infer from data, a loaded file,
+    // Discard, an Apply) redraws, shortly after the last one.
+    let redrawTimer = null;
+    watch(() => (flow.value && flow.value.loaded ? [flow.value.ed.version, flow.value.ed.working] : null), (now) => {
+      if (!now) return;
+      clearTimeout(redrawTimer);
+      redrawTimer = setTimeout(() => loadViews(), 250);
+    });
+    onBeforeUnmount(() => clearTimeout(redrawTimer));
     watch([schema, showSource, () => state.theme, () => state.systemDark], () => nextTick(renderMermaid));
     watch(() => state.focusPanel, (req) => {
       if (req && req.panel === 'schema' && req.tab && TABS.some((t) => t.id === req.tab)) tab.value = req.tab;
@@ -406,7 +431,7 @@ export const SchemaPanel = {
       </template>
       <template v-else>
         <div v-if="error" class="notice">{{ error }}</div>
-        <div v-if="ed && ed.draft" class="notice info">The drawing shows the {{ ed.stored ? 'stored' : 'inferred' }} schema, not the draft.</div>
+        <div v-if="ed && ed.dirty" class="notice info">The drawing shows the draft, which is not applied yet.</div>
         <div v-if="schema && schema.truncated" class="notice info">
           The graph has {{ schema.total_labels }} labels; the views show the first ones only.
         </div>

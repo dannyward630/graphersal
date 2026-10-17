@@ -79,7 +79,7 @@ impl GraphStorage for Wrapped {
     fn edge_endpoints(&self, edge: EdgeHandle) -> Option<(VertexHandle, VertexHandle)> {
         GraphStorage::edge_endpoints(&self.0, edge)
     }
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
@@ -87,7 +87,7 @@ impl GraphStorage for Wrapped {
     ) -> Result<VertexHandle, GraphError> {
         // A storage bug stand-in: a panic in the middle of a script.
         assert!(!labels.iter().any(|label| label == "panic"), "storage bug");
-        GraphStorage::add_vertex(&mut self.0, id, labels, properties)
+        GraphStorage::insert_vertex(&mut self.0, id, labels, properties)
     }
     fn add_vertex_label(
         &mut self,
@@ -99,7 +99,7 @@ impl GraphStorage for Wrapped {
     fn remove_vertex_label(&mut self, node: VertexHandle, label: &str) -> Result<bool, GraphError> {
         GraphStorage::remove_vertex_label(&mut self.0, node, label)
     }
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -107,7 +107,7 @@ impl GraphStorage for Wrapped {
         to: VertexHandle,
         properties: PropertyMap,
     ) -> Result<EdgeHandle, GraphError> {
-        GraphStorage::add_edge(&mut self.0, id, label, from, to, properties)
+        GraphStorage::insert_edge(&mut self.0, id, label, from, to, properties)
     }
     fn set_vertex_property(
         &mut self,

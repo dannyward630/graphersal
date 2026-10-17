@@ -6,7 +6,7 @@ use compact_str::CompactString;
 
 use crate::error::TraverserResult;
 use crate::graph::schema::{ValueType, type_of};
-use crate::value::{ElementProperty, GType, Number, PathRef, StreamKind, TraverserValue};
+use crate::value::{ElementProperty, GType, Number, PathRef, StreamKind, Temporal, TraverserValue};
 use crate::{Traverser, TraverserContext};
 
 /// A predicate (`P.eq`, `P.gt`, `P.within`, ...), the argument of `has()`, `is()` and `where()`.
@@ -274,6 +274,8 @@ enum Scalar<'a> {
     Number(&'a Number),
     Str(Cow<'a, str>),
     Uuid(u128),
+    Temporal(Temporal),
+    Vector(&'a crate::value::Vector),
 }
 
 impl<'a> Scalar<'a> {
@@ -289,6 +291,8 @@ impl<'a> Scalar<'a> {
                 Some(Scalar::Str(Cow::Owned(text.text().into_string())))
             }
             ElementProperty::Uuid(u) => Some(Scalar::Uuid(*u)),
+            ElementProperty::Temporal(t) => Some(Scalar::Temporal(*t)),
+            ElementProperty::Vector(v) => Some(Scalar::Vector(v)),
             ElementProperty::Object(_)
             | ElementProperty::Map(_)
             | ElementProperty::Array(_)
@@ -315,6 +319,13 @@ pub enum PValue {
     /// A UUID literal (`UUID.fromString(..)` in the DSL, [`ElementProperty::uuid_from_string`]
     /// in Rust). It matches only a stored `Uuid` with the same bits, never a `String`.
     Uuid(u128),
+    /// A date or time literal ([`Temporal`]). It compares with a stored value of the same
+    /// temporal type only (a `datetime` by its instant), never with a string.
+    Temporal(Temporal),
+    /// A vector literal (`vector([..])`, a Graphersal extension). It equals a stored vector of
+    /// the same element kind, dimension and components, and orders among vectors by their order
+    /// (kind, dimension, components); never against a list.
+    Vector(crate::value::Vector),
     /// The `null` literal (`P.eq(null)`; `()` in the DSL). Following TinkerPop's comparability
     /// rules, `null` equals only `null`, `lte`/`gte` hold only for `null` itself, and `lt`/`gt`
     /// never hold.
@@ -470,6 +481,8 @@ impl<T: Into<PValue> + Debug + Clone> P<T> {
                     ElementProperty::Number(n) => Some(PValue::Number(n)),
                     ElementProperty::String(s) => Some(PValue::String(s)),
                     ElementProperty::Uuid(u) => Some(PValue::Uuid(u)),
+                    ElementProperty::Temporal(t) => Some(PValue::Temporal(t)),
+                    ElementProperty::Vector(v) => Some(PValue::Vector(v)),
                     _ => None,
                 }
             }
@@ -676,6 +689,10 @@ impl<T: Into<PValue> + Debug + Clone> P<T> {
                 PValue::String(s.clone())
             }
             Some(TraverserValue::Computed(ElementProperty::Uuid(u), _)) => PValue::Uuid(*u),
+            Some(TraverserValue::Computed(ElementProperty::Temporal(t), _)) => PValue::Temporal(*t),
+            Some(TraverserValue::Computed(ElementProperty::Vector(v), _)) => {
+                PValue::Vector(v.clone())
+            }
             _ => {
                 // A collection or an element takes part in `eq`/`neq` as a whole value.
                 let bucket = bucket.to_traverser_value();
@@ -895,9 +912,12 @@ impl<T: Into<PValue> + Debug + Clone> P<T> {
             P::StartingWith(value) => match value.clone().into() {
                 PValue::String(value) => Ok(Self::text_operand(context, arg_value)?
                     .is_some_and(|a_v| a_v.starts_with(value.as_str()))),
-                PValue::Number(_) | PValue::Boolean(_) | PValue::Uuid(_) | PValue::Null => {
-                    Ok(false)
-                }
+                PValue::Number(_)
+                | PValue::Boolean(_)
+                | PValue::Uuid(_)
+                | PValue::Temporal(_)
+                | PValue::Vector(_)
+                | PValue::Null => Ok(false),
             },
 
             P::NotStartingWith(value) => {
@@ -907,9 +927,12 @@ impl<T: Into<PValue> + Debug + Clone> P<T> {
             P::EndingWith(value) => match value.clone().into() {
                 PValue::String(value) => Ok(Self::text_operand(context, arg_value)?
                     .is_some_and(|a_v| a_v.ends_with(value.as_str()))),
-                PValue::Number(_) | PValue::Boolean(_) | PValue::Uuid(_) | PValue::Null => {
-                    Ok(false)
-                }
+                PValue::Number(_)
+                | PValue::Boolean(_)
+                | PValue::Uuid(_)
+                | PValue::Temporal(_)
+                | PValue::Vector(_)
+                | PValue::Null => Ok(false),
             },
 
             P::NotEndingWith(value) => {
@@ -919,9 +942,12 @@ impl<T: Into<PValue> + Debug + Clone> P<T> {
             P::Containing(value) => match value.clone().into() {
                 PValue::String(value) => Ok(Self::text_operand(context, arg_value)?
                     .is_some_and(|a_v| a_v.contains(value.as_str()))),
-                PValue::Number(_) | PValue::Boolean(_) | PValue::Uuid(_) | PValue::Null => {
-                    Ok(false)
-                }
+                PValue::Number(_)
+                | PValue::Boolean(_)
+                | PValue::Uuid(_)
+                | PValue::Temporal(_)
+                | PValue::Vector(_)
+                | PValue::Null => Ok(false),
             },
 
             P::NotContaining(value) => {
@@ -961,7 +987,8 @@ impl<T: Into<PValue> + Debug + Clone> P<T> {
     /// is false.
     ///
     /// Numbers compare by value across `int64`/`float64`; `NaN` is incomparable with everything
-    /// (itself included); strings, booleans and UUIDs compare with their own kind only; `null`
+    /// (itself included); strings, booleans, UUIDs and each temporal type compare with their own
+    /// kind only; `null`
     /// compares only with `null`. A graph element, path or container is incomparable with every
     /// operand (never an error). String content is never read as a number (rule 7). The stream
     /// value is borrowed from storage, nothing is cloned.
@@ -983,6 +1010,11 @@ impl<T: Into<PValue> + Debug + Clone> P<T> {
             (Scalar::Str(a), PValue::String(b)) => Some(a.as_ref().cmp(b.as_str())),
             (Scalar::Bool(a), PValue::Boolean(b)) => Some(a.cmp(b)),
             (Scalar::Uuid(a), PValue::Uuid(b)) => Some(a.cmp(b)),
+            // Temporal values compare within one temporal type only (TinkerPop compares dates
+            // with dates); a `datetime` by its instant.
+            (Scalar::Temporal(a), PValue::Temporal(b)) if a.kind() == b.kind() => Some(a.cmp(b)),
+            // Vectors with vectors only (a Graphersal extension), by their total order.
+            (Scalar::Vector(a), PValue::Vector(b)) => Some((*a).cmp(b)),
             (Scalar::Null, PValue::Null) => Some(Ordering::Equal),
             _ => None,
         })
@@ -1233,6 +1265,30 @@ impl From<bool> for PValue {
         PValue::Boolean(value)
     }
 }
+
+impl From<crate::value::Vector> for PValue {
+    fn from(value: crate::value::Vector) -> Self {
+        PValue::Vector(value)
+    }
+}
+
+impl From<Temporal> for PValue {
+    fn from(value: Temporal) -> Self {
+        PValue::Temporal(value)
+    }
+}
+
+macro_rules! temporal_pvalue {
+    ($($ty:ident),*) => {$(
+        impl From<crate::value::temporal::$ty> for PValue {
+            fn from(value: crate::value::temporal::$ty) -> Self {
+                PValue::Temporal(value.into())
+            }
+        }
+    )*};
+}
+
+temporal_pvalue!(Date, Time, LocalDateTime, DateTime, Duration);
 
 impl From<bool> for P<PValue> {
     fn from(value: bool) -> Self {

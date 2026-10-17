@@ -36,7 +36,7 @@ impl GraphSchema {
     pub fn to_graph(&self) -> TraversalGraph {
         let mut tg = TraversalGraph::new();
         for (label, vertex) in &self.vertices {
-            let _ = tg.add_vertex(
+            let _ = tg.insert_vertex(
                 Some(CompactString::new(label)),
                 vec![CompactString::new("schema_vertex")],
                 label_properties(label, &vertex.schema),

@@ -6,8 +6,8 @@
 //!
 //! | Mutation | Undo entry |
 //! |---|---|
-//! | `add_vertex` | [`UndoEntry::AddedVertex`]: remove it again (the auto-id sequence stays advanced) |
-//! | `add_edge` | [`UndoEntry::AddedEdge`]: remove it again (the auto-id sequence stays advanced) |
+//! | `insert_vertex` | [`UndoEntry::AddedVertex`]: remove it again (the auto-id sequence stays advanced) |
+//! | `insert_edge` | [`UndoEntry::AddedEdge`]: remove it again (the auto-id sequence stays advanced) |
 //! | `drop_vertex` | [`UndoEntry::DroppedVertex`]: image of the vertex and its cascaded edges |
 //! | `drop_edge` | [`UndoEntry::DroppedEdge`]: image of the edge |
 //! | `set_*_property`, `drop_*_property`, jpath writes and removals | [`UndoEntry::VertexProperty`] / [`UndoEntry::EdgeProperty`]: old value and position of the top-level key, or "absent" |
@@ -94,6 +94,12 @@ pub(crate) struct UndoLog {
     /// when it opened; `None` when the graph's execution policy sets no `memory.limit` (then
     /// nothing is paid). Reset when the outermost unit closes.
     budget: Option<MemoryBudget>,
+    /// The start of the outermost open unit, in microseconds since the Unix epoch (`None`
+    /// outside a unit): `GraphStorage::unit_started_at`, the time of `defaultFunction`
+    /// `now`/`today`. Taken when the outermost unit opens; reset when it closes.
+    started_at: Option<i64>,
+    /// The start of the last outermost unit: the next one never starts earlier.
+    last_started_at: i64,
 }
 
 impl UndoLog {
@@ -141,6 +147,7 @@ impl UndoLog {
             self.sequences_raised = false;
             self.metadata = CommitMetadata::default();
             self.budget = None;
+            self.started_at = None;
             if self.entries.capacity() > KEEP_CAPACITY {
                 self.entries = Vec::new();
             } else {
@@ -260,6 +267,13 @@ impl TraversalGraph {
             self.undo.budget =
                 crate::traversal::memory_budget::unit_limit(&self.execution_policy, None)
                     .map(|limit| MemoryBudget::new(limit).start(&*self));
+            // The unit's time (`defaultFunction` `now`): never earlier than the previous unit's
+            // or the last commit's, so a later unit never stores an earlier `now`.
+            let started_at = now_micros()
+                .max(self.undo.last_started_at)
+                .max(self.undo.last_committed_at);
+            self.undo.started_at = Some(started_at);
+            self.undo.last_started_at = started_at;
         }
         self.undo.depth = self.undo.depth.saturating_add(1);
         UnitMark::new(self.undo.entries.len() as u64)
@@ -443,6 +457,12 @@ impl TraversalGraph {
         changes
     }
 
+    /// The start of the outermost open unit (`GraphStorage::unit_started_at`); `None` outside a
+    /// unit.
+    pub(crate) fn undo_unit_started_at(&self) -> Option<i64> {
+        self.undo.started_at
+    }
+
     /// The depth of open units (`0`: none).
     pub(crate) fn undo_depth(&self) -> u32 {
         self.undo.depth
@@ -531,6 +551,9 @@ impl TraversalGraph {
             }
             UndoEntry::DroppedEdge(edge) => self.restore_edge(*edge),
             UndoEntry::VertexProperty { id, key, old } => {
+                if let Some(handle) = self.index.get_node(&id) {
+                    self.pindex_vertex(handle, false, Some(&key));
+                }
                 let vertex = self
                     .index
                     .get_node(&id)
@@ -541,6 +564,7 @@ impl TraversalGraph {
                 }
                 if let Some(handle) = self.index.get_node(&id) {
                     self.compression_normalize_vertex_key(handle, &key);
+                    self.pindex_vertex(handle, true, Some(&key));
                 }
             }
             UndoEntry::EdgeProperty {
@@ -549,6 +573,9 @@ impl TraversalGraph {
                 old,
                 map_was_none,
             } => {
+                if let Some(handle) = self.index.get_edge(&id) {
+                    self.pindex_edge(handle, false, Some(&key));
+                }
                 let edge = self
                     .index
                     .get_edge(&id)
@@ -569,6 +596,7 @@ impl TraversalGraph {
                 }
                 if let Some(handle) = self.index.get_edge(&id) {
                     self.compression_normalize_edge_key(handle, &key);
+                    self.pindex_edge(handle, true, Some(&key));
                 }
             }
             UndoEntry::VertexLabels { id, old } => {
@@ -576,6 +604,7 @@ impl TraversalGraph {
                     tracing::error!(%id, "undo: vertex of a label change not found");
                     return;
                 };
+                self.pindex_vertex(handle, false, None);
                 let Some(vertex) = self.vertex_weight_mut(handle) else {
                     tracing::error!(%id, "undo: vertex of a label change not found");
                     return;
@@ -589,12 +618,14 @@ impl TraversalGraph {
                     self.index.insert_node_label(label, handle);
                 }
                 self.compression_normalize_vertex(handle);
+                self.pindex_vertex(handle, true, None);
             }
             UndoEntry::EdgeLabel { id, old } => {
                 let Some(handle) = self.index.get_edge(&id) else {
                     tracing::error!(%id, "undo: edge of a label change not found");
                     return;
                 };
+                self.pindex_edge(handle, false, None);
                 let Some(edge) = self.edge_weight_mut(handle) else {
                     tracing::error!(%id, "undo: edge of a label change not found");
                     return;
@@ -609,6 +640,7 @@ impl TraversalGraph {
                     self.index.insert_edge_label(old, handle);
                 }
                 self.compression_normalize_edge(handle);
+                self.pindex_edge(handle, true, None);
             }
             UndoEntry::Schema(old) => *self.schema.write() = *old,
             UndoEntry::Definition { kind, name, old } => {
@@ -616,10 +648,8 @@ impl TraversalGraph {
                     Some(old) => self.definitions.insert(*old),
                     None => self.definitions.remove(kind, &name),
                 };
-                // Undoing a rule change re-runs its pass (D10).
-                if kind == DefinitionKind::COMPRESSION {
-                    self.compression_after_change(replaced.as_ref(), &name);
-                }
+                // Undoing a rule change re-runs its pass (D10); an index is rebuilt.
+                self.catalog_after_change(kind, replaced.as_ref(), &name);
             }
         }
     }
@@ -633,6 +663,7 @@ impl TraversalGraph {
     ) -> Result<(), GraphError> {
         definition.validate()?;
         crate::graph::compression::check_conflict(self, &definition)?;
+        crate::graph::property_index::check_conflict(self, &definition)?;
         let current = self.definitions.get(definition.kind(), definition.name());
         if current == Some(&definition) {
             return Ok(());
@@ -647,11 +678,9 @@ impl TraversalGraph {
         let kind = definition.kind();
         let name = CompactString::from(definition.name());
         let old = self.definitions.insert(definition);
-        // The explicit pass of a rule change (D8): in the same unit, recorded only as the
-        // definition change (the pass changes no logical data).
-        if kind == DefinitionKind::COMPRESSION {
-            self.compression_after_change(old.as_ref(), &name);
-        }
+        // The explicit pass of a rule change (D8) or the build of an index: in the same unit,
+        // recorded only as the definition change (neither changes logical data).
+        self.catalog_after_change(kind, old.as_ref(), &name);
         self.undo.record(UndoEntry::Definition {
             kind,
             name,
@@ -665,9 +694,7 @@ impl TraversalGraph {
     pub(crate) fn remove_definition_recorded(&mut self, kind: DefinitionKind, name: &str) -> bool {
         match self.definitions.remove(kind, name) {
             Some(old) => {
-                if kind == DefinitionKind::COMPRESSION {
-                    self.compression_after_change(Some(&old), name);
-                }
+                self.catalog_after_change(kind, Some(&old), name);
                 self.undo.record(UndoEntry::Definition {
                     kind,
                     name: CompactString::from(name),
@@ -676,6 +703,22 @@ impl TraversalGraph {
                 true
             }
             None => false,
+        }
+    }
+
+    /// The derived state of a catalog change of `kind` (`old`: what was stored before, the
+    /// catalog already holds the new state): a compression rule runs its pass, a property index
+    /// is rebuilt from the data.
+    pub(crate) fn catalog_after_change(
+        &mut self,
+        kind: DefinitionKind,
+        old: Option<&Definition>,
+        name: &str,
+    ) {
+        if kind == DefinitionKind::COMPRESSION {
+            self.compression_after_change(old, name);
+        } else if kind == DefinitionKind::PROPERTY_INDEX {
+            self.property_index_after_change(name);
         }
     }
 
@@ -766,6 +809,7 @@ impl TraversalGraph {
                 self.index.insert_node_label(label.clone(), handle);
             }
         }
+        self.pindex_vertex(handle, true, None);
         handle
     }
 
@@ -800,6 +844,7 @@ impl TraversalGraph {
         if let Some(label) = label {
             self.index.insert_edge_label(label, handle);
         }
+        self.pindex_edge(handle, true, None);
         handle
     }
 
@@ -825,6 +870,7 @@ impl TraversalGraph {
         } else {
             None
         };
+        self.pindex_edge(edge, false, None);
         let (id, label, properties, _) = self.graph.remove_edge(index)?;
         self.statistics.edge_removed(label.as_deref());
         if let Some(label) = &label {
@@ -872,6 +918,7 @@ impl TraversalGraph {
                 edges.push(image);
             }
         }
+        self.pindex_vertex(node, false, None);
         let (id, labels, properties, _) = self.graph.remove_node(index)?;
         self.statistics.vertex_removed(&labels);
         self.index.remove_node(&id);
@@ -899,7 +946,7 @@ mod tests {
     fn nothing_is_recorded_outside_a_unit() {
         let mut graph = TraversalGraph::tinkerpop_modern();
         let v =
-            GraphStorage::add_vertex(&mut graph, None, vec!["x".into()], PropertyMap::default())
+            GraphStorage::insert_vertex(&mut graph, None, vec!["x".into()], PropertyMap::default())
                 .expect("add");
         GraphStorage::set_vertex_property(&mut graph, v, "k".into(), 1.into()).expect("set");
         assert_eq!(graph.undo.len(), 0);
@@ -909,9 +956,9 @@ mod tests {
     fn outermost_commit_clears_and_nested_commit_keeps() {
         let mut graph = TraversalGraph::new();
         let outer = graph.begin_unit();
-        GraphStorage::add_vertex(&mut graph, None, vec![], PropertyMap::default()).expect("add");
+        GraphStorage::insert_vertex(&mut graph, None, vec![], PropertyMap::default()).expect("add");
         let inner = graph.begin_unit();
-        GraphStorage::add_vertex(&mut graph, None, vec![], PropertyMap::default()).expect("add");
+        GraphStorage::insert_vertex(&mut graph, None, vec![], PropertyMap::default()).expect("add");
         graph.commit_unit(inner).expect("commit");
         assert_eq!(graph.undo.len(), 2);
         graph.commit_unit(outer).expect("commit");

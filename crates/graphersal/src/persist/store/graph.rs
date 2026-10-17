@@ -491,13 +491,13 @@ mod tests {
         fn edge_endpoints(&self, edge: EdgeHandle) -> Option<(VertexHandle, VertexHandle)> {
             self.inner.edge_endpoints(edge)
         }
-        fn add_vertex(
+        fn insert_vertex(
             &mut self,
             id: Option<CompactString>,
             labels: Vec<CompactString>,
             properties: PropertyMap,
         ) -> Result<VertexHandle, GraphError> {
-            self.inner.add_vertex(id, labels, properties)
+            self.inner.insert_vertex(id, labels, properties)
         }
         fn add_vertex_label(
             &mut self,
@@ -513,7 +513,7 @@ mod tests {
         ) -> Result<bool, GraphError> {
             self.inner.remove_vertex_label(node, label)
         }
-        fn add_edge(
+        fn insert_edge(
             &mut self,
             id: Option<CompactString>,
             label: Option<CompactString>,
@@ -521,7 +521,7 @@ mod tests {
             to: VertexHandle,
             properties: PropertyMap,
         ) -> Result<EdgeHandle, GraphError> {
-            self.inner.add_edge(id, label, from, to, properties)
+            self.inner.insert_edge(id, label, from, to, properties)
         }
         fn set_vertex_property(
             &mut self,

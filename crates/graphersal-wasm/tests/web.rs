@@ -202,16 +202,24 @@ fn graphson_save_and_load_keeps_types_and_reports_skips() {
         .unwrap(),
     );
     assert_eq!(typed["execution"]["results"][0], 1, "{typed}");
-    // A date is skipped and listed in the warnings; malformed text is an error, not a panic.
+    // A date/time type Graphersal cannot hold (a year) is skipped and listed in the warnings,
+    // one it holds (`g:Date`) is imported; malformed text is an error, not a panic.
     let info = json(
         &q.load_graphson(
-            r#"{"id":"v","properties":{"born":[{"value":{"@type":"g:Date","@value":1}}]}}"#,
+            r#"{"id":"v","properties":{"born":[{"value":{"@type":"gx:Year","@value":"2016"}}],"seen":[{"value":{"@type":"g:Date","@value":1}}]}}"#,
             "dates.json",
             None,
         )
         .unwrap(),
     );
-    assert_eq!(info["warnings"].as_array().unwrap().len(), 1, "{info}");
+    let warnings = info["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{info}");
+    assert!(warnings[0].as_str().unwrap().contains("gx:Year"), "{info}");
+    let seen = json(
+        &q.execute(r#"g.v().has("seen").count().next()"#, "{}")
+            .unwrap(),
+    );
+    assert_eq!(seen["execution"]["results"][0], 1, "{seen}");
     assert!(q.load_graphson("{bad", "bad.json", None).is_err());
     assert!(GraphSource::from_file("graph.json").is_err());
 }
@@ -365,6 +373,25 @@ fn a_loaded_graph_is_a_store_in_memory_in_the_browser() {
 /// `Fake(seed)` gives the same values in the browser build as natively (the reproducibility
 /// contract of `graphersal`'s `script/fake`; `fake_tests.rs` pins the same string natively, so a
 /// platform difference in the generator or the float formatting shows here).
+/// The built-in embedder runs in the browser: the `embed` step, `embed(text)` and
+/// `g.embedders()`.
+#[wasm_bindgen_test]
+fn embed_runs_in_the_browser() {
+    let mut p = modern();
+    let r = json(
+        &p.execute(
+            r#"g.v().has_label("person").property("emb", __.embed("name")).iterate();
+               [g.v().has_label("person").nearest("emb", embed("marco"), 1).values("name").next(),
+                g.embedders()[0].name]"#,
+            "{}",
+        )
+        .unwrap(),
+    );
+    assert_eq!(r["ok"], true, "{r}");
+    let raw = r["display"]["raw"].as_str().unwrap();
+    assert!(raw.contains("marko") && raw.contains("hash-ngram/1"), "{r}");
+}
+
 #[wasm_bindgen_test]
 fn fake_values_match_the_native_build() {
     let mut p = Playground::new();

@@ -11,8 +11,34 @@
 // Paths are arrays of keys into the schema document, e.g.
 // ['vertices', 'person', 'schema', 'properties', 'address', 'properties', 'zip'].
 
+/** The date and time types (book "Dates and Times"): a string node with their `format`. */
+export const TEMPORAL_BASES = Object.freeze(['datetime', 'localdatetime', 'date', 'time', 'duration']);
+
 /** The base types of the type dropdown, in menu order. */
-export const BASE_TYPES = Object.freeze(['string', 'integer', 'number', 'boolean', 'uuid', 'array', 'object', 'null', 'any']);
+export const BASE_TYPES = Object.freeze(['string', 'integer', 'number', 'boolean', 'uuid', ...TEMPORAL_BASES, 'vector', 'array', 'object', 'null', 'any']);
+
+/** The element kinds of a vector node (`{"type": "array", "format": "vector", "element": ..}`). */
+export const VECTOR_ELEMENTS = Object.freeze(['f32', 'f16', 'i8', 'bit']);
+
+/** The metrics of a vector node's `metric` (the default metric of `similarity`/`nearest`). */
+export const VECTOR_METRICS = Object.freeze(['cosine', 'dot', 'l2', 'hamming']);
+
+/** The largest `dimension` of a vector node (the engine's `MAX_VECTOR_DIMENSION`). */
+export const MAX_VECTOR_DIMENSION = 65536;
+
+/** The `format` of a base type written as `{"type": "string", "format": ..}`. */
+export const FORMAT_OF_BASE = Object.freeze({
+  uuid: 'uuid', datetime: 'date-time', localdatetime: 'local-date-time', date: 'date', time: 'time', duration: 'duration',
+});
+const BASE_OF_FORMAT = Object.freeze(Object.fromEntries(Object.entries(FORMAT_OF_BASE).map(([b, f]) => [f, b])));
+
+/** The base type of a `string` node: its format's type (`uuid`, `date`, ...) or `string`. */
+function stringBase(node) {
+  return (node && BASE_OF_FORMAT[node.format]) || 'string';
+}
+
+/** The bounds of a date and time type: compared as values of that type, written as its text. */
+const FORMAT_BOUNDS = ['formatMinimum', 'formatMaximum', 'formatExclusiveMinimum', 'formatExclusiveMaximum'];
 
 /** The schema modes. */
 export const MODES = Object.freeze(['none', 'open', 'closed']);
@@ -23,7 +49,10 @@ export const CONSTRAINTS = Object.freeze({
   number: ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum'],
   string: ['minLength', 'maxLength', 'pattern'],
   uuid: [],
+  ...Object.fromEntries(TEMPORAL_BASES.map((b) => [b, FORMAT_BOUNDS])),
   array: ['minItems', 'maxItems'],
+  // `element`, `dimension`, `metric` and `embedder` are edited in the form's Vector block (not constraints).
+  vector: [],
   object: [],
   boolean: [],
   null: [],
@@ -31,11 +60,40 @@ export const CONSTRAINTS = Object.freeze({
   union: [],
 });
 
+/**
+ * The `defaultFunction`s a base type admits (the engine's `check_defaults`): each produces a value
+ * of exactly that type, for a top-level property only.
+ */
+export const DEFAULT_FUNCTIONS = Object.freeze({
+  uuid: Object.freeze(['uuidv4', 'uuidv7']),
+  datetime: Object.freeze(['now']),
+  date: Object.freeze(['today']),
+});
+
+/**
+ * Whether `path` is a label's top-level property (`[vertices|edges, label, 'schema', 'properties',
+ * key]`): the only place where `default`/`defaultFunction` are applied on create.
+ */
+export function isTopLevelProperty(path) {
+  return path.length === 5 && path[2] === 'schema' && path[3] === 'properties';
+}
+
+/**
+ * The create-time default of a property node for the table: `default "x"`, `default now()`, or
+ * null without one. Read from the property node itself (annotations are not on the value node).
+ */
+export function defaultSummary(node) {
+  if (!isPlainObject(node)) return null;
+  if (typeof node.defaultFunction === 'string') return `default ${node.defaultFunction}()`;
+  if ('default' in node) return `default ${short(node.default)}`;
+  return null;
+}
+
 /** Keywords that constrain any kind of value. */
 export const VALUE_CONSTRAINTS = Object.freeze(['enum', 'const']);
 
 /** Annotation keywords: stored and round-tripped, no effect on validation. */
-export const ANNOTATIONS = Object.freeze(['title', 'description', 'default', 'examples', 'deprecated', '$comment']);
+export const ANNOTATIONS = Object.freeze(['title', 'description', 'default', 'defaultFunction', 'examples', 'deprecated', '$comment']);
 
 /** Keywords that belong to one kind of value; removed when the type changes to another kind. */
 const KIND_KEYWORDS = {
@@ -43,9 +101,14 @@ const KIND_KEYWORDS = {
   minLength: 'string', maxLength: 'string', pattern: 'string', format: 'string',
   minItems: 'array', maxItems: 'array', items: 'array',
   properties: 'object', required: 'object', additionalProperties: 'object',
+  formatMinimum: 'temporal', formatMaximum: 'temporal', formatExclusiveMinimum: 'temporal', formatExclusiveMaximum: 'temporal',
+  element: 'vector', dimension: 'vector', metric: 'vector', embedder: 'vector',
 };
 
-const KIND_OF_BASE = { integer: 'numeric', number: 'numeric', string: 'string', uuid: 'string', array: 'array', object: 'object' };
+const KIND_OF_BASE = {
+  integer: 'numeric', number: 'numeric', string: 'string', uuid: 'string', array: 'array', object: 'object', vector: 'vector',
+  ...Object.fromEntries(TEMPORAL_BASES.map((b) => [b, 'temporal'])),
+};
 
 // ------------------------------------------------------------------ plain data helpers
 
@@ -167,7 +230,8 @@ export function describe(node) {
   if (kinds.length === 0) return { base: 'null', nullable: true, value: [] };
   if (kinds.length > 1) return { base: 'union', nullable, value: [] };
   let base = kinds[0];
-  if (base === 'string' && node.format === 'uuid') base = 'uuid';
+  if (base === 'string') base = stringBase(node);
+  if (base === 'array' && node.format === 'vector') base = 'vector';
   if (!BASE_TYPES.includes(base)) base = 'union';
   return { base, nullable, value: [] };
 }
@@ -182,6 +246,10 @@ export function typeText(node, { collapsed = false } = {}) {
   const d = describe(node);
   const v = valueNode(node);
   if (d.base === 'union') return unionText(node);
+  if (d.base === 'vector') {
+    const element = VECTOR_ELEMENTS.includes(v.element) ? v.element : 'f32';
+    return Number.isInteger(v.dimension) ? `vector<${element}, ${v.dimension}>` : `vector<${element}>`;
+  }
   if (d.base === 'array') {
     if (!isPlainObject(v.items)) return 'array';
     return `array of ${typeText(v.items, { collapsed: true })}`;
@@ -198,7 +266,7 @@ function unionText(node) {
     return `anyOf<${node.anyOf.map((m) => (describe(m).base === 'null' ? 'null' : typeText(m, { collapsed: true }))).join(' | ')}>`;
   }
   const types = Array.isArray(node.type) ? node.type : [node.type];
-  return types.filter((t) => t !== 'null').map((t) => (t === 'string' && node.format === 'uuid' ? 'uuid' : t)).join(' | ');
+  return types.filter((t) => t !== 'null').map((t) => (t === 'string' ? stringBase(node) : t)).join(' | ');
 }
 
 /** A JSON value in a compact form for the constraint column. */
@@ -229,6 +297,11 @@ export function constraintSummary(node) {
   if (v.minLength !== undefined || v.maxLength !== undefined) out.push(`length ${range(v.minLength, v.maxLength)}`);
   if (v.pattern !== undefined) out.push(String(v.pattern));
   if (v.minItems !== undefined || v.maxItems !== undefined) out.push(`items ${range(v.minItems, v.maxItems)}`);
+  const flo = v.formatExclusiveMinimum !== undefined ? v.formatExclusiveMinimum : v.formatMinimum;
+  const fhi = v.formatExclusiveMaximum !== undefined ? v.formatExclusiveMaximum : v.formatMaximum;
+  if (flo !== undefined || fhi !== undefined) {
+    out.push(range(flo, fhi, v.formatExclusiveMinimum !== undefined, v.formatExclusiveMaximum !== undefined));
+  }
   if (Array.isArray(v.enum)) out.push(`one of ${v.enum.map((x) => short(x, 12)).join(', ')}`);
   if (v.const !== undefined) out.push(`= ${short(v.const)}`);
   return out;
@@ -278,12 +351,18 @@ export function setBaseType(doc, path, base) {
   }
   delete node.enum;
   delete node.const;
-  if (base !== 'uuid') delete node.format;
+  if (d.base !== base) for (const k of FORMAT_BOUNDS) delete node[k];
+  delete node.format;
   delete node.type;
   if (base === 'any') return;
-  const t = base === 'uuid' ? 'string' : base;
+  const format = FORMAT_OF_BASE[base];
+  const t = format ? 'string' : base === 'vector' ? 'array' : base;
   node.type = base === 'null' ? 'null' : nullable ? [t, 'null'] : t;
-  if (base === 'uuid') node.format = 'uuid';
+  if (format) node.format = format;
+  if (base === 'vector') {
+    node.format = 'vector';
+    node.element = 'f32';
+  }
   if (base === 'array' && !isPlainObject(node.items)) node.items = { type: 'string' };
   if (base === 'object' && !isPlainObject(node.properties)) node.properties = {};
   reorderType(node);
@@ -518,7 +597,20 @@ export function violationQuery(group) {
 
 /** A placeholder value of a base type for a backfill script. */
 function placeholder(base) {
-  return { string: '', integer: 0, number: 0, boolean: false, array: [], object: {}, uuid: '00000000-0000-0000-0000-000000000000' }[base] ?? null;
+  return {
+    string: '', integer: 0, number: 0, boolean: false, array: [], object: {}, uuid: '00000000-0000-0000-0000-000000000000',
+    datetime: '1970-01-01T00:00:00Z', localdatetime: '1970-01-01T00:00:00', date: '1970-01-01', time: '00:00:00', duration: 'PT0S',
+  }[base] ?? null;
+}
+
+/**
+ * A backfill value as a Rhai literal: a date and time value through its constructor
+ * (`date("1970-01-01")`), since the draft that declares the key enforces nothing yet (mode
+ * `none` stores a string as a string).
+ */
+function fillLiteral(base, value) {
+  if (TEMPORAL_BASES.includes(base) && typeof value === 'string') return `${base}(${rhaiString(value)})`;
+  return rhaiLiteral(value);
 }
 
 /**
@@ -526,7 +618,7 @@ function placeholder(base) {
  * draft, as ONE playground run (a run is one unit: nothing is kept unless all of it succeeds):
  * 1. the draft with mode `none` (declares the keys, enforces nothing yet),
  * 2. `property(key, value)` on every element of the label that lacks the key; the value is the
- *    draft's `default` (an annotation; the editor uses it to prefill) or a placeholder to edit,
+ *    draft's `default` (a create stores it, existing data needs this backfill) or a placeholder,
  * 3. the draft itself, which validates all data again.
  * Returns null when no group can be backfilled this way.
  * @returns {{title: string, script: string} | null}
@@ -538,9 +630,10 @@ export function backfillScript(draft, groups) {
     const section = g.element === 'edge' ? 'edges' : 'vertices';
     const node = getAt(draft, [section, g.label, 'schema', 'properties', g.field]);
     const hasDefault = isPlainObject(node) && 'default' in node;
-    const value = hasDefault ? node.default : placeholder(describe(node).base);
+    const base = describe(node).base;
+    const value = hasDefault ? node.default : placeholder(base);
     const source = g.element === 'edge' ? 'g.E()' : 'g.V()';
-    fills.push(`${source}.hasLabel(${rhaiString(g.label)}).not(__.has(${rhaiString(g.field)})).property(${rhaiString(g.field)}, ${rhaiLiteral(value)}).toList();` +
+    fills.push(`${source}.hasLabel(${rhaiString(g.label)}).not(__.has(${rhaiString(g.field)})).property(${rhaiString(g.field)}, ${fillLiteral(base, value)}).toList();` +
       (hasDefault ? '  // the draft\'s default' : '  // placeholder: edit it'));
   }
   if (!fills.length) return null;

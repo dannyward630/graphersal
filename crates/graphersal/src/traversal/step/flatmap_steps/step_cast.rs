@@ -281,6 +281,10 @@ fn to_natural_number(value: &ElementProperty) -> TraverserResult<ElementProperty
     match value {
         ElementProperty::Number(_) | ElementProperty::Null => Ok(value.clone()),
         ElementProperty::Boolean(_) => value.cast(&ValueType::Int64),
+        // TinkerPop `asNumber()` of a date: its epoch milliseconds (`int64`).
+        ElementProperty::Temporal(crate::value::temporal::Temporal::DateTime(_)) => {
+            value.cast(&ValueType::Int64)
+        }
         ElementProperty::String(text) => {
             if text.parse::<i64>().is_ok() {
                 value.cast(&ValueType::Int64)

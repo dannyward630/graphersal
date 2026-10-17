@@ -268,6 +268,89 @@ pub(super) fn register(registry: &mut Registry) {
             ScriptGraphTraversalSource::as_number_with,
         )
         .register_fn("cast", ScriptGraphTraversalSource::cast)
+        // The date steps (book part "Dates and Times").
+        .register_fn_as(&["as_date", "asDate"], ScriptGraphTraversalSource::as_date)
+        .register_fn_as(
+            &["as_date", "asDate"],
+            ScriptGraphTraversalSource::as_date_t,
+        )
+        .register_fn_as(
+            &["as_duration", "asDuration"],
+            ScriptGraphTraversalSource::as_duration,
+        )
+        // The vector steps (book page "Vectors").
+        .register_fn_as(
+            &["as_vector", "asVector"],
+            ScriptGraphTraversalSource::as_vector,
+        )
+        .register_fn("quantize", ScriptGraphTraversalSource::quantize)
+        .register_fn("similarity", ScriptGraphTraversalSource::similarity)
+        .register_fn("similarity", ScriptGraphTraversalSource::similarity_2)
+        .register_fn("similarity", ScriptGraphTraversalSource::similarity_3)
+        .register_fn("nearest", ScriptGraphTraversalSource::nearest)
+        .register_fn("nearest", ScriptGraphTraversalSource::nearest_with)
+        .register_fn("embed", ScriptGraphTraversalSource::embed)
+        .register_fn("embed", ScriptGraphTraversalSource::embed_1)
+        .register_fn("embed", ScriptGraphTraversalSource::embed_2)
+        .register_fn_as(
+            &["vector_mean", "vectorMean"],
+            ScriptGraphTraversalSource::vector_mean,
+        )
+        .register_fn_as(
+            &["date_add", "dateAdd"],
+            ScriptGraphTraversalSource::date_add,
+        )
+        .register_fn_as(
+            &["date_add", "dateAdd"],
+            ScriptGraphTraversalSource::date_add_in,
+        )
+        .register_fn_as(
+            &["date_add", "dateAdd"],
+            ScriptGraphTraversalSource::date_add_duration,
+        )
+        .register_fn_as(
+            &["date_add", "dateAdd"],
+            ScriptGraphTraversalSource::date_add_duration_in,
+        )
+        .register_fn_as(
+            &["date_diff", "dateDiff"],
+            ScriptGraphTraversalSource::date_diff,
+        )
+        .register_fn_as(
+            &["date_diff", "dateDiff"],
+            ScriptGraphTraversalSource::date_diff_unit,
+        )
+        .register_fn_as(
+            &["date_diff", "dateDiff"],
+            ScriptGraphTraversalSource::date_diff_unit_in,
+        )
+        .register_fn("age", ScriptGraphTraversalSource::age)
+        .register_fn("age", ScriptGraphTraversalSource::age_in)
+        .register_fn_as(
+            &["date_trunc", "dateTrunc"],
+            ScriptGraphTraversalSource::date_trunc,
+        )
+        .register_fn_as(
+            &["date_trunc", "dateTrunc"],
+            ScriptGraphTraversalSource::date_trunc_in,
+        )
+        .register_fn_as(
+            &["date_part", "datePart"],
+            ScriptGraphTraversalSource::date_part,
+        )
+        .register_fn_as(
+            &["date_part", "datePart"],
+            ScriptGraphTraversalSource::date_part_in,
+        )
+        .register_fn_as(&["at_zone", "atZone"], ScriptGraphTraversalSource::at_zone)
+        .register_fn_as(
+            &["as_local", "asLocal"],
+            ScriptGraphTraversalSource::as_local,
+        )
+        .register_fn_as(
+            &["as_local", "asLocal"],
+            ScriptGraphTraversalSource::as_local_in,
+        )
         .register_fn("cast", ScriptGraphTraversalSource::cast_with)
         .register_fn("substring", ScriptGraphTraversalSource::substring)
         .register_fn("substring", ScriptGraphTraversalSource::substring_from)
@@ -295,15 +378,45 @@ pub(super) fn register(registry: &mut Registry) {
         .register_fn("where", ScriptGraphTraversalSource::where_label_p)
         .register_fn("where_p", ScriptGraphTraversalSource::where_p)
         .register_fn("where_t", ScriptGraphTraversalSource::where_t)
-        .register_fn_as(&["addV", "add_v"], ScriptGraphTraversalSource::add_v_empty)
-        .register_fn_as(&["addV", "add_v"], ScriptGraphTraversalSource::add_v)
-        .register_fn_as(&["addV", "add_v"], ScriptGraphTraversalSource::add_v_labels)
+        // The creating steps carry the evaluation's `now()` (`defaultFunction` `now`/`today`).
         .register_fn_as(
             &["addV", "add_v"],
-            ScriptGraphTraversalSource::add_v_traversal,
+            |ctx: NativeCallContext, this: &mut ScriptGraphTraversalSource| {
+                this.add_v_empty().stamped(&ctx)
+            },
         )
-        .register_fn_as(&["addE", "add_e"], ScriptGraphTraversalSource::add_e_empty)
-        .register_fn_as(&["addE", "add_e"], ScriptGraphTraversalSource::add_e)
+        .register_fn_as(
+            &["addV", "add_v"],
+            |ctx: NativeCallContext, this: &mut ScriptGraphTraversalSource, label: String| {
+                this.add_v(label).stamped(&ctx)
+            },
+        )
+        .register_fn_as(
+            &["addV", "add_v"],
+            |ctx: NativeCallContext,
+             this: &mut ScriptGraphTraversalSource,
+             labels: Vec<Dynamic>| { this.add_v_labels(labels).stamped(&ctx) },
+        )
+        .register_fn_as(
+            &["addV", "add_v"],
+            |ctx: NativeCallContext,
+             this: &mut ScriptGraphTraversalSource,
+             label: ScriptGraphTraversalSource| {
+                this.add_v_traversal(label).stamped(&ctx)
+            },
+        )
+        .register_fn_as(
+            &["addE", "add_e"],
+            |ctx: NativeCallContext, this: &mut ScriptGraphTraversalSource| {
+                this.add_e_empty().stamped(&ctx)
+            },
+        )
+        .register_fn_as(
+            &["addE", "add_e"],
+            |ctx: NativeCallContext, this: &mut ScriptGraphTraversalSource, label: Dynamic| {
+                this.add_e(label).map(|source| source.stamped(&ctx))
+            },
+        )
         .register_fn_as(
             &["withSideEffect", "with_side_effect"],
             ScriptGraphTraversalSource::with_side_effect,
@@ -346,12 +459,16 @@ pub(super) fn register(registry: &mut Registry) {
         )
         .register_fn_as(
             &["mergeV", "merge_v"],
-            ScriptGraphTraversalSource::merge_v_empty,
+            |ctx: NativeCallContext, this: &mut ScriptGraphTraversalSource| {
+                this.merge_v_empty().stamped(&ctx)
+            },
         )
         .register_fn_as(&["mergeV", "merge_v"], ScriptGraphTraversalSource::merge_v)
         .register_fn_as(
             &["mergeE", "merge_e"],
-            ScriptGraphTraversalSource::merge_e_empty,
+            |ctx: NativeCallContext, this: &mut ScriptGraphTraversalSource| {
+                this.merge_e_empty().stamped(&ctx)
+            },
         )
         .register_fn_as(&["mergeE", "merge_e"], ScriptGraphTraversalSource::merge_e)
         // .register_fn("add_v_", ScriptGraphTraversalSource::add_v_)

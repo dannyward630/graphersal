@@ -128,6 +128,33 @@ const CATEGORIES: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "Dates and times",
+        &[
+            "as_date",
+            "as_duration",
+            "date_add",
+            "date_diff",
+            "age",
+            "date_trunc",
+            "date_part",
+            "at_zone",
+            "as_local",
+        ],
+    ),
+    (
+        "Vectors",
+        &[
+            "as_vector",
+            "quantize",
+            "similarity",
+            "nearest",
+            "vector_mean",
+            "embed",
+            "embedders",
+            "embed_property",
+        ],
+    ),
+    (
         "Lists and ordering",
         &[
             "fold",
@@ -250,6 +277,10 @@ const CATEGORIES: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "Property indexes",
+        &["create_index", "drop_index", "indexes"],
+    ),
+    (
         "Compressed properties",
         &[
             "define_compression",
@@ -286,6 +317,8 @@ const GROUPS: &[(&str, &str, &[&str])] = &[
             "CastPolicy",
             "UUID",
             "Uuid",
+            "temporal",
+            "Vector",
             "Set",
             "Map",
             "V",

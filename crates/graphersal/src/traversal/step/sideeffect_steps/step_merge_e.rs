@@ -35,11 +35,15 @@ struct StepMergeE<'g, S: GraphStorage + 'g> {
     on_match_problem: Option<MergeProblem>,
     out_v_problem: Option<MergeProblem>,
     in_v_problem: Option<MergeProblem>,
+    /// The time of `defaultFunction` `now`/`today` the script DSL pinned for this step (the
+    /// evaluation's `now()`); `None`: the execution's ([`TraverserContext::create_context`]).
+    create_time: Option<crate::value::temporal::DateTime>,
 }
 
 impl<'g, S: GraphStorage + 'g> Clone for StepMergeE<'g, S> {
     fn clone(&self) -> Self {
         Self {
+            create_time: self.create_time,
             merge: self.merge.clone(),
             on_create: self.on_create.clone(),
             on_match: self.on_match.clone(),
@@ -107,6 +111,7 @@ impl<'g, S: GraphStorage + 'g> StepMergeE<'g, S> {
     fn new(merge: MergeInput<'g, S>, start: bool) -> Self {
         let (merge, merge_problem) = merge.into_arg(KIND, MergeRole::Merge, None);
         Self {
+            create_time: None,
             merge,
             on_create: None,
             on_match: None,
@@ -277,6 +282,10 @@ impl<'g, S: GraphStorage + 'g> MergeStep<'g, S> for StepMergeE<'g, S> {
 }
 
 impl<'g, S: GraphStorage + 'g> GraphStepSideEffectMut<'g, S> for StepMergeE<'g, S> {
+    fn set_create_time(&mut self, now: crate::value::temporal::DateTime) {
+        self.create_time = Some(now);
+    }
+
     fn process(
         &self,
         context: &mut TraverserContext<'_, S>,
@@ -348,7 +357,8 @@ impl<'g, S: GraphStorage + 'g> GraphStepSideEffectMut<'g, S> for StepMergeE<'g, 
         };
         let out_v = Self::require(out_v, Direction::Out)?;
         let in_v = Self::require(in_v, Direction::In)?;
-        let edge = create_edge(context.storage, &created, out_v, in_v)?;
+        let create = context.create_context_or(self.create_time);
+        let edge = create_edge(context.storage, &created, out_v, in_v, &create)?;
         Ok(vec![Traverser::with_parts(
             TraverserValue::Edge(edge),
             source.path,

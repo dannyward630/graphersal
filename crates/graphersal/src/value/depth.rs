@@ -46,6 +46,8 @@ pub(crate) fn property_exceeds_depth(value: &ElementProperty, max: usize) -> boo
         }
         let child = depth + 1;
         match current {
+            // A vector is one value (its components are not nested values).
+            ElementProperty::Vector(_) => {}
             ElementProperty::Array(items) => {
                 stack.extend(items.iter().filter(|c| is_container(c)).map(|c| (c, child)));
             }
@@ -73,7 +75,8 @@ pub(crate) fn property_exceeds_depth(value: &ElementProperty, max: usize) -> boo
             | ElementProperty::Compressed(_)
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
-            | ElementProperty::Uuid(_) => {}
+            | ElementProperty::Uuid(_)
+            | ElementProperty::Temporal(_) => {}
         }
     }
     false
@@ -210,7 +213,7 @@ mod tests {
         assert!(traverser_value_exceeds_depth(&wrapped, 3));
         let mut graph = TraversalGraph::default();
         let id = graph
-            .add_vertex(None, vec![], Default::default())
+            .insert_vertex(None, vec![], Default::default())
             .expect("a vertex");
         let vertex: V = TraverserValue::Vertex(id);
         assert!(!traverser_value_exceeds_depth(&vertex, 0));

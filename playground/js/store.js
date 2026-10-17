@@ -2,6 +2,7 @@
 // talks to the engine for graph loading and query execution. The query tabs' logic lives in
 // tabs.js (pure, tested under Node); this module wraps it in the reactive state and persists it.
 
+import { loadBuildInfo, versionLabel } from './build-info.js';
 import { reactive, markRaw } from 'vue';
 import { getEngine } from './engine/index.js';
 import { DEFAULT_LIMITS } from './engine/engine.js';
@@ -52,6 +53,8 @@ export const state = reactive({
   ready: false,
   engine: null,
   engineInfo: null,
+  // The header's version (js/build-info.js `versionLabel`): {text, title}, or null.
+  versionLabel: null,
   engineMissing: false, // the WebAssembly build is not there: the page explains how to build it
   route: 'start',
   graph: null,
@@ -101,6 +104,10 @@ export const state = reactive({
   // the graph and when the Compression manager opens (refreshCompressions); null before.
   compressions: null,
   compressionsError: null,
+  // The property indexes of the graph with their stats (engine.listIndexes), reloaded with the
+  // graph and when the Property indexes manager opens (refreshIndexes); null before.
+  indexes: null,
+  indexesError: null,
   // The manager the Catalog dropdown opened: 'queries' | 'compression' | null (the Workspace
   // hosts the dialogs; openCatalog sets it, the dialog clears it when it closes).
   catalogDialog: null,
@@ -146,6 +153,8 @@ export async function init() {
       state.engine = markRaw(engine);
       state.engineInfo = await engine.info();
       state.storeView = state.engineInfo.view || null;
+      const build = state.engineInfo.server ? null : await loadBuildInfo();
+      state.versionLabel = versionLabel(state.engineInfo.version, build);
     }
   } finally {
     engineGate.open();
@@ -1056,12 +1065,12 @@ export async function saveCatalogFile() {
   try {
     const text = await state.engine.saveCatalog();
     if (isEmptyCatalog(text)) {
-      toast('The catalog is empty: no saved queries and no compression rules to save.', 'info', 7000);
+      toast('The catalog is empty: no saved queries, compression rules or property indexes to save.', 'info', 7000);
       return;
     }
     const file = catalogFile(text);
     downloadBlob(new Blob([file.text], { type: file.type }), file.name);
-    toast('Saved the catalog (saved queries and compression rules, JSON); load it back with Catalog ▸ Load catalog.', 'info', 7000);
+    toast('Saved the catalog (saved queries, compression rules and property indexes, JSON); load it back with Catalog ▸ Load catalog.', 'info', 7000);
   } catch (err) {
     toast(`Save failed: ${err && err.message ? err.message : err}`, 'error', 9000);
   } finally {
@@ -1083,6 +1092,7 @@ export async function loadCatalogFile(file) {
     if (res && res.graph) state.graph = res.graph;
     await refreshSavedQueries();
     await refreshCompressions();
+    await refreshIndexes();
     toast(`Loaded ${res.loaded} catalog definition${res.loaded === 1 ? '' : 's'}.`, 'info', 6000);
     return true;
   } catch (err) {
@@ -1093,7 +1103,7 @@ export async function loadCatalogFile(file) {
   }
 }
 
-/** Opens a manager of the Catalog dropdown: 'queries' or 'compression'. */
+/** Opens a manager of the Catalog dropdown: 'queries', 'compression' or 'indexes'. */
 export function openCatalog(id) {
   state.catalogDialog = id;
   state.catalogDialogN++;
@@ -1151,6 +1161,54 @@ export async function dropCompressionRule(name) {
 export async function recompressRule(name) {
   const res = await state.engine.recompress(name);
   await compressionsChanged();
+  return res;
+}
+
+// ------------------------------------------------------------------ property indexes
+
+let indexesLoad = 0;
+
+/** Reloads the property indexes with their stats (the Property indexes manager). */
+export async function refreshIndexes() {
+  if (!state.engine || typeof state.engine.listIndexes !== 'function' || !state.graph) return;
+  const load = ++indexesLoad;
+  try {
+    const list = await state.engine.listIndexes();
+    if (load === indexesLoad) {
+      state.indexes = markRaw(list || []);
+      state.indexesError = null;
+    }
+  } catch (err) {
+    if (load === indexesLoad) state.indexesError = err && err.message ? err.message : String(err);
+  }
+}
+
+/** An index changed through the page: the list and the graph info (its counts) reload. */
+async function indexesChanged() {
+  await refreshIndexes();
+  try {
+    state.graph = await state.engine.graphInfo();
+  } catch (err) {
+    /* the counts in the info are cosmetic */
+  }
+}
+
+/**
+ * The Property indexes form's Create: creates an index from a spec (js/indexes.js
+ * `indexDraftToSpec`). Resolves to the engine's answer: `{ok, index}` or `{ok: false, errors}`
+ * (field errors, shown in the form).
+ */
+export async function createPropertyIndex(spec) {
+  if (!state.engine) return { ok: false, errors: [{ field: 'general', message: 'The engine is not available.' }] };
+  const res = await state.engine.createIndex(spec);
+  if (res && res.ok) await indexesChanged();
+  return res;
+}
+
+/** Drops a property index (the caller asked the user first); no data changes. */
+export async function dropPropertyIndex(name) {
+  const res = await state.engine.dropIndex(name);
+  await indexesChanged();
   return res;
 }
 

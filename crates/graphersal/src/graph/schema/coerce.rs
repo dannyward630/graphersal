@@ -1,20 +1,32 @@
 //! Coercion on write: converts an incoming property value to the type a schema declares for it.
 //!
-//! Only two conversions exist, and both happen only because the schema *explicitly declares*
+//! Only four conversions exist, and all happen only because the schema *explicitly declares*
 //! the target type (this is not content sniffing, see CLAUDE.md rule 7):
 //!
 //! - a canonical UUID string becomes a [`ElementProperty::Uuid`] where the node is
 //!   `{"type": "string", "format": "uuid"}`;
+//! - a string the temporal type's parser accepts (ISO 8601 / RFC 3339 text, not only the
+//!   canonical form) becomes a [`ElementProperty::Temporal`] where the node is
+//!   `{"type": "string", "format": "date-time"}` (`date`, `local-date-time`, `time`,
+//!   `duration`); text the parser refuses is a coercion failure;
 //! - an `int64` becomes a `float64` where the node admits `number` but not `integer`, when it
-//!   is exactly representable.
+//!   is exactly representable;
+//! - a list of numbers becomes a [`ElementProperty::Vector`] of the declared element where the
+//!   node is `{"type": "array", "format": "vector", ..}`, and a vector of another element is
+//!   quantized to the declared one (the dimension is not changed: validation checks it).
 //!
 //! Everything else passes through unchanged, and validation reports any remaining mismatch.
-//! Reads never coerce. A schema's `default` is never applied here or anywhere else.
+//! Reads never coerce. A schema's `default` is coerced like a written value when a create stores
+//! it (`schema/defaults.rs` fills it in, the write path coerces it).
 
 use crate::graph::schema::nested::{NestedCtx, validate_nested};
-use crate::graph::schema::{JsonType, PropertySchema};
+use crate::graph::schema::{JsonType, PropertySchema, SchemaFormat};
+use std::borrow::Cow;
+
+use crate::value::physical::{PhysicalValue, lift_temporal};
+use crate::value::temporal::TemporalKind;
 use crate::value::uuid::parse_canonical;
-use crate::value::{ElementProperty, Number};
+use crate::value::{ElementProperty, Number, Vector, VectorElement, VectorError};
 
 /// Why a value could not be coerced to its declared type.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,6 +40,23 @@ pub(crate) struct CoerceFailure {
 
 /// The reason reported for a string that is not a canonical UUID.
 pub(crate) const NOT_A_CANONICAL_UUID: &str = "not a canonical UUID (8-4-4-4-12 lowercase hex)";
+
+/// The reason reported for a string that is not a value of a declared temporal type.
+pub(crate) fn not_a_temporal(kind: TemporalKind) -> &'static str {
+    match kind {
+        TemporalKind::DateTime => {
+            "not a datetime with its UTC offset or time zone (ISO 8601 / RFC 3339 such as \
+             2024-05-01T09:30:00+02:00; a text without an offset is not read as UTC; years -9999 \
+             to 9999)"
+        }
+        TemporalKind::Date => "not a date (ISO 8601 such as 2024-05-01, years -9999 to 9999)",
+        TemporalKind::LocalDateTime => {
+            "not a localdatetime (ISO 8601 without an offset such as 2024-05-01T09:30:00)"
+        }
+        TemporalKind::Time => "not a time (ISO 8601 without an offset such as 09:30:00)",
+        TemporalKind::Duration => "not a duration (ISO 8601 such as P1Y2M3DT4H5M6S)",
+    }
+}
 
 /// The reason reported for an integer that has no exact `float64` counterpart.
 pub(crate) const INEXACT_FLOAT64: &str = "integer cannot be represented exactly as float64";
@@ -57,19 +86,71 @@ pub(crate) fn coerce_to_declared(
         return Ok(value);
     };
     match value {
-        ElementProperty::String(text) if node.is_uuid_string() => match parse_canonical(&text) {
-            Some(uuid) => Ok(ElementProperty::Uuid(uuid)),
-            None => Err(CoerceFailure {
-                reason: NOT_A_CANONICAL_UUID,
-                value: ElementProperty::String(text),
-            }),
-        },
+        ElementProperty::String(text) if node.string_format() == Some(SchemaFormat::Uuid) => {
+            match parse_canonical(&text) {
+                Some(uuid) => Ok(ElementProperty::Uuid(uuid)),
+                None => Err(CoerceFailure {
+                    reason: NOT_A_CANONICAL_UUID,
+                    value: ElementProperty::String(text),
+                }),
+            }
+        }
+        // Plain guards, not `if let` guards: those need a newer Rust than the MSRV.
+        ElementProperty::String(text)
+            if node
+                .string_format()
+                .and_then(SchemaFormat::temporal_kind)
+                .is_some() =>
+        {
+            let Some(kind) = node.string_format().and_then(SchemaFormat::temporal_kind) else {
+                return Ok(ElementProperty::String(text));
+            };
+            match lift_temporal(&PhysicalValue::String(Cow::Borrowed(text.as_str())), kind) {
+                Ok(temporal) => Ok(temporal),
+                Err(_) => Err(CoerceFailure {
+                    reason: not_a_temporal(kind),
+                    value: ElementProperty::String(text),
+                }),
+            }
+        }
         ElementProperty::Number(number)
             if types.contains(&JsonType::Number) && !types.contains(&JsonType::Integer) =>
         {
             match number.as_i64() {
                 Some(integer) => int_to_float64(integer),
                 None => Ok(ElementProperty::Number(number)),
+            }
+        }
+        // A list of numbers where the node declares a vector: a vector of the declared element
+        // (quantized from the f32 values), so a property is stored quantized from the start.
+        ElementProperty::Array(items) if node.vector.is_some() => {
+            let Some(declared) = &node.vector else {
+                return Ok(ElementProperty::Array(items));
+            };
+            let vector = match Vector::from_values(&items) {
+                Ok(vector) => vector,
+                Err(err) => {
+                    return Err(CoerceFailure {
+                        reason: match err {
+                            VectorError::Dimension { .. } => NOT_A_VECTOR_LENGTH,
+                            _ => NOT_A_VECTOR,
+                        },
+                        value: ElementProperty::Array(items),
+                    });
+                }
+            };
+            quantize_to(vector, declared.element)
+        }
+        // A vector of another element: quantized to the declared one.
+        ElementProperty::Vector(vector)
+            if node
+                .vector
+                .as_ref()
+                .is_some_and(|declared| vector.element() != declared.element) =>
+        {
+            match &node.vector {
+                Some(declared) => quantize_to(vector, declared.element),
+                None => Ok(ElementProperty::Vector(vector)),
             }
         }
         ElementProperty::Array(items) => match &node.items {
@@ -90,6 +171,29 @@ pub(crate) fn coerce_to_declared(
             Ok(ElementProperty::Object(map))
         }
         other => Ok(other),
+    }
+}
+
+/// The reason reported for a list that is not a list of finite numbers where a vector is
+/// declared.
+pub(crate) const NOT_A_VECTOR: &str =
+    "not a list of finite numbers (the property declares a vector)";
+
+/// The reason reported for an empty or too long list where a vector is declared.
+pub(crate) const NOT_A_VECTOR_LENGTH: &str = "a vector has 1 to 65536 components";
+
+/// The reason reported for a vector that does not fit the declared element.
+pub(crate) const NOT_IN_ELEMENT_RANGE: &str =
+    "a component lies beyond the range of the declared element (f16: 65504)";
+
+/// A vector in the declared element.
+fn quantize_to(vector: Vector, element: VectorElement) -> Result<ElementProperty, CoerceFailure> {
+    match vector.quantize(element) {
+        Ok(quantized) => Ok(ElementProperty::Vector(quantized)),
+        Err(_) => Err(CoerceFailure {
+            reason: NOT_IN_ELEMENT_RANGE,
+            value: ElementProperty::Vector(vector),
+        }),
     }
 }
 

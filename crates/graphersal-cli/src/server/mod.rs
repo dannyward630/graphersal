@@ -76,7 +76,7 @@ pub const SERVER_ID: &str = "graphersal-dev";
 /// The stderr banner.
 const BANNER: &str = "\
 ==============================================================================
- graphersal DEV SERVER - dev mode, unstable, local only
+ graphersal DEV SERVER - dev mode, unstable, local only, NOT for production
  No authentication. Loopback only. The graph lives in memory only: nothing
  is saved unless you click \"Save to file\" (a --graph file) or download it.
  The HTTP API is internal to the playground and changes without notice.
@@ -85,7 +85,7 @@ const BANNER: &str = "\
 /// The stderr banner of a server on a Store directory.
 const STORE_BANNER: &str = "\
 ==============================================================================
- graphersal DEV SERVER - dev mode, unstable, local only
+ graphersal DEV SERVER - dev mode, unstable, local only, NOT for production
  No authentication. Loopback only. The graph is a Store (a directory or a
  single file): every commit is written to its write-ahead log before the query
  answers, and it survives a restart (or a crash) of the server.
@@ -490,7 +490,8 @@ pub fn session_presets(cli: &Cli) -> SessionPresets {
     }
     let mut presets = SessionPresets::new()
         .with_limits(cli.script_limits())
-        .with_script_timeout_ms(cli.timeout_ms);
+        .with_script_timeout_ms(cli.timeout_ms)
+        .with_embedders(crate::cli::embedders());
     for (key, value) in budget.traversal_options() {
         presets = presets.with_option(key, value);
     }
@@ -803,6 +804,10 @@ fn route(context: &Arc<Context>, request: &mut Request) -> Result<Answer, HttpEr
             Ok(text_response(200, answer?))
         }
         (Method::Get, "schema") => value(context.call(|s| s.graph().schema_view())?),
+        (Method::Post, "schema/view") => {
+            let body = text_body(request)?;
+            value(context.call_fallible(move |s| s.schema_view_of(&body))?)
+        }
         (Method::Get, "schema/stored") => {
             Ok(text_response(200, context.call(|s| s.get_schema_text())?))
         }
@@ -954,6 +959,17 @@ fn route(context: &Arc<Context>, request: &mut Request) -> Result<Answer, HttpEr
             let name = body_name(&json_body(request)?)?;
             value(context.call_fallible(move |s| s.recompress(&name))?)
         }
+        // Property indexes (`graphersal_session::indexes`).
+        (Method::Get, "indexes") => value(context.call(|s| s.list_indexes())?),
+        (Method::Post, "indexes/create") => {
+            let body = json_body(request)?;
+            value(context.call(move |s| s.create_index(&body))?)
+        }
+        (Method::Post, "indexes/drop") => {
+            let name = body_name(&json_body(request)?)?;
+            let dropped = context.call_fallible(move |s| s.drop_index(&name))?;
+            value(json!({ "dropped": dropped }))
+        }
         (_, "layout" | "layout/step" | "layout/cancel") => {
             layout::route(context, request, &method, endpoint)
         }
@@ -1004,6 +1020,7 @@ fn route(context: &Arc<Context>, request: &mut Request) -> Result<Answer, HttpEr
             | "execute"
             | "schema"
             | "schema/stored"
+            | "schema/view"
             | "schema/infer"
             | "schema/set"
             | "schema/patch"
@@ -1033,7 +1050,10 @@ fn route(context: &Arc<Context>, request: &mut Request) -> Result<Answer, HttpEr
             | "compression"
             | "compression/define"
             | "compression/drop"
-            | "compression/recompress",
+            | "compression/recompress"
+            | "indexes"
+            | "indexes/create"
+            | "indexes/drop",
         ) => Err(HttpError(
             405,
             format!("method {method} is not allowed on {path}"),
@@ -1080,7 +1100,27 @@ fn info(context: &Context) -> Value {
         // The AI Chat (`--ai`): `{provider, model, readOnly, sendsDataTo, maxToolCallsPerTurn}`
         // (never the key), or null.
         "ai": ai_status(context),
+        // The embedders queries can call (the built-in hash-ngram/1 and every --embedder):
+        // `[{name, model, dimension, default}]`.
+        "embedders": embedders_value(),
     })
+}
+
+/// The registry of [`crate::cli::embedders`] for `GET /api/info`.
+fn embedders_value() -> Value {
+    let registry = crate::cli::embedders();
+    let default = registry.default_embedder().info().name.clone();
+    registry
+        .infos()
+        .map(|info| {
+            json!({
+                "name": info.name.as_str(),
+                "model": info.model.as_str(),
+                "dimension": info.dimension,
+                "default": info.name == default,
+            })
+        })
+        .collect()
 }
 
 /// [`ai::status`], or null in a build without the `ai` feature.

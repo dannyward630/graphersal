@@ -410,6 +410,33 @@ impl<'g, S: GraphStorage + 'g> GraphStep<'g, S> {
                 visit(read(vertex))
             }
             GraphStep::SideEffect("subgraph", _) => visit(read(vertex)),
+            // `embed` runs an embedder of the registry: `Execute` on it, for every embedder.
+            GraphStep::Map("embed", step) => match step.embedder_name() {
+                Some(name) => visit(AccessRequest::new(
+                    Action::Execute,
+                    Resource::Embedder { name },
+                )),
+                None => Ok(()),
+            },
+            // A text query embeds its text: `Execute` on each candidate embedder of its model.
+            GraphStep::Map("similarity", step) => match step.text_query() {
+                Some(query) => query.embedder_names().try_for_each(|name| {
+                    visit(AccessRequest::new(
+                        Action::Execute,
+                        Resource::Embedder { name },
+                    ))
+                }),
+                None => Ok(()),
+            },
+            GraphStep::FlatBarrier("nearest", step) => match step.text_query() {
+                Some(query) => query.embedder_names().try_for_each(|name| {
+                    visit(AccessRequest::new(
+                        Action::Execute,
+                        Resource::Embedder { name },
+                    ))
+                }),
+                None => Ok(()),
+            },
             // `inject(v)` of a vertex or edge value reaches the stored element of its id.
             GraphStep::Append(_, step) => {
                 let (vertices, edges) = step.reads_elements();
@@ -650,6 +677,11 @@ pub(crate) trait GraphStepSideEffectMut<'g, S: GraphStorage + 'g>:
     fn static_labels(&self) -> Vec<&str> {
         Vec::new()
     }
+    /// Pins the time `defaultFunction` `now`/`today` use for the elements this step creates
+    /// (the script DSL's evaluation `now()`). The default ignores it: a step that creates no
+    /// element.
+    #[cfg_attr(not(feature = "script"), allow(dead_code))]
+    fn set_create_time(&mut self, _now: crate::value::temporal::DateTime) {}
     fn process(
         &self,
         context: &mut TraverserContext<'_, S>,
@@ -920,6 +952,53 @@ impl PropertyFilter {
     }
 }
 
+/// The property index a `v()`/`e()` source reads instead of its label buckets (set by the
+/// `property_index` rule, book page "Property Indexes"): the candidates are the elements of
+/// each source label whose `key` lies in one of `ranges` (a superset); the source still checks
+/// its folded conditions, and the condition the index serves stays in the plan when it is a
+/// `has(key, P)` step, so the result never differs from the label scan.
+#[derive(Debug, Clone)]
+pub(crate) struct IndexAccess {
+    /// The top-level property key of the index.
+    pub(crate) key: String,
+    /// The transform of the index (`None`: the plain index on the value).
+    pub(crate) transform: Option<crate::graph::PropertyIndexTransform>,
+    /// The slices of the index to read (several for `P.within` and `P.outside`).
+    pub(crate) ranges: Vec<crate::graph::PropertyIndexRange>,
+}
+
+impl IndexAccess {
+    /// `[index: vertex person.title, vertex employee.title]`: what `.profile()` shows; an index
+    /// with a transform names it (`[index: vertex person.name to_lower]`).
+    pub(crate) fn render(&self, element: &str, labels: &[String]) -> String {
+        let suffix = match &self.transform {
+            Some(transform) => format!(" {transform}"),
+            None => String::new(),
+        };
+        let names: Vec<String> = labels
+            .iter()
+            .map(|label| format!("{element} {label}.{}{suffix}", self.key))
+            .collect();
+        format!(" [index: {}]", names.join(", "))
+    }
+}
+
+/// A `has(key, P)` condition as slices of an ordered property index
+/// ([`GraphStepFilter::index_condition`]).
+#[derive(Debug, Clone)]
+pub(crate) struct IndexCondition<'a> {
+    /// The top-level property key.
+    pub(crate) key: &'a str,
+    /// The transform the condition applies to the value before the predicate (`has(key,
+    /// __.to_lower().is(P))`: `to_lower`), so only an index of that transform serves it.
+    pub(crate) transform: Option<crate::graph::PropertyIndexTransform>,
+    /// The slices holding every value the predicate accepts.
+    pub(crate) ranges: Vec<crate::graph::PropertyIndexRange>,
+    /// The predicate reads a string operand as a path label first (`P.eq("a")`): only a source
+    /// whose traversers carry no path label may serve it from an index.
+    pub(crate) reads_path_labels: bool,
+}
+
 pub(crate) trait GraphStepInit<'g, S: GraphStorage + 'g>:
     Send + Sync + fmt::Display
 {
@@ -943,6 +1022,15 @@ pub(crate) trait GraphStepInit<'g, S: GraphStorage + 'g>:
     /// Folds one more `has(key, value)` condition into this source step. Returns `false` (and
     /// keeps nothing) for a step that cannot check properties while it scans (the default).
     fn push_property_filter(&mut self, _filter: PropertyFilter) -> bool {
+        false
+    }
+    /// The property index this source reads (see [`IndexAccess`]). Default: none.
+    fn index_access(&self) -> Option<&IndexAccess> {
+        None
+    }
+    /// Sets (or with `None` clears) the property index this source reads. Returns `false` for
+    /// a step that cannot read an index (the default).
+    fn set_index_access(&mut self, _access: Option<IndexAccess>) -> bool {
         false
     }
     fn is_count_only(&self) -> bool {
@@ -1056,6 +1144,13 @@ pub(crate) trait GraphStepMap<'g, S: GraphStorage + 'g>: Send + Sync + fmt::Disp
         context: &mut TraverserContext<'_, S>,
         source: Traverser<S>,
     ) -> TraverserResult<Traverser<S>>;
+    /// The property index transform this step computes on a string, when it is exactly one
+    /// (`to_lower()`: [`PropertyIndexTransform::ToLower`](crate::graph::PropertyIndexTransform)),
+    /// so the `property_index` rule can serve `has(key, __.to_lower().is(P))` from an index of
+    /// that transform. Default `None`.
+    fn index_transform(&self) -> Option<crate::graph::PropertyIndexTransform> {
+        None
+    }
     /// Attaches a `from()`/`to()` modulator argument list. The default rejects it: only a
     /// step that overrides this and returns [`ArgsModulation::Accepted`] takes `from()`/
     /// `to()` (TinkerPop's `FromToModulating`: `add_e()` today), so a step can never swallow
@@ -1109,6 +1204,54 @@ pub(crate) trait GraphStepMap<'g, S: GraphStorage + 'g>: Send + Sync + fmt::Disp
     /// skips a map step only when it cannot.
     fn may_filter(&self) -> bool {
         false
+    }
+    /// How many traversers the executor hands to [`Self::process_batch`] at once; `1` (the
+    /// default): the executor calls [`Self::process_filter`] per traverser. A step that calls
+    /// an embedder returns the embedder's batch size, so one call covers many traversers.
+    fn batch_size(&self) -> usize {
+        1
+    }
+    /// Maps a batch of at most [`Self::batch_size`] traversers (each kept or dropped, in input
+    /// order). Only called when `batch_size() > 1`; the default maps one by one.
+    fn process_batch(
+        &self,
+        context: &mut TraverserContext<'_, S>,
+        sources: Vec<Traverser<S>>,
+    ) -> TraverserResult<Vec<Traverser<S>>> {
+        let mut out = Vec::with_capacity(sources.len());
+        for source in sources {
+            if let Some(mapped) = self.process_filter(context, source)? {
+                out.push(mapped);
+            }
+        }
+        Ok(out)
+    }
+    /// `Some(name)` for a step that calls an embedder: the name it asks for (`None` inside:
+    /// the registry's default). `run()` resolves it and calls [`Self::bind_embedder`] before the
+    /// permission check.
+    fn embedder_request(&self) -> Option<Option<compact_str::CompactString>> {
+        None
+    }
+    /// Binds the embedder `run()` resolved for [`Self::embedder_request`].
+    fn bind_embedder(&mut self, _embedder: std::sync::Arc<dyn crate::value::Embedder>) {}
+    /// The registry name of the bound embedder, for the permission request.
+    fn embedder_name(&self) -> Option<&str> {
+        None
+    }
+    /// The text query of a step searching vectors by a text (`similarity("emb", "text")`)
+    /// with the step's property key: `run()` binds its candidate embedders before the
+    /// permission check.
+    fn text_query_mut(
+        &mut self,
+    ) -> Option<(
+        Option<&crate::PropKey>,
+        &mut crate::traversal::step::map_steps::step_similarity::TextQuery,
+    )> {
+        None
+    }
+    /// The bound text query (the permission check asks `Execute` on its embedders).
+    fn text_query(&self) -> Option<&crate::traversal::step::map_steps::step_similarity::TextQuery> {
+        None
     }
     /// Maps one traverser, or drops it; the executor calls this rather than `process`.
     fn process_filter(
@@ -1369,6 +1512,20 @@ pub(crate) trait GraphStepFlatBarrier<'g, S: GraphStorage + 'g>:
         context: &mut TraverserContext<'_, S>,
         source: Vec<Traverser<S>>,
     ) -> TraverserResult<Option<Vec<Traverser<S>>>>;
+    /// The text query of `nearest("emb", "text", k)` with its property key; see
+    /// [`GraphStepMap::text_query_mut`].
+    fn text_query_mut(
+        &mut self,
+    ) -> Option<(
+        Option<&crate::PropKey>,
+        &mut crate::traversal::step::map_steps::step_similarity::TextQuery,
+    )> {
+        None
+    }
+    /// The bound text query; see [`GraphStepMap::text_query`].
+    fn text_query(&self) -> Option<&crate::traversal::step::map_steps::step_similarity::TextQuery> {
+        None
+    }
     /// Attaches a `from()`/`to()` modulator argument list. The default rejects it: only a
     /// step that overrides this and returns [`ArgsModulation::Accepted`] takes `from()`/
     /// `to()` (TinkerPop's `FromToModulating`: `add_e()` today), so a step can never swallow
@@ -1474,6 +1631,19 @@ pub(crate) trait GraphStepFilter<'g, S: GraphStorage + 'g>:
     /// `source_filter_pushdown` rule may fold into a `v()`/`e()` source step (see
     /// [`PropertyFilter`]). Default `None`: the step cannot be folded.
     fn property_equality(&self) -> Option<PropertyFilter> {
+        None
+    }
+    /// The condition of a `has(key, P)` on a literal property name as the slices of an ordered
+    /// property index that hold every value it can accept (book page "Property Indexes"):
+    /// `(key, ranges)`. Default `None`: no index can serve it.
+    fn index_condition(&self) -> Option<IndexCondition<'_>> {
+        None
+    }
+    /// The predicate of an `is(P)` on the incoming value as the slices of an ordered property
+    /// index that hold every value it can accept, with whether it reads a string operand as a
+    /// path label first (see [`IndexCondition::reads_path_labels`]): read by the
+    /// `property_index` rule for the child of `has(key, __.to_lower().is(P))`. Default `None`.
+    fn value_index_ranges(&self) -> Option<(Vec<crate::graph::PropertyIndexRange>, bool)> {
         None
     }
     fn as_where_traversal(&self) -> Option<&AnonymousTraversal<'g, S>> {

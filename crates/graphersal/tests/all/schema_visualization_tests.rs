@@ -96,6 +96,73 @@ fn test_mermaid_types_have_no_angle_brackets() {
     assert!(mermaid.contains("union either"), "{mermaid}");
 }
 
+/// Labels and property names are user text: the Mermaid output must parse whatever they hold
+/// (checked against the Mermaid 11 parser when this was written; the rules are kept here):
+/// identifiers never start with a digit and are unique, the real text stays in an alias, a
+/// comment or a quoted relationship label, an alias holds no `%` or `\\`, no quoted text holds
+/// `"` or a line break, and an attribute type is letters, digits, `_` and `~` only.
+#[test]
+fn test_mermaid_survives_hostile_names() {
+    let s = schema(
+        r#"{"vertices": {
+            "Док-умент": {"schema": {"type": "object", "required": ["a b"], "properties": {
+                "a b": {"type": "string", "pattern": "^\\d+\"x#y;%%z$"},
+                "1x": {"type": ["integer", "null"], "minimum": 0},
+                "e": {"enum": ["x\ny", "q;r"]},
+                "emb": {"type": "array", "format": "vector", "element": "i8", "dimension": 3},
+                "addr": {"type": "object", "properties": {"zip-code": {"type": "string"}}}}}},
+            "1st": {"schema": {"type": "object"}},
+            "a-b": {"schema": {"type": "object"}},
+            "a_b": {"schema": {"type": "object"}},
+            "%\\%": {"schema": {"type": "object"}}},
+          "edges": {
+            "has part {x}": {"connections": [{"from": "Док-умент", "to": "1st"}]},
+            "x:y \"z\"": {"connections": [{"from": "*", "to": "a-b"}]}}}"#,
+    );
+    let mermaid = s.to_mermaid();
+    // unique identifiers, the text in an alias
+    assert!(mermaid.contains("  a_b[\"a-b\"] {"), "{mermaid}");
+    assert!(mermaid.contains("  a_b_2[\"a_b\"] {"), "{mermaid}");
+    assert!(mermaid.contains("  _1st[\"1st\"] {"), "{mermaid}");
+    assert!(mermaid.contains("[\"％＼％\"]"), "{mermaid}");
+    assert!(
+        mermaid.contains("  any_label[\"* (any label)\"] {"),
+        "{mermaid}"
+    );
+    // attributes: a safe name with the real one in the comment; a vector's dimension there too
+    assert!(
+        mermaid.contains(r#"int64 _1x "1x: nullable, >= 0""#),
+        "{mermaid}"
+    );
+    assert!(
+        mermaid.contains(r#"string a_b "a b: required, pattern"#),
+        "{mermaid}"
+    );
+    assert!(
+        mermaid.contains(r#"vector~i8~ emb "dimension 3""#),
+        "{mermaid}"
+    );
+    // relationship labels: quoted unless a plain word
+    assert!(
+        mermaid.contains(r#"||--o{ _1st : "has part {x}""#),
+        "{mermaid}"
+    );
+    assert!(
+        mermaid.contains(r#"any_label ||--o{ a_b : "x:y 'z'""#),
+        "{mermaid}"
+    );
+    assert!(mermaid.contains(" : addr\n"), "{mermaid}");
+    for line in mermaid.lines().skip(1) {
+        // a quoted part never spans a line: the quotes of every line pair up
+        assert_eq!(line.matches('"').count() % 2, 0, "{line}");
+        let trimmed = line.trim_start();
+        assert!(
+            !trimmed.starts_with(|c: char| c.is_ascii_digit()),
+            "identifier starts with a digit: {line}"
+        );
+    }
+}
+
 #[cfg(feature = "display")]
 #[test]
 fn test_schema_to_table_shows_nested_paths_and_constraints() {

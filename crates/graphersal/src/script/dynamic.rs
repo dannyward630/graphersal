@@ -32,6 +32,12 @@ pub(crate) fn dynamic_text(arg: &Dynamic) -> String {
         let mut out = String::new();
         write_dynamic_literal(&mut out, arg, crate::value::depth::DEFAULT_MAX_VALUE_DEPTH);
         out
+    } else if let Some(value) = dynamic_temporal(arg) {
+        crate::value::literal::rhai_temporal(&value)
+    } else if let Some(vector) = arg.read_lock::<ScriptVector>() {
+        vector
+            .0
+            .literal(Some(crate::value::literal::MAX_LITERAL_ITEMS))
     } else if arg.type_name().contains("::") {
         type_name_of(arg)
     } else {
@@ -82,6 +88,8 @@ pub(super) fn dynamic_to_string(arg: Dynamic) -> String {
         arg.into_string().unwrap_or_else(|s| s.to_string())
     } else if let Some(uuid) = arg.read_lock::<ScriptUuid>() {
         uuid.canonical()
+    } else if let Some(value) = dynamic_temporal(&arg) {
+        value.to_string()
     } else {
         dynamic_text(&arg)
     }
@@ -366,6 +374,11 @@ pub(crate) fn element_property_to_dynamic(value: ElementProperty) -> Dynamic {
         ElementProperty::Compressed(text) => compressed_to_dynamic(&text),
         ElementProperty::Boolean(value) => Dynamic::from_bool(value),
         ElementProperty::Uuid(value) => Dynamic::from(ScriptUuid(value)),
+        // One script type per temporal type (`datetime`, `date`, ...): a result fed back into
+        // the DSL stays a temporal value of its type.
+        ElementProperty::Temporal(value) => temporal_to_dynamic(value),
+        // The Rhai vector type: prints as its literal, fed back into the DSL as a vector.
+        ElementProperty::Vector(value) => Dynamic::from(ScriptVector(value)),
         ElementProperty::Number(value) => {
             if let Some(int) = value.as_i64() {
                 Dynamic::from_int(int)
@@ -613,6 +626,10 @@ fn convert_bounded(arg: Dynamic, levels: usize) -> Result<ElementProperty, TooDe
         ElementProperty::Null
     } else if let Some(uuid) = arg.read_lock::<ScriptUuid>() {
         ElementProperty::Uuid(uuid.0)
+    } else if let Some(value) = dynamic_temporal(&arg) {
+        ElementProperty::Temporal(value)
+    } else if let Some(vector) = arg.read_lock::<ScriptVector>() {
+        ElementProperty::Vector(vector.0.clone())
     } else if let Some(vertex) = arg.read_lock::<ScriptVertex>() {
         ElementProperty::Vertex(Box::new(vertex.0.clone()))
     } else if let Some(edge) = arg.read_lock::<ScriptEdge>() {
@@ -722,6 +739,22 @@ pub(super) fn dynamic_to_json_value(
         // JSON is the physical level and has no UUID type: the canonical string goes in, and a
         // field declared `uuid` in `Open`/`Closed` mode is coerced back to a `Uuid` on write.
         serde_json::Value::String(uuid.canonical())
+    } else if let Some(value) = dynamic_temporal(&arg) {
+        // The same for a temporal value: its canonical text (coerced back by a declared
+        // temporal format).
+        serde_json::Value::String(value.to_string())
+    } else if let Some(vector) = arg.read_lock::<ScriptVector>() {
+        // A vector is the list of its values (coerced back by a declared vector).
+        serde_json::Value::Array(
+            vector
+                .0
+                .iter_f32()
+                .filter_map(|value| {
+                    serde_json::Number::from_f64(crate::value::vector::tagged::short_f64(value))
+                        .map(serde_json::Value::Number)
+                })
+                .collect(),
+        )
     } else if let Some(map) = arg.read_lock::<ScriptMap>() {
         // JSON objects are string-keyed by definition: a map with a non-string key has no JSON
         // property form (a `ScriptMap` only exists when a key is not a string).
@@ -780,6 +813,10 @@ fn dynamic_to_pvalue(arg: &Dynamic) -> PValue {
         }
     } else if let Some(uuid) = arg.read_lock::<ScriptUuid>() {
         PValue::Uuid(uuid.0)
+    } else if let Some(value) = dynamic_temporal(arg) {
+        PValue::Temporal(value)
+    } else if let Some(vector) = arg.read_lock::<ScriptVector>() {
+        PValue::Vector(vector.0.clone())
     } else if arg.is_unit() {
         // `()` is the DSL's `null` (`P.eq(())` is TinkerPop's `P.eq(null)`).
         PValue::Null
@@ -820,7 +857,9 @@ pub(super) fn try_dynamic_to_argp(arg: &Dynamic) -> Result<ArgP, Box<rhai::EvalA
         let type_name = arg.type_name();
         match type_name {
             "string" | "bool" | "i64" | "f64" => Ok(ArgP::Eq(arg.clone())),
-            _ if arg.is::<ScriptUuid>() => Ok(ArgP::Eq(arg.clone())),
+            _ if arg.is::<ScriptUuid>() || is_temporal(arg) || arg.is::<ScriptVector>() => {
+                Ok(ArgP::Eq(arg.clone()))
+            }
             _ => Err(Box::new(rhai::EvalAltResult::ErrorMismatchDataType(
                 "a predicate (P.eq(1), ...) or a value".to_string(),
                 type_name_of(arg),
@@ -1160,6 +1199,7 @@ pub(super) fn one_step_source(step: Step) -> ScriptGraphTraversalSource {
         access: Default::default(),
         private: true,
         anonymous: true,
+        now: None,
     }
 }
 

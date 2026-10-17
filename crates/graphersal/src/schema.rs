@@ -40,7 +40,9 @@
 //! | Change | Compatible when |
 //! |---|---|
 //! | `mode` | it gets less strict (`closed` → `open` → `none`); stricter is incompatible |
-//! | `meta`, annotations (`title`, `description`, `default`, ...) | always |
+//! | `meta`, annotations (`title`, `description`, ...) | always |
+//! | `default`, `defaultFunction` (added, changed, removed) | always: it changes only what a create stores for an absent top-level property, never existing data or a valid write; listed as `default_changed` |
+//! | a vector's `embedder` (the model that produced its vectors) | when it is declared where there was none; changing or removing it is incompatible (stored vectors and a text query embedded by another model are not comparable; a text query needs the model); listed as `embedder_changed` |
 //! | label added | the old mode was `closed` (no client could write it), or its schema requires no key and admits undeclared keys |
 //! | label removed | never |
 //! | connection added / removed | the edge label's connections still allow every old pair (the new list is empty, or contains every old pair), or the new mode is not `closed` (topology binds only there) |
@@ -50,18 +52,19 @@
 //! | key made optional | always |
 //! | `additionalProperties` | `false` → `true` |
 //! | type | the new type admits every kind the old one did (`["integer"]` → `["integer", "null"]`) |
-//! | a bound (`minimum`, `maxLength`, `minItems`, ...) | it is removed or relaxed |
+//! | a bound (`minimum`, `maxLength`, `minItems`, `formatMinimum`, ...) | it is removed or relaxed |
+//! | `format` (`date` → `date-time`, added, removed) | never: it is another type |
 //! | `pattern`, `const` | removed |
 //! | `enum` | removed, or a superset |
 //!
 //! With a new mode `none` every change is compatible (nothing is enforced any more).
 
 pub use crate::graph::schema::{
-    Annotations, Constraints, EdgeConnection, EdgeSchema, GraphSchema, JsonType, META_SCHEMA_JSON,
-    PropertySchema, SCHEMA_FORMAT_URL, SchemaChange, SchemaChangeKind, SchemaDiff, SchemaFormat,
-    SchemaInferer, SchemaMode, SchemaPatch, SchemaPattern, SchemaRow, SchemaValidation,
-    SchemaViolationReport, ValueType, VertexSchema, ViolationGroup, ViolationKind, VisualizeFormat,
-    type_of,
+    Annotations, Constraints, DefaultFunction, EdgeConnection, EdgeSchema, GraphSchema, JsonType,
+    META_SCHEMA_JSON, PropertySchema, SCHEMA_FORMAT_URL, SchemaChange, SchemaChangeKind,
+    SchemaDiff, SchemaFormat, SchemaInferer, SchemaMode, SchemaPatch, SchemaPattern, SchemaRow,
+    SchemaValidation, SchemaViolationReport, ValueType, VectorSchema, VertexSchema, ViolationGroup,
+    ViolationKind, VisualizeFormat, type_of,
 };
 /// The bounds of an aggregated `SchemaError::ExistingDataViolatesSchema` report (groups kept and
 /// printed, sample ids per group and their length) and the group key of elements without a label.

@@ -1,20 +1,20 @@
-//! The catalog: named definitions stored beside the schema (saved queries, compression rules and
-//! host-defined kinds 128-255).
+//! The catalog: named definitions stored beside the schema (saved queries, property indexes,
+//! compression rules and host-defined kinds 128-255).
 //!
 //! For hosts that manage saved queries or keep their own definitions in a graph's catalog. A host
 //! kind is stored opaque, byte for byte; `encode_payload`/`decode_payload` (feature `persist`)
 //! are the payload codec the library uses for its own kinds. Guides: the book pages
-//! `users_guide/saved_queries.md` and `users_guide/compressed_properties.md`.
+//! `users_guide/saved_queries.md`, `users_guide/property_indexes.md` and
+//! `users_guide/compressed_properties.md`.
 //!
 //! # The catalog
 //!
 //! The catalog of definitions: named, typed entries stored IN the database next to the schema
-//! (`book/src/users_guide/saved_queries.md`). Two kinds are defined: the **saved query**
-//! ([`QueryDefinition`]) and the **compression rule**
-//! ([`CompressionDefinition`], kind `3`); kind
-//! `2` is reserved for property indexes, kinds `128..=255` belong to hosts, every other kind is
-//! unassigned; a kind this version does not decode is kept as an opaque
-//! entry (see below).
+//! (`book/src/users_guide/saved_queries.md`). Three kinds are defined: the **saved query**
+//! ([`QueryDefinition`], kind `1`), the **property index** ([`PropertyIndexDefinition`], kind
+//! `2`) and the **compression rule** ([`CompressionDefinition`], kind `3`); kinds
+//! `128..=255` belong to hosts, every other kind is unassigned; a kind this version does not
+//! decode is kept as an opaque entry (see below).
 //!
 //! ## Model
 //!
@@ -36,7 +36,7 @@
 //! | Kinds | Owner |
 //! |---|---|
 //! | `0` | invalid |
-//! | `1..=127` | the library: `1` saved query, `2` reserved for a future property index, `3` compression rule, the rest unassigned |
+//! | `1..=127` | the library: `1` saved query, `2` property index, `3` compression rule, the rest unassigned |
 //! | `128..=255` | hosts ([`DefinitionKind::HOST_FIRST`]..=[`DefinitionKind::HOST_LAST`]): never assigned by the library |
 //!
 //! A host (a server built on the library, say) adds its own catalog entities under a host kind
@@ -91,3 +91,7 @@ pub use crate::graph::definition::{
 };
 #[cfg(feature = "persist")]
 pub use crate::graph::definition::{decode_payload, encode_payload};
+pub use crate::graph::property_index::{
+    MAX_INDEX_KEY_BYTES, MAX_INDEX_LABEL_BYTES, PropertyIndexDefinition, PropertyIndexTransform,
+    PropertyIndexType,
+};

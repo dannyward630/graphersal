@@ -382,3 +382,42 @@ fn a_storage_without_persistence_serves_graphs_without_stores() {
         )["execution"]
     );
 }
+
+#[test]
+fn property_indexes_work_and_a_storage_without_them_says_so() {
+    let spec = json!({"label": "person", "key": "age"});
+    let mut s = both(false);
+    let created = same(&mut s, |s| s.create_index(&spec));
+    assert_eq!(created["index"]["stats"]["entries"], 4, "{created}");
+    same(&mut s, |s| s.list_indexes());
+    same(&mut s, |s| {
+        run(
+            s,
+            r#"g.v().has_label("person").has("age", P.gt(30)).values("name").to_list()"#,
+        )
+    });
+    let text = s[0].save_catalog_text();
+    assert_eq!(text, s[1].save_catalog_text());
+
+    // A storage that keeps index definitions but serves none: create is its "not supported"
+    // error; a catalog file brings the definition in, listed as not served.
+    let mut plain = Session::with_storage(Arc::new(StorageKind::<NoCompression>::persistent()));
+    plain.load_sample("modern").unwrap();
+    let refused = plain.create_index(&spec);
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert_eq!(refused["errors"][0]["field"], "general");
+    assert!(
+        refused["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("property indexes"),
+        "{refused}"
+    );
+    assert_eq!(plain.index_count(), 0);
+    plain.load_catalog(&text, false).unwrap();
+    assert_eq!(plain.index_count(), 1);
+    let listed = plain.list_indexes();
+    assert_eq!(listed[0]["served"], false, "{listed}");
+    assert_eq!(listed[0]["stats"], Value::Null);
+    assert!(plain.drop_index("person_age").unwrap());
+}

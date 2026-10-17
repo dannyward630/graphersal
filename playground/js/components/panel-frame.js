@@ -28,7 +28,10 @@ export const PanelFrame = {
           <path v-if="collapsed" d="M6 4l4 4-4 4"/><path v-else d="M4 6l4 4 4-4"/>
         </svg>
       </button>
-      <span class="panel-title" :title="shortcut ? title + ' (' + shortcut + ')' : title">{{ title }}</span>
+      <!-- The title toggles too: people click the name, not the small chevron (the chevron stays the
+           keyboard and screen-reader control). -->
+      <span class="panel-title" :class="{ toggles: !maximized }" @click="maximized || $emit('toggle-collapse')"
+            :title="(shortcut ? title + ' (' + shortcut + ')' : title) + (maximized ? '' : collapsed ? ': click to expand' : ': click to collapse')">{{ title }}</span>
       <div class="tabs" v-if="!collapsed || maximized"><slot name="tabs"></slot></div>
       <div class="panel-actions">
         <slot name="actions" v-if="!collapsed || maximized"></slot>

@@ -16,7 +16,7 @@ use crate::value::{ElementProperty, PropertyMap};
 /// Magic of the `GRAPH` file.
 const GRAPH_MAGIC: &[u8; 8] = b"GRSLGRPH";
 /// Size of the fixed part of the `GRAPH` file.
-const GRAPH_FIXED_BYTES: usize = 256;
+pub(crate) const GRAPH_FIXED_BYTES: usize = 256;
 /// Size of one lineage entry.
 const LINEAGE_ENTRY_BYTES: usize = 32;
 
@@ -591,8 +591,7 @@ pub(crate) fn decode_graph_copies(dir: &DirPath) -> Result<(Decoded, Decoded), P
     let main = read(GRAPH_FILE);
     let copy = read(GRAPH_COPY);
     // Either copy of a NEWER store format (an upgrade by a newer Graphersal writes the copy
-    // first): the store is refused whatever the other copy holds, before anything else of it
-    // is read (format spec 15).
+    // first): the store is refused whatever the other copy holds (format spec 15).
     if let Some(found) = newer {
         return Err(newer_store(dir, found));
     }
@@ -623,26 +622,45 @@ pub(crate) fn newer_store(dir: &DirPath, found: u32) -> PersistError {
 }
 
 /// The version guard of every operation on an existing store, backup or attic (format spec
-/// 15), run BEFORE anything else of it is read and before any write or lock:
+/// 15), run BEFORE anything else of it is read and before any write or lock: refuses a newer
+/// version ([`refuse_newer_version`]) and an older store format
+/// ([`PersistError::OlderFormat`], as [`decode_graph_copies`] classifies it). What else is
+/// wrong with `GRAPH`, and a header that cannot be read (a read failure, a damaged or short
+/// header), is left to the operation, which reports it as before (damage reporting and
+/// maintenance mode are unchanged).
+pub(crate) fn refuse_other_version(dir: &DirPath) -> Result<(), PersistError> {
+    refuse_newer_version(dir)?;
+    decode_graph_copies(dir).map(|_| ())
+}
+
+/// The forward part of the version guard (format spec 15), also run by the upgrade converter,
+/// which reads OLDER stores:
 ///
 /// 1. a single-file container of a newer container version;
-/// 2. `GRAPH` / `GRAPH.copy` of a newer store format version (either copy) or of an older one
-///    ([`PersistError::OlderFormat`], as [`decode_graph_copies`] classifies it);
+/// 2. `GRAPH` / `GRAPH.copy` of a newer store format version (either copy);
 /// 3. any manifest, snapshot segment or WAL segment of the tree (snapshots, holders, `tmp-*`
 ///    directories, the attic) whose header is intact (magic and checksum) but whose file
 ///    format version is newer than this build's.
 ///
 /// A newer version is [`PersistError::UnsupportedVersion`]: written by a newer Graphersal,
-/// never damage, never repaired. Reads only headers (64 bytes per segment, a manifest's fixed
-/// part); what else is wrong with `GRAPH` is left to the operation.
-pub(crate) fn refuse_other_version(dir: &DirPath) -> Result<(), PersistError> {
+/// never damage, never repaired or upgraded. Reads only headers (64 bytes per segment, a
+/// manifest's fixed part).
+pub(crate) fn refuse_newer_version(dir: &DirPath) -> Result<(), PersistError> {
     refuse_newer_container(dir)?;
-    let _copies = decode_graph_copies(dir)?;
+    let mut newer = None;
+    for name in [GRAPH_FILE, GRAPH_COPY] {
+        if let Ok(bytes) = read_bounded(&dir.join(name), 64 << 20) {
+            newer = newer.max(GraphFile::newer_version(&bytes));
+        }
+    }
+    if let Some(found) = newer {
+        return Err(newer_store(dir, found));
+    }
     refuse_newer_files(dir, dir, 0)
 }
 
-/// Step 1 of [`refuse_other_version`]: the single-file container's preamble.
-fn refuse_newer_container(dir: &DirPath) -> Result<(), PersistError> {
+/// Step 1 of [`refuse_newer_version`]: the single-file container's preamble.
+pub(crate) fn refuse_newer_container(dir: &DirPath) -> Result<(), PersistError> {
     #[cfg(not(target_arch = "wasm32"))]
     if dir.name().is_empty()
         && let Some(path) = dir.store_dir().local_path()
@@ -658,7 +676,7 @@ fn refuse_newer_container(dir: &DirPath) -> Result<(), PersistError> {
     Ok(())
 }
 
-/// Step 3 of [`refuse_other_version`]: every file below `at` (depth-bounded: a store's tree
+/// Step 3 of [`refuse_newer_version`]: every file below `at` (depth-bounded: a store's tree
 /// is at most `attic/<entry>/snapshots/<seq>/<file>` deep).
 fn refuse_newer_files(root: &DirPath, at: &DirPath, depth: usize) -> Result<(), PersistError> {
     if depth > 6 {
@@ -672,8 +690,9 @@ fn refuse_newer_files(root: &DirPath, at: &DirPath, depth: usize) -> Result<(), 
         let path = at.join(&name);
         match kind {
             EntryKind::Dir => refuse_newer_files(root, &path, depth + 1)?,
-            EntryKind::File => {
-                if let Some((what, found)) = newer_file_version(&path) {
+            EntryKind::File => match newer_file_version(&path) {
+                Ok(None) => {}
+                Ok(Some((what, found))) => {
                     return Err(PersistError::UnsupportedVersion {
                         location: format!(
                             "{what} {} of the store {} (file format version)",
@@ -684,25 +703,29 @@ fn refuse_newer_files(root: &DirPath, at: &DirPath, depth: usize) -> Result<(), 
                         supported: super::super::codec::FORMAT_VERSION,
                     });
                 }
-            }
+                // An unreadable header is left to the operation's own checks.
+                Err(_) => {}
+            },
         }
     }
     Ok(())
 }
 
 /// The kind and file format version of a manifest, snapshot segment or WAL segment whose
-/// header is intact but NEWER than this build reads; `None` for everything else (another
-/// file, a current version, a damaged or short header: damage is the operation's business).
-fn newer_file_version(path: &DirPath) -> Option<(&'static str, u32)> {
+/// header is intact but NEWER than this build reads; `Ok(None)` for everything else (another
+/// file, a current or older version, a damaged or short header: damage is the operation's
+/// business); `Err` for a header that could not be read.
+fn newer_file_version(path: &DirPath) -> std::io::Result<Option<(&'static str, u32)>> {
+    use super::super::codec::FORMAT_VERSION;
     use super::super::manifest::{FIXED_BYTES, MANIFEST_MAGIC, ManifestFixed};
     use super::super::segment::SEGMENT_MAGIC;
     use super::super::wal::WAL_MAGIC;
     const HEADER: usize = 64;
-    let len = path.len().ok()?;
+    let len = path.len()?;
     if len < HEADER as u64 {
-        return None;
+        return Ok(None);
     }
-    let head = path.read_range(0, HEADER).ok()?;
+    let head = path.read_range(0, HEADER)?;
     let magic = &head[..8];
     if magic == SEGMENT_MAGIC || magic == WAL_MAGIC {
         // Both headers: magic, version u32, ..., the CRC-32C of bytes 0..60 at 60.
@@ -713,20 +736,28 @@ fn newer_file_version(path: &DirPath) -> Option<(&'static str, u32)> {
         } else {
             "snapshot segment"
         };
-        return (crc(&head[..60]) == stored && version > super::super::codec::FORMAT_VERSION)
-            .then_some((what, version));
+        return Ok(
+            (crc(&head[..60]) == stored && version > FORMAT_VERSION).then_some((what, version))
+        );
     }
     if magic == MANIFEST_MAGIC && len >= FIXED_BYTES as u64 {
         // The head copy of the fixed part, else the tail copy (format spec 6.1).
-        let newer = |at: u64| {
-            let bytes = path.read_range(at, FIXED_BYTES).ok()?;
-            ManifestFixed::decode(&bytes).err()?.newer_version
+        // `Ok(Ok(()))`: an intact copy this build reads; `Ok(Err(version))`: not intact, or
+        // intact and newer (`Some`).
+        let copy = |at: u64| -> std::io::Result<Result<(), Option<u32>>> {
+            let bytes = path.read_range(at, FIXED_BYTES)?;
+            Ok(ManifestFixed::decode(&bytes)
+                .map(|_| ())
+                .map_err(|err| err.newer_version))
         };
-        return newer(0)
-            .or_else(|| newer(len - FIXED_BYTES as u64))
-            .map(|found| ("manifest", found));
+        let found = match copy(0)? {
+            Ok(()) => None,
+            Err(Some(found)) => Some(found),
+            Err(None) => copy(len - FIXED_BYTES as u64)?.err().flatten(),
+        };
+        return Ok(found.map(|found| ("manifest", found)));
     }
-    None
+    Ok(None)
 }
 
 /// Writes `GRAPH.copy` and then `GRAPH` (each atomically: a temporary file, fsync, rename),
@@ -1042,6 +1073,11 @@ pub(crate) fn undo_new_dir(dir: &DirPath, existed: bool) {
 }
 
 /// The store format version this build writes and reads (format spec 5.1, 15): the version
-/// word of `GRAPH`. Version 2 added the store id (offset 100); a store of version 1 is refused
-/// with [`PersistError::OlderFormat`] (migrate it through a packed snapshot).
-pub(crate) const STORE_VERSION: u32 = 2;
+/// word of `GRAPH`. Version 2 added the store id (offset 100); version 3 (Graphersal 0.2.0)
+/// has the same `GRAPH` layout and marks a store whose snapshots and WAL are of file format
+/// version 2 (the temporal value tags), so that a build that reads only file format version 1
+/// refuses the store as newer instead of taking its files for damage. A store of version 1 or
+/// 2 is refused with [`PersistError::OlderFormat`]; version 2 is upgraded by the converter
+/// (`upgrade.rs`, format spec 15.1), version 1 (never released) migrates through a packed
+/// snapshot.
+pub(crate) const STORE_VERSION: u32 = 3;

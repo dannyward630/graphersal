@@ -215,7 +215,7 @@ mod tests {
         assert_eq!(graph.read().vertex_count(), 0);
         graph
             .write()
-            .add_vertex(Some("a".into()), vec!["n".into()], PropertyMap::default())
+            .insert_vertex(Some("a".into()), vec!["n".into()], PropertyMap::default())
             .expect("a writable storage");
         {
             let first = graph.read();
@@ -230,7 +230,7 @@ mod tests {
         }
         graph
             .get_mut()
-            .add_vertex(Some("b".into()), vec![], PropertyMap::default())
+            .insert_vertex(Some("b".into()), vec![], PropertyMap::default())
             .expect("a writable storage");
         let storage = graph.into_inner();
         assert_eq!(storage.vertex_count(), 2);

@@ -5,8 +5,8 @@
 use compact_str::CompactString;
 
 use super::codec::{
-    DecodeError, DecodeResult, FORMAT_VERSION, Reader, crc, put_str, put_u8, put_u16, put_u32,
-    put_u64, put_uvar,
+    DecodeError, DecodeResult, FORMAT_VERSION, FileVersion, Reader, crc, put_str, put_u8, put_u16,
+    put_u32, put_u64, put_uvar,
 };
 use super::definitions::{self, DefinitionRecord};
 use super::segment::{ChunkIndexEntry, KIND_EDGE, KIND_VERTEX};
@@ -59,6 +59,9 @@ pub(crate) struct ManifestFixed {
     pub(crate) variable_len: u64,
     pub(crate) name: String,
     pub(crate) chunk_bytes: u32,
+    /// The file format version the manifest was read with (not a field of its own: the version
+    /// word; [`ManifestFixed::encode`] always writes the current one).
+    pub(crate) version: FileVersion,
 }
 
 impl ManifestFixed {
@@ -120,15 +123,7 @@ impl ManifestFixed {
             return Err(DecodeError::new(0, "not a manifest (bad magic)"));
         }
         let version = r.u32()?;
-        if version > FORMAT_VERSION {
-            return Err(DecodeError::newer(8, "manifest", version));
-        }
-        if version != FORMAT_VERSION {
-            return Err(DecodeError::new(
-                8,
-                format!("unsupported manifest version {version}"),
-            ));
-        }
+        DecodeError::check_version(8, "manifest", version)?;
         let mut fixed = ManifestFixed {
             flags: r.u32()?,
             graph_id: r.u128_be()?,
@@ -149,6 +144,7 @@ impl ManifestFixed {
             segment_count: r.u32()?,
             variable_offset: r.u64()?,
             variable_len: r.u64()?,
+            version: FileVersion(version),
             ..ManifestFixed::default()
         };
         let name_len = r.u16()? as usize;

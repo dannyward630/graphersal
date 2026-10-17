@@ -38,20 +38,58 @@ pub(crate) fn parse_canonical(input: &str) -> Option<u128> {
     Some(value)
 }
 
+/// The version and variant bits of a UUID (`ver` in bits 76..80, variant `10` in bits 62..64).
+const VERSION_VARIANT_MASK: u128 = (0xF << 76) | (0b11 << 62);
+
+/// A new random RFC 9562 version-4 UUID: 122 random bits, the version and variant bits.
+pub(crate) fn new_v4() -> u128 {
+    let random: u128 = rand::random();
+    (random & !VERSION_VARIANT_MASK) | (0x4 << 76) | (0b10 << 62)
+}
+
+/// The last version-7 UUID this process made, for monotonicity.
+static LAST_V7: parking_lot::Mutex<u128> = parking_lot::Mutex::new(0);
+
 /// A new RFC 9562 version-7 UUID: 48 bits of Unix milliseconds (through `web_time`, never
 /// `std::time`), the version and variant bits, and 74 random bits.
-#[cfg_attr(not(feature = "persist"), allow(dead_code))]
+///
+/// Monotonic within the process (RFC 9562 section 6.2, method 2 on the whole random part): when
+/// the clock has not moved past the last UUID's millisecond (same millisecond, or a clock
+/// step back), the new UUID is the last one plus one in its 74 random bits, carrying into the
+/// timestamp when they are exhausted, so UUIDs made one after the other always increase.
 pub(crate) fn new_v7() -> u128 {
     let millis = web_time::SystemTime::now()
         .duration_since(web_time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis())
         & 0xFFFF_FFFF_FFFF;
     let random: u128 = rand::random();
-    (millis << 80)
-        | (0x7 << 76)
-        | (random & (0xFFF << 64))
-        | (0b10 << 62)
-        | (random & 0x3FFF_FFFF_FFFF_FFFF)
+    let fresh = (millis << 80) | (random & !(VERSION_VARIANT_MASK | (u128::MAX << 80))) | V7_BITS;
+    let mut last = LAST_V7.lock();
+    let next = if fresh > *last {
+        fresh
+    } else {
+        increment_v7(*last)
+    };
+    *last = next;
+    next
+}
+
+/// The version-7 and variant bits.
+const V7_BITS: u128 = (0x7 << 76) | (0b10 << 62);
+
+/// `uuid` plus one in its 74 random bits (rand_a: bits 64..76, rand_b: bits 0..62), carrying
+/// into the 48-bit timestamp; the version and variant bits stay.
+fn increment_v7(uuid: u128) -> u128 {
+    let millis = uuid >> 80;
+    let rand_a = (uuid >> 64) & 0xFFF;
+    let rand_b = uuid & 0x3FFF_FFFF_FFFF_FFFF;
+    let counter = ((rand_a << 62) | rand_b).wrapping_add(1) & ((1 << 74) - 1);
+    let millis = if counter == 0 {
+        (millis + 1) & 0xFFFF_FFFF_FFFF
+    } else {
+        millis
+    };
+    (millis << 80) | ((counter >> 62) << 64) | (counter & 0x3FFF_FFFF_FFFF_FFFF) | V7_BITS
 }
 
 /// Renders a `u128` as a canonical, lowercase, hyphenated UUID string.
@@ -129,5 +167,44 @@ mod tests {
             parse_canonical("{550e8400-e29b-41d4-a716-446655440000}"),
             None
         );
+    }
+
+    #[test]
+    fn v4_has_version_and_variant() {
+        for _ in 0..100 {
+            let uuid = new_v4();
+            assert_eq!((uuid >> 76) & 0xF, 4);
+            assert_eq!((uuid >> 62) & 0b11, 0b10);
+        }
+        assert_ne!(new_v4(), new_v4());
+    }
+
+    #[test]
+    fn v7_has_version_variant_and_increases() {
+        let mut previous = new_v7();
+        for _ in 0..10_000 {
+            let uuid = new_v7();
+            assert_eq!((uuid >> 76) & 0xF, 7);
+            assert_eq!((uuid >> 62) & 0b11, 0b10);
+            assert!(uuid > previous, "v7 UUIDs of one process increase");
+            previous = uuid;
+        }
+        let now = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let stamp = previous >> 80;
+        assert!(
+            stamp + 60_000 > now && stamp <= now + 60_000,
+            "48-bit Unix milliseconds"
+        );
+    }
+
+    #[test]
+    fn v7_increment_carries_into_the_timestamp() {
+        let full = (5u128 << 80) | (0xFFF << 64) | 0x3FFF_FFFF_FFFF_FFFF | V7_BITS;
+        assert_eq!(increment_v7(full), (6u128 << 80) | V7_BITS);
+        let low = (5u128 << 80) | 0x3FFF_FFFF_FFFF_FFFF | V7_BITS;
+        assert_eq!(increment_v7(low), (5u128 << 80) | (1 << 64) | V7_BITS);
     }
 }

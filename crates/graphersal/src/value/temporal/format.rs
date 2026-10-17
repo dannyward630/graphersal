@@ -1,0 +1,146 @@
+//! The canonical text of every temporal type (ISO 8601 / RFC 3339).
+//!
+//! - Years are four digits with a `-` for years before 1 (`-0044-03-15`; year 0 is 1 BC).
+//! - Seconds are always written; a fraction only when it is not zero, in groups of three digits
+//!   (`.250`, `.250500`), as `java.time` writes them.
+//! - An offset of zero is `Z`, others `+HH:MM`, with `:SS` only when the offset has seconds.
+//! - A duration is `P[nY][nM][nD][T[nH][nM][n[.f]S]]`, `PT0S` when zero; when every non-zero
+//!   part is negative the whole is written negative (`-P1DT2H`), otherwise each negative part
+//!   carries its own sign (`P1M-2D`).
+//!
+//! Parsing the text gives the same value back (`parse.rs`, tested in `tests.rs`).
+
+use std::fmt::{self, Write};
+
+use super::civil::{self, MICROS_PER_SECOND};
+use super::{Date, DateTime, Duration, LocalDateTime, Time};
+
+fn write_date(f: &mut impl Write, days: i32) -> fmt::Result {
+    let (year, month, day) = civil::civil_from_days(days);
+    if year < 0 {
+        write!(f, "-{:04}-{month:02}-{day:02}", -year)
+    } else {
+        write!(f, "{year:04}-{month:02}-{day:02}")
+    }
+}
+
+/// Writes a fraction of a second (`.250`, `.250500`) when it is not zero.
+fn write_fraction(f: &mut impl Write, micros: i64) -> fmt::Result {
+    if micros == 0 {
+        Ok(())
+    } else if micros % 1000 == 0 {
+        write!(f, ".{:03}", micros / 1000)
+    } else {
+        write!(f, ".{micros:06}")
+    }
+}
+
+fn write_time(f: &mut impl Write, micros_of_day: i64) -> fmt::Result {
+    let seconds = micros_of_day / MICROS_PER_SECOND;
+    write!(
+        f,
+        "{:02}:{:02}:{:02}",
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    )?;
+    write_fraction(f, micros_of_day % MICROS_PER_SECOND)
+}
+
+fn write_local(f: &mut impl Write, micros: i64) -> fmt::Result {
+    let (days, of_day) = civil::split_micros(micros);
+    write_date(f, days as i32)?;
+    f.write_char('T')?;
+    write_time(f, of_day)
+}
+
+/// Writes a UTC offset: `Z`, `+02:00`, `-00:19:32`.
+pub(crate) fn write_offset(f: &mut impl Write, offset_seconds: i32) -> fmt::Result {
+    if offset_seconds == 0 {
+        return f.write_char('Z');
+    }
+    let sign = if offset_seconds < 0 { '-' } else { '+' };
+    let abs = offset_seconds.unsigned_abs();
+    write!(f, "{sign}{:02}:{:02}", abs / 3600, abs / 60 % 60)?;
+    if !abs.is_multiple_of(60) {
+        write!(f, ":{:02}", abs % 60)?;
+    }
+    Ok(())
+}
+
+impl fmt::Display for Date {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_date(f, self.days)
+    }
+}
+
+impl fmt::Display for Time {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_time(f, self.micros)
+    }
+}
+
+impl fmt::Display for LocalDateTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_local(f, self.micros)
+    }
+}
+
+impl fmt::Display for DateTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_local(f, self.local().micros)?;
+        write_offset(f, self.offset_seconds)
+    }
+}
+
+impl fmt::Display for Duration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_zero() {
+            return f.write_str("PT0S");
+        }
+        // Wide integers: `i64::MIN` micros and `i32::MIN` months negate without overflow.
+        let mut months = self.months as i128;
+        let mut days = self.days as i128;
+        let mut micros = self.micros as i128;
+        let all_negative = months <= 0 && days <= 0 && micros <= 0;
+        if all_negative {
+            f.write_char('-')?;
+            months = -months;
+            days = -days;
+            micros = -micros;
+        }
+        f.write_char('P')?;
+        let (years, months) = (months / 12, months % 12);
+        if years != 0 {
+            write!(f, "{years}Y")?;
+        }
+        if months != 0 {
+            write!(f, "{months}M")?;
+        }
+        if days != 0 {
+            write!(f, "{days}D")?;
+        }
+        if micros != 0 {
+            f.write_char('T')?;
+            let second = MICROS_PER_SECOND as i128;
+            let (hours, rest) = (micros / (3600 * second), micros % (3600 * second));
+            let (minutes, rest) = (rest / (60 * second), rest % (60 * second));
+            if hours != 0 {
+                write!(f, "{hours}H")?;
+            }
+            if minutes != 0 {
+                write!(f, "{minutes}M")?;
+            }
+            if rest != 0 {
+                if rest < 0 {
+                    f.write_char('-')?;
+                }
+                let rest = rest.abs();
+                write!(f, "{}", rest / second)?;
+                write_fraction(f, (rest % second) as i64)?;
+                f.write_char('S')?;
+            }
+        }
+        Ok(())
+    }
+}

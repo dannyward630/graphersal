@@ -1116,6 +1116,7 @@ pub(crate) fn check_conflict(
             && existing.path() == rule.path()
         {
             return Err(DefinitionError::Conflict {
+                kind: "compression rule".to_string(),
                 name: definition.name().to_string(),
                 existing: other.name().to_string(),
                 reason: format!(
@@ -1149,7 +1150,9 @@ impl Definition {
     pub fn as_compression(&self) -> Option<&CompressionDefinition> {
         match self.body() {
             DefinitionBody::Compression(rule) => Some(rule),
-            DefinitionBody::Query(_) | DefinitionBody::Opaque(_) => None,
+            DefinitionBody::Query(_)
+            | DefinitionBody::PropertyIndex(_)
+            | DefinitionBody::Opaque(_) => None,
         }
     }
 }
@@ -1201,7 +1204,7 @@ mod tests {
         let mut props = PropertyMap::default();
         props.insert("bio", cv(1).into());
         let v = graph
-            .add_vertex(None, vec!["customer".into()], props)
+            .insert_vertex(None, vec!["customer".into()], props)
             .unwrap();
         graph
             .set_definition(Definition::compression("bio", rule("bio")))

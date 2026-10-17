@@ -23,7 +23,7 @@ import {
 import { storage } from '../util.js';
 import {
   PARAM_TYPES, ITEM_TYPES, newParam, newDraft, draftFromQuery, draftToSpec,
-  errorsByField, formFields, initialValues, formArgs, rememberValues,
+  errorsByField, formFields, initialValues, formArgs, rememberValues, formatExample,
 } from '../saved-queries.js';
 import { dslLanguage, dslHighlight } from '../editor/dsl-language.js';
 import { dslCompletionSource } from '../editor/completion.js';
@@ -236,7 +236,7 @@ export const SavedQueryDialog = {
     onBeforeUnmount(destroyEditor);
 
     return {
-      state, dlg, host, d, PARAM_TYPES, ITEM_TYPES, fieldErrors, signature, close,
+      state, dlg, host, d, PARAM_TYPES, ITEM_TYPES, fieldErrors, signature, close, formatExample,
       addParam, removeParam, moveParam, paramErrors, save, remove, runNow, editFromRun,
     };
   },
@@ -339,7 +339,7 @@ export const SavedQueryDialog = {
                       class="code-input" :class="{ invalid: d.errors[f.name] }" spellcheck="false"
                       :placeholder="f.kind === 'list' ? 'one ' + f.itemsKind + ' per line' : 'JSON'"></textarea>
             <input v-else :id="'sq-run-' + f.name" type="text" v-model="d.values[f.name]" :class="{ invalid: d.errors[f.name] }"
-                   :placeholder="f.kind === 'uuid' ? '01234567-89ab-cdef-0123-456789abcdef' : (f.hasDefault ? 'default: ' + f.defaultValue : '')" spellcheck="false">
+                   :placeholder="f.hasDefault ? 'default: ' + f.defaultValue : formatExample(f.kind)" spellcheck="false">
             <span v-if="d.errors[f.name]" class="hint sq-error">{{ d.errors[f.name] }}</span>
             <span v-if="f.hint" class="hint">{{ f.hint }}</span>
           </template>

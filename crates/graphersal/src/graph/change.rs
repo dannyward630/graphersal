@@ -110,14 +110,17 @@ impl EdgeState {
 )]
 #[non_exhaustive]
 pub enum Mutation {
-    /// A vertex was added with these labels and properties.
+    /// A vertex was added with these labels and properties (whichever call made it: a query's
+    /// create, an import, ...). Applying or replaying it stores exactly this
+    /// ([`GraphStorage::insert_vertex`](crate::storage::GraphStorage::insert_vertex)): the
+    /// schema defaults a create filled in are part of `properties` and never applied again.
     #[non_exhaustive]
     AddVertex {
         /// The new vertex's id.
         id: String,
         /// Its label set, primary label first.
         labels: Vec<String>,
-        /// Its properties as stored (after schema coercion).
+        /// Its properties as stored (after schema coercion and create-time defaults).
         #[cfg_attr(feature = "serde", serde(with = "tagged_element"))]
         properties: PropertyMap,
     },
@@ -130,7 +133,9 @@ pub enum Mutation {
         /// Its state right before the removal.
         before: VertexState,
     },
-    /// An edge was added.
+    /// An edge was added; applied or replayed exactly as recorded
+    /// ([`GraphStorage::insert_edge`](crate::storage::GraphStorage::insert_edge)), like
+    /// [`Mutation::AddVertex`].
     #[non_exhaustive]
     AddEdge {
         /// The new edge's id.
@@ -141,7 +146,7 @@ pub enum Mutation {
         out_id: String,
         /// The id of the target vertex.
         in_id: String,
-        /// Its properties as stored (after schema coercion).
+        /// Its properties as stored (after schema coercion and create-time defaults).
         #[cfg_attr(feature = "serde", serde(with = "tagged_element"))]
         properties: PropertyMap,
     },

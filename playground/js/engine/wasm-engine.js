@@ -8,7 +8,7 @@
 // (loaded with the graph file, set later with "Load schema", or saved with the graph). Changes made by queries after that point
 // are lost; script variables never survive a run anyway (every run gets a fresh scope). The
 // catalog the page loaded or edited (Catalog ▸ Load catalog, the saved-query editor, the
-// Compression manager) is part of the restore point too, like the schema; definitions a script
+// Compression and Property indexes managers) is part of the restore point too, like the schema; definitions a script
 // makes are not.
 //
 // The store in memory: every graph the worker loads is kept as a Store in memory (commit 0 =
@@ -339,6 +339,10 @@ export class WasmEngine extends Engine {
     return this.call('schema');
   }
 
+  async schemaViewOf(schema) {
+    return this.call('schemaViewOf', asJson(schema));
+  }
+
   async getSchema() {
     return JSON.parse(await this.call('getSchema')); // JSON text from the worker (worker.js RAW_METHODS)
   }
@@ -439,6 +443,24 @@ export class WasmEngine extends Engine {
 
   async recompress(name) {
     return this.call('recompress', name);
+  }
+
+  // Property indexes (the catalog's kind `property_index`).
+
+  async listIndexes() {
+    return this.call('listIndexes');
+  }
+
+  async createIndex(spec) {
+    const res = await this.call('createIndex', plain(spec));
+    if (res && res.ok) await this.catalogChanged();
+    return res;
+  }
+
+  async dropIndex(name) {
+    const res = await this.call('dropIndex', name);
+    await this.catalogChanged();
+    return res;
   }
 
   /** The page changed the catalog: the restore point of a Stop keeps the new catalog. */

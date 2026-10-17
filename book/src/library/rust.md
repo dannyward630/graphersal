@@ -1,11 +1,11 @@
 # Rust Quick Start
 
-Add the crate with the features you need ([Installation](../users_guide/installation.md) lists
+Add the crate with the features you need ([Library Features](../users_guide/installation.md) lists
 them all):
 
 ```toml
 [dependencies]
-graphersal = { version = "0.1", features = ["script", "io", "display"] }
+graphersal = { version = "0.2", features = ["script", "io", "display"] }
 ```
 
 - `script`: the Gremlin DSL as text, the same language as the CLI, the playground and Python;

@@ -28,7 +28,7 @@ graphersal --graph m.gsnap -e 'g.v().count().next()'  # 6
 ## Rust
 
 ```toml
-graphersal = { version = "0.1", features = ["persist"] }
+graphersal = { version = "0.2", features = ["persist"] }
 ```
 
 ```rust,no_run

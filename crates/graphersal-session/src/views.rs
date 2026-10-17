@@ -18,12 +18,24 @@ pub const SCHEMA_MAX_LABELS: usize = 300;
 /// data (`source: "inferred"`, `mode: "inferred"`). `json` is the canonical schema format. Beyond
 /// [`SCHEMA_MAX_LABELS`] labels only the first ones are shown (`truncated: true`).
 pub fn schema_view<S: GraphStorage>(g: &S) -> Value {
-    let stored = g.get_schema();
-    let (mode, source) = match &stored {
-        Some(schema) => (schema.mode.as_str(), "stored"),
-        None => ("inferred", "inferred"),
-    };
-    let full = stored.unwrap_or_else(|| g.infer_schema());
+    match g.get_schema() {
+        Some(schema) => {
+            let mode = schema.mode.as_str();
+            schema_view_with(g, schema, mode, "stored")
+        }
+        None => schema_view_with(g, g.infer_schema(), "inferred", "inferred"),
+    }
+}
+
+/// [`schema_view`] of a given schema (`source: "given"`, `mode` its mode), with the label
+/// counts of the graph `g`: what the playground draws for the schema its editor shows (a
+/// draft, or one inferred earlier), so the drawings always show what the tables show.
+pub fn schema_view_of<S: GraphStorage>(g: &S, schema: GraphSchema) -> Value {
+    let mode = schema.mode.as_str();
+    schema_view_with(g, schema, mode, "given")
+}
+
+fn schema_view_with<S: GraphStorage>(g: &S, full: GraphSchema, mode: &str, source: &str) -> Value {
     let total_labels = full.vertices.len() + full.edges.len();
     let truncated = total_labels > SCHEMA_MAX_LABELS;
     let schema = if truncated {
@@ -203,7 +215,7 @@ pub fn statistics_view<S: GraphStorage>(g: &S) -> Value {
 
 /// `g.memory_usage()` as data: `{structure_bytes, index_bytes, property_bytes, total_bytes,
 /// total_mb, compressed_values, compressed_plain_bytes, compressed_stored_bytes,
-/// compression_dictionary_bytes}`, or `null`.
+/// compression_dictionary_bytes, property_index_bytes}`, or `null`.
 pub fn memory_usage<S: GraphStorage>(g: &S) -> Value {
     match g.memory_usage() {
         Some(stats) => json!({
@@ -216,6 +228,7 @@ pub fn memory_usage<S: GraphStorage>(g: &S) -> Value {
             "compressed_plain_bytes": stats.compressed_plain_bytes,
             "compressed_stored_bytes": stats.compressed_stored_bytes,
             "compression_dictionary_bytes": stats.compression_dictionary_bytes,
+            "property_index_bytes": stats.property_index_bytes,
         }),
         None => Value::Null,
     }
@@ -247,7 +260,10 @@ fn receiver_of(first_param_type: Option<&str>) -> &'static str {
         "ScriptCastPolicy" | "CastPolicy" => "CastPolicy",
         "ArgP" | "Predicate" => "Predicate",
         "ScriptUuid" | "Uuid" => "Uuid",
+        "ScriptVector" | "Vector" => "Vector",
         "ScriptFake" | "Fake" => "Fake",
+        "DateTime" | "datetime" | "Date" | "date" | "LocalDateTime" | "localdatetime" | "Time"
+        | "time" | "Duration" | "duration" => "temporal",
         "BTreeMap" | "map" => "map",
         _ => "global",
     }

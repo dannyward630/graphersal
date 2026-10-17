@@ -227,7 +227,7 @@ mod tests {
         use crate::graph::GraphStorage;
 
         let mut tg = crate::graph::TraversalGraph::new();
-        GraphStorage::add_vertex(
+        GraphStorage::insert_vertex(
             &mut tg,
             Some("v1".into()),
             vec!["a".into(), "b".into()],

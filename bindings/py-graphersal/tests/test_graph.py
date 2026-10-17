@@ -3,6 +3,7 @@ build (see the design spec's Testing section). Rust-side conversion/error-mappin
 in `src/convert.rs` and `src/error.rs`; these cover the surface Python code actually calls.
 """
 
+import datetime
 import json
 import os
 import uuid
@@ -100,13 +101,18 @@ def test_from_graphson_export_round_trip(tmp_path):
 def test_from_graphson_warns_about_skipped_dates(tmp_path):
     path = tmp_path / "dates.json"
     path.write_text(
-        '{"id":"v","label":"x","properties":{"born":[{"value":{"@type":"g:Date","@value":1}}],'
-        '"name":[{"value":"n"}]}}\n'
+        '{"id":"v","label":"x","properties":{"born":[{"value":{"@type":"gx:Year","@value":"2016"}}],'
+        '"seen":[{"value":{"@type":"g:Date","@value":1}}],"name":[{"value":"n"}]}}\n'
     )
-    with pytest.warns(UserWarning, match=r"skipped date/time values \(g:Date"):
+    with pytest.warns(UserWarning, match=r"skipped date/time values \(gx:Year") as record:
         graph = graphersal.Graph.from_graphson(os.fspath(path))
+    assert not any("g:Date" in str(w.message) for w in record)
     assert graph.query('g.V().values("name").next()') == "n"
     assert graph.query('g.V().has("born").count().next()') == 0
+    # A date/time type Graphersal holds is imported.
+    assert graph.query('g.V().values("seen").next()') == datetime.datetime(
+        1970, 1, 1, 0, 0, 0, 1000, tzinfo=datetime.timezone.utc
+    )
 
 
 def test_from_graphson_raises_on_malformed_input(tmp_path):
@@ -445,3 +451,21 @@ def test_compression_rules_define_list_recompress_and_drop():
     assert graph.drop_compression("cv") is True
     assert graph.drop_compression("cv") is False
     assert graph.execute('g.v().values("cv").to_list()') == [cv]
+
+
+def test_property_indexes_create_list_serve_and_drop():
+    graph = graphersal.Graph.tinkerpop_modern()
+    graph.create_index("person", "age")
+    graph.create_index("knows", "weight", element="edge", name="weights")
+    indexes = {index["name"]: index for index in graph.indexes()}
+    assert set(indexes) == {"person_age", "weights"}
+    assert indexes["person_age"]["entries"] == 4
+    assert indexes["person_age"]["served"] is True
+    assert indexes["weights"]["element"] == "edge"
+    names = graph.execute('g.v().has_label("person").has("age", P.gt(30)).values("name")')
+    assert sorted(names) == ["josh", "peter"]
+    profile = graph.execute('g.v().has_label("person").has("age", P.gt(30)).profile().to_string()')
+    assert "[index: vertex person.age]" in profile
+    assert graph.drop_index("weights") is True
+    assert graph.drop_index("weights") is False
+    assert [index["name"] for index in graph.indexes()] == ["person_age"]

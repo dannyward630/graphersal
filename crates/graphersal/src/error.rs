@@ -525,6 +525,65 @@ pub enum ValueError {
         /// The right operand, rendered with its type.
         right: String,
     },
+
+    /// A date step (`date_add`, `date_diff`, `date_trunc`, `at_zone`, ...) met a value it cannot
+    /// take: an incoming value or an argument that is not a date or time, or a child traversal
+    /// without a result.
+    #[error("The {step}() step takes {expected} as its {operand}, but got {actual}")]
+    #[non_exhaustive]
+    TemporalInput {
+        /// The step's name (`date_add`, `date_diff`, ...).
+        step: &'static str,
+        /// Which input failed: `incoming value`, `argument` or `traversal argument`.
+        operand: &'static str,
+        /// What the step needed there (`a date or time`, `a datetime`, ...).
+        expected: &'static str,
+        /// What it got: a type name with the value, `null`, or that the traversal yielded
+        /// nothing.
+        actual: String,
+    },
+
+    /// `as_date()` or `as_duration()` could not convert a value: text that is not a value of the
+    /// target type, a number that is not an integer of epoch milliseconds, `null`, a list, ...
+    /// The message starts like TinkerPop's (`Can't parse`).
+    #[error("Can't parse {value} as a {target}: {reason}")]
+    #[non_exhaustive]
+    TemporalParse {
+        /// The step's name (`as_date`, `as_duration`).
+        step: &'static str,
+        /// The target type (`datetime`, `date`, `duration`, ...).
+        target: &'static str,
+        /// The value, rendered with its type (`"abc" (string)`, `1.5 (float64)`, `null`).
+        value: String,
+        /// Why it does not convert.
+        reason: String,
+    },
+
+    /// A date operation failed: a result outside the years -9999 to 9999, an unknown time
+    /// zone, a unit or part the value's type does not have (hours of a `date`), or a temporal
+    /// text that does not parse (`datetime("..")`).
+    #[error("The {step}() step failed: {error}")]
+    #[non_exhaustive]
+    Temporal {
+        /// The step or function's name (`date_add`, `datetime`, ...).
+        step: &'static str,
+        /// What went wrong.
+        #[source]
+        error: crate::value::temporal::TemporalError,
+    },
+
+    /// A vector could not be built or converted: an empty or too long list, a component that is
+    /// not a finite number, an unknown element kind, a component beyond the range of the target
+    /// kind (`vector([..])`, `as_vector()`, `quantize(..)`).
+    #[error("The {step}() step failed: {error}")]
+    #[non_exhaustive]
+    Vector {
+        /// The step or function's name (`vector`, `as_vector`, `quantize`).
+        step: &'static str,
+        /// What went wrong.
+        #[source]
+        error: crate::value::VectorError,
+    },
 }
 
 /// Why an [`Operator`](crate::value::Operator) failed: the kind of a [`ValueError::OperatorFailed`].
@@ -695,6 +754,141 @@ fn local_element_help(step: &str, index: usize, actual: &str) -> String {
          or keep only the strings with \
          g.v().values(\"name\").fold().unfold().is(typeOf(GType.STRING)).fold().{snake}(Scope.local)."
     )
+}
+
+/// A runnable call of a date step for its `help()` texts.
+fn temporal_step_example(step: &str) -> &'static str {
+    match step {
+        "date_add" => "date_add(DT.day, 1)",
+        "date_diff" => "date_diff(datetime(\"2023-08-01T00:00:00Z\"))",
+        "age" => "age(datetime(\"2000-01-01T00:00:00Z\"))",
+        "date_trunc" => "date_trunc(DT.month)",
+        "date_part" => "date_part(DT.year)",
+        "at_zone" => "at_zone(\"Europe/Berlin\")",
+        "as_local" => "as_local()",
+        "as_duration" => "as_duration()",
+        _ => "date_add(DT.day, 1)",
+    }
+}
+
+/// The `help()` text of [`ValueError::TemporalInput`].
+fn temporal_input_help(step: &str, operand: &str, expected: &str, actual: &str) -> String {
+    let example = temporal_step_example(step);
+    if operand == "traversal argument" && actual.starts_with("no result") {
+        return format!(
+            "The traversal argument of {step}() runs on the incoming value and its first result \
+             is the operand, so it must yield a value, for example \
+             g.inject(datetime(\"2023-08-08T00:00:00Z\")).{step}(__.constant(datetime(\
+             \"2023-08-01T00:00:00Z\")))."
+        );
+    }
+    let types = "The date steps take date and time values (datetime, date, localdatetime, time; \
+                 date_add() and date_trunc() also a duration). Build one with \
+                 datetime(\"2023-08-02T00:00:00Z\"), date(\"2023-08-02\"), \
+                 localdatetime(\"2023-08-02T09:30:00\"), time(\"09:30:00\") or duration(\"P1D\")";
+    if actual.starts_with("string") {
+        return format!(
+            "{types}. A string is never read as a date by itself: convert it first with \
+             as_date() (ISO 8601 text), for example \
+             g.inject(\"2023-08-02T00:00:00Z\").as_date().{example}, or with \
+             as_date(GType.DATE) (and GType.LOCALDATETIME, GType.TIME) for the other types."
+        );
+    }
+    if actual.starts_with("int64") || actual.starts_with("float64") {
+        return format!(
+            "{types}. A number is not a date: as_date() reads an integer of milliseconds since \
+             1970-01-01T00:00:00Z, for example g.inject(1690934400000).as_date().{example}."
+        );
+    }
+    let specific = match step {
+        "at_zone" => {
+            " at_zone() places a datetime (the same instant) or a localdatetime (its wall clock) \
+             in a zone; convert a date first with as_date(GType.LOCALDATETIME)."
+        }
+        "as_local" => {
+            " as_local() reads the wall clock of a datetime (at its own offset, or in the zone \
+             given)."
+        }
+        "date_diff" | "age" => {
+            " Both operands must be of the same type; a null argument of date_diff() counts as \
+             the epoch."
+        }
+        _ => "",
+    };
+    format!(
+        "{types}, or convert a property with as_date(); keep only the values of one type with \
+         is(P.typeOf(GType.DATETIME)) before the step.{specific} The step needed {expected} here."
+    )
+}
+
+/// The `help()` text of [`ValueError::TemporalParse`].
+fn temporal_parse_help(step: &str, target: &str) -> String {
+    if step == "as_duration" {
+        return "as_duration() reads an ISO 8601 duration such as \"P1Y2M3DT4H5M6S\", \"P2W\" or \
+                \"PT1.5S\" (each part may have its own sign: \"P1M-2D\"); a duration passes \
+                unchanged. Build one directly with duration(\"P1D\")."
+            .to_string();
+    }
+    match target {
+        "datetime" => "as_date() reads ISO 8601 / RFC 3339 text (\"2023-08-02T00:00:00Z\", \
+                       \"2023-08-02T00:00:00-07:00\"; without an offset the text is UTC and a date \
+                       alone is midnight UTC) or an integer number of milliseconds since \
+                       1970-01-01T00:00:00Z, for example g.inject(1690934400000).as_date(); a \
+                       date or localdatetime becomes the datetime at UTC. A float, null, a list \
+                       or a map is not converted: as_number(GType.LONG) truncates a float first, \
+                       and is(P.typeOf(GType.STRING)) keeps only the strings."
+            .to_string(),
+        "date" => "as_date(GType.DATE) reads a date text such as \"2023-08-02\", or takes the \
+                   date of a datetime (at its own offset) or of a localdatetime."
+            .to_string(),
+        "localdatetime" => "as_date(GType.LOCALDATETIME) reads a text without an offset such as \
+                            \"2023-08-02T09:30:00\" (a date alone is midnight), or takes the wall \
+                            clock of a datetime (at its own offset) or a date at midnight."
+            .to_string(),
+        "time" => "as_date(GType.TIME) reads a time text such as \"09:30:00\", or takes the time \
+                   of day of a datetime (at its own offset) or of a localdatetime."
+            .to_string(),
+        _ => "as_date() converts to datetime, date, localdatetime and time (as_date(GType.DATE), \
+              ...); as_duration() reads durations."
+            .to_string(),
+    }
+}
+
+/// The `help()` text of [`ValueError::Temporal`].
+fn temporal_help(step: &str, error: &crate::value::temporal::TemporalError) -> String {
+    use crate::value::temporal::TemporalError;
+    match error {
+        TemporalError::OutOfRange { .. } => format!(
+            "Dates and times cover the years -9999 to 9999 with a resolution of one \
+             microsecond; {step}() left that range. Check the amount (date_add(DT.year, 10000) \
+             goes too far) or keep the extreme values out with a filter such as \
+             is(P.gt(datetime(\"1900-01-01T00:00:00Z\")))."
+        ),
+        TemporalError::UnknownZone { .. } => "A zone is an IANA name of the bundled time zone \
+                                              database (\"Europe/Berlin\", \
+                                              \"America/New_York\", \"UTC\"; the names are \
+                                              case-sensitive) or a fixed UTC offset (\"+02:00\", \
+                                              \"-07:00\", \"Z\"), for example \
+                                              at_zone(\"Europe/Berlin\")."
+            .to_string(),
+        TemporalError::Unsupported { .. } => "Each type has its own units: a date has no hours \
+                                              (convert it with as_date(GType.LOCALDATETIME) \
+                                              first), a time has no days or months, a duration \
+                                              has no weeks and no zone. DT.day_of_week, \
+                                              DT.iso_day_of_week, DT.day_of_year, DT.iso_year, \
+                                              DT.epoch and DT.offset are parts for date_part(), \
+                                              not units; a zone argument applies to a datetime \
+                                              only; both operands of date_diff() and age() must \
+                                              be of the same type."
+            .to_string(),
+        TemporalError::Parse { .. } => "Write the ISO 8601 text of the type: \
+                                        datetime(\"2023-08-02T00:00:00Z\") (an offset such as \
+                                        +02:00 or a zone such as [Europe/Berlin]), \
+                                        date(\"2023-08-02\"), \
+                                        localdatetime(\"2023-08-02T09:30:00\"), \
+                                        time(\"09:30:00\"), duration(\"P1DT2H\")."
+            .to_string(),
+    }
 }
 
 /// The `help()` text of [`ValueError::LabelStepElementKind`].
@@ -1367,6 +1561,17 @@ impl DiagnosticError for ValueError {
                 ..
             } => Some(string_function_help(step, operand, actual)),
             ValueError::OperatorFailed { operator, kind, .. } => Some(operator_help(operator, kind)),
+            ValueError::TemporalInput {
+                step,
+                operand,
+                expected,
+                actual,
+            } => Some(temporal_input_help(step, operand, expected, actual)),
+            ValueError::TemporalParse { step, target, .. } => {
+                Some(temporal_parse_help(step, target))
+            }
+            ValueError::Temporal { step, error } => Some(temporal_help(step, error)),
+            ValueError::Vector { error, .. } => Some(error.help()),
         }
     }
 
@@ -1710,12 +1915,12 @@ impl GraphError {
         GraphError::EdgeNotFound { id: id.into() }
     }
 
-    /// [`GraphError::VertexIdUniqueConstraint`]: `add_vertex` was given an id already in use.
+    /// [`GraphError::VertexIdUniqueConstraint`]: `insert_vertex` was given an id already in use.
     pub fn duplicate_vertex_id(id: impl Into<String>) -> Self {
         GraphError::VertexIdUniqueConstraint { id: id.into() }
     }
 
-    /// [`GraphError::EdgeIdUniqueConstraint`]: `add_edge` was given an id already in use.
+    /// [`GraphError::EdgeIdUniqueConstraint`]: `insert_edge` was given an id already in use.
     pub fn duplicate_edge_id(id: impl Into<String>) -> Self {
         GraphError::EdgeIdUniqueConstraint { id: id.into() }
     }
@@ -2639,12 +2844,13 @@ impl DiagnosticError for ScriptError {
             ScriptError::InvalidQueryArgument {
                 query, parameter, ..
             } => Some(format!(
-                "An argument is a data value (a string, a number, a boolean, a UUID, a list or a \
-                 map, never a traversal or a closure) that satisfies its parameter's schema; types \
-                 are exact (only an int64 is accepted where a float64 is declared). \
+                "An argument is a data value (a string, a number, a boolean, a UUID, a date or \
+                 time, a list or a map, never a traversal or a closure) that satisfies its \
+                 parameter's schema; types are exact (the only conversions: an int64 where a float64 \
+                 is declared, the text of a declared format such as a date-time). \
                  g.get_query(\"{query}\")[\"params\"] shows the schema of '{parameter}'; convert \
-                 the value before the call, for example with parse_int(\"5\") or \
-                 UUID.from_string(\"..\")."
+                 the value before the call, for example with parse_int(\"5\"), \
+                 UUID.from_string(\"..\") or datetime(\"2024-05-01T09:30:00+02:00\")."
             )),
             ScriptError::InvalidQueryBody { query, .. } => Some(format!(
                 "The body of a saved query is the text of ONE Rhai function named like the query \
@@ -2904,16 +3110,44 @@ pub enum DefinitionError {
         /// The name looked for.
         name: String,
     },
-    /// A compression rule covers the same element kind, label and path as another rule.
-    #[error("Conflicting compression rule '{name}': {reason}")]
+    /// A compression rule covers the same element kind, label and path as another rule, or a
+    /// property index the same element kind, label and key as another index.
+    #[error("Conflicting {kind} '{name}': {reason}")]
     #[non_exhaustive]
     Conflict {
-        /// The rule being stored.
+        /// What conflicts: `compression rule` or `property index`.
+        kind: String,
+        /// The rule (or index) being stored.
         name: String,
         /// The rule already stored.
         existing: String,
         /// What they share.
         reason: String,
+    },
+    /// A property index cannot be created because the graph's schema declares its key as
+    /// values the index does not hold (for its type a vector, an array, an object, or a union
+    /// of only such; with the transform `to_lower` anything but a string; book page "Property
+    /// Indexes", sections "Index types" and "Case-insensitive search").
+    #[error(
+        "Cannot create a property index on {element} '{label}' key '{key}': the schema \
+         declares '{key}' as {declared}, and an index of type '{index_type}'{} holds none of \
+         its values",
+        transform_clause(.transform)
+    )]
+    #[non_exhaustive]
+    IndexTypeMismatch {
+        /// The element kind the index covers.
+        element: crate::graph::schema::ElementKind,
+        /// The label the index covers.
+        label: String,
+        /// The top-level property key.
+        key: String,
+        /// The declared type, without `null` (`vector<f32>`, `array<string>`, `object`).
+        declared: String,
+        /// The index type (`memory-ordered`).
+        index_type: Box<str>,
+        /// The index transform (`to_lower`), `None` without one.
+        transform: Option<Box<str>>,
     },
     /// The JSON (or value) form of a definition or a catalog is malformed.
     #[error("Malformed definition: {reason}")]
@@ -2924,10 +3158,25 @@ pub enum DefinitionError {
     },
 }
 
+/// ` with the transform 'to_lower'` for a mismatch of an index with a transform, else empty.
+fn transform_clause(transform: &Option<Box<str>>) -> String {
+    match transform {
+        Some(transform) => format!(" with the transform '{transform}'"),
+        None => String::new(),
+    }
+}
+
 impl DiagnosticError for DefinitionError {
     fn help(&self) -> Option<String> {
         use crate::graph::definition as d;
         Some(match self {
+            DefinitionError::InvalidName { kind, .. } if kind == "property_index" => format!(
+                "A property index's name is an identifier of 1 to {} bytes (ASCII letters, \
+                 digits and '_', starting with a letter or '_'), for example \"person_title\". \
+                 It names the index for g.drop_index; g.create_index(#{{label, key}}) without a \
+                 name calls it <label>_<key>.",
+                d::MAX_QUERY_NAME_BYTES
+            ),
             DefinitionError::InvalidName { kind, .. } if kind == "compression" => format!(
                 "A compression rule's name is an identifier of 1 to {} bytes (ASCII letters, \
                  digits and '_', starting with a letter or '_'), for example \"customer_cv\". \
@@ -2971,9 +3220,41 @@ impl DiagnosticError for DefinitionError {
                     crate::graph::compression::MAX_MIN_BYTES,
                     crate::graph::compression::DEFAULT_MIN_BYTES
                 ),
-                "label" => "Name the vertex or edge label the rule applies to, for example \
-                            \"customer\"; it need not exist yet."
+                "label" => "Name the vertex or edge label the rule (or index) applies to, for \
+                            example \"customer\"; it need not exist yet."
                     .to_string(),
+                "key" => format!(
+                    "An index orders the elements by one top-level property: name it with 1 to \
+                     {} bytes, for example \"title\" (a plain name, not a jpath; nested values \
+                     are not indexed).",
+                    crate::graph::property_index::MAX_INDEX_KEY_BYTES
+                ),
+                "transform" => format!(
+                    "The transform says what an index keys its values by. This version knows \
+                     {}; leave transform out to index the values themselves. \"to_lower\" \
+                     indexes the lowered text of string values for case-insensitive search: \
+                     g.create_index(#{{label: \"person\", key: \"name\", transform: \
+                     \"to_lower\"}}), queried with \
+                     g.v().has_label(\"person\").has(\"name\", __.to_lower().is(\"marko\")).",
+                    crate::graph::property_index::PropertyIndexTransform::KNOWN_NAMES
+                        .iter()
+                        .map(|name| format!("\"{name}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                "type" => format!(
+                    "The index type says how the index keeps its entries. This version knows \
+                     {}. \"memory-ordered\" (the default; leave type out for it) is an ordered \
+                     index kept in memory and rebuilt from the data when the graph is opened, \
+                     serving equality, P.within and ranges, for example \
+                     g.create_index(#{{label: \"person\", key: \"age\", type: \
+                     \"memory-ordered\"}}).",
+                    crate::graph::property_index::PropertyIndexType::KNOWN_NAMES
+                        .iter()
+                        .map(|name| format!("\"{name}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
                 "dialect" => format!(
                     "The dialect names the language of the source; this version writes \"{}\".",
                     d::QUERY_DIALECT
@@ -3003,18 +3284,70 @@ impl DiagnosticError for DefinitionError {
                  body: ..})."
                     .to_string()
             }
+            DefinitionError::Conflict { kind, existing, .. } if kind == "property index" => {
+                format!(
+                    "One index per element kind, label and key, and '{existing}' already is it: \
+                     queries use it as it is (see g.indexes()). To rename it, drop it first with \
+                     g.drop_index(\"{existing}\")."
+                )
+            }
             DefinitionError::Conflict { existing, .. } => format!(
                 "One rule per element kind, label and path: change the existing rule instead \
                  (define it again under its name '{existing}' with the new parameters), or drop \
                  it first with g.drop_compression(\"{existing}\")."
             ),
+            DefinitionError::IndexTypeMismatch {
+                label,
+                key,
+                declared,
+                index_type,
+                transform,
+                ..
+            } => {
+                let mut help = if let Some(transform) = transform {
+                    format!(
+                        "An index with the transform '{transform}' holds the lowered text of \
+                         string values only, for case-insensitive search with \
+                         has(\"{key}\", __.to_lower().is(..)); '{key}' is declared as \
+                         {declared}, so it would hold nothing. Index the values themselves \
+                         instead (leave transform out: g.create_index(#{{label: \"{label}\", \
+                         key: \"{key}\"}})), or keep the text you search in its own string \
+                         property and index that with transform: \"{transform}\"."
+                    )
+                } else if declared.contains("vector<") {
+                    format!(
+                        "Vectors are not index keys: search them with nearest() or similarity() \
+                         (an exact search, book page \"Vectors\"), for example \
+                         g.v().has_label(\"{label}\").nearest(\"{key}\", query, 10) for the 10 \
+                         closest; a vector index type is planned."
+                    )
+                } else {
+                    format!(
+                        "An index of type '{index_type}' holds scalar values only (null, \
+                         boolean, int64, float64, string, uuid, date, localdatetime, datetime, \
+                         time, duration), never an array, an object or a vector. Index a scalar \
+                         top-level property instead: an index key is one top-level property \
+                         name, nested fields are not indexed, so keep the value you filter on \
+                         in its own top-level property (for example \
+                         g.v().has_label(\"{label}\").property(\"{key}_main\", ..)) and index \
+                         that."
+                    )
+                };
+                help.push_str(
+                    " If the schema's declaration is wrong, change it first (g.patch_schema(..)) \
+                     and create the index again; a schema change made after an index exists \
+                     never drops it.",
+                );
+                help
+            }
             DefinitionError::Malformed { .. } => {
                 "A definition in JSON is an object with \"kind\" (\"query\") and \"name\", plus \
                  for a query \"source\", \"params\" and optionally \"folder\", \
                  \"description\", \"dialect\" and \"meta\"; a compression rule \
                  (\"kind\": \"compression\") has \"label\", \"path\" and optionally \"element\", \
-                 \"codec\", \"min_bytes\" and \"dictionary\"; a catalog is \
-                 {\"definitions\": [..]}."
+                 \"codec\", \"min_bytes\" and \"dictionary\"; a property index \
+                 (\"kind\": \"property_index\") has \"label\", \"key\" and optionally \
+                 \"element\", \"type\" and \"transform\"; a catalog is {\"definitions\": [..]}."
                     .to_string()
             }
         })
@@ -3054,7 +3387,8 @@ impl DiagnosticError for SchemaError {
                      To make a key required that existing elements lack, backfill first, in one \
                      transaction: (in a closed schema, declare the key optional first with \
                      g.patch_schema(..)), write the values, then patch the key into \"required\". A schema \
-                     \"default\" is NOT applied to existing elements (it is an annotation only).",
+                     \"default\" fills only elements created after it is set, never existing ones (no \
+                     backfill).",
                 );
                 let unlabeled = report
                     .groups
@@ -3110,15 +3444,18 @@ impl DiagnosticError for SchemaError {
                     "Provide a value for the nested key '{property_name}' (e.g. \
                      property(jpath(\"{property_name}\"), value)) or remove it from \"required\" of its \
                      enclosing object in the schema; a required nested key cannot be removed with \
-                     remove_property(jpath(..)). A schema \"default\" is an annotation only: it does not \
-                     fill a missing key."
+                     remove_property(jpath(..)). A schema \"default\" below the top level is an \
+                     annotation: it does not fill a missing nested key (only a label's top-level \
+                     properties get their default when an element is created)."
                 ))
             }
             SchemaError::MissingRequiredProperty { property_name, .. } => {
                 Some(format!(
                     "Provide a value for '{property_name}' or remove it from the label's \"required\" in \
-                     the schema. A schema \"default\" is an annotation only: it is never filled in, so a \
-                     required property needs a value even when its schema has a default.\n\
+                     the schema, or give it a \"default\" (or \"defaultFunction\") in the schema: it is \
+                     stored when an element is created without the property (mode open or closed), \
+                     but never filled into existing elements, and never by an import or a property \
+                     removal.\n\
                      A required property must be supplied when the element is created: \
                      add_v(\"L\").property(\"{property_name}\", value) works because the optimizer rule \
                      add_property_fold folds the directly following constant property() steps into \
@@ -3167,6 +3504,19 @@ impl DiagnosticError for SchemaError {
                 if let Some(convert) = coercion_step(&expected_type.to_lowercase()) {
                     help.push_str(&format!(
                         "\nIn a query, convert the values with values({key}).{convert}."
+                    ));
+                }
+                if let Some(declared) = expected_type.strip_prefix("vector<") {
+                    let element = declared
+                        .split([',', '>'])
+                        .next()
+                        .unwrap_or("f32")
+                        .trim();
+                    help.push_str(&format!(
+                        "\nA list of numbers written to a declared vector becomes a vector of its \
+                         element on write (mode open or closed), and a vector of another element \
+                         is quantized; the dimension is never changed. In a query, convert the \
+                         values with values({key}).as_vector().quantize(\"{element}\")."
                     ));
                 }
                 if expected_type == "uuid" && actual_type != "string" {
@@ -3385,6 +3735,13 @@ pub enum TraverserError {
         /// How long the execution had run when it was stopped, in milliseconds.
         elapsed_ms: u64,
     },
+
+    /// An embedding failed (the `embed` step or the DSL function `embed(text)`): an unknown
+    /// embedder, a value that is not a string, a text with nothing to embed, an embedder that
+    /// failed or answered wrongly. A cancelled or timed-out embedding is [`Self::Cancelled`] or
+    /// [`Self::Timeout`] instead.
+    #[error("Embedding failed: {0}")]
+    Embed(crate::value::EmbedError),
 
     /// An execution option set with `with()` holds a value of the wrong shape.
     ///
@@ -4016,6 +4373,7 @@ impl TraverserError {
             TraverserError::Spelled { source, .. } => source.canonical_help(),
             TraverserError::Timeout { limit_ms, .. } => Some(timeout_help(*limit_ms, None)),
             TraverserError::Cancelled { .. } => Some(cancelled_help()),
+            TraverserError::Embed(err) => Some(err.help()),
             TraverserError::InvalidOption { key, .. } => Some(invalid_option_help(key)),
             TraverserError::LockedOption { key } => Some(locked_option_help(key)),
             TraverserError::PermissionDenied { reason, .. }
@@ -4420,6 +4778,8 @@ fn timeout_help(limit_ms: u64, steps: Option<Vec<String>>) -> String {
     } else {
         ""
     };
+    // A has() on a labelled start reads every element of the label: a property index serves it.
+    let index_advice = property_index_advice(&query);
     // Duplicates pile up where many paths converge on one vertex: merge them between two
     // expansions of the failing query, or in the example query when it has none.
     let barriered = barrier_between_expansions(&steps)
@@ -4432,6 +4792,7 @@ fn timeout_help(limit_ms: u64, steps: Option<Vec<String>>) -> String {
          one that was running.\n\
          {repeat_advice}\
          {glob_path_advice}\
+         {index_advice}\
          Merge duplicate traversers: barrier() merges equal traversers so later steps process \
          each distinct one once, for example g.{barriered}.\n\
          Narrow the start set with has_label() or has_id(), for example \
@@ -4446,6 +4807,29 @@ fn timeout_help(limit_ms: u64, steps: Option<Vec<String>>) -> String {
         narrowed = with_after_start("has_label(\"<label>\")"),
         limited = with_after_start("limit(1000)"),
     )
+}
+
+/// The first string literal in `text` after `marker` (`has_label("person")` -> `person`).
+fn literal_after<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
+    let rest = &text[text.find(marker)? + marker.len()..];
+    let rest = rest.strip_prefix('"')?;
+    Some(&rest[..rest.find('"')?])
+}
+
+/// Advice to declare a property index when the failing query filters a labelled start on a
+/// property (`v().has_label("person").has("title", ..)`), or `""`.
+fn property_index_advice(query: &str) -> String {
+    let label = literal_after(query, "has_label(").or_else(|| literal_after(query, "labels: ["));
+    let key = literal_after(query, ".has(");
+    match (label, key) {
+        (Some(label), Some(key)) => format!(
+            "A has() on a property reads every \"{label}\" element: declare a property index on \
+             it, for example g.create_index(#{{label: \"{label}\", key: \"{key}\"}}); \
+             equality, P.within and ranges on \"{key}\" then read only the matching elements, \
+             and .profile() shows [index: ..] on the start step (book page Property Indexes).\n"
+        ),
+        _ => String::new(),
+    }
 }
 
 /// `steps` with a `barrier()` between every two adjacent expansion steps (`out()`, `in()`,
@@ -6275,6 +6659,34 @@ impl TraverserError {
 mod tests {
     use super::*;
 
+    /// The embedding errors a query cannot trigger with the built-in embedder (they come from a
+    /// host's embedder or its registration) carry their help through `TraverserError::Embed`.
+    #[test]
+    fn embed_error_help_for_host_embedders() {
+        use crate::value::EmbedError;
+        for (error, expected) in [
+            (
+                EmbedError::bad_output("2 vectors for 3 texts"),
+                "broke its contract",
+            ),
+            (
+                EmbedError::unavailable("the model file is missing"),
+                "Retry later",
+            ),
+            (EmbedError::failed("CUDA out of memory"), "its message"),
+            (
+                EmbedError::Cancelled,
+                "g.with(\"evaluationTimeout\", 60000)",
+            ),
+            (EmbedError::registry("a duplicate"), "registered once"),
+        ] {
+            let err = TraverserError::Embed(error);
+            let help = err.help().expect("help");
+            assert!(help.contains(expected), "{help}");
+            assert!(format_diagnostic(&err).contains("Embedding failed: "));
+        }
+    }
+
     /// The `path` help (a label that is not set on the traverser's path) names the `Pop` forms; a
     /// named-field variant, so built by hand here.
     #[test]
@@ -6508,7 +6920,11 @@ mod tests {
             )
         );
         assert!(
-            req_help.contains("\"default\" is an annotation only"),
+            req_help.contains(
+                "or give it a \"default\" (or \"defaultFunction\") in the schema: it is stored \
+                 when an element is created without the property (mode open or closed), but never \
+                 filled into existing elements, and never by an import or a property removal."
+            ),
             "{req_help}"
         );
         assert!(req_help.contains("add_property_fold"), "{req_help}");
@@ -7038,6 +7454,23 @@ mod tests {
                 help.contains("g.with(\"evaluationTimeout\", 500).v().out().out().count()"),
                 "{help}"
             );
+        }
+
+        #[test]
+        fn timeout_help_on_a_property_filter_points_to_a_property_index() {
+            let steps = vec![
+                "v(labels: [\"person\"]).has(\"title\", \"CEO\")".to_string(),
+                "out()".to_string(),
+                "count()".to_string(),
+            ];
+            let help = timeout_help(250, Some(steps));
+            assert!(
+                help.contains("g.create_index(#{label: \"person\", key: \"title\"})"),
+                "{help}"
+            );
+            assert!(help.contains("Narrow the start set"), "{help}");
+            // Without a property filter there is no index advice.
+            assert!(!timeout_help(250, None).contains("create_index"));
         }
 
         #[test]

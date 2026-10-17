@@ -1,9 +1,9 @@
 //! `graphersal-wasm`: the Graphersal engine compiled to WebAssembly for the browser playground.
 //!
-//! The JavaScript API ([`Playground`]) is **internal to the playground** in 0.1.0: it is shaped by
+//! The JavaScript API ([`Playground`]) is **internal to the playground**: it is shaped by
 //! the playground's engine boundary (`playground/js/engine/engine.js`) and runs inside a module
 //! Web Worker (`playground/js/engine/worker.js`). Publishing a designed, semver-stable JS API on
-//! npm is planned for 0.2.0. Every method takes and returns plain strings (JSON text for
+//! npm is planned. Every method takes and returns plain strings (JSON text for
 //! structured data), so the worker passes them on without conversion glue.
 //!
 //! Build: `playground/build.sh` (wasm-bindgen CLI, target `web`, output `playground/pkg/`).
@@ -254,6 +254,16 @@ impl Playground {
     /// total_labels}`.
     pub fn schema(&self) -> String {
         to_text(&self.session.graph().schema_view())
+    }
+
+    /// The schema views of the schema `json` (the editor's draft) with the graph's label
+    /// counts: the same structure as [`Self::schema`], `source: "given"`.
+    #[wasm_bindgen(js_name = schemaViewOf)]
+    pub fn schema_view_of(&self, json: &str) -> Result<String, JsError> {
+        self.session
+            .schema_view_of(json)
+            .map(|v| to_text(&v))
+            .map_err(|e| JsError::new(&e))
     }
 
     /// The graph to draw as columns (`CompactGraph`: `{vertexIds, vertexLabel, vertexName,
@@ -670,6 +680,31 @@ impl Playground {
             .map_err(|e| JsError::new(&e))
     }
 
+    /// The property indexes with their current stats, as JSON text: `[{name, element, label,
+    /// key, served, stats}]` (`graphersal_session::indexes`).
+    #[wasm_bindgen(js_name = listIndexes)]
+    pub fn list_indexes(&self) -> String {
+        to_text(&self.session.list_indexes())
+    }
+
+    /// Creates a property index from the form's spec (JSON text `{label, key, element?,
+    /// name?}`): `{ok, index}` or `{ok: false, errors: [{field, message, help?}]}`; never throws
+    /// for a refused index.
+    #[wasm_bindgen(js_name = createIndex)]
+    pub fn create_index(&mut self, spec: &str) -> Result<String, JsError> {
+        let spec = body_json(spec)?;
+        Ok(to_text(&self.session.create_index(&spec)))
+    }
+
+    /// Drops the property index `name`: `{dropped}`.
+    #[wasm_bindgen(js_name = dropIndex)]
+    pub fn drop_index(&mut self, name: &str) -> Result<String, JsError> {
+        self.session
+            .drop_index(name)
+            .map(|dropped| to_text(&serde_json::json!({ "dropped": dropped })))
+            .map_err(|e| JsError::new(&e))
+    }
+
     /// "Save graph" as GraphSON: `{text, schema, warnings}`: the graph as GraphSON 3.0 text (line
     /// form), the stored schema as JSON text (`null` without one), checked by loading both back.
     #[wasm_bindgen(js_name = saveGraphson)]
@@ -771,6 +806,29 @@ mod tests {
         assert_eq!(json(p.load_catalog(&file, true).unwrap())["loaded"], 1);
         assert_eq!(json(p.info())["compressionRules"], 1);
         assert_eq!(json(p.info())["catalog"]["compression"], 1);
+    }
+
+    #[test]
+    fn property_indexes_through_the_playground_api() {
+        let json = |text: String| -> Value { serde_json::from_str(&text).expect("JSON") };
+        let mut p = Playground::new();
+        p.load_sample("modern").unwrap();
+        let created = json(
+            p.create_index(r#"{"label": "person", "key": "age"}"#)
+                .unwrap(),
+        );
+        assert_eq!(created["ok"], true, "{created}");
+        assert_eq!(created["index"]["name"], "person_age");
+        assert_eq!(json(p.list_indexes())[0]["stats"]["entries"], 4);
+        let refused = json(p.create_index(r#"{"label": "person"}"#).unwrap());
+        assert_eq!(refused["errors"][0]["field"], "key");
+        assert_eq!(json(p.info())["propertyIndexes"], 1);
+        let file = p.save_catalog();
+        assert!(file.contains("\"property_index\""), "{file}");
+        assert_eq!(json(p.drop_index("person_age").unwrap())["dropped"], true);
+        assert_eq!(json(p.info())["propertyIndexes"], 0);
+        assert_eq!(json(p.load_catalog(&file, true).unwrap())["loaded"], 1);
+        assert_eq!(json(p.info())["catalog"]["property_index"], 1);
     }
 
     /// The property editor: the typed edit view, a dry run, a save, a refused value.

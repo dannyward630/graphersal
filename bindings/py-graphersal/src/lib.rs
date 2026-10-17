@@ -17,21 +17,30 @@ static ALLOC: ::graphersal::alloc_tracking::TrackingAllocator =
 
 mod convert;
 mod element;
+mod embedder;
 mod error;
 mod graph;
 mod policy;
 mod script_thread;
 mod store;
+mod temporal;
+mod vector;
 
 use pyo3::prelude::*;
 
 pub use element::{Edge, Vertex};
+pub use embedder::PyEmbedder;
+#[cfg(feature = "model2vec")]
+pub use embedder::PyModel2Vec;
 pub use error::{
-    CommitRejectedError, GraphersalError, PermissionDeniedError, ReturnedClosureError,
+    CommitRejectedError, EmbedPropertyError, GraphersalError, PermissionDeniedError,
+    ReturnedClosureError,
 };
 pub use graph::{DryRunResult, Graph};
 pub use policy::AccessPolicy;
 pub use store::Store;
+pub use temporal::Interval;
+pub use vector::PyVector;
 
 /// Python bindings of the Graphersal in-memory graph traversal engine: run Gremlin scripts against
 /// a `Graph` and get native Python values back. See `Graph`, `AccessPolicy` and `GraphersalError`.
@@ -43,6 +52,11 @@ fn graphersal(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Store>()?;
     m.add_class::<Vertex>()?;
     m.add_class::<Edge>()?;
+    m.add_class::<Interval>()?;
+    m.add_class::<PyVector>()?;
+    m.add_class::<PyEmbedder>()?;
+    #[cfg(feature = "model2vec")]
+    m.add_class::<PyModel2Vec>()?;
     let error_type = py.get_type::<GraphersalError>();
     // A class-level default so every `GraphersalError` has `.help` even when raised through a
     // path that never calls `error::new_graphersal_error` (e.g. the `Dynamic` conversion
@@ -56,6 +70,7 @@ fn graphersal(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<PermissionDeniedError>(),
     )?;
     m.add("CommitRejectedError", py.get_type::<CommitRejectedError>())?;
+    m.add("EmbedPropertyError", py.get_type::<EmbedPropertyError>())?;
     m.add(
         "ReturnedClosureError",
         py.get_type::<ReturnedClosureError>(),

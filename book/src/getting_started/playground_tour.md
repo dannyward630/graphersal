@@ -75,10 +75,12 @@ The **File tree** sample is a small directory tree: good for recursive traversal
 - several query tabs side by side, a history and saved scripts;
 - a graph editor (add, change and delete vertices and edges by clicking);
 - a fast WebGL drawing for large graphs, label graphs and neighbourhood views;
-- saved queries and compression rules in the **Catalog** menu;
+- saved queries, compression rules and property indexes in the **Catalog** menu;
 - a Store in memory with commits, marks, point-in-time views, forks and rollback (the **Store**
   menu);
 - downloads of the graph (GraphSON, GraphML, snapshot), the schema and the catalog.
+- vector search over embeddings: the **Examples** group "Embeddings (vectors)" and
+  [Embeddings and Vector Search](embeddings.md).
 - the green **Share link** button in the top bar: a link that opens your query together with a small graph,
   for example in a bug report ([Share a query with its graph](../users_guide/web_playground.md#share-a-query-with-its-graph)).
 

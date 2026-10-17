@@ -299,6 +299,12 @@ input[type="number"] { width: 80px; }
   background: url(../assets/favicon.svg) center / contain no-repeat;
 }
 .brand small { color: var(--text-muted); font-weight: 500; }
+.topbar .version-label {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .topbar .graph-name {
   max-width: 260px;
   overflow: hidden;
@@ -602,6 +608,7 @@ table.data-table.store-changes th, table.data-table.store-changes td { vertical-
   user-select: none;
 }
 .panel.collapsed .panel-header { border-bottom: 0; }
+.panel-title.toggles { cursor: pointer; user-select: none; }
 .panel-title {
   flex: 0 1 auto;
   min-width: 24px;
@@ -941,6 +948,8 @@ table.data-table {
 .data-table tr:hover td { background: var(--surface-2); }
 .data-table .cell-null { color: var(--text-faint); font-style: italic; }
 .data-table .cell-json { font-family: var(--font-mono); color: var(--text-muted); }
+.data-table .cell-vector summary { cursor: pointer; font-family: var(--font-mono); }
+.data-table .cell-vector .mono { color: var(--text-muted); white-space: normal; }
 .data-table .cell-str { color: var(--syn-string); }
 .data-table .cell-bool { color: var(--syn-keyword); font-family: var(--font-mono); }
 
@@ -1161,6 +1170,10 @@ table.schema-table { border-collapse: collapse; width: 100%; font-size: 12.5px; 
 .schema-table td.constraints { white-space: normal; min-width: 120px; width: 100%; }
 .schema-table td.constraints .schema-chip { padding: 0 5px; border-radius: 4px; background: var(--surface-3); color: var(--text); }
 .schema-table tr.open > td { background: var(--accent-soft); }
+.schema-table tr.prop-row.open { cursor: pointer; }
+.schema-table .details-close { display: flex; justify-content: flex-end; padding: 4px 8px 0; }
+.icon-btn.danger-hover:hover { color: var(--danger); }
+.icon-btn svg { display: block; }
 .schema-table .nested-row > td, .schema-table .details-row > td { padding: 2px 0 6px 18px; border-bottom: 1px solid var(--border); }
 .schema-table .nested-row > td > .schema-table { border-left: 2px solid var(--border-strong); }
 .schema-table .nested-toggle { color: var(--text-muted); font-family: var(--font-mono); font-size: 12px; }

@@ -16,7 +16,7 @@ use crate::value::PropertyMap;
 /// replayed. The snapshot functions and the Store (`graphersal::persist`) need it; a storage
 /// without it can still be queried through the DSL and the session, but not stored.
 ///
-/// **EXPERIMENTAL in 0.1.x**, like [`GraphStorage`]: methods may change in any 0.1.x release.
+/// **EXPERIMENTAL in 0.2.x**, like [`GraphStorage`]: methods may change in any 0.2.x release.
 /// Guides: the book pages `persistence/store_own_storage.md` (a `Store<S>`) and
 /// `for_developers/custom_storage.md` (every front end).
 ///
@@ -223,10 +223,12 @@ impl PersistentStorage for TraversalGraph {
         Ok(())
     }
 
-    /// The compression load pass (the rules' dictionaries and compressed values), then
+    /// The compression load pass (the rules' dictionaries and compressed values), the build of
+    /// every property index from the data (entries are never persisted), then
     /// [`TraversalGraph::shrink_to_fit`].
     fn finish_load(&mut self) {
         self.compression_load_pass();
+        self.property_index_rebuild_all();
         self.shrink_to_fit();
     }
 
@@ -346,14 +348,14 @@ mod tests {
         )
         .unwrap();
         live.transaction(|g| {
-            let a = g.add_vertex(Some("a".into()), vec!["person".into()], PropertyMap::new())?;
-            let b = g.add_vertex(None, vec!["person".into()], PropertyMap::new())?;
-            let c = g.add_vertex(Some("c".into()), vec![], PropertyMap::new())?;
+            let a = g.insert_vertex(Some("a".into()), vec!["person".into()], PropertyMap::new())?;
+            let b = g.insert_vertex(None, vec!["person".into()], PropertyMap::new())?;
+            let c = g.insert_vertex(Some("c".into()), vec![], PropertyMap::new())?;
             g.set_vertex_property(a, "name".into(), "ann".into())?;
             g.add_vertex_label(c, "robot".into())?;
-            let e = g.add_edge(None, Some("knows".into()), a, b, PropertyMap::new())?;
+            let e = g.insert_edge(None, Some("knows".into()), a, b, PropertyMap::new())?;
             g.set_edge_property(e, "w".into(), 1.5.into())?;
-            g.add_edge(
+            g.insert_edge(
                 Some("e2".into()),
                 Some("likes".into()),
                 b,

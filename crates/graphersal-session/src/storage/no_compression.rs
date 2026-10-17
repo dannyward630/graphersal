@@ -1,7 +1,9 @@
-//! A test storage: [`Forwarding`] without compressed properties. Every method forwards to the
-//! wrapped [`Forwarding`] except `recompress` and `compression_stats`, which keep the trait
-//! defaults (`Unsupported`, `None`): the behaviour of a foreign storage that stores compression
-//! rules but never applies them.
+//! A test storage: [`Forwarding`] without compressed properties and without property indexes.
+//! Every method forwards to the wrapped [`Forwarding`] except `recompress` and
+//! `compression_stats`, which keep the trait defaults (`Unsupported`, `None`), and
+//! `property_indexes` and the index lookups, which keep theirs (none; the capability is off):
+//! the behaviour of a foreign storage that stores compression rules and index definitions but
+//! never applies them.
 
 use graphersal::ElementProperty;
 use graphersal::storage::{
@@ -114,13 +116,13 @@ impl GraphStorage for NoCompression {
         GraphStorage::remove_definition(&mut self.0, kind, name)
     }
 
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         properties: PropertyMap,
     ) -> Result<Fv, GraphError> {
-        GraphStorage::add_vertex(&mut self.0, id, labels, properties)
+        GraphStorage::insert_vertex(&mut self.0, id, labels, properties)
     }
     fn add_vertex_label(&mut self, node: Fv, label: CompactString) -> Result<bool, GraphError> {
         GraphStorage::add_vertex_label(&mut self.0, node, label)
@@ -131,7 +133,7 @@ impl GraphStorage for NoCompression {
     fn set_edge_label(&mut self, edge: Fe, label: CompactString) -> Result<bool, GraphError> {
         GraphStorage::set_edge_label(&mut self.0, edge, label)
     }
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -139,7 +141,7 @@ impl GraphStorage for NoCompression {
         to: Fv,
         properties: PropertyMap,
     ) -> Result<Fe, GraphError> {
-        GraphStorage::add_edge(&mut self.0, id, label, from, to, properties)
+        GraphStorage::insert_edge(&mut self.0, id, label, from, to, properties)
     }
     fn set_vertex_property(
         &mut self,
@@ -227,7 +229,8 @@ impl GraphStorage for NoCompression {
         GraphStorage::mark(&mut self.0, name)
     }
     fn capabilities(&self) -> StorageCapabilities {
-        GraphStorage::capabilities(&self.0)
+        // No property indexes either: `property_indexes` and the lookups keep the defaults.
+        GraphStorage::capabilities(&self.0).with_property_indexes(false)
     }
     fn register_commit_hook(&mut self, hook: Box<dyn CommitHook>) -> Result<(), GraphError> {
         GraphStorage::register_commit_hook(&mut self.0, hook)

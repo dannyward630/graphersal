@@ -127,6 +127,14 @@ unless a page says otherwise; the differences are collected in
 
 [`to_lower`](steps/to_lower.md) · [`to_upper`](steps/to_upper.md) · [`trim`](steps/trim.md) · [`l_trim`](steps/l_trim.md) · [`r_trim`](steps/r_trim.md) · [`substring`](steps/substring.md) · [`replace`](steps/replace.md) · [`concat`](steps/concat.md) · [`format`](steps/format.md) · [`split`](steps/split.md) · [`length`](steps/length.md) · [`as_string`](steps/as_string.md) · [`as_bool`](steps/as_bool.md) · [`as_number`](steps/as_number.md) · [`cast`](steps/cast.md)
 
+### Dates and times
+
+[`as_date`](steps/as_date.md) · [`as_duration`](steps/as_duration.md) · [`date_add`](steps/date_add.md) · [`date_diff`](steps/date_diff.md) · [`age`](steps/age.md) · [`date_trunc`](steps/date_trunc.md) · [`date_part`](steps/date_part.md) · [`at_zone`](steps/at_zone.md) · [`as_local`](steps/as_local.md)
+
+### Vectors
+
+[`as_vector`](steps/as_vector.md) · [`quantize`](steps/quantize.md) · [`similarity`](steps/similarity.md) · [`nearest`](steps/nearest.md) · [`vector_mean`](steps/vector_mean.md) · [`embed`](steps/embed.md) · [`embedders`](steps/embedders.md) · [`embed_property`](steps/embed_property.md)
+
 ### Lists and ordering
 
 [`fold`](steps/fold.md) · [`unfold`](steps/unfold.md) · [`combine`](steps/combine.md) · [`conjoin`](steps/conjoin.md) · [`difference`](steps/difference.md) · [`disjunct`](steps/disjunct.md) · [`intersect`](steps/intersect.md) · [`merge`](steps/merge.md) · [`product`](steps/product.md) · [`reverse`](steps/reverse.md) · [`order`](steps/order.md)
@@ -166,6 +174,10 @@ unless a page says otherwise; the differences are collected in
 ### Saved queries
 
 [`define_query`](steps/define_query.md) · [`define_queries`](steps/define_queries.md) · [`query`](steps/query.md) · [`queries`](steps/queries.md) · [`get_query`](steps/get_query.md) · [`drop_query`](steps/drop_query.md) · [`move_query`](steps/move_query.md) · [`describe_query`](steps/describe_query.md)
+
+### Property indexes
+
+[`create_index`](steps/create_index.md) · [`drop_index`](steps/drop_index.md) · [`indexes`](steps/indexes.md)
 
 ### Compressed properties
 

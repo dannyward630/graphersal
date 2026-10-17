@@ -1478,3 +1478,280 @@ fn injecting_an_element_value_asks_read_data() {
     let _ = run(&graph, "g.inject(1, \"a\").toList()", recorder.clone()).unwrap();
     assert!(recorder.seen().is_empty(), "{:?}", recorder.seen());
 }
+
+#[test]
+fn has_with_a_traversal_asks_for_what_its_child_does() {
+    let graph = modern();
+    // A reading child is allowed read-only.
+    let found = run(
+        &graph,
+        r#"g.V().has("name", __.to_lower().is("marko")).count().next()"#,
+        AccessPolicy::read_only(),
+    )
+    .unwrap();
+    assert_eq!(found.as_int().unwrap(), 1);
+    // A writing child asks Create Data and is denied before anything runs.
+    let before = count(&graph);
+    assert_denied(
+        run(
+            &graph,
+            r#"g.V().has("name", __.addV("copy")).iterate()"#,
+            AccessPolicy::read_only(),
+        ),
+        "add_v",
+        "Create Data",
+    );
+    assert_eq!(count(&graph), before);
+}
+
+/// Embedders (book page "Vectors"): the `embed` step and the function `embed(text)` ask
+/// `Execute` on the embedder, the built-in one included; `read_only()` allows it; a saved query
+/// may embed.
+mod embedders {
+    use super::*;
+
+    /// Denies `Execute` on every embedder, allows everything else.
+    struct NoEmbedders;
+
+    impl Authorizer for NoEmbedders {
+        fn authorize(&self, request: &AccessRequest<'_>) -> Result<(), Denied> {
+            match request.resource {
+                Resource::Embedder { name } => Err(Denied::new(format!("no embedder {name}"))),
+                _ => Ok(()),
+            }
+        }
+    }
+
+    #[test]
+    fn the_step_and_the_function_ask_execute_on_the_embedder() {
+        let graph = modern();
+        let recorder = Arc::new(Recorder::default());
+        let _ = run(
+            &graph,
+            r#"let q = embed("marko"); g.v().embed("name").embed("name").count().next()"#,
+            recorder.clone(),
+        )
+        .unwrap();
+        let asked: Vec<String> = recorder
+            .seen()
+            .into_iter()
+            .filter(|seen| seen.contains("Embedder"))
+            .collect();
+        // Once for the function, once for the traversal (two steps, one distinct request).
+        assert_eq!(
+            asked,
+            vec![
+                r#"Execute Embedder("hash-ngram/1")"#.to_string(),
+                r#"Execute Embedder("hash-ngram/1")"#.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_denied_embedder_stops_the_step_and_the_function() {
+        let graph = modern();
+        assert_denied(
+            run(&graph, r#"g.v().embed("name").to_list()"#, NoEmbedders),
+            "embed",
+            r#"Execute Embedder("hash-ngram/1")"#,
+        );
+        assert_denied(
+            run(&graph, r#"embed("marko")"#, NoEmbedders),
+            "embed",
+            r#"Execute Embedder("hash-ngram/1")"#,
+        );
+        // Inside a child traversal, before anything is written.
+        assert_denied(
+            run(
+                &graph,
+                r#"g.v().property("emb", __.embed("name")).iterate()"#,
+                NoEmbedders,
+            ),
+            "embed",
+            r#"Execute Embedder("hash-ngram/1")"#,
+        );
+        assert!(
+            run(&graph, r#"g.v().has("emb").count().next()"#, AllowAll)
+                .unwrap()
+                .as_int()
+                .unwrap()
+                == 0
+        );
+        // A policy denies the resource kind.
+        let policy = AccessPolicy::allow_all().deny(ActionKind::Execute, ResourceKind::Embedder);
+        assert_denied(
+            run(&graph, r#"embed("marko")"#, policy),
+            "embed",
+            "Execute Embedder",
+        );
+    }
+
+    #[test]
+    fn read_only_allows_embedding_and_a_saved_query_may_embed() {
+        let graph = modern();
+        assert!(AccessPolicy::read_only().allows(ActionKind::Execute, ResourceKind::Embedder));
+        assert!(AccessPolicy::allow_all().allows(ActionKind::Execute, ResourceKind::Embedder));
+        let n = run(
+            &graph,
+            r#"let q = embed("marko"); g.v().has_label("person").embed("name").count().next()"#,
+            AccessPolicy::read_only(),
+        )
+        .unwrap();
+        assert_eq!(n.as_int().unwrap(), 4);
+        let _ = run(
+            &graph,
+            r#"g.define_query(#{name: "similar", params: #{text: "string"},
+                 body: "fn similar(text) { g.v().has_label(\"person\").embed(\"name\").similarity(embed(text)) }"})"#,
+            AllowAll,
+        )
+        .unwrap();
+        let scores = run(
+            &graph,
+            r#"g.query("similar", #{text: "marko"}).to_list().len()"#,
+            AccessPolicy::read_only(),
+        )
+        .unwrap();
+        assert_eq!(scores.as_int().unwrap(), 4);
+    }
+
+    #[test]
+    fn an_owned_embedder_request_round_trips() {
+        let request = AccessRequest::new(
+            Action::Execute,
+            Resource::Embedder {
+                name: "acme/minilm",
+            },
+        );
+        let owned = request.to_owned_request();
+        assert_eq!(owned.as_request(), request);
+        assert_eq!(owned.to_string(), r#"Execute Embedder("acme/minilm")"#);
+        assert_eq!(request.resource.kind(), ResourceKind::Embedder);
+        assert_eq!(ResourceKind::Embedder.name(), "Embedder");
+    }
+}
+
+/// The job `embed_property` and the text queries of `nearest`/`similarity` (book page
+/// "Vectors"): the job asks `Read` and `Update` on the label's data, `Execute` on the embedder
+/// and `Update` on the schema when it declares the property; it is denied in a saved query;
+/// a text query asks `Execute` on the embedder of the declared model.
+mod embed_jobs {
+    use super::*;
+
+    const ATTACH: &str = r#"g.set_schema(g.infer_schema(), SchemaMode.open)"#;
+    const JOB: &str = r#"g.embed_property(#{label: "person", from: "name", to: "emb"})"#;
+
+    #[test]
+    fn the_job_asks_for_the_data_the_embedder_and_the_schema() {
+        let graph = modern();
+        let _ = run(&graph, ATTACH, AllowAll).unwrap();
+        let recorder = Arc::new(Recorder::default());
+        let _ = run(&graph, JOB, recorder.clone()).unwrap();
+        assert_eq!(
+            recorder.seen(),
+            [
+                r#"Read Data(vertex "person")"#,
+                r#"Update Data(vertex "person")"#,
+                r#"Execute Embedder("hash-ngram/1")"#,
+                "Update Schema",
+            ]
+        );
+        // Declared already: the schema is not asked for again.
+        let recorder = Arc::new(Recorder::default());
+        let _ = run(
+            &graph,
+            r#"g.embed_property(#{label: "person", from: "name", to: "emb", only_missing: false})"#,
+            recorder.clone(),
+        )
+        .unwrap();
+        assert!(!recorder.seen().iter().any(|seen| seen == "Update Schema"));
+    }
+
+    #[test]
+    fn a_denied_request_stops_the_job_before_anything_is_written() {
+        let graph = modern();
+        let _ = run(&graph, ATTACH, AllowAll).unwrap();
+        assert_denied(
+            run(&graph, JOB, AccessPolicy::read_only()),
+            "embed_property",
+            r#"Update Data(vertex "person")"#,
+        );
+        let no_schema = AccessPolicy::allow_all().deny(ActionKind::Update, ResourceKind::Schema);
+        assert_denied(
+            run(&graph, JOB, no_schema),
+            "embed_property",
+            "Update Schema",
+        );
+        let no_embedder =
+            AccessPolicy::allow_all().deny(ActionKind::Execute, ResourceKind::Embedder);
+        assert_denied(
+            run(&graph, JOB, no_embedder),
+            "embed_property",
+            r#"Execute Embedder("hash-ngram/1")"#,
+        );
+        assert_eq!(
+            run(&graph, r#"g.v().has("emb").count().next()"#, AllowAll)
+                .unwrap()
+                .as_int()
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn a_saved_query_cannot_run_the_job() {
+        let graph = modern();
+        let _ = run(&graph, ATTACH, AllowAll).unwrap();
+        let _ = run(
+            &graph,
+            r#"g.define_query(#{name: "fill", body: "fn fill() { g.embed_property(#{label: \"person\", from: \"name\", to: \"emb\"}) }"})"#,
+            AllowAll,
+        )
+        .unwrap();
+        let err = run(&graph, r#"g.query("fill")"#, AllowAll).unwrap_err();
+        assert!(
+            err.contains("Permission denied for 'embed_property'"),
+            "{err}"
+        );
+        assert!(err.contains("a saved query is read-only"), "{err}");
+    }
+
+    #[test]
+    fn a_text_query_asks_execute_on_the_embedder_of_its_model() {
+        let graph = modern();
+        let _ = run(&graph, &format!("{ATTACH}; {JOB}"), AllowAll).unwrap();
+        let recorder = Arc::new(Recorder::default());
+        let _ = run(
+            &graph,
+            r#"g.v().nearest("emb", "marco", 1).similarity("emb", "marco").to_list()"#,
+            recorder.clone(),
+        )
+        .unwrap();
+        assert!(
+            recorder
+                .seen()
+                .iter()
+                .any(|seen| seen == r#"Execute Embedder("hash-ngram/1")"#),
+            "{:?}",
+            recorder.seen()
+        );
+        let no_embedder =
+            AccessPolicy::allow_all().deny(ActionKind::Execute, ResourceKind::Embedder);
+        assert_denied(
+            run(
+                &graph,
+                r#"g.v().nearest("emb", "marco", 1).to_list()"#,
+                no_embedder,
+            ),
+            "nearest",
+            r#"Execute Embedder("hash-ngram/1")"#,
+        );
+        // read_only() allows a text query.
+        let n = run(
+            &graph,
+            r#"g.v().nearest("emb", "marco", 2).count().next()"#,
+            AccessPolicy::read_only(),
+        )
+        .unwrap();
+        assert_eq!(n.as_int().unwrap(), 2);
+    }
+}

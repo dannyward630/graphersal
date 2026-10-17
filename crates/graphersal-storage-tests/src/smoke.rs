@@ -8,7 +8,7 @@ use graphersal::{ElementProperty, GraphTraversalSource, TraversalGraph};
 use crate::contract::{edge, props, vertex};
 
 /// Loads the TinkerPop "modern" graph (6 vertices, 6 edges) into an empty storage using only
-/// trait methods (`add_vertex`, `add_edge`).
+/// trait methods (`insert_vertex`, `insert_edge`).
 pub fn load_modern<S: GraphStorage>(storage: &mut S) {
     let person = |s: &mut S, id: &str, name: &str, age: i32| {
         vertex(

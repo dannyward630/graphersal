@@ -628,13 +628,21 @@ pub(crate) fn create_edge<S: GraphStorage>(
     map: &ParsedMap,
     out_v: S::VertexId,
     in_v: S::VertexId,
+    create: &crate::graph::schema::defaults::CreateContext,
 ) -> TraverserResult<S::EdgeId> {
     let properties: PropertyMap = map
         .entries
         .iter()
         .map(|entry| (entry.key.clone(), entry.value.clone()))
         .collect();
-    Ok(storage.add_edge(map.id.clone(), map.label.clone(), out_v, in_v, properties)?)
+    Ok(storage.add_edge_with(
+        map.id.clone(),
+        map.label.clone(),
+        out_v,
+        in_v,
+        properties,
+        create,
+    )?)
 }
 
 /// Writes `entries` to an existing element (onMatch), each with its own cardinality or
@@ -654,6 +662,7 @@ pub(crate) fn apply_entries<S: GraphStorage>(
 pub(crate) fn create_vertex<S: GraphStorage>(
     storage: &mut S,
     map: &ParsedMap,
+    create: &crate::graph::schema::defaults::CreateContext,
 ) -> TraverserResult<S::VertexId> {
     for entry in &map.entries {
         check_cardinality(MergeKind::Vertex.step(), entry.cardinality, false)?;
@@ -664,7 +673,7 @@ pub(crate) fn create_vertex<S: GraphStorage>(
         .map(|entry| (entry.key.clone(), entry.value.clone()))
         .collect();
     let labels = map.label.iter().cloned().collect();
-    Ok(storage.add_vertex(map.id.clone(), labels, properties)?)
+    Ok(storage.add_vertex_with(map.id.clone(), labels, properties, create)?)
 }
 
 /// A merge argument or option as handed to the builder, before the step parses it for its

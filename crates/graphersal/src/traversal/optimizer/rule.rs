@@ -12,6 +12,18 @@ pub(crate) trait OptimizationRule<'g, S: GraphStorage + 'g>: Send + Sync {
     /// Returns `true` if steps were modified, `false` otherwise.
     fn apply(&self, plan: &mut Plan<'g, S>) -> bool;
 
+    /// [`Self::apply`] with what the optimizer knows about the run (the storage's property
+    /// indexes, whether this level is the root). Rules that need it override this one; the
+    /// optimizer always calls it.
+    fn apply_in(
+        &self,
+        plan: &mut Plan<'g, S>,
+        context: &crate::traversal::optimizer::OptimizerContext<'_>,
+    ) -> bool {
+        let _ = context;
+        self.apply(plan)
+    }
+
     /// Applies the rule to bare steps, discarding logical provenance.
     ///
     /// Only for callers that have no plan to maintain, such as rule unit tests.

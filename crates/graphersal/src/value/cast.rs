@@ -1,5 +1,6 @@
 use crate::error::{TraverserError, TraverserResult};
 use crate::graph::schema::{ValueType, value_type_name};
+use crate::value::temporal::{DateTime, Temporal, TemporalKind};
 use crate::value::uuid as uuid_codec;
 use crate::value::{ElementProperty, Number};
 
@@ -36,6 +37,11 @@ impl ElementProperty {
     /// | `Boolean → Int64` / `Float64` | `false → 0`, `true → 1` |
     /// | `Int64` / `Float64 → Boolean` | only from exactly `0` or `1` |
     /// | `Array` / `Object` / `Vertex` / `Edge` → scalar | never |
+    /// | temporal → `String` | the canonical ISO 8601 text (`2023-08-02T00:00:00Z`) |
+    /// | `DateTime` → `Int64` / `Float64` | milliseconds since the Unix epoch, rounded down (TinkerPop `asNumber()`) |
+    /// | `String` → temporal | parses the text of that type (an explicit conversion, never applied implicitly) |
+    /// | `Int64` → `DateTime` | the instant that many milliseconds after the epoch, in UTC (TinkerPop `asDate(number)`) |
+    /// | temporal → another temporal type | never (the date steps convert between them) |
     ///
     /// Returns [`ValueError::UnsupportedCastTarget`](crate::error::ValueError::UnsupportedCastTarget)
     /// for a target no conversion can produce yet, so an unimplemented target fails loudly
@@ -71,6 +77,12 @@ impl ElementProperty {
             ValueType::Float64 => self.cast_to_float64(target),
             ValueType::String => self.cast_to_string(target),
             ValueType::Uuid => self.cast_to_uuid(target),
+            ValueType::Date
+            | ValueType::LocalDateTime
+            | ValueType::DateTime
+            | ValueType::Time
+            | ValueType::Duration => self.cast_to_temporal(target),
+            ValueType::Vector(element) => self.cast_to_vector(*element),
 
             // A container target would have to describe how to build the container, which a
             // 1-to-1 coercion cannot express; a union target names no single type at all.
@@ -135,8 +147,51 @@ impl ElementProperty {
             ElementProperty::Uuid(value) => {
                 Ok(ElementProperty::from(uuid_codec::format_canonical(*value)))
             }
+            ElementProperty::Temporal(value) => Ok(ElementProperty::from(value.to_string())),
+            // The DSL literal (`vector([0.1, 0.2])`), every component.
+            ElementProperty::Vector(value) => Ok(ElementProperty::from(value.to_string())),
             _ => self.cast_failure(target),
         }
+    }
+
+    /// Converts to a temporal type: the same type passes, a string is parsed as that type, an
+    /// integer is epoch milliseconds for a `datetime`; anything else fails.
+    fn cast_to_temporal(&self, target: &ValueType) -> TraverserResult<ElementProperty> {
+        let Some(kind) = target.temporal_kind() else {
+            return self.cast_failure(target);
+        };
+        match self {
+            ElementProperty::Temporal(value) if value.kind() == kind => Ok(self.clone()),
+            ElementProperty::String(text) => match Temporal::parse_as(kind, text) {
+                Ok(value) => Ok(ElementProperty::Temporal(value)),
+                Err(_) => self.cast_failure(target),
+            },
+            ElementProperty::Number(number) if kind == TemporalKind::DateTime => {
+                match number.as_i64().map(DateTime::from_epoch_millis) {
+                    Some(Ok(value)) => Ok(ElementProperty::Temporal(Temporal::DateTime(value))),
+                    _ => self.cast_failure(target),
+                }
+            }
+            _ => self.cast_failure(target),
+        }
+    }
+
+    /// Converts to a vector of `element`: a list of numbers becomes an f32 vector quantized to
+    /// `element`, a vector is quantized to it (`as_vector()`); anything else fails.
+    fn cast_to_vector(
+        &self,
+        element: crate::value::VectorElement,
+    ) -> TraverserResult<ElementProperty> {
+        let converted = match self {
+            ElementProperty::Vector(vector) => vector.quantize(element),
+            ElementProperty::Array(items) => {
+                crate::value::Vector::from_values(items).and_then(|vector| vector.quantize(element))
+            }
+            _ => return self.cast_failure(&ValueType::Vector(element)),
+        };
+        converted
+            .map(ElementProperty::Vector)
+            .map_err(|error| crate::value::vector::vector_error("as_vector", error))
     }
 
     /// Parses a canonical UUID string, or accepts a value that already is one.
@@ -201,6 +256,10 @@ impl ElementProperty {
                     0
                 })))
             }
+            // TinkerPop `asNumber()` of a date: epoch milliseconds.
+            ElementProperty::Temporal(Temporal::DateTime(value)) => Ok(ElementProperty::Number(
+                Number::from_i64(value.epoch_millis()),
+            )),
             _ => self.cast_failure(target),
         }
     }
@@ -224,6 +283,9 @@ impl ElementProperty {
                     0.0
                 })))
             }
+            ElementProperty::Temporal(Temporal::DateTime(value)) => Ok(ElementProperty::Number(
+                Number::from_f64(value.epoch_millis() as f64),
+            )),
             _ => self.cast_failure(target),
         }
     }

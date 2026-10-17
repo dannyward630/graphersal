@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Aleksandr Dederer <aleks@graphersal.dev>"]
 repository = "https://github.com/graphersal/graphersal"
 homepage = "https://graphersal.dev"
@@ -26,6 +26,15 @@ rust-version = "1.88"
 codegen-units = 1
 #debug = true
 
+# The prebuilt `graphersal` CLI binaries attached to every GitHub Release (.github/workflows/
+# binaries.yml): release code, whole-program LTO, symbols stripped. Never `panic = "abort"` here:
+# a panic unwinding through a unit rolls it back first (`close_on_unwind`), and the CLI, the dev
+# server and the Store rely on that to leave no half-applied change behind.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+strip = true
+
 # The browser playground's WebAssembly module (crates/graphersal-wasm, playground/build.sh):
 # release code optimized for size ("z": 25% smaller gzipped than "s", ~30% slower), link-time optimized, panics abort (no unwinding tables).
 [profile.wasm-release]
@@ -36,9 +45,9 @@ panic = "abort"
 
 [workspace.dependencies]
 # Internal workspace crates
-graphersal = { path = "crates/graphersal", version = "0.1.1" }
-graphersal-session = { path = "crates/graphersal-session", version = "0.1.1" }
-graphersal-storage-tests = { path = "crates/graphersal-storage-tests", version = "0.1.1" }
+graphersal = { path = "crates/graphersal", version = "0.2.0" }
+graphersal-session = { path = "crates/graphersal-session", version = "0.2.0" }
+graphersal-storage-tests = { path = "crates/graphersal-storage-tests", version = "0.2.0" }
 
 # Core Graph & Algorithms
 petgraph = { version = "0.6.5", features = ["serde-1"] }
@@ -55,6 +64,12 @@ tracing = "0.1"
 # `performance.now()` clock in the browser (already in the tree through rhai).
 web-time = "1"
 thiserror = "1.0"
+# IANA time zones of the temporal values (book "Dates and Times"): the zone rules and the bundled
+# tz database (`jiff-tzdb`, the same answer on every machine and in wasm32, updated with our
+# releases). Used internally only: calendar math, parsing and formatting are our own code and no
+# jiff type appears in the public API. No system database lookup (`tzdb-zoneinfo` off) and no
+# `js` feature: the clock is `web_time`.
+jiff = { version = "0.2.37", default-features = false, features = ["std", "tz-fat", "tzdb-bundle-always"] }
 # Schema `pattern` constraints are regular expressions (JSON Schema semantics). The de-facto
 # standard engine: linear-time matching (no catastrophic backtracking on untrusted schemas), no
 # unsafe FFI, builds for wasm32-unknown-unknown. A pattern is compiled once, when the schema
@@ -92,6 +107,20 @@ rustix = { version = "1", features = ["fs"] }
 # library), builds for wasm32.
 ruzstd = { version = "0.9.1", default-features = false, features = ["std"] }
 
+# The Model2Vec embedder (`graphersal` feature `model2vec`, `graphersal::vector::Model2Vec`,
+# native only): static token embeddings + mean pooling from a local model directory
+# (`config.json`, `tokenizer.json`, `model.safetensors`). `model2vec-rs` (MIT) is the reference
+# implementation of the format by its authors; without default features it has no
+# `hf-hub`/`ureq` 2 and never touches the network (the CLI's `embed-model download` fetches the
+# files). `tokenizers` (Apache-2.0) is the Hugging Face tokenizer `model2vec-rs` builds on; it
+# needs one regex backend: `fancy-regex` is pure Rust (the default `onig` and `esaxx_fast` build
+# C/C++ code). `safetensors` (Apache-2.0, already a dependency of `model2vec-rs`) reads the
+# shape of the embedding matrix at load, so a vocabulary id that is out of range is refused there
+# and no lookup can go out of bounds later.
+model2vec-rs = { version = "0.3.0", default-features = false }
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+safetensors = "0.5"
+
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -107,6 +136,10 @@ tiny_http = "0.12"
 # calls over HTTPS. Synchronous (no async runtime: the dev server is synchronous, the Rust LLM
 # SDKs need tokio), pure Rust with rustls (ring) and the webpki root certificates, no system TLS.
 ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+# SHA-256 of the files `graphersal embed-model download` fetches (CLI feature `model2vec`), checked
+# against the hash Hugging Face states for an LFS file while the body streams to disk. Already in
+# the tree as the crypto provider of rustls (through `ureq`), the same version: no new crate.
+ring = "0.17"
 # SIGINT/SIGTERM (Ctrl+C, `kill`) in the CLI and its dev server: a Store open in the process is
 # closed cleanly before it exits (a second Ctrl+C exits at once). Small and pure Rust (a signal
 # pipe on Unix through `nix`, a console handler on Windows); `termination` adds SIGTERM/SIGHUP.

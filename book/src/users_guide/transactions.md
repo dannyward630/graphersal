@@ -28,7 +28,7 @@ materializes the results (for example returning a vertex the same traversal drop
 | Rhai through `eval_value_dry_run` (host option), Python `Graph.dry_run` | the whole script, always rolled back ([below](#dry-run-of-a-script-rhai)) |
 | Rust API: `Transactional::transaction(\|g\| ..)` (every storage) | the closure; every traversal inside is a savepoint ([below](#explicit-transactions-rust)) |
 | Rust API: `Transactional::dry_run(\|g\| ..)` (storages with change capture) | the closure, always rolled back ([below](#dry-run)) |
-| `GraphStorage` methods called directly (`add_vertex`, `set_vertex_property`, ...) | one call: it either succeeds or changes nothing; outside a unit it is not recorded, so no hook sees it (use it for loading, see [below](#loading-versus-importing)) |
+| `GraphStorage` methods called directly (`add_vertex`, `insert_vertex`, `set_vertex_property`, ...) | one call: it either succeeds or changes nothing; outside a unit it is not recorded, so no hook sees it (use it for loading, see [below](#loading-versus-importing)) |
 | `set_schema()` / `patch_schema()` outside a unit | one unit of its own |
 | a catalog change (`set_definition()`, `remove_definition()`, `define_query()`, `move_query()`, `describe_query()`) outside a unit | one unit of its own |
 | `import_graphml()` / `import_graphson()` into an existing graph | the whole import |
@@ -143,7 +143,7 @@ assert_eq!(graph.vertex_count(), 6); // untouched
 The default unit of a script is one traversal. A host that wants all-or-nothing for the whole
 script (a migration script, an import, a playground run) calls
 `graphersal::script::eval_value_atomic(graph, script, params, &limits, authorizer)` instead of
-`eval_value_with_limits`. The script cannot choose this itself (no `g.tx()` in 0.1.0).
+`eval_value_with_limits`. The script cannot choose this itself (there is no `g.tx()`).
 
 ```rhai,graph=modern
 g.addV("person").property("name", "ann").next();          // part of the unit
@@ -333,17 +333,28 @@ With the `serde` feature a `ChangeSet` serializes as JSON (`{"commit_seq": 1, "c
 ...}]}`; a missing `committed_at` or sequence reads as `0`, which `replay` ignores), and a serialized change set replays into an **identical** graph
 without any schema. JSON-native values stay plain JSON; a value of a logical type JSON cannot hold
 carries an explicit per-value type tag, at any depth (in element images, property writes and
-commit attributes). Today that is only `uuid`, in TinkerPop GraphSON style:
+commit attributes): `uuid` and the date and time types, in TinkerPop GraphSON style with the
+canonical text:
 
 ```json
 {"@type": "g:UUID", "@value": "6f1d3c2a-0000-4000-8000-000000000001"}
+{"@type": "gx:OffsetDateTime", "@value": "2024-05-01T09:30:00+02:00"}
 ```
+
+| Type | Tag |
+|---|---|
+| `datetime`, `date`, `localdatetime`, `time` | `gx:OffsetDateTime`, `gx:LocalDate`, `gx:LocalDateTime`, `gx:LocalTime` |
+| `duration` of microseconds only (no months, no days) | `gx:Duration` (`PT26H`) |
+| `duration` of months and days only | `gx:Period` (`P1Y2M3D`) |
+| any other `duration` | `graphersal:Interval` (`P1MT2H`) |
+| `vector` (book page [Vectors](vectors.md)) | `graphersal:Vector` with an object: `{"element": "f32", "data": [0.5, -1.0]}` (`f16` the same), `{"element": "i8", "scale": 0.007874016, "codes": [64, -127]}`, `{"element": "bit", "dimension": 3, "bits": "a0"}` (the packed bytes in hex); exact for every element kind |
 
 A user map that happens to have an `"@type"` key of its own is escaped, so it can never be misread
 as a tag: `{"@type": "graphersal:Object", "@value": {"@type": "mine", "x": 1}}` (the payload's keys
-are literal). Reading is strict: an object with an `"@type"` key must be exactly one of these two
-forms (only `@type` and `@value`, a canonical lowercase uuid or an object payload); anything else
-is an error, never a guess. The tags exist for the `ChangeSet` only; GraphML and the other exports
+are literal). Reading is strict: an object with an `"@type"` key must be exactly one of these
+forms (only `@type` and `@value`, a canonical lowercase uuid, the text of a value of the tag's
+type, with a `gx:Duration` holding no months or days and a `gx:Period` no time part, or an object
+payload); anything else is an error, never a guess. The tags exist for the `ChangeSet` only; GraphML and the other exports
 are unchanged.
 
 ## Commit hooks
@@ -564,14 +575,14 @@ process ends, and the graph with it.
 - Commit hooks registered from Python (Python gets change sets only as data, through `dry_run`).
 - Removing a commit hook.
 - Isolation of concurrent readers during a write: readers wait for the writer. A layered storage
-  with snapshot reads is planned for 0.2.
+  with snapshot reads is planned.
 
 ## Deviations from TinkerPop
 
 - TinkerGraph without transactions keeps the changes a traversal made before it failed.
   Graphersal rolls them back: the graph is never left half-changed by one failing traversal.
 - TinkerPop opens an explicit transaction with `g.tx()` and ends it with `commit()` /
-  `rollback()`. Graphersal has no `tx()` (in 0.1.0); the Rust API uses the closure
+  `rollback()`. Graphersal has no `tx()`; the Rust API uses the closure
   `transaction(|g| ..)`, and a host can make a whole script one unit.
 - TinkerPop's `EventStrategy` reports each mutation to a `MutationListener` after it happened.
   Graphersal's commit hooks get one `ChangeSet` per committed unit, before it is final (with a

@@ -2,7 +2,7 @@
 //!
 //! This is the engine of `subgraph("sg")` + `cap("sg")` and of the `to_graph()` terminal. It reads
 //! the source through [`GraphStorage`] and writes the target only through the [`GraphStorage`]
-//! mutation API (`add_vertex`/`add_edge`), so any storage can be a target, and every property
+//! mutation API (`insert_vertex`/`insert_edge`), so any storage can be a target, and every property
 //! travels at full depth (nested objects and arrays are cloned, never flattened).
 
 use std::collections::HashMap;
@@ -16,7 +16,7 @@ use crate::value::{ElementProperty, PropertyMap};
 
 /// Copies `edges` and both endpoint vertices of every edge from `source` into `target`.
 ///
-/// - Ids are preserved (ids are strings, `add_vertex`/`add_edge` take them as `Some(id)`).
+/// - Ids are preserved (ids are strings, `insert_vertex`/`insert_edge` take them as `Some(id)`).
 /// - A vertex keeps its whole label set, in order, and all of its properties; an edge keeps its
 ///   label and properties.
 /// - A vertex that is an endpoint of several edges is copied once. A vertex whose id the target
@@ -50,7 +50,7 @@ where
         })?;
         let from = ensure_vertex(source, target, &mut vertices, from)?;
         let to = ensure_vertex(source, target, &mut vertices, to)?;
-        target.add_edge(
+        target.insert_edge(
             Some(CompactString::new(edge_id)),
             source.edge_label(edge).map(CompactString::new),
             from,
@@ -88,7 +88,7 @@ where
     let id = stored_vertex_id(source, vertex)?;
     let handle = match target.get_vertex_by_id(id) {
         Some(existing) => existing,
-        None => target.add_vertex(
+        None => target.insert_vertex(
             Some(CompactString::new(id)),
             source.vertex_labels(vertex).to_vec(),
             source

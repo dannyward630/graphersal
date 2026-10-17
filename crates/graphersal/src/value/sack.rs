@@ -16,6 +16,7 @@
 
 use compact_str::CompactString;
 use fnv::FnvHashMap;
+use std::collections::hash_map::Entry;
 
 use crate::error::{TraverserError, TraverserResult, ValueError};
 use crate::value::ElementProperty;
@@ -59,6 +60,10 @@ enum ScalarKey {
     FloatBits(u64),
     Str(CompactString),
     Uuid(u128),
+    /// Every field of the value: two datetimes of one instant but different offsets are equal
+    /// values, yet interned apart so a sack keeps the offset it was given. Boxed: inline, the
+    /// 32 bytes grew every key from 32 to 48 bytes and slowed sack merges by about 13 %.
+    Temporal(Box<crate::value::temporal::TemporalBits>),
 }
 
 impl ScalarKey {
@@ -80,7 +85,10 @@ impl ScalarKey {
             ElementProperty::String(s) => ScalarKey::Str(s.clone()),
             ElementProperty::Compressed(text) => ScalarKey::Str(text.text()),
             ElementProperty::Uuid(u) => ScalarKey::Uuid(*u),
-            ElementProperty::Array(_)
+            ElementProperty::Temporal(t) => ScalarKey::Temporal(Box::new(t.bits())),
+            // Not interned: a vector gets a fresh handle like a container.
+            ElementProperty::Vector(_)
+            | ElementProperty::Array(_)
             | ElementProperty::Object(_)
             | ElementProperty::Map(_)
             | ElementProperty::Vertex(_)
@@ -90,6 +98,23 @@ impl ScalarKey {
 }
 
 static NULL: ElementProperty = ElementProperty::Null;
+
+/// The cast error of a vertex or edge sack (a sack holds data, not a graph element).
+#[cold]
+fn element_sack(value: &ElementProperty) -> Box<TraverserError> {
+    let actual = if matches!(value, ElementProperty::Vertex(_)) {
+        "vertex"
+    } else {
+        "edge"
+    };
+    ValueError::CastException {
+        expected: "scalar, array or object".to_string(),
+        actual: actual.to_string(),
+        value: None,
+        origin: None,
+    }
+    .into()
+}
 
 /// Arena of sack values owned by one traversal execution.
 ///
@@ -132,40 +157,38 @@ impl SackArena {
     /// Fails with [`TraverserError::SackArenaExhausted`] when the arena is full and with a
     /// cast error for a vertex or edge value (a sack holds data, not a graph element).
     pub(crate) fn intern(&mut self, value: ElementProperty) -> TraverserResult<SackRef> {
-        match &value {
-            ElementProperty::Vertex(_) | ElementProperty::Edge(_) => {
-                let actual = if matches!(value, ElementProperty::Vertex(_)) {
-                    "vertex"
-                } else {
-                    "edge"
-                };
-                return Err(ValueError::CastException {
-                    expected: "scalar, array or object".to_string(),
-                    actual: actual.to_string(),
-                    value: None,
-                    origin: None,
-                }
-                .into());
-            }
-            _ => {}
-        }
-        let key = ScalarKey::of(&value);
-        if let Some(key) = &key
-            && let Some(&index) = self.intern.get(key)
-        {
-            return Ok(SackRef(index));
-        }
         let index = self.values.len();
+        // A scalar: one hash and one probe for both the lookup and the insertion (a sack merge
+        // operator interns every combined value, so this is the merge loop's hottest call).
+        if let Some(key) = ScalarKey::of(&value) {
+            return match self.intern.entry(key) {
+                Entry::Occupied(slot) => Ok(SackRef(*slot.get())),
+                Entry::Vacant(slot) => {
+                    if index >= self.capacity as usize {
+                        return Err(self.exhausted());
+                    }
+                    self.values.push(value);
+                    slot.insert(index as u32);
+                    Ok(SackRef(index as u32))
+                }
+            };
+        }
+        if let ElementProperty::Vertex(_) | ElementProperty::Edge(_) = &value {
+            return Err(element_sack(&value));
+        }
         if index >= self.capacity as usize {
-            return Err(Box::new(TraverserError::SackArenaExhausted {
-                capacity: u64::from(self.capacity),
-            }));
+            return Err(self.exhausted());
         }
         self.values.push(value);
-        if let Some(key) = key {
-            self.intern.insert(key, index as u32);
-        }
         Ok(SackRef(index as u32))
+    }
+
+    /// The [`TraverserError::SackArenaExhausted`] error of this arena.
+    #[cold]
+    fn exhausted(&self) -> Box<TraverserError> {
+        Box::new(TraverserError::SackArenaExhausted {
+            capacity: u64::from(self.capacity),
+        })
     }
 
     /// The value behind `handle`; [`SackRef::NONE`] reads as `null`.

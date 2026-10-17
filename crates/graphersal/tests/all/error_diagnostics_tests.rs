@@ -1374,7 +1374,7 @@ fn invalid_optimizer_rule_option_help_names_the_valid_rules() {
         err.to_string(),
         "Invalid value for option 'optimizer.disabled': unknown optimizer rule \"not_a_real_rule\"; \
          valid names are: where_unnest, add_property_fold, filter_reorder, has_id_pushdown, source_filter_pushdown, \
-         barrier_pushdown, group_count_pushdown, count_pushdown, lazy_barrier, all"
+         property_index, barrier_pushdown, group_count_pushdown, count_pushdown, lazy_barrier, all"
     );
     let help = err.help().expect("help");
     assert!(
@@ -1387,8 +1387,8 @@ fn invalid_optimizer_rule_option_help_names_the_valid_rules() {
     assert!(
         help.contains(
             "(where_unnest, add_property_fold, filter_reorder, has_id_pushdown, \
-             source_filter_pushdown, barrier_pushdown, group_count_pushdown, count_pushdown, \
-             lazy_barrier — see the book's Query Optimizer chapter"
+             source_filter_pushdown, property_index, barrier_pushdown, group_count_pushdown, \
+             count_pushdown, lazy_barrier — see the book's Query Optimizer chapter"
         ),
         "{help}"
     );
@@ -4427,7 +4427,11 @@ fn nested_schema_error_help_names_the_path_and_reads_it_with_jpath() {
         "{required}"
     );
     assert!(
-        required.contains("\"default\" is an annotation only"),
+        required.contains(
+            "A schema \"default\" below the top level is an annotation: it does not fill a \
+             missing nested key (only a label's top-level properties get their default when an \
+             element is created)."
+        ),
         "{required}"
     );
     assert!(
@@ -4725,7 +4729,13 @@ fn applying_a_schema_to_violating_data_help_says_how_to_proceed() {
     assert!(help.contains("g.infer_schema()"), "{help}");
     assert!(help.contains("g.validate_schema(schema)"), "{help}");
     assert!(help.contains("backfill first"), "{help}");
-    assert!(help.contains("annotation only"), "{help}");
+    assert!(
+        help.contains(
+            "A schema \"default\" fills only elements created after it is set, never existing \
+             ones (no backfill)."
+        ),
+        "{help}"
+    );
     assert_eq!(graph.get_schema(), None);
 }
 
@@ -6557,5 +6567,397 @@ fn error_locations_leave_out_the_display_limit() {
             .iter()
             .all(|entry| !entry.name.contains("[display]")),
         "{location:?}"
+    );
+}
+
+/// The vector search errors (book page "Vectors") are located at their step and carry the help of
+/// their cause.
+#[test]
+fn vector_search_errors_carry_their_help() {
+    use graphersal::vector::{VectorElement, VectorMetric};
+
+    let graph = GraphSource::empty();
+    {
+        let mut lock = graph.write();
+        lock.traversal_mut()
+            .add_v("doc")
+            .property("emb", Vector::from_f32(vec![1.0, 0.0]).unwrap())
+            .iterate()
+            .unwrap();
+    }
+    let lock = graph.read();
+    let q3 = Vector::from_f32(vec![1.0, 0.0, 0.0]).unwrap();
+    let err = lock
+        .traversal()
+        .v(None)
+        .nearest("emb", &q3, 5, None)
+        .to_list()
+        .expect_err("dimension mismatch");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("nearest(\"emb\", vector([1.0, 0.0, 0.0]), 5)"),
+        "{report}"
+    );
+    assert!(report.contains("vectors of dimensions 2 and 3"), "{report}");
+    assert!(report.contains("\"dimension\": 384"), "{report}");
+    assert_eq!(err.step_location().expect("located").step_id, "1");
+
+    let bits = Vector::from_f32(vec![1.0, -1.0])
+        .unwrap()
+        .quantize(VectorElement::Bit)
+        .unwrap();
+    let err = lock
+        .traversal()
+        .v(None)
+        .similarity("emb", bits, None)
+        .to_list()
+        .expect_err("bit against f32");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("a bit vector compares only with another bit vector"),
+        "{report}"
+    );
+    assert!(
+        report.contains("nearest(\"emb\", q.quantize(\"bit\"), 10)"),
+        "{report}"
+    );
+
+    let q2 = Vector::from_f32(vec![1.0, 0.0]).unwrap();
+    let err = lock
+        .traversal()
+        .v(None)
+        .similarity("emb", q2, Some(VectorMetric::Hamming))
+        .to_list()
+        .expect_err("hamming on f32");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("the hamming metric compares bit vectors"),
+        "{report}"
+    );
+    assert!(report.contains("quantize(\"bit\")"), "{report}");
+}
+
+#[test]
+fn property_index_type_errors_carry_their_help() {
+    use crate::script_host::eval_value;
+
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    let fail = |script: &str| -> String {
+        eval_value(graph.clone(), script)
+            .expect_err(script)
+            .to_string()
+    };
+    let _ = eval_value(
+        graph.clone(),
+        r#"g.set_schema(#{mode: "open", vertices: #{doc: #{schema: #{type: "object", properties: #{
+             emb: #{type: "array", format: "vector", element: "f32"},
+             tags: #{type: ["array", "null"], items: #{type: "string"}}}}}}})"#,
+    )
+    .unwrap();
+
+    let vector = fail(r#"g.create_index(#{label: "doc", key: "emb"})"#);
+    for part in [
+        "Cannot create a property index on vertex 'doc' key 'emb': the schema declares 'emb' \
+         as vector<f32>, and an index of type 'memory-ordered' holds none of its values",
+        "Help: Vectors are not index keys: search them with nearest() or similarity() (an exact \
+         search, book page \"Vectors\"), for example \
+         g.v().has_label(\"doc\").nearest(\"emb\", query, 10)",
+        "a vector index type is planned",
+        "a schema change made after an index exists never drops it",
+    ] {
+        assert!(vector.contains(part), "{part}\n{vector}");
+    }
+    let array = fail(r#"g.createIndex(#{label: "doc", key: "tags"})"#);
+    for part in [
+        "declares 'tags' as array<string>",
+        "Help: An index of type 'memory-ordered' holds scalar values only",
+        "Index a scalar top-level property instead",
+        "g.v().has_label(\"doc\").property(\"tags_main\", ..)",
+    ] {
+        assert!(array.contains(part), "{part}\n{array}");
+    }
+    let unknown = fail(r#"g.create_index(#{label: "person", key: "age", type: "btree"})"#);
+    for part in [
+        "Invalid type of 'person_age': 'btree' is not an index type this version knows (known: \
+         memory-ordered)",
+        "Help: The index type says how the index keeps its entries. This version knows \
+         \"memory-ordered\".",
+        "g.create_index(#{label: \"person\", key: \"age\", type: \"memory-ordered\"})",
+    ] {
+        assert!(unknown.contains(part), "{part}\n{unknown}");
+    }
+}
+
+#[test]
+fn property_index_transform_errors_carry_their_help() {
+    use crate::script_host::eval_value;
+
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    let fail = |script: &str| -> String {
+        eval_value(graph.clone(), script)
+            .expect_err(script)
+            .to_string()
+    };
+    let _ = eval_value(
+        graph.clone(),
+        r#"g.set_schema(#{mode: "open", vertices: #{person: #{schema: #{type: "object", properties: #{
+             age: #{type: ["integer", "null"]}, name: #{type: "string"}}}}}})"#,
+    )
+    .unwrap();
+
+    let mismatch = fail(r#"g.create_index(#{label: "person", key: "age", transform: "to_lower"})"#);
+    for part in [
+        "Cannot create a property index on vertex 'person' key 'age': the schema declares 'age' \
+         as int64, and an index of type 'memory-ordered' with the transform 'to_lower' holds \
+         none of its values",
+        "Help: An index with the transform 'to_lower' holds the lowered text of string values \
+         only, for case-insensitive search with has(\"age\", __.to_lower().is(..))",
+        "g.create_index(#{label: \"person\", key: \"age\"})",
+        "a schema change made after an index exists never drops it",
+    ] {
+        assert!(mismatch.contains(part), "{part}\n{mismatch}");
+    }
+    // A string key is fine.
+    let _ = eval_value(
+        graph.clone(),
+        r#"g.create_index(#{label: "person", key: "name", transform: "to_lower"})"#,
+    )
+    .unwrap();
+    let unknown = fail(r#"g.createIndex(#{label: "person", key: "name", transform: "upper"})"#);
+    for part in [
+        "Invalid transform of 'person_name_upper': 'upper' is not an index transform this \
+         version knows (known: to_lower)",
+        "Help: The transform says what an index keys its values by. This version knows \
+         \"to_lower\"",
+        "g.v().has_label(\"person\").has(\"name\", __.to_lower().is(\"marko\"))",
+    ] {
+        assert!(unknown.contains(part), "{part}\n{unknown}");
+    }
+}
+
+/// The embedding errors a query can trigger (book page "Vectors", section "Embeddings") are
+/// located at the `embed` step and carry the help of their cause.
+#[test]
+fn embed_errors_carry_their_help() {
+    let graph = GraphSource::tinkerpop_modern();
+    let lock = graph.read();
+
+    // An unknown embedder: found before the run, located at its step.
+    let err = lock
+        .traversal()
+        .v(None)
+        .embed("name", Some("acme/missing"))
+        .to_list()
+        .expect_err("unknown embedder");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("there is no embedder \"acme/missing\""),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "g.embedders() lists the embedders this host registered (the built-in \
+             \"hash-ngram/1\" is always there)"
+        ),
+        "{report}"
+    );
+    assert_eq!(err.step_location().expect("located").step_id, "1");
+
+    // Not a string: no implicit conversion, as_string() named.
+    let err = lock
+        .traversal()
+        .v(None)
+        .values("age")
+        .embed_value(None)
+        .to_list()
+        .expect_err("an int64 is no text");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("embed() takes a string, not int64"),
+        "{report}"
+    );
+    assert!(
+        report.contains("g.v().values(\"age\").as_string().embed()"),
+        "{report}"
+    );
+    assert_eq!(err.step_location().expect("located").step_id, "2");
+
+    // Nothing to embed.
+    let err = lock
+        .traversal()
+        .inject(vec![ElementProperty::from("...")])
+        .embed_value(None)
+        .to_list()
+        .expect_err("no word");
+    let report = format_diagnostic(&err);
+    assert!(report.contains("has nothing to embed"), "{report}");
+    assert!(
+        report.contains("g.v().has(\"name\", P.neq(\"\")).embed(\"name\")"),
+        "{report}"
+    );
+    assert!(matches!(
+        err.root_cause(),
+        TraverserError::Embed(graphersal::vector::EmbedError::NoFeatures { index: 0, .. })
+    ));
+
+    // A text where a vector is needed: the help names embed().
+    let err = lock
+        .traversal()
+        .inject(vec![ElementProperty::from("graph")])
+        .similarity_value(Vector::from_f32(vec![1.0]).unwrap(), None)
+        .to_list()
+        .expect_err("a text is no vector");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("embed(\"graph indexes\") or g.v().embed(\"name\")"),
+        "{report}"
+    );
+}
+
+/// The provenance errors of `embed_property` and of the text queries of `nearest` /
+/// `similarity` (book page "Vectors") carry the help of their cause; the text-query ones are
+/// located at their step.
+#[test]
+fn embed_property_and_text_query_errors_carry_their_help() {
+    use graphersal::exec::CancelToken;
+    use graphersal::vector::{EmbedJob, Embedders};
+
+    let embedders = Embedders::default();
+    let run_job = |graph: &Graph, job: &EmbedJob| {
+        let failed = graph
+            .embed_property(job, &embedders, &CancelToken::new(), &mut |_| {})
+            .expect_err("the job fails");
+        format_diagnostic(&*failed.error)
+    };
+    let text_query = |graph: &Graph| {
+        let lock = graph.read();
+        lock.traversal()
+            .v(None)
+            .nearest("emb", "graph indexes", 2, None)
+            .to_list()
+            .expect_err("the text query fails")
+    };
+
+    // No schema attached.
+    let graph = GraphSource::tinkerpop_modern();
+    let report = run_job(&graph, &EmbedJob::new("person", "name", "emb"));
+    assert!(
+        report.contains("embed_property needs a schema attached"),
+        "{report}"
+    );
+    assert!(
+        report.contains("g.set_schema(g.infer_schema(), SchemaMode.open)"),
+        "{report}"
+    );
+    let err = text_query(&graph);
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("nearest needs a schema attached"),
+        "{report}"
+    );
+    assert!(
+        report.contains("g.v().nearest(\"emb\", embed(\"graph indexes\"), 5)"),
+        "{report}"
+    );
+    assert_eq!(err.step_location().expect("located").step_id, "1");
+
+    // Attached, nothing declared.
+    {
+        let mut lock = graph.write();
+        let mut g = lock.traversal_mut();
+        let schema = g.infer_schema().unwrap().with_mode(SchemaMode::Open);
+        g.set_schema(schema).unwrap();
+    }
+    let report = format_diagnostic(&text_query(&graph));
+    assert!(report.contains("declares no embedder"), "{report}");
+    assert!(
+        report.contains("g.embed_property(#{label: \"doc\", from: \"text\", to: \"emb\"})"),
+        "{report}"
+    );
+
+    // Declared for one model per label: another embedder, a text query over both.
+    graph
+        .embed_property(
+            &EmbedJob::new("person", "name", "emb"),
+            &embedders,
+            &CancelToken::new(),
+            &mut |_| {},
+        )
+        .unwrap();
+    {
+        let mut lock = graph.write();
+        let mut schema = lock.get_schema().unwrap();
+        let mut other = schema.vertices["person"].schema.properties["emb"].clone();
+        if let Some(vector) = other.vector.as_mut() {
+            vector.embedder = Some("acme/other@2".to_string());
+        }
+        schema.vertices["software"]
+            .schema
+            .properties
+            .insert("emb".to_string(), other);
+        lock.traversal_mut().set_schema(schema).unwrap();
+    }
+    let report = run_job(&graph, &EmbedJob::new("software", "name", "emb"));
+    assert!(
+        report.contains("vectors of the model \"acme/other@2\""),
+        "{report}"
+    );
+    assert!(report.contains("Embed into another property"), "{report}");
+    {
+        let mut lock = graph.write();
+        lock.traversal_mut()
+            .v(None)
+            .has_label("software")
+            .property("emb", Vector::from_f32(vec![1.0; 256]).unwrap())
+            .iterate()
+            .unwrap();
+    }
+    {
+        let lock = graph.read();
+        let err = lock
+            .traversal()
+            .v(None)
+            .has_label("software")
+            .nearest("emb", "lop", 1, None)
+            .to_list()
+            .expect_err("no embedder of the model");
+        let report = format_diagnostic(&err);
+        assert!(
+            report.contains("no registered embedder has the model \"acme/other@2\""),
+            "{report}"
+        );
+        assert!(report.contains("--embedder NAME=REPO"), "{report}");
+        assert!(
+            report.contains("g.embedders() lists the registered ones"),
+            "{report}"
+        );
+    }
+    let report = format_diagnostic(&text_query(&graph));
+    assert!(
+        report.contains("one text query cannot search both"),
+        "{report}"
+    );
+    assert!(
+        report.contains("g.v().has_label(\"doc\").nearest(\"emb\", \"graph indexes\", 5)"),
+        "{report}"
+    );
+
+    // The value form names the key form.
+    let lock = graph.read();
+    let err = lock
+        .traversal()
+        .v(None)
+        .values("emb")
+        .similarity_value("graph", None)
+        .to_list()
+        .expect_err("no key");
+    let report = format_diagnostic(&err);
+    assert!(
+        report.contains("needs a top-level property name"),
+        "{report}"
+    );
+    assert!(
+        report.contains("g.v().similarity(\"emb\", \"graph indexes\")"),
+        "{report}"
     );
 }

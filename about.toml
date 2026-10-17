@@ -7,6 +7,7 @@ accepted = [
     "MIT",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "ISC",
     "0BSD",
     "Zlib",
     "BSL-1.0",
@@ -14,6 +15,17 @@ accepted = [
     "CC0-1.0",
     "Unicode-3.0",
     "MPL-2.0",
+    "CDLA-Permissive-2.0",
 ]
 ignore-dev-dependencies = true
 ignore-build-dependencies = true
+
+# model2vec-rs (the `model2vec` feature, on in the CLI) declares its licence only through
+# `license-file = "LICENSE"`; that file is the MIT licence text. The checksum pins it.
+[model2vec-rs.clarify]
+license = "MIT"
+
+[[model2vec-rs.clarify.files]]
+path = "LICENSE"
+license = "MIT"
+checksum = "6869ad291a9df9866448579b7157bf337373a21ced5b4b315e68b2924aff2ab9"

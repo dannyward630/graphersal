@@ -289,18 +289,41 @@ fn unsupported_json_schema_keywords_are_errors_with_a_reason() {
 }
 
 #[test]
-fn only_the_uuid_format_exists_and_dates_are_errors() {
-    for format in ["date-time", "date", "time", "email", "uri"] {
+fn only_uuid_and_the_date_time_formats_exist_and_others_are_errors() {
+    for (format, name) in [
+        ("uuid", "uuid"),
+        ("date-time", "datetime"),
+        ("date", "date"),
+        ("local-date-time", "localdatetime"),
+        ("time", "time"),
+        ("duration", "duration"),
+    ] {
+        let schema = schema(&one(&format!(
+            r#"{{"type": "string", "format": "{format}"}}"#
+        )));
+        assert_eq!(
+            schema.vertices["v"].schema.properties["p"].type_name(),
+            name,
+            "{format}"
+        );
+    }
+    for format in ["email", "uri", "ipv4", "date-time-local"] {
         let (at, reason, hint) = invalid(&one(&format!(
             r#"{{"type": "string", "format": "{format}"}}"#
         )));
         assert!(at.ends_with("/format"), "{at}");
         assert!(reason.contains(format), "{reason}");
-        assert!(hint.contains("0.2.0"), "{hint}");
+        assert!(
+            hint.contains("The supported formats are uuid, date-time"),
+            "{hint}"
+        );
+        assert!(hint.contains("Remove any other format"), "{hint}");
     }
     let (_, reason, _) = invalid(&one(r#"{"format": "uuid"}"#));
     assert!(reason.contains("format needs"), "{reason}");
     let (_, reason, _) = invalid(&one(r#"{"type": "integer", "format": "uuid"}"#));
+    assert!(reason.contains("format applies to string"), "{reason}");
+    let (_, reason, _) = invalid(&one(r#"{"type": "integer", "format": "date-time"}"#));
     assert!(reason.contains("format applies to string"), "{reason}");
 }
 
@@ -544,14 +567,26 @@ fn a_pasted_pydantic_model_schema_loads_and_validates() {
 
 #[test]
 fn the_unedited_pydantic_output_names_what_to_remove() {
+    // A `datetime` field (Pydantic's `format: date-time`) loads as is.
     let with_date = PYDANTIC.replace(
         r#""level":"#,
         r#""created": {"format": "date-time", "type": "string"}, "level":"#,
     );
     let json = format!(r#"{{"vertices": {{"person": {{"schema": {with_date}}}}}}}"#);
+    let loaded = schema(&json);
+    assert_eq!(
+        loaded.vertices["person"].schema.properties["created"].type_name(),
+        "datetime"
+    );
+    // An `EmailStr` field (`format: email`) is named, with what to remove.
+    let with_email = PYDANTIC.replace(
+        r#""level":"#,
+        r#""mail": {"format": "email", "type": "string"}, "level":"#,
+    );
+    let json = format!(r#"{{"vertices": {{"person": {{"schema": {with_email}}}}}}}"#);
     let (at, _, hint) = invalid(&json);
-    assert_eq!(at, "/vertices/person/schema/properties/created/format");
-    assert!(hint.contains("0.2.0"), "{hint}");
+    assert_eq!(at, "/vertices/person/schema/properties/mail/format");
+    assert!(hint.contains("Remove any other format"), "{hint}");
     let with_map = PYDANTIC.replace(
         r#""level":"#,
         r#""labels": {"additionalProperties": {"type": "integer"}, "type": "object"}, "level":"#,

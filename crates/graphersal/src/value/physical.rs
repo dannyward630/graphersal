@@ -150,9 +150,18 @@ pub(crate) fn encoding_of(ty: &ValueType) -> Option<Encoding> {
         ValueType::Boolean => Some(Encoding::Boolean),
         ValueType::Int64 => Some(Encoding::Int64),
         ValueType::Float64 => Some(Encoding::Float64),
-        // A UUID is carried as its canonical string.
-        ValueType::String | ValueType::Uuid => Some(Encoding::String),
-        ValueType::Array(_) | ValueType::Object | ValueType::Union(_) => None,
+        // A UUID and a temporal value are carried as their canonical text.
+        ValueType::String
+        | ValueType::Uuid
+        | ValueType::Date
+        | ValueType::LocalDateTime
+        | ValueType::DateTime
+        | ValueType::Time
+        | ValueType::Duration => Some(Encoding::String),
+        // A vector is carried as the list of its values (a container in every format).
+        ValueType::Vector(_) | ValueType::Array(_) | ValueType::Object | ValueType::Union(_) => {
+            None
+        }
     }
 }
 
@@ -175,6 +184,12 @@ pub(crate) fn lower(value: &ElementProperty) -> PhysicalValue<'_> {
         ElementProperty::Uuid(u) => {
             PhysicalValue::String(Cow::Owned(format_canonical(*u).into_string()))
         }
+        // The canonical ISO 8601 / RFC 3339 text; [`lift_temporal`] reads it back.
+        ElementProperty::Temporal(t) => PhysicalValue::String(Cow::Owned(t.to_string())),
+        // The list of its values, dequantized (an i8 or bit vector as its f32 values): a JSON
+        // reader gets numbers, and a declared vector property turns them back into the vector
+        // (`quantize` of the dequantized values gives the same codes).
+        ElementProperty::Vector(v) => crate::value::vector::tagged::lower_values(v),
         ElementProperty::Array(items) => PhysicalValue::Array(items.iter().map(lower).collect()),
         ElementProperty::Object(map) => lower_map(map),
         ElementProperty::Vertex(vertex) => lower_vertex(vertex),
@@ -337,6 +352,34 @@ pub(crate) fn lift_declared(
             declared: declared.non_null_type_name(),
             actual: value_type_name(&coerced),
         })
+    }
+}
+
+/// Lifts the physical form of a value declared as a temporal type: its text parsed as that type
+/// (the inverse of [`lower`] for a temporal value). Any other physical value, or text that is not
+/// a value of the type, is an error; nothing else is ever turned into a temporal value (rule 7).
+pub(crate) fn lift_temporal(
+    value: &PhysicalValue<'_>,
+    kind: crate::value::temporal::TemporalKind,
+) -> Result<ElementProperty, crate::value::temporal::TemporalError> {
+    match value {
+        PhysicalValue::String(text) => crate::value::temporal::Temporal::parse_strict(kind, text)
+            .map(ElementProperty::Temporal),
+        other => {
+            let shown = match other {
+                PhysicalValue::Null => "null",
+                PhysicalValue::Bool(_) => "a boolean",
+                PhysicalValue::Int(_) | PhysicalValue::Float(_) => "a number",
+                PhysicalValue::Array(_) => "an array",
+                PhysicalValue::Object(_) => "an object",
+                PhysicalValue::String(_) => "a string",
+            };
+            Err(crate::value::temporal::TemporalError::parse(
+                shown,
+                kind.name(),
+                "expected its text",
+            ))
+        }
     }
 }
 
@@ -765,6 +808,9 @@ mod serde_glue {
     use serde::ser::{self, SerializeMap, SerializeSeq};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+    use crate::value::temporal::tags;
+    use crate::value::vector::tagged as vector_tagged;
+
     const NON_FINITE: &str = "non-finite float cannot be represented in JSON";
 
     impl Serialize for PhysicalValue<'_> {
@@ -944,7 +990,8 @@ mod serde_glue {
 
     /// The *tagged* JSON form of a value (rule 7: an explicit per-value type tag): JSON-native
     /// types are plain JSON, a `uuid` is `{"@type": "g:UUID", "@value": "<canonical>"}` at any
-    /// depth, and an object that has an `"@type"` key of its own is escaped with
+    /// depth, a temporal value is `{"@type": "gx:OffsetDateTime", "@value": "<canonical>"}` (the
+    /// tags of `temporal::tags`), and an object that has an `"@type"` key of its own is escaped with
     /// [`OBJECT_TAG`], so no user map can be misread as a tag. [`TaggedOwned`] reads it back
     /// exactly. Used where a value must survive a round trip without a schema (the serialized
     /// `ChangeSet`); everything else keeps the plain codec.
@@ -986,6 +1033,22 @@ mod serde_glue {
                     map.end()
                 }
                 ElementProperty::Object(fields) => TaggedEntries(fields).serialize(serializer),
+                // `{"@type": "gx:OffsetDateTime", "@value": "<canonical text>"}`, ...
+                // (`temporal::tags`).
+                ElementProperty::Temporal(value) => {
+                    let mut map = serializer.serialize_map(Some(2))?;
+                    map.serialize_entry(TYPE_KEY, tags::tag_of(value))?;
+                    map.serialize_entry(VALUE_KEY, &value.to_string())?;
+                    map.end()
+                }
+                // `{"@type": "graphersal:Vector", "@value": {"element": .., ..}}` (exact,
+                // `vector::tagged`).
+                ElementProperty::Vector(value) => {
+                    let mut map = serializer.serialize_map(Some(2))?;
+                    map.serialize_entry(TYPE_KEY, vector_tagged::VECTOR_TAG)?;
+                    map.serialize_entry(VALUE_KEY, &vector_tagged::payload(value))?;
+                    map.end()
+                }
                 // Scalars are JSON-native. Vertices, edges and non-string-keyed maps are never
                 // property values; they keep the plain codec.
                 ElementProperty::Null
@@ -1001,10 +1064,12 @@ mod serde_glue {
     }
 
     /// A value read from the tagged JSON form written by [`Tagged`]: a `g:UUID` tag becomes a
-    /// `Uuid`, a `graphersal:Object` tag the escaped object, every other JSON type the logical
-    /// type of the same name. An object with an `"@type"` key that is not exactly one of these
-    /// two tags (`@type` and `@value` only, a canonical uuid string, an object payload) is an
-    /// error: it cannot have been written by [`Tagged`], and guessing would corrupt data.
+    /// `Uuid`, a temporal tag (`gx:OffsetDateTime`, ...) its temporal value, a
+    /// `graphersal:Object` tag the escaped object, every other JSON type the logical type of the
+    /// same name. An object with an `"@type"` key that is not exactly one of these tags (`@type`
+    /// and `@value` only, a canonical uuid string, a temporal text of the tag's type, an object
+    /// payload) is an error: it cannot have been written by [`Tagged`], and guessing would
+    /// corrupt data.
     pub(crate) struct TaggedOwned(pub(crate) ElementProperty);
 
     impl<'de> Deserialize<'de> for TaggedOwned {
@@ -1071,8 +1136,22 @@ mod serde_glue {
             {
                 lift_tagged_entries(fields)
             }
+            (Some(PhysicalValue::String(tag)), Some(payload))
+                if tag == vector_tagged::VECTOR_TAG =>
+            {
+                vector_tagged::from_payload(&payload).map(ElementProperty::Vector)
+            }
+            (Some(PhysicalValue::String(tag)), Some(PhysicalValue::String(text)))
+                if tags::is_tag(&tag) =>
+            {
+                match tags::read_tagged(&tag, &text) {
+                    Some(Ok(value)) => Ok(ElementProperty::Temporal(value)),
+                    Some(Err(err)) => Err(format!("{tag}: {err}")),
+                    None => Err(format!("unknown type tag \"{tag}\"")),
+                }
+            }
             (Some(PhysicalValue::String(tag)), Some(_)) => Err(format!(
-                "unknown or malformed type tag \"{tag}\" (known: \"{UUID_TAG}\" with a uuid string, \"{OBJECT_TAG}\" with an object)"
+                "unknown or malformed type tag \"{tag}\" (known: \"{UUID_TAG}\" with a uuid string, \"{OBJECT_TAG}\" with an object, the temporal tags \"gx:OffsetDateTime\", \"gx:LocalDate\", \"gx:LocalDateTime\", \"gx:LocalTime\", \"gx:Duration\", \"gx:Period\", \"graphersal:Interval\" with their text, \"graphersal:Vector\" with its object)"
             )),
             _ => Err(format!(
                 "a tagged value needs a string \"{TYPE_KEY}\" and a \"{VALUE_KEY}\""

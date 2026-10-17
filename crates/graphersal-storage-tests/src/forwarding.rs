@@ -19,8 +19,9 @@ use graphersal::TraversalGraph;
 use graphersal::storage::{
     ChangeSet, CommitHook, CommitMetadata, CompactString, CompressionStats, Definition,
     DefinitionKind, EdgeHandle, ExecutionPolicy, GraphError, GraphNodeType, GraphSchema,
-    GraphStatistics, GraphStorage, JsonPath, Mark, MemoryStats, PropertyMap, PropertySchema,
-    RollbackReason, StorageCapabilities, UnitChanges, UnitMark, VertexHandle,
+    GraphStatistics, GraphStorage, JsonPath, Mark, MemoryStats, PropertyIndexInfo,
+    PropertyIndexRange, PropertyIndexTransform, PropertyMap, PropertySchema, RollbackReason,
+    StorageCapabilities, UnitChanges, UnitMark, VertexHandle,
 };
 
 /// The vertex handle of [`Forwarding`]: a newtype around the wrapped graph's [`VertexHandle`],
@@ -38,7 +39,7 @@ pub struct ForwardEdgeId(EdgeHandle);
 ///
 /// Every method `TraversalGraph` implements is forwarded explicitly: the data, labels,
 /// properties and path writes, the schema, the catalog, compression (`recompress`,
-/// `compression_stats`), statistics, memory, the execution policy, units, commit hooks and
+/// `compression_stats`), property indexes (`property_indexes` and the two lookups), statistics, memory, the execution policy, units, commit hooks and
 /// change capture (`unit_changes`, `set_unit_metadata`, `discard_unit`), `mark`, the id
 /// sequences and the capabilities. Left on the trait default ON PURPOSE, because
 /// `TraversalGraph` keeps the default too and the default then runs over this storage's own
@@ -180,14 +181,59 @@ impl GraphStorage for Forwarding {
     fn compression_stats(&self, name: &str) -> Option<CompressionStats> {
         GraphStorage::compression_stats(&self.0, name)
     }
+    fn property_indexes(&self) -> Vec<PropertyIndexInfo> {
+        GraphStorage::property_indexes(&self.0)
+    }
+    fn vertices_by_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        range: &PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = ForwardVertexId> + 'a>> {
+        let found = GraphStorage::vertices_by_property_index(&self.0, label, key, range)?;
+        Some(Box::new(found.map(ForwardVertexId)))
+    }
+    fn edges_by_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        range: &PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = ForwardEdgeId> + 'a>> {
+        let found = GraphStorage::edges_by_property_index(&self.0, label, key, range)?;
+        Some(Box::new(found.map(ForwardEdgeId)))
+    }
+    fn vertices_by_transformed_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        transform: &PropertyIndexTransform,
+        range: &PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = ForwardVertexId> + 'a>> {
+        let found = GraphStorage::vertices_by_transformed_property_index(
+            &self.0, label, key, transform, range,
+        )?;
+        Some(Box::new(found.map(ForwardVertexId)))
+    }
+    fn edges_by_transformed_property_index<'a>(
+        &'a self,
+        label: &'a str,
+        key: &'a str,
+        transform: &PropertyIndexTransform,
+        range: &PropertyIndexRange,
+    ) -> Option<Box<dyn Iterator<Item = ForwardEdgeId> + 'a>> {
+        let found = GraphStorage::edges_by_transformed_property_index(
+            &self.0, label, key, transform, range,
+        )?;
+        Some(Box::new(found.map(ForwardEdgeId)))
+    }
 
-    fn add_vertex(
+    fn insert_vertex(
         &mut self,
         id: Option<CompactString>,
         labels: Vec<CompactString>,
         properties: PropertyMap,
     ) -> Result<ForwardVertexId, GraphError> {
-        GraphStorage::add_vertex(&mut self.0, id, labels, properties).map(ForwardVertexId)
+        GraphStorage::insert_vertex(&mut self.0, id, labels, properties).map(ForwardVertexId)
     }
     fn add_vertex_label(
         &mut self,
@@ -210,7 +256,7 @@ impl GraphStorage for Forwarding {
     ) -> Result<bool, GraphError> {
         GraphStorage::set_edge_label(&mut self.0, edge.0, label)
     }
-    fn add_edge(
+    fn insert_edge(
         &mut self,
         id: Option<CompactString>,
         label: Option<CompactString>,
@@ -218,7 +264,8 @@ impl GraphStorage for Forwarding {
         to: ForwardVertexId,
         properties: PropertyMap,
     ) -> Result<ForwardEdgeId, GraphError> {
-        GraphStorage::add_edge(&mut self.0, id, label, from.0, to.0, properties).map(ForwardEdgeId)
+        GraphStorage::insert_edge(&mut self.0, id, label, from.0, to.0, properties)
+            .map(ForwardEdgeId)
     }
     fn set_vertex_property(
         &mut self,
@@ -325,6 +372,9 @@ impl GraphStorage for Forwarding {
     }
     fn last_commit_seq(&self) -> u64 {
         GraphStorage::last_commit_seq(&self.0)
+    }
+    fn unit_started_at(&self) -> Option<i64> {
+        GraphStorage::unit_started_at(&self.0)
     }
     fn raise_id_sequences(
         &mut self,

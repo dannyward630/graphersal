@@ -361,6 +361,70 @@ fn find_fault<'g, S: GraphStorage + 'g>(
 /// that step would carry (`at #N`, [`TraverserError::step_location`]). Returns `err` unchanged
 /// when no step matches.
 /// The one label `labels` names (repeated names count once), or `None` for none or several.
+/// The candidates of a `v()` source that reads a property index ([`IndexAccess`]): the vertices
+/// of every label in every range of the access, each once. `None` when the storage serves no
+/// index for one of the labels (the source scans its labels instead).
+///
+/// [`IndexAccess`]: crate::traversal::step::IndexAccess
+fn index_vertices<S: GraphStorage>(
+    storage: &S,
+    labels: &[String],
+    access: &crate::traversal::step::IndexAccess,
+) -> Option<Vec<S::VertexId>> {
+    let dedup = labels.len() > 1 || access.ranges.len() > 1;
+    let mut seen: std::collections::HashSet<S::VertexId> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for label in labels {
+        for range in &access.ranges {
+            let found = match &access.transform {
+                None => storage.vertices_by_property_index(label, &access.key, range)?,
+                Some(transform) => storage.vertices_by_transformed_property_index(
+                    label,
+                    &access.key,
+                    transform,
+                    range,
+                )?,
+            };
+            for node in found {
+                if !dedup || seen.insert(node) {
+                    out.push(node);
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
+/// The edge counterpart of [`index_vertices`].
+fn index_edges<S: GraphStorage>(
+    storage: &S,
+    labels: &[String],
+    access: &crate::traversal::step::IndexAccess,
+) -> Option<Vec<S::EdgeId>> {
+    let dedup = labels.len() > 1 || access.ranges.len() > 1;
+    let mut seen: std::collections::HashSet<S::EdgeId> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for label in labels {
+        for range in &access.ranges {
+            let found = match &access.transform {
+                None => storage.edges_by_property_index(label, &access.key, range)?,
+                Some(transform) => storage.edges_by_transformed_property_index(
+                    label,
+                    &access.key,
+                    transform,
+                    range,
+                )?,
+            };
+            for edge in found {
+                if !dedup || seen.insert(edge) {
+                    out.push(edge);
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
 fn single_label(labels: &[String]) -> Option<&str> {
     let (first, rest) = labels.split_first()?;
     rest.iter().all(|l| l == first).then_some(first.as_str())
@@ -385,6 +449,62 @@ pub(crate) fn locate_pre_run_error<'g, S: GraphStorage + 'g>(
         // Unreachable: `located` starts as an error and every wrapping keeps it one.
         Ok(()) => Box::new(TraverserError::wrong_query("unlocated plan error")),
     }
+}
+
+/// Resolves the embedder of every `embed` step of `steps` (child traversals included) in
+/// `registry` and binds it to the step; an unknown name is [`TraverserError::Embed`] located at
+/// its step. A text query of `similarity`/`nearest` binds the candidate embedders of the model
+/// the attached schema declares for its property (`schema` is read once, only when a text
+/// query exists). Runs before the permission check, on the plan as written.
+fn bind_embedders<'g, S: GraphStorage + 'g>(
+    steps: &mut [GraphStep<'g, S>],
+    registry: &crate::value::Embedders,
+    schema: &dyn Fn() -> Option<crate::graph::schema::GraphSchema>,
+) -> TraverserResult<()> {
+    type Schema = Option<Option<crate::graph::schema::GraphSchema>>;
+    fn walk<'g, S: GraphStorage + 'g>(
+        steps: &mut [GraphStep<'g, S>],
+        registry: &crate::value::Embedders,
+        schema: &dyn Fn() -> Option<crate::graph::schema::GraphSchema>,
+        loaded: &mut Schema,
+    ) -> Result<(), crate::value::EmbedError> {
+        for step in steps.iter_mut() {
+            if let GraphStep::Map(_, map) = step
+                && let Some(requested) = map.embedder_request()
+            {
+                let embedder = registry.resolve(requested.as_deref())?.clone();
+                map.bind_embedder(embedder);
+            }
+            let (name, text) = match step {
+                GraphStep::Map(name, map) => (*name, map.text_query_mut()),
+                GraphStep::FlatBarrier(name, step) => (*name, step.text_query_mut()),
+                _ => ("", None),
+            };
+            if let Some((key, text)) = text {
+                let schema = loaded.get_or_insert_with(schema).as_ref();
+                text.bind(name, key, schema, registry)?;
+            }
+            for child in step.child_traversals_mut() {
+                walk(&mut child.steps, registry, schema, loaded)?;
+            }
+        }
+        Ok(())
+    }
+    walk(steps, registry, schema, &mut None).map_err(|err| {
+        let fault = |step: &GraphStep<'g, S>| match step {
+            GraphStep::Map(_, map) => {
+                map.embedder_request()
+                    .is_some_and(|requested| registry.resolve(requested.as_deref()).is_err())
+                    || map.text_query().is_some_and(|text| text.bind_failed())
+            }
+            GraphStep::FlatBarrier(_, step) => {
+                step.text_query().is_some_and(|text| text.bind_failed())
+            }
+            _ => false,
+        };
+        GraphStep::number_children(steps);
+        locate_pre_run_error(steps, None, Box::new(TraverserError::Embed(err)), &fault)
+    })
 }
 
 /// [`locate_pre_run_error`] for an error of the plan-time validation pass
@@ -606,7 +726,7 @@ impl GraphSource {
                             ElementProperty::String(format!("{}", level).into()),
                         );
                         let node_index = g
-                            .add_vertex(Some(id.clone().into()), vec![id.clone().into()], value)
+                            .insert_vertex(Some(id.clone().into()), vec![id.clone().into()], value)
                             .unwrap();
                         prev_vertex_ids.push(node_index);
                     }
@@ -625,9 +745,13 @@ impl GraphSource {
                                 ElementProperty::String(format!("{}", level).into()),
                             );
                             let node_index = g
-                                .add_vertex(Some(id.clone().into()), vec![id.clone().into()], value)
+                                .insert_vertex(
+                                    Some(id.clone().into()),
+                                    vec![id.clone().into()],
+                                    value,
+                                )
                                 .unwrap();
-                            g.add_edge(
+                            g.insert_edge(
                                 None::<CompactString>,
                                 None::<CompactString>,
                                 prev_node_index,
@@ -701,7 +825,71 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
             profile_type: ProfileType::none(),
             sack: None,
             restrictions: None,
+            create_time: None,
+            embedders: None,
         }
+    }
+
+    /// Gives this traversal the embedders its `embed` steps call (book page "Vectors", section
+    /// "Embeddings"). Without it the traversal uses the default registry, which holds only the
+    /// built-in `hash-ngram/1`.
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use graphersal::prelude::*;
+    /// use graphersal::vector::{Embedders, HashNgram};
+    ///
+    /// let small = HashNgram::with_dimension("acme/small", 8).unwrap();
+    /// let embedders = Embedders::builder()
+    ///     .with(Arc::new(small))
+    ///     .unwrap()
+    ///     .default_name("acme/small")
+    ///     .unwrap()
+    ///     .build();
+    /// let graph = GraphSource::tinkerpop_modern();
+    /// let g = graph.read();
+    /// let vector = g
+    ///     .traversal()
+    ///     .with_embedders(Arc::new(embedders))
+    ///     .v(None::<()>)
+    ///     .embed("name", None)
+    ///     .next()
+    ///     .unwrap()
+    ///     .unwrap();
+    /// assert_eq!(vector.as_vector().map(|v| v.dimension()), Some(8));
+    /// ```
+    pub fn with_embedders(mut self, embedders: std::sync::Arc<crate::value::Embedders>) -> Self {
+        self.embedders = Some(embedders);
+        self
+    }
+
+    /// Pins the time `defaultFunction: "now"` stores (and `"today"` takes its UTC date from) for
+    /// every element this traversal creates. Without it the time is the start of the storage's
+    /// outermost open unit
+    /// ([`GraphStorage::unit_started_at`](crate::storage::GraphStorage::unit_started_at): with
+    /// the implicit unit of a traversal, its start), else the system clock. For deterministic
+    /// tests and for hosts that keep one clock (the script DSL pins the evaluation's `now()`,
+    /// which hosts pin with `script::pin_now`).
+    ///
+    /// ```
+    /// use graphersal::prelude::*;
+    /// use graphersal::temporal::DateTime;
+    /// let mut graph = TraversalGraph::new();
+    /// let schema = GraphSchema::from_json(
+    ///     r#"{"mode": "open", "vertices": {"event": {"schema": {"type": "object",
+    ///         "properties": {"at": {"type": "string", "format": "date-time",
+    ///                               "defaultFunction": "now"}}}}}}"#,
+    /// )
+    /// .unwrap();
+    /// graph.traversal_mut().set_schema(schema).unwrap();
+    /// let at: DateTime = "2026-10-15T12:00:00Z".parse().unwrap();
+    /// graph.traversal_mut().with_now(at).add_v("event").iterate().unwrap();
+    /// let stored = graph.traversal().v(None::<()>).values("at").next().unwrap();
+    /// assert_eq!(stored, Some(ElementProperty::Temporal(at.into())));
+    /// ```
+    pub fn with_now(mut self, now: crate::value::temporal::DateTime) -> Self {
+        self.create_time = Some(now);
+        self
     }
 
     /// Checks this traversal with `authorizer`: every execution first asks it for every
@@ -1023,6 +1211,12 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
     /// ([`SchemaError::ExistingDataViolatesSchema`](crate::error::SchemaError)). The empty
     /// schema ([`GraphSchema::is_empty`]) removes the schema.
     ///
+    /// Create-time defaults (`default`/`defaultFunction`, see
+    /// [`Annotations`](crate::schema::Annotations)) are checked first: each must give a valid
+    /// value of its top-level property, and `defaultFunction` sits only on a top-level property
+    /// ([`SchemaError::InvalidSchema`](crate::error::SchemaError) otherwise). They apply to
+    /// elements created from now on; existing elements are never filled in (no backfill).
+    ///
     /// Runs in the current unit (inside a transaction or a whole-script unit it is rolled back
     /// with it), or as a unit of its own: recorded as a
     /// [`Mutation::SetSchema`](crate::graph::Mutation::SetSchema), captured and seen by the
@@ -1055,6 +1249,7 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
     /// ```
     pub fn set_schema(&mut self, schema: GraphSchema) -> TraverserResult<()> {
         self.authorize_schema("set_schema", crate::graph::Action::Update)?;
+        crate::graph::schema::defaults::check_defaults(&schema)?;
         self.atomically(|this| {
             this.storage.set_schema(schema)?;
             Ok(())
@@ -1067,6 +1262,7 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
     pub fn patch_schema(&mut self, patch: &SchemaPatch) -> TraverserResult<GraphSchema> {
         self.authorize_schema("patch_schema", crate::graph::Action::Update)?;
         let schema = patch.apply(self.storage.get_schema().as_ref())?;
+        crate::graph::schema::defaults::check_defaults(&schema)?;
         let stored = schema.clone();
         self.atomically(|this| {
             this.storage.set_schema(stored)?;
@@ -1081,6 +1277,7 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
     /// Asks an attached authorizer for `Read` on the schema.
     pub fn validate_schema(&self, schema: &GraphSchema) -> TraverserResult<SchemaValidation> {
         self.authorize_schema("validate_schema", crate::graph::Action::Read)?;
+        crate::graph::schema::defaults::check_defaults(schema)?;
         Ok(self.validation(schema.clone()))
     }
 
@@ -1089,6 +1286,7 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
     pub fn validate_schema_patch(&self, patch: &SchemaPatch) -> TraverserResult<SchemaValidation> {
         self.authorize_schema("validate_schema_patch", crate::graph::Action::Read)?;
         let schema = patch.apply(self.storage.get_schema().as_ref())?;
+        crate::graph::schema::defaults::check_defaults(&schema)?;
         Ok(self.validation(schema))
     }
 
@@ -1305,6 +1503,103 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
             Some(name),
         )?;
         Ok(self.storage.compression_stats(name))
+    }
+
+    /// Declares the property index `name` (book page "Property Indexes"): the `element`s
+    /// labelled `label`, ordered by their top-level property `key`. A `v()`/`e()` with that
+    /// label and a `has()` on that key (equality, `P.within`, a range) then reads the index
+    /// instead of every element of the label; `.profile()` shows `[index: ..]` on the source.
+    /// The index is built in the same unit, kept exact on every write, rollback and replay, and
+    /// rebuilt from the data when a graph is loaded (its entries are never stored).
+    ///
+    /// A [`set_definition`](Self::set_definition) of a [`Definition::property_index`] (a
+    /// catalog entry of kind [`DefinitionKind::PROPERTY_INDEX`]); a second index on the same
+    /// `(element, label, key, type)` fails with
+    /// [`DefinitionError::Conflict`](crate::error::DefinitionError::Conflict). A storage
+    /// without [`property_indexes`](crate::graph::StorageCapabilities::property_indexes)
+    /// refuses it with [`GraphError::Unsupported`](crate::error::GraphError::Unsupported).
+    /// Asks an attached authorizer for `Create` on it (`Update` when it replaces one). The
+    /// index is first checked by
+    /// [`PropertyIndexDefinition::check_create`](crate::graph::PropertyIndexDefinition::check_create)
+    /// against the stored schema: an unknown index type, or a key the schema declares as values
+    /// the type cannot hold (a vector, an array, an object), is refused.
+    ///
+    /// ```
+    /// use graphersal::prelude::*;
+    /// use graphersal::{catalog::PropertyIndexDefinition, storage::ElementKind};
+    ///
+    /// let mut graph = TraversalGraph::tinkerpop_modern();
+    /// let index = PropertyIndexDefinition::new(ElementKind::Vertex, "person", "age");
+    /// graph.traversal_mut().create_index("person_age", index).unwrap();
+    /// let names = graph
+    ///     .traversal()
+    ///     .v(None)
+    ///     .has_label("person")
+    ///     .has("age", 29)
+    ///     .values("name")
+    ///     .to_list()
+    ///     .unwrap();
+    /// assert_eq!(names, vec![ElementProperty::from("marko")]);
+    /// ```
+    pub fn create_index(
+        &mut self,
+        name: &str,
+        index: crate::graph::PropertyIndexDefinition,
+    ) -> TraverserResult<()> {
+        if !self.storage.capabilities().property_indexes {
+            return Err(crate::error::GraphError::unsupported("property indexes").into());
+        }
+        let action = if self
+            .storage
+            .definition(DefinitionKind::PROPERTY_INDEX, name)
+            .is_some()
+        {
+            crate::graph::Action::Update
+        } else {
+            crate::graph::Action::Create
+        };
+        self.authorize_definition(
+            "create_index",
+            action,
+            Some(DefinitionKind::PROPERTY_INDEX),
+            Some(name),
+        )?;
+        index
+            .check_create(name, self.storage.get_schema().as_ref())
+            .map_err(crate::error::GraphError::from)?;
+        self.set_definition(Definition::property_index(name, index))
+    }
+
+    /// Drops the property index `name`; `false` when there is none. Asks an attached
+    /// authorizer for `Delete` on it.
+    pub fn drop_index(&mut self, name: &str) -> TraverserResult<bool> {
+        self.remove_definition(DefinitionKind::PROPERTY_INDEX, name)
+    }
+
+    /// The property indexes of the catalog, by name, each with what it holds right now
+    /// (`None`: the storage does not serve it). Asks an attached authorizer for `Read` on them.
+    pub fn list_indexes(
+        &self,
+    ) -> TraverserResult<Vec<(Definition, Option<crate::graph::PropertyIndexStats>)>> {
+        self.authorize_definition(
+            "list_indexes",
+            crate::graph::Action::Read,
+            Some(DefinitionKind::PROPERTY_INDEX),
+            None,
+        )?;
+        let served = self.storage.property_indexes();
+        Ok(self
+            .storage
+            .definitions()
+            .filter(|definition| definition.kind() == DefinitionKind::PROPERTY_INDEX)
+            .map(|definition| {
+                let stats = served
+                    .iter()
+                    .find(|info| info.name == definition.name())
+                    .map(|info| info.stats);
+                (definition.clone(), stats)
+            })
+            .collect())
     }
 
     /// Moves the saved query `name` into `folder` (`None` or `""`: the root). Callers name a
@@ -1988,6 +2283,16 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
                 expansion: Expansion::UNBOUNDED,
             }
         };
+        // The `embed` steps resolve their embedder first, so the permission check asks for the
+        // embedder that runs and the profile names it.
+        let embedders = self
+            .embedders
+            .clone()
+            .unwrap_or_else(crate::value::Embedders::current);
+        let storage = &self.storage;
+        if let Err(err) = bind_embedders(&mut self.steps, &embedders, &|| storage.get_schema()) {
+            return failed_before_run(err, &self.options);
+        }
         if let Some(restrictions) = &self.restrictions
             && let Err(err) = restrictions.check(&mut self.steps, &self.options)
         {
@@ -2017,6 +2322,9 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
                     options,
                 );
                 context.profile_type = this.profile_type;
+                context.create_context = this
+                    .create_time
+                    .map(crate::graph::schema::defaults::CreateContext::at);
                 let result = match &this.sack {
                     Some(spec) => context.sacks.intern(spec.initial.clone()).map(|sack| {
                         context.initial_sack = sack;
@@ -2097,8 +2405,11 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
         // folded and reordered, the query the user actually wrote is no longer recoverable.
         // `default_pipeline_with` consults this execution's `optimizer.disabled`/
         // `optimizer.enabled` options (D3 of the rule-visibility spec) when building the pipeline.
-        let optimizer = crate::traversal::optimizer::TraversalOptimizer::default_pipeline_with(
+        // With the property indexes the storage serves (none: one empty `Vec`, no allocation, and
+        // the `property_index` rule is left out of the pipeline).
+        let optimizer = crate::traversal::optimizer::TraversalOptimizer::for_run(
             &context.options,
+            context.storage.property_indexes(),
         )
         .with_diagnostics(context.strategy.contains(TraversalStrategy::Diagnostics));
         let level = optimizer.apply(steps);
@@ -2507,6 +2818,27 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
                                     }
                                 }
                                 count_out = source.len();
+                            } else if let Some(candidates) = init_labels.and_then(|labels| {
+                                index_vertices(&*context.storage, labels, step.index_access()?)
+                            }) {
+                                // A property index serves a condition (book page "Property
+                                // Indexes"): its candidates (a superset) are checked like the
+                                // label scan's elements.
+                                for node_index in candidates {
+                                    tick_deadline(&mut context.deadline).with_step_frame(
+                                        || step.get_name(),
+                                        step_at,
+                                        || plan_frame(steps, level, logical_step_idx),
+                                    )?;
+                                    if !property_filters.iter().all(|filter| {
+                                        filter.vertex_matches(context.storage, node_index)
+                                    }) {
+                                        continue;
+                                    }
+                                    let v1 = TraverserValue::Vertex(node_index);
+                                    source.push(Traverser::start(context, v1));
+                                }
+                                count_out = source.len();
                             } else if let Some(labels) = init_labels {
                                 let single = single_label(labels);
                                 if let Some(stats) = context.storage.statistics()
@@ -2733,6 +3065,25 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
                                     }
                                 }
                                 count_out = source.len();
+                            } else if let Some(candidates) = init_labels.and_then(|labels| {
+                                index_edges(&*context.storage, labels, step.index_access()?)
+                            }) {
+                                // A property index serves a condition (see the vertex case).
+                                for edge_index in candidates {
+                                    tick_deadline(&mut context.deadline).with_step_frame(
+                                        || step.get_name(),
+                                        step_at,
+                                        || plan_frame(steps, level, logical_step_idx),
+                                    )?;
+                                    if !property_filters.iter().all(|filter| {
+                                        filter.edge_matches(context.storage, edge_index)
+                                    }) {
+                                        continue;
+                                    }
+                                    let v1 = TraverserValue::Edge(edge_index);
+                                    source.push(Traverser::start(context, v1));
+                                }
+                                count_out = source.len();
                             } else if let Some(labels) = init_labels {
                                 for label in labels {
                                     for edge_index in context.storage.edges_by_label(label) {
@@ -2884,7 +3235,37 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
                     } else {
                         let extends = step.extends_path();
                         let mut result: Vec<Traverser<S>> = Vec::with_capacity(count_before);
-                        if step.may_filter() {
+                        let batch = step.batch_size();
+                        if batch > 1 {
+                            // One call per batch of at most `batch` traversers (an embedder's
+                            // `max_batch`), in input order; the buffer is bounded by `batch`.
+                            let mut pending = source.into_iter();
+                            loop {
+                                let chunk: Vec<Traverser<S>> =
+                                    pending.by_ref().take(batch).collect();
+                                if chunk.is_empty() {
+                                    break;
+                                }
+                                context.tick().with_step_frame(
+                                    || step.get_name(),
+                                    step_at,
+                                    || plan_frame(steps, level, logical_step_idx),
+                                )?;
+                                let mapped = step.process_batch(context, chunk).with_step_frame(
+                                    || step.get_name(),
+                                    step_at,
+                                    || plan_frame(steps, level, logical_step_idx),
+                                )?;
+                                for mut mapped in mapped {
+                                    if extends {
+                                        mapped.extend_path(&mut context.paths, mode)?;
+                                    } else {
+                                        mapped.keep_path(mode);
+                                    }
+                                    result.push(mapped);
+                                }
+                            }
+                        } else if step.may_filter() {
                             for src in source.into_iter() {
                                 context.tick().with_step_frame(
                                     || step.get_name(),

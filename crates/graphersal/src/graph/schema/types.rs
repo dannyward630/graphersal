@@ -1,20 +1,22 @@
 use std::fmt;
 
 use crate::value::ElementProperty;
+use crate::value::VectorElement;
+use crate::value::temporal::TemporalKind;
 
 /// The type of an [`ElementProperty`] property value: every leaf corresponds to exactly one
 /// `ElementProperty` variant.
 ///
 /// `ValueType` is the shadow of the runtime value model, not a separate type system. It names
 /// the type of a property value for [`GType`](crate::value::GType) tokens, casts and
-/// diagnostics. The leaves `Null`, `Boolean`, `Int64`, `Float64`, `String` and `Uuid` each
-/// describe one kind of `ElementProperty` value; `Array`, `Object` and `Union` are containers.
+/// diagnostics. The leaves `Null`, `Boolean`, `Int64`, `Float64`, `String`, `Uuid` and the five
+/// temporal types each describe one kind of `ElementProperty` value; `Array`, `Object` and `Union` are containers.
 /// What a *schema* declares is a [`PropertySchema`](crate::graph::schema::PropertySchema) (a
 /// JSON Schema node), whose diagnostics use the same names.
 ///
 /// Type names have one canonical spelling everywhere, and it is this type's [`fmt::Display`]
-/// form: `null`, `boolean`, `int64`, `float64`, `string`, `uuid`, `array<T>`, `object`,
-/// `union<A|B>`. In a schema they are written in JSON Schema's vocabulary (`integer` = `int64`,
+/// form: `null`, `boolean`, `int64`, `float64`, `string`, `uuid`, `date`, `localdatetime`,
+/// `datetime`, `time`, `duration`, `vector<f32>` (and the other element kinds), `array<T>`, `object`, `union<A|B>`. In a schema they are written in JSON Schema's vocabulary (`integer` = `int64`,
 /// `number` = `float64`, `string` + `format: "uuid"` = `uuid`).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -31,6 +33,20 @@ pub enum ValueType {
     String,
     /// A UUID.
     Uuid,
+    /// A calendar day ([`Date`](crate::value::temporal::Date)).
+    Date,
+    /// A wall-clock date and time without a zone
+    /// ([`LocalDateTime`](crate::value::temporal::LocalDateTime)).
+    LocalDateTime,
+    /// An instant with its UTC offset ([`DateTime`](crate::value::temporal::DateTime)).
+    DateTime,
+    /// A time of day ([`Time`](crate::value::temporal::Time)).
+    Time,
+    /// A length of time in months, days and microseconds
+    /// ([`Duration`](crate::value::temporal::Duration)).
+    Duration,
+    /// A vector of one element kind ([`Vector`](crate::value::Vector)), any dimension.
+    Vector(VectorElement),
     /// A homogeneous sequence of `T`.
     Array(Box<ValueType>),
     /// A map of named fields.
@@ -51,6 +67,12 @@ impl fmt::Display for ValueType {
             ValueType::Float64 => f.write_str("float64"),
             ValueType::String => f.write_str("string"),
             ValueType::Uuid => f.write_str("uuid"),
+            ValueType::Date => f.write_str("date"),
+            ValueType::LocalDateTime => f.write_str("localdatetime"),
+            ValueType::DateTime => f.write_str("datetime"),
+            ValueType::Time => f.write_str("time"),
+            ValueType::Duration => f.write_str("duration"),
+            ValueType::Vector(element) => write!(f, "vector<{element}>"),
             ValueType::Array(inner) => write!(f, "array<{inner}>"),
             ValueType::Object => f.write_str("object"),
             ValueType::Union(variants) => {
@@ -93,6 +115,8 @@ pub fn type_of(prop: &ElementProperty) -> Option<ValueType> {
         }),
         ElementProperty::String(_) | ElementProperty::Compressed(_) => Some(ValueType::String),
         ElementProperty::Uuid(_) => Some(ValueType::Uuid),
+        ElementProperty::Temporal(value) => Some(ValueType::of_temporal(value.kind())),
+        ElementProperty::Vector(value) => Some(ValueType::Vector(value.element())),
         ElementProperty::Array(arr) => {
             let mut variants = Vec::new();
             for item in arr.iter() {
@@ -122,12 +146,50 @@ pub fn type_of(prop: &ElementProperty) -> Option<ValueType> {
     }
 }
 
+impl ValueType {
+    /// The value type of a temporal kind.
+    pub(crate) fn of_temporal(kind: TemporalKind) -> ValueType {
+        match kind {
+            TemporalKind::Date => ValueType::Date,
+            TemporalKind::LocalDateTime => ValueType::LocalDateTime,
+            TemporalKind::DateTime => ValueType::DateTime,
+            TemporalKind::Time => ValueType::Time,
+            TemporalKind::Duration => ValueType::Duration,
+        }
+    }
+
+    /// The temporal kind of a temporal value type; `None` for every other type.
+    pub(crate) fn temporal_kind(&self) -> Option<TemporalKind> {
+        match self {
+            ValueType::Date => Some(TemporalKind::Date),
+            ValueType::LocalDateTime => Some(TemporalKind::LocalDateTime),
+            ValueType::DateTime => Some(TemporalKind::DateTime),
+            ValueType::Time => Some(TemporalKind::Time),
+            ValueType::Duration => Some(TemporalKind::Duration),
+            ValueType::Null
+            | ValueType::Boolean
+            | ValueType::Int64
+            | ValueType::Float64
+            | ValueType::String
+            | ValueType::Uuid
+            | ValueType::Vector(_)
+            | ValueType::Array(_)
+            | ValueType::Object
+            | ValueType::Union(_) => None,
+        }
+    }
+}
+
 /// Returns the display name of a value's type for diagnostics: its [`type_of`] rendered in the
 /// canonical spelling, or `vertex`/`edge` for a graph element.
 ///
 /// A container that holds a graph element somewhere inside is named by its shape
 /// (`array`/`object`), since it has no `ValueType`.
 pub(crate) fn value_type_name(value: &ElementProperty) -> String {
+    // A vector names its dimension too (`vector<f32, 768>`), as a declaration does.
+    if let ElementProperty::Vector(vector) = value {
+        return format!("vector<{}, {}>", vector.element(), vector.dimension());
+    }
     if let Some(ty) = type_of(value) {
         return ty.to_string();
     }

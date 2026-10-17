@@ -1,5 +1,5 @@
 // The Catalog: everything stored in the graph besides its data and schema (the catalog of
-// definitions: saved queries, compression rules, later indexes ...).
+// definitions: saved queries, compression rules, property indexes).
 //
 // - `CatalogMenu`: the top bar's "Catalog ▾" dropdown. One item per kind with its count, each
 //   opening that kind's manager, and the catalog file: "Save catalog (.json)" downloads every
@@ -13,17 +13,26 @@
 //     dictionary) with Edit, Recompress and Drop, and the form (name, element, label with the
 //     graph's labels as suggestions, path, minimum size, dictionary) with the engine's field
 //     errors next to their inputs.
-// The models are js/compression.js and js/saved-queries.js (tested under Node).
+//   * Property indexes: the indexes with their stats (entries, distinct values, elements per
+//     value, memory; "not served" on a storage without indexes) with Drop (confirmed), and the
+//     create form (element, label with suggestions, key, optional name with the default name
+//     as placeholder) with the engine's field errors next to their inputs.
+// The models are js/compression.js, js/indexes.js and js/saved-queries.js (tested under Node).
 
 import { ref, reactive, computed, watch, nextTick } from 'vue';
 import {
   state, toast, openCatalog, saveCatalogFile, loadCatalogFile, refreshSavedQueries, refreshCompressions,
   defineCompressionRule, dropCompressionRule, recompressRule, dropSavedQuery,
+  refreshIndexes, createPropertyIndex, dropPropertyIndex,
 } from '../store.js';
 import {
-  catalogItems, ruleRow, totals, newDraft, draftFromRule, draftToSpec, labelSuggestions,
+  ruleRow, totals, newDraft, draftFromRule, draftToSpec, labelSuggestions,
 } from '../compression.js';
 import { queryTree, signatureText, errorsByField } from '../saved-queries.js';
+import {
+  catalogMenuItems, indexRow, indexTotals, newTransformIndexDraft, indexDraftToSpec, defaultIndexName,
+  INDEX_TYPES, INDEX_TRANSFORMS, indexTypeOf, indexTransformOf, indexNotServedReason,
+} from '../indexes.js';
 import { formatBytes } from '../statistics.js';
 import { DropMenu } from './drop-menu.js';
 import { SavedQueryDialog } from './saved-queries.js';
@@ -35,7 +44,7 @@ export const CatalogMenu = {
   components: { DropMenu },
   setup() {
     const fileInput = ref(null);
-    const items = computed(() => catalogItems(state.graph));
+    const items = computed(() => catalogMenuItems(state.graph));
     function pickFile(close) {
       close();
       if (fileInput.value) fileInput.value.click();
@@ -48,7 +57,7 @@ export const CatalogMenu = {
     return { state, items, fileInput, pickFile, onFile, openCatalog, saveCatalogFile };
   },
   template: `
-  <drop-menu button-class="btn" title="The catalog: saved queries and compression rules stored in the graph" menu-style="min-width: 280px">
+  <drop-menu button-class="btn" title="The catalog: saved queries, compression rules and property indexes stored in the graph" menu-style="min-width: 280px">
     <template #trigger>Catalog ▾</template>
     <template #default="{ close }">
       <div class="menu-title">Stored in the graph</div>
@@ -58,7 +67,7 @@ export const CatalogMenu = {
       <div class="menu-sep"></div>
       <div class="menu-title">Catalog file (no data inside)</div>
       <button class="menu-item" :disabled="state.saving || state.running" @click="saveCatalogFile()"
-              title="Every definition of the catalog (saved queries, compression rules) as one JSON file (graphersal-catalog-YYYYMMDD-HHMMSS.json)">Save catalog (.json)</button>
+              title="Every definition of the catalog (saved queries, compression rules, property indexes) as one JSON file (graphersal-catalog-YYYYMMDD-HHMMSS.json)">Save catalog (.json)</button>
       <button class="menu-item" :disabled="state.loadingGraph || state.running" @click.stop="pickFile(close)"
               title="Store the definitions of a catalog file in this graph: one of the same kind and name is replaced; a compression rule compresses its values at once">Load catalog…</button>
     </template>
@@ -310,23 +319,212 @@ export const CompressionManager = {
   `,
 };
 
+/** The Property indexes manager: the indexes with their stats, and the create form. */
+export const IndexesManager = {
+  setup(props, { expose }) {
+    const dlg = ref(null);
+    const d = reactive({
+      draft: null, // the form's draft (null: the list)
+      errors: {}, // field -> [messages]
+      busy: false,
+      labels: { vertex: [], edge: [] },
+    });
+    const rows = computed(() => (state.indexes || []).map((index) => ({
+      index, row: indexRow(index), type: indexTypeOf(index), transform: indexTransformOf(index),
+      reason: indexNotServedReason(index),
+    })));
+    const transformHint = computed(() => {
+      const t = d.draft && INDEX_TRANSFORMS.find((x) => x.name === (d.draft.transform || ''));
+      return t ? t.description : '';
+    });
+    const typeHint = computed(() => {
+      const t = d.draft && INDEX_TYPES.find((x) => x.name === d.draft.type);
+      return t ? t.description : '';
+    });
+    const sum = computed(() => indexTotals(state.indexes || []));
+    const suggestions = computed(() => (d.draft ? d.labels[d.draft.element] || [] : []));
+    const namePlaceholder = computed(() => {
+      const x = d.draft;
+      return x && x.label.trim() && x.key.trim()
+        ? defaultIndexName(x.element, x.label.trim(), x.key.trim(), x.transform)
+        : defaultIndexName('vertex', 'person', 'age', x && x.transform);
+    });
+
+    async function loadLabels() {
+      try {
+        const stats = await state.engine.statistics();
+        d.labels = { vertex: labelSuggestions(stats, 'vertex'), edge: labelSuggestions(stats, 'edge') };
+      } catch (err) {
+        d.labels = { vertex: [], edge: [] };
+      }
+    }
+    async function open() {
+      Object.assign(d, { draft: null, errors: {}, busy: false });
+      await refreshIndexes();
+      if (dlg.value && !dlg.value.open) dlg.value.showModal();
+    }
+    function close() {
+      if (dlg.value && dlg.value.open) dlg.value.close();
+    }
+    async function startNew() {
+      Object.assign(d, { draft: newTransformIndexDraft(), errors: {} });
+      await loadLabels();
+      await nextTick();
+    }
+    function cancelForm() {
+      Object.assign(d, { draft: null, errors: {} });
+    }
+    async function save() {
+      if (d.busy || !d.draft) return;
+      const local = indexDraftToSpec(d.draft);
+      if (local.errors) {
+        d.errors = errorsByField(local.errors);
+        return;
+      }
+      d.busy = true;
+      try {
+        const res = await createPropertyIndex(local.spec);
+        if (res && res.ok) {
+          const i = res.index || {};
+          const s = i.stats;
+          toast(`Property index "${i.name}" created${s ? `: ${s.entries} entr${s.entries === 1 ? 'y' : 'ies'}, ${formatBytes(s.bytes)}` : ''}.`, 'info', 5000);
+          cancelForm();
+        } else {
+          d.errors = errorsByField((res && res.errors) || [{ field: 'general', message: 'The engine refused it.' }]);
+        }
+      } catch (err) {
+        d.errors = { general: [message(err)] };
+      } finally {
+        d.busy = false;
+      }
+    }
+    async function drop(index) {
+      if (d.busy) return;
+      if (!window.confirm(`Drop the property index "${index.name}"? No data changes; queries on ${index.label}.${index.key} scan again.`)) return;
+      d.busy = true;
+      try {
+        await dropPropertyIndex(index.name);
+        toast(`Property index "${index.name}" dropped.`, 'info', 4000);
+      } catch (err) {
+        toast(`Drop failed: ${message(err)}`, 'error', 9000);
+      } finally {
+        d.busy = false;
+      }
+    }
+    expose({ open, close });
+    return {
+      state, dlg, d, rows, sum, suggestions, namePlaceholder, typeHint, transformHint,
+      indexTypes: INDEX_TYPES, indexTransforms: INDEX_TRANSFORMS, formatBytes, close,
+      startNew, cancelForm, save, drop,
+    };
+  },
+  template: `
+  <dialog ref="dlg" class="catalog-dialog wide" aria-labelledby="ci-title">
+    <div class="dialog-head">
+      <h2 id="ci-title">Property indexes</h2><span class="spacer"></span>
+      <button type="button" class="icon-btn" @click="close" aria-label="Close">×</button>
+    </div>
+    <div class="dialog-body">
+      <template v-if="!d.draft">
+        <p class="muted sq-note">An index orders the vertices (or edges) of one label by one top-level property, so a query such as g.v().has_label("person").has("age", P.gt(30)) reads only the matching elements: equality, P.within and ranges are served. Results never change (only their order may); .profile() names the index it reads. An index costs memory and a little time on every write of its key. Indexes travel with the catalog file and with a snapshot; their entries are rebuilt from the data on every load.</p>
+        <div v-if="state.indexesError" class="field-error">{{ state.indexesError }}</div>
+        <p v-else-if="!rows.length" class="muted">No property indexes yet. A label with many elements filtered on one property is the use case.</p>
+        <div v-else class="catalog-table-wrap">
+          <table class="data-table catalog-table">
+            <thead><tr>
+              <th>Name</th><th>Applies to</th><th>Key</th><th>Type</th><th>Transform</th>
+              <th class="num">Entries</th><th class="num">Distinct values</th><th class="num">Per value</th><th class="num">Memory</th><th></th>
+            </tr></thead>
+            <tbody>
+              <tr v-for="{ index, row, type, transform, reason } in rows" :key="index.name">
+                <td class="code">{{ row.name }} <span v-if="!row.served" class="badge" :title="reason">not served</span></td>
+                <td>{{ row.target }}</td><td class="code">{{ row.key }}</td>
+                <td class="code">{{ type }}<div v-if="!row.served && reason" class="muted" style="font-size: 12px">{{ reason }}</div></td>
+                <td class="code">{{ transform || '—' }}</td>
+                <td class="num">{{ row.entries }}</td><td class="num">{{ row.distinct }}</td>
+                <td class="num" title="Elements an equality reads on average">{{ row.perValue }}</td><td class="num">{{ row.bytes }}</td>
+                <td class="catalog-actions">
+                  <button type="button" class="btn small danger" :disabled="d.busy || state.running" @click="drop(index)">Drop</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="muted sq-note">Together: {{ sum.entries }} entries, {{ formatBytes(sum.bytes) }}<template v-if="sum.notServed">; {{ sum.notServed }} not served by this storage</template>.</p>
+        </div>
+        <div class="sq-buttons">
+          <button type="button" class="btn primary" :disabled="state.running" @click="startNew">New index…</button>
+          <span class="spacer"></span>
+          <button type="button" class="btn" @click="close">Close</button>
+        </div>
+      </template>
+
+      <form v-else @submit.prevent="save">
+        <h3>New index</h3>
+        <div class="form-grid">
+          <label for="ci-element">Element</label>
+          <select id="ci-element" v-model="d.draft.element" :class="{ invalid: d.errors.element }" style="justify-self:start">
+            <option value="vertex">vertex</option><option value="edge">edge</option>
+          </select>
+          <div v-for="m in d.errors.element || []" class="field-error sq-span">{{ m }}</div>
+          <label for="ci-label">Label</label>
+          <input id="ci-label" type="text" list="ci-labels" v-model="d.draft.label" :class="{ invalid: d.errors.label }" placeholder="person" autocomplete="off" spellcheck="false">
+          <datalist id="ci-labels"><option v-for="l in suggestions" :key="l" :value="l"></option></datalist>
+          <div v-for="m in d.errors.label || []" class="field-error sq-span">{{ m }}</div>
+          <span class="hint">The label need not exist yet; the graph's {{ d.draft.element }} labels are suggested. Queries use the index after has_label() of this label.</span>
+          <label for="ci-key">Key</label>
+          <input id="ci-key" type="text" v-model="d.draft.key" :class="{ invalid: d.errors.key }" placeholder="age" autocomplete="off" spellcheck="false">
+          <div v-for="m in d.errors.key || []" class="field-error sq-span">{{ m }}</div>
+          <span class="hint">A top-level property name (not a jpath); lists and maps as values are not indexed. A key the schema declares as a vector, a list or a map is refused.</span>
+          <label for="ci-type">Type</label>
+          <select id="ci-type" v-model="d.draft.type" :class="{ invalid: d.errors.type }" :title="typeHint" style="justify-self:start">
+            <option v-for="t in indexTypes" :key="t.name" :value="t.name" :title="t.description">{{ t.name }}</option>
+          </select>
+          <div v-for="m in d.errors.type || []" class="field-error sq-span">{{ m }}</div>
+          <span class="hint">{{ typeHint }}</span>
+          <label for="ci-transform">Transform</label>
+          <select id="ci-transform" v-model="d.draft.transform" :class="{ invalid: d.errors.transform }" :title="transformHint" style="justify-self:start">
+            <option v-for="t in indexTransforms" :key="t.name" :value="t.name" :title="t.description">{{ t.label }}</option>
+          </select>
+          <div v-for="m in d.errors.transform || []" class="field-error sq-span">{{ m }}</div>
+          <span class="hint">{{ transformHint }}</span>
+          <label for="ci-name">Name</label>
+          <input id="ci-name" type="text" v-model="d.draft.name" :class="{ invalid: d.errors.name }" :placeholder="namePlaceholder" autocomplete="off" spellcheck="false">
+          <div v-for="m in d.errors.name || []" class="field-error sq-span">{{ m }}</div>
+          <span class="hint">Optional; without one the index is called {{ namePlaceholder }}.</span>
+        </div>
+        <div v-for="m in d.errors.general || []" class="field-error">{{ m }}</div>
+        <p class="muted sq-note">Creating builds the index from the data at once (one commit); no data changes.</p>
+        <div class="sq-buttons">
+          <span class="spacer"></span>
+          <button type="button" class="btn" @click="cancelForm">Back</button>
+          <button type="submit" class="btn primary" :disabled="d.busy || state.running">{{ d.busy ? 'Creating…' : 'Create' }}</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+  `,
+};
+
 /** The managers of the Catalog dropdown, opened through `openCatalog(id)`. */
 export const CatalogDialogs = {
-  components: { SavedQueriesManager, CompressionManager },
+  components: { SavedQueriesManager, CompressionManager, IndexesManager },
   setup() {
     const queries = ref(null);
     const compression = ref(null);
+    const indexes = ref(null);
     watch(() => state.catalogDialogN, async () => {
       const id = state.catalogDialog;
       state.catalogDialog = null;
       await nextTick();
       if (id === 'queries' && queries.value) await queries.value.open();
       if (id === 'compression' && compression.value) await compression.value.open();
+      if (id === 'indexes' && indexes.value) await indexes.value.open();
     });
-    return { queries, compression };
+    return { queries, compression, indexes };
   },
   template: `
   <saved-queries-manager ref="queries"></saved-queries-manager>
   <compression-manager ref="compression"></compression-manager>
+  <indexes-manager ref="indexes"></indexes-manager>
   `,
 };

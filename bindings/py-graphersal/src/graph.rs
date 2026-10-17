@@ -6,6 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use graphersal::error::format_diagnostic;
+use graphersal::exec::CancelToken;
 use graphersal::io::{GraphExport, GraphImport, ImportReport};
 use graphersal::persist;
 use graphersal::prelude::ElementProperty;
@@ -14,6 +15,8 @@ use graphersal::script::{
     ScriptLimits, eval_value_atomic, eval_value_dry_run, eval_value_with_limits,
     materialize_traversals,
 };
+use graphersal::storage::ElementKind;
+use graphersal::vector::EmbedJob;
 use graphersal::{GraphSource, prelude::Graph as EngineGraph};
 use graphersal::{auth::Authorizer, exec::ExecutionPolicy, storage::GraphStorage};
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -23,6 +26,7 @@ use pyo3::types::PyDict;
 use crate::convert::{
     change_set_to_pyobject, dynamic_to_pyobject, python_params_to_element_properties,
 };
+use crate::embedder::{PyEmbedder, RegistryCell, registry_of};
 use crate::error::{map_diagnostic, map_eval_error, map_io_error};
 use crate::policy::AccessPolicy;
 use crate::script_thread::on_script_thread;
@@ -35,6 +39,8 @@ pub struct Graph {
     inner: Arc<EngineGraph>,
     /// Resource limits of every script this graph runs: the SAFE defaults until `set_limits`.
     limits: Mutex<ScriptLimits>,
+    /// The embedders of its scripts and `embed_property` (shared with the `Store` it came from).
+    embedders: RegistryCell,
 }
 
 /// What a script run from Python may do: `policy` when the call names one, else everything (the
@@ -101,18 +107,20 @@ fn with_memory_budget(
 }
 
 impl Graph {
-    /// A Python graph over a graph another owner keeps (a `Store`'s).
-    pub(crate) fn from_shared(inner: Arc<EngineGraph>) -> Self {
+    /// A Python graph over a graph another owner keeps (a `Store`'s), with its registry.
+    pub(crate) fn from_shared(inner: Arc<EngineGraph>, embedders: RegistryCell) -> Self {
         Graph {
             inner,
             limits: Mutex::new(ScriptLimits::default()),
+            embedders,
         }
     }
 
-    fn wrap(inner: EngineGraph) -> Self {
+    fn wrap(inner: EngineGraph, embedders: RegistryCell) -> Self {
         Graph {
             inner: Arc::new(inner),
             limits: Mutex::new(ScriptLimits::default()),
+            embedders,
         }
     }
 }
@@ -129,32 +137,46 @@ impl Graph {
     /// figure is the exact live Rust heap of the extension (it installs the tracking allocator),
     /// which does not count Python objects: with ``"auto"``, ``memory_headroom`` must also cover
     /// the Python side of the process.
+    ///
+    /// ``embedders`` is a list of ``Embedder`` (also ``Model2Vec``) the graph's scripts
+    /// (``embed()``, text queries in ``nearest``/``similarity``) and ``embed_property`` call,
+    /// beside the built-in ``"hash-ngram/1"``; ``default_embedder`` names the one used when a
+    /// call names none (default ``"hash-ngram/1"``). A duplicate or reserved name raises
+    /// ``ValueError``. Every graph constructor and loader takes the same two keywords.
     #[new]
-    #[pyo3(signature = (*, memory_limit=None, memory_headroom=None))]
+    #[pyo3(signature = (*, memory_limit=None, memory_headroom=None, embedders=None, default_embedder=None))]
     fn new(
         memory_limit: Option<&Bound<'_, PyAny>>,
         memory_headroom: Option<u64>,
+        embedders: Option<Vec<PyRef<'_, PyEmbedder>>>,
+        default_embedder: Option<&str>,
     ) -> PyResult<Self> {
-        Ok(Graph::wrap(with_memory_budget(
-            GraphSource::empty(),
-            memory_limit,
-            memory_headroom,
-        )?))
+        let registry = registry_of(embedders, default_embedder)?;
+        Ok(Graph::wrap(
+            with_memory_budget(GraphSource::empty(), memory_limit, memory_headroom)?,
+            registry,
+        ))
     }
 
     /// ``Graph.tinkerpop_modern(*, memory_limit=None, memory_headroom=None)``: the standard
     /// TinkerPop "modern" toy graph (6 vertices, 6 edges). The keywords are those of ``Graph()``.
     #[staticmethod]
-    #[pyo3(signature = (*, memory_limit=None, memory_headroom=None))]
+    #[pyo3(signature = (*, memory_limit=None, memory_headroom=None, embedders=None, default_embedder=None))]
     fn tinkerpop_modern(
         memory_limit: Option<&Bound<'_, PyAny>>,
         memory_headroom: Option<u64>,
+        embedders: Option<Vec<PyRef<'_, PyEmbedder>>>,
+        default_embedder: Option<&str>,
     ) -> PyResult<Self> {
-        Ok(Graph::wrap(with_memory_budget(
-            GraphSource::tinkerpop_modern(),
-            memory_limit,
-            memory_headroom,
-        )?))
+        let registry = registry_of(embedders, default_embedder)?;
+        Ok(Graph::wrap(
+            with_memory_budget(
+                GraphSource::tinkerpop_modern(),
+                memory_limit,
+                memory_headroom,
+            )?,
+            registry,
+        ))
     }
 
     /// ``Graph.from_graphml(path, *, schema=None, mode=None, memory_limit=None,
@@ -170,7 +192,8 @@ impl Graph {
     /// keywords are those of ``Graph()``; the budget applies to the traversals after the load,
     /// not to the load.
     #[staticmethod]
-    #[pyo3(signature = (path, *, schema=None, mode=None, memory_limit=None, memory_headroom=None))]
+    #[pyo3(signature = (path, *, schema=None, mode=None, memory_limit=None, memory_headroom=None, embedders=None, default_embedder=None))]
+    #[allow(clippy::too_many_arguments)]
     fn from_graphml(
         py: Python<'_>,
         path: &str,
@@ -178,7 +201,10 @@ impl Graph {
         mode: Option<String>,
         memory_limit: Option<&Bound<'_, PyAny>>,
         memory_headroom: Option<u64>,
+        embedders: Option<Vec<PyRef<'_, PyEmbedder>>>,
+        default_embedder: Option<&str>,
     ) -> PyResult<Self> {
+        let registry = registry_of(embedders, default_embedder)?;
         let inner = match load_schema_argument(py, schema, mode)? {
             None => GraphSource::from_graphml(path).map_err(|err| map_io_error(py, err))?,
             Some((text, mode)) => {
@@ -193,11 +219,10 @@ impl Graph {
                 .map_err(|text: String| map_diagnostic(py, &text))?
             }
         };
-        Ok(Graph::wrap(with_memory_budget(
-            inner,
-            memory_limit,
-            memory_headroom,
-        )?))
+        Ok(Graph::wrap(
+            with_memory_budget(inner, memory_limit, memory_headroom)?,
+            registry,
+        ))
     }
 
     /// ``Graph.from_graphson(path, *, schema=None, mode=None, memory_limit=None,
@@ -209,7 +234,8 @@ impl Graph {
     /// as in ``Graph.from_graphml`` (set first, then the file imported as one unit; a violation
     /// in ``open``/``closed`` fails the load). The other keywords are those of ``Graph()``.
     #[staticmethod]
-    #[pyo3(signature = (path, *, schema=None, mode=None, memory_limit=None, memory_headroom=None))]
+    #[pyo3(signature = (path, *, schema=None, mode=None, memory_limit=None, memory_headroom=None, embedders=None, default_embedder=None))]
+    #[allow(clippy::too_many_arguments)]
     fn from_graphson(
         py: Python<'_>,
         path: &str,
@@ -217,7 +243,10 @@ impl Graph {
         mode: Option<String>,
         memory_limit: Option<&Bound<'_, PyAny>>,
         memory_headroom: Option<u64>,
+        embedders: Option<Vec<PyRef<'_, PyEmbedder>>>,
+        default_embedder: Option<&str>,
     ) -> PyResult<Self> {
+        let registry = registry_of(embedders, default_embedder)?;
         let (inner, report) = match load_schema_argument(py, schema, mode)? {
             None => graphersal::io::GraphSONImport::new()
                 .load_file(path)
@@ -235,11 +264,10 @@ impl Graph {
             }
         };
         warn_graphson_skips(py, path, &report)?;
-        Ok(Graph::wrap(with_memory_budget(
-            inner,
-            memory_limit,
-            memory_headroom,
-        )?))
+        Ok(Graph::wrap(
+            with_memory_budget(inner, memory_limit, memory_headroom)?,
+            registry,
+        ))
     }
 
     /// ``graph.import_graphml(path)``: imports a GraphML file into this live graph as one unit:
@@ -279,18 +307,29 @@ impl Graph {
     /// which TinkerGraph's ``g.io(path).read()`` loads. Values keep their types (``uuid``,
     /// ``array`` and ``object`` too); the file carries no schema.
     fn export_graphson(&self, py: Python<'_>, path: &str) -> PyResult<()> {
-        self.inner
-            .export_graphson(path)
-            .map_err(|err| map_io_error(py, err))
+        let graph = Arc::clone(&self.inner);
+        let target = path.to_string();
+        // The read lock is taken off the GIL (see `embedder.rs`).
+        py.detach(move || {
+            graph
+                .export_graphson(&target)
+                .map_err(|err| format_diagnostic(&err))
+        })
+        .map_err(|text| map_diagnostic(py, &text))
     }
 
     /// ``graph.export_graphml(path)``: writes this graph out as GraphML. GraphML carries no
     /// schema: keep the schema JSON separately and set it on the target graph before the import
     /// (``graph.set_schema(..)`` then ``g.import_graphml(..)``) to restore declared types.
     fn export_graphml(&self, py: Python<'_>, path: &str) -> PyResult<()> {
-        self.inner
-            .export_graphml(path)
-            .map_err(|err| map_io_error(py, err))
+        let graph = Arc::clone(&self.inner);
+        let target = path.to_string();
+        py.detach(move || {
+            graph
+                .export_graphml(&target)
+                .map_err(|err| format_diagnostic(&err))
+        })
+        .map_err(|text| map_diagnostic(py, &text))
     }
 
     /// ``graph.save(path, *, name=None)``: writes this graph as a packed snapshot (the
@@ -333,13 +372,16 @@ impl Graph {
     /// ``memory_limit`` also refuses a snapshot whose size estimate does not fit; the keywords
     /// are those of ``Graph()``.
     #[staticmethod]
-    #[pyo3(signature = (path, *, memory_limit=None, memory_headroom=None))]
+    #[pyo3(signature = (path, *, memory_limit=None, memory_headroom=None, embedders=None, default_embedder=None))]
     fn load(
         py: Python<'_>,
         path: &str,
         memory_limit: Option<&Bound<'_, PyAny>>,
         memory_headroom: Option<u64>,
+        embedders: Option<Vec<PyRef<'_, PyEmbedder>>>,
+        default_embedder: Option<&str>,
     ) -> PyResult<Self> {
+        let registry = registry_of(embedders, default_embedder)?;
         let mut options = persist::ReadOptions::new();
         if let Some(ElementProperty::Number(bytes)) = memory_limit_value(memory_limit)?
             && let Some(bytes) = bytes.as_i64()
@@ -355,11 +397,10 @@ impl Graph {
                     .map_err(|err| format_diagnostic(&err))
             })
             .map_err(|text| map_diagnostic(py, &text))?;
-        Ok(Graph::wrap(with_memory_budget(
-            EngineGraph::new(graph),
-            memory_limit,
-            memory_headroom,
-        )?))
+        Ok(Graph::wrap(
+            with_memory_budget(EngineGraph::new(graph), memory_limit, memory_headroom)?,
+            registry,
+        ))
     }
 
     /// ``graph.start_journal(path, *, durability="every_commit")``: attaches a journal
@@ -447,7 +488,8 @@ impl Graph {
     /// ``reached_end``. The recovered graph has no journal: call ``start_journal`` (after a
     /// ``save``) to continue.
     #[staticmethod]
-    #[pyo3(signature = (snapshot, journals, *, commit_seq=None, time=None, mark=None))]
+    #[pyo3(signature = (snapshot, journals, *, commit_seq=None, time=None, mark=None, embedders=None, default_embedder=None))]
+    #[allow(clippy::too_many_arguments)]
     fn recover(
         py: Python<'_>,
         snapshot: Option<String>,
@@ -455,7 +497,10 @@ impl Graph {
         commit_seq: Option<u64>,
         time: Option<i64>,
         mark: Option<String>,
+        embedders: Option<Vec<PyRef<'_, PyEmbedder>>>,
+        default_embedder: Option<&str>,
     ) -> PyResult<(Self, Py<PyAny>)> {
+        let registry = registry_of(embedders, default_embedder)?;
         let target = match (commit_seq, time, mark) {
             (None, None, None) => persist::RecoveryTarget::Latest,
             (Some(seq), None, None) => persist::RecoveryTarget::CommitSeq(seq),
@@ -500,7 +545,7 @@ impl Graph {
             recovered.report.torn_tail.map(|torn| torn.bytes),
         )?;
         report.set_item("reached_end", recovered.report.reached_end)?;
-        let graph = Graph::wrap(EngineGraph::new(recovered.graph));
+        let graph = Graph::wrap(EngineGraph::new(recovered.graph), registry);
         Ok((graph, report.into_any().unbind()))
     }
 
@@ -622,11 +667,13 @@ impl Graph {
             authorizer,
         } = self.request(script, params, policy.as_deref())?;
         let graph = Arc::clone(&self.inner);
+        let embedders = self.embedders.current();
         let AssertUngil(result) = py.detach(move || {
             on_script_thread(move || {
-                AssertUngil(eval_value_dry_run(
-                    graph, &script, params, &limits, authorizer,
-                ))
+                AssertUngil(
+                    embedders
+                        .scope(|| eval_value_dry_run(graph, &script, params, &limits, authorizer)),
+                )
             })
         });
         match result {
@@ -1012,6 +1059,84 @@ impl Graph {
         Ok(())
     }
 
+    /// ``graph.create_index(label, key, element="vertex", name=None, type="memory-ordered", *,
+    /// transform=None, policy=None)``: declares (or replaces) a property index, like the DSL's
+    /// ``g.create_index(#{..})``: the ``element``s labelled ``label``, ordered by their
+    /// top-level property ``key``; a ``has()`` on that key after ``has_label(label)`` then reads
+    /// the index. ``name`` defaults to ``<label>_<key>`` (``<label>_<key>_edge`` for edges,
+    /// then ``_to_lower`` with that transform), ``type`` to ``"memory-ordered"`` (the only index
+    /// type this version knows). ``transform="to_lower"`` indexes the lowered text of string
+    /// values for a case-insensitive search, ``has(key, __.to_lower().is("alice"))``. The index
+    /// is built at once and rebuilt from the data whenever the graph is loaded. An unknown type
+    /// or transform, or a key the graph's schema declares as values the index cannot hold (a
+    /// vector, an array, an object; with ``to_lower`` any non-string), is refused.
+    #[pyo3(signature = (label, key, element="vertex", name=None, r#type="memory-ordered", *, transform=None, policy=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn create_index(
+        &self,
+        py: Python<'_>,
+        label: &str,
+        key: &str,
+        element: &str,
+        name: Option<&str>,
+        r#type: &str,
+        transform: Option<&str>,
+        policy: Option<PyRef<'_, AccessPolicy>>,
+    ) -> PyResult<()> {
+        let params = PyDict::new(py);
+        params.set_item("index_label", label)?;
+        params.set_item("index_key", key)?;
+        params.set_item("index_element", element)?;
+        params.set_item("index_type", r#type)?;
+        let mut spec = String::from(
+            "label: index_label, key: index_key, element: index_element, type: index_type",
+        );
+        if let Some(name) = name {
+            params.set_item("index_name", name)?;
+            spec.push_str(", name: index_name");
+        }
+        if let Some(transform) = transform {
+            params.set_item("index_transform", transform)?;
+            spec.push_str(", transform: index_transform");
+        }
+        let script = format!("g.create_index(#{{{spec}}})");
+        self.run(py, &script, Some(&params), false, policy.as_deref())?;
+        Ok(())
+    }
+
+    /// ``graph.indexes(*, policy=None)``: the property indexes as a ``list`` of ``dict``
+    /// (``name``, ``element``, ``label``, ``key``, ``type``, ``transform`` (``None`` without
+    /// one), ``served``, ``reason`` when it is not served, and the current ``entries``,
+    /// ``distinct_values``, ``skipped``, ``bytes``).
+    #[pyo3(signature = (*, policy=None))]
+    fn indexes(
+        &self,
+        py: Python<'_>,
+        policy: Option<PyRef<'_, AccessPolicy>>,
+    ) -> PyResult<Py<PyAny>> {
+        self.run(py, "g.indexes()", None, false, policy.as_deref())
+    }
+
+    /// ``graph.drop_index(name, *, policy=None)``: drops the property index; ``False`` when
+    /// there is none.
+    #[pyo3(signature = (name, *, policy=None))]
+    fn drop_index(
+        &self,
+        py: Python<'_>,
+        name: &str,
+        policy: Option<PyRef<'_, AccessPolicy>>,
+    ) -> PyResult<Py<PyAny>> {
+        let params = PyDict::new(py);
+        params.set_item("index_name", name)?;
+        self.run(
+            py,
+            "g.drop_index(index_name)",
+            Some(&params),
+            false,
+            policy.as_deref(),
+        )
+    }
+
     /// ``graph.call_query(name, params=None, *, policy=None)``: calls the saved query ``name``
     /// with named arguments (``g.query(name, #{..})``; ``graph.query`` is the alias of
     /// ``execute``) and returns its result like ``execute`` (a traversal's results as a
@@ -1027,13 +1152,29 @@ impl Graph {
     ) -> PyResult<Py<PyAny>> {
         let bound = PyDict::new(py);
         bound.set_item("query_name", name)?;
-        // A uuid.UUID argument travels as its text; the parameter's schema turns it back.
+        // A uuid.UUID or a date argument travels as its text (a date as its canonical ISO
+        // 8601 text); the parameter's schema turns it back.
         let args = match params {
             Some(args) => {
+                let texts = PyDict::new(py);
+                for (key, value) in args.iter() {
+                    if let Some(vector) = crate::vector::python_vector(&value) {
+                        // A vector travels as its list of values; a vector parameter's schema
+                        // turns it back (quantized to its element).
+                        let values: Vec<f64> =
+                            vector.iter_f32().map(crate::vector::short_f64).collect();
+                        texts.set_item(key, values)?;
+                        continue;
+                    }
+                    match crate::temporal::python_temporal_text(&value) {
+                        Some(text) => texts.set_item(key, text)?,
+                        None => texts.set_item(key, value)?,
+                    }
+                }
                 let dumps = py.import("json")?.getattr("dumps")?;
                 let kwargs = PyDict::new(py);
                 kwargs.set_item("default", py.import("builtins")?.getattr("str")?)?;
-                dumps.call((args,), Some(&kwargs))?.extract::<String>()?
+                dumps.call((texts,), Some(&kwargs))?.extract::<String>()?
             }
             None => "{}".to_string(),
         };
@@ -1045,6 +1186,170 @@ impl Graph {
             false,
             policy.as_deref(),
         )
+    }
+
+    // The embedders (book page "Vectors", section "Embeddings"). The registry is the graph's
+    // (shared with the `Store` it came from); each run takes the registry of its start.
+
+    /// ``graph.register_embedder(embedder, *, default=False)``: adds an ``Embedder`` (also a
+    /// ``Model2Vec``) to this graph's embedders (``default=True`` makes it the default). A
+    /// running execution keeps the embedders it started with; the next one sees the new
+    /// registry. A name already registered, or a reserved one (``"hash-ngram"``,
+    /// ``"hash-ngram/*"``), raises ``ValueError``.
+    #[pyo3(signature = (embedder, *, default=false))]
+    fn register_embedder(&self, embedder: PyRef<'_, PyEmbedder>, default: bool) -> PyResult<()> {
+        // The registry lock is never held while waiting for the GIL or a graph lock: the swap
+        // only clones `Arc`s.
+        self.embedders
+            .register(Arc::clone(&embedder.inner), default)
+    }
+
+    /// ``graph.embedders()``: this graph's embedders as a ``list`` of ``dict`` (``name``,
+    /// ``model``, ``dimension``, ``element``, ``metric``, ``max_batch``, ``deterministic``,
+    /// ``local``, ``default``), the default first; the built-in ``"hash-ngram/1"`` is always
+    /// there. The same list as the DSL's ``g.embedders()``.
+    fn embedders(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.run(py, "g.embedders()", None, false, None)
+    }
+
+    /// ``graph.embed_property(*, label, source, target, element="vertex", embedder=None,
+    /// only_missing=True, batch=None)``: embeds the text property ``source`` of every
+    /// ``element`` (``"vertex"`` or ``"edge"``) labelled ``label`` and stores the vector in its
+    /// property ``target``, page by page (``batch`` elements per page, default the embedder's
+    /// ``max_batch``): the texts are read under a short read lock, the embedder runs without
+    /// any lock (other threads keep reading and writing), each page is written as one unit.
+    /// ``embedder`` names a registered embedder (default: the graph's default);
+    /// ``only_missing=False`` embeds again the elements that have ``target`` already.
+    ///
+    /// The graph needs a schema attached (mode ``open`` or ``closed``): the job declares
+    /// ``target`` there as vectors of the embedder's model (its ``embedder`` keyword), which is
+    /// what a text query (``nearest("emb", "a question", 5)``) embeds with later. Returns the
+    /// report ``dict``: ``embedded``, ``skipped_no_text``, ``not_text``, ``skipped_changed``,
+    /// ``skipped_removed``, ``units``, ``schema_changed``, ``elapsed_ms``, ``embedder``,
+    /// ``model``. A failure raises ``EmbedPropertyError`` (a ``GraphersalError``) whose
+    /// ``report`` holds the counts up to the failure: earlier pages stay, the failing one is
+    /// rolled back, and a second run continues where it stopped. The GIL is released for the
+    /// whole job; Ctrl+C (``KeyboardInterrupt``) cancels it between pages and is raised with
+    /// the same ``report`` attribute.
+    #[pyo3(signature = (*, label, source, target, element="vertex", embedder=None, only_missing=true, batch=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn embed_property(
+        &self,
+        py: Python<'_>,
+        label: &str,
+        source: &str,
+        target: &str,
+        element: &str,
+        embedder: Option<&str>,
+        only_missing: bool,
+        batch: Option<usize>,
+    ) -> PyResult<Py<PyAny>> {
+        let kind = match element {
+            "vertex" => ElementKind::Vertex,
+            "edge" => ElementKind::Edge,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "element must be \"vertex\" or \"edge\", got {other:?}"
+                )));
+            }
+        };
+        let registry = self.embedders.current();
+        // The embedder of the report, resolved like the job does (an unknown name fails in the
+        // job, with its diagnostic).
+        let resolved = match embedder {
+            None => Some(Arc::clone(registry.default_embedder())),
+            Some(name) => registry.get(name).cloned(),
+        };
+        let mut job = EmbedJob::new(label, source, target)
+            .element(kind)
+            .only_missing(only_missing);
+        if let Some(name) = embedder {
+            job = job.embedder(name);
+        }
+        if let Some(batch) = batch {
+            job = job.batch(batch);
+        }
+        let graph = Arc::clone(&self.inner);
+        let cancel = CancelToken::new();
+        let job_cancel = cancel.clone();
+        let (outcome, interrupted) = py.detach(move || {
+            let (done, finished) = std::sync::mpsc::channel();
+            std::thread::scope(|threads| {
+                threads.spawn(move || {
+                    let result = graph.embed_property(&job, &registry, &job_cancel, &mut |_| {});
+                    let _ = done.send(result);
+                });
+                let mut interrupted = None;
+                loop {
+                    match finished.recv_timeout(std::time::Duration::from_millis(50)) {
+                        Ok(result) => return (Some(result), interrupted),
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            // Signals (Ctrl+C) reach Python only through `check_signals`, on
+                            // the main thread, with the GIL: taken briefly, never while
+                            // waiting for a graph lock.
+                            if interrupted.is_none()
+                                && let Some(Err(err)) = Python::try_attach(|py| py.check_signals())
+                            {
+                                cancel.cancel();
+                                interrupted = Some(err);
+                            }
+                        }
+                        // The job thread panicked (a bug): the scope resumes the panic.
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            return (None, interrupted);
+                        }
+                    }
+                }
+            })
+        });
+        let report_of = |report: &graphersal::vector::EmbedReport| -> PyResult<Py<PyAny>> {
+            let dict = PyDict::new(py);
+            dict.set_item("embedded", report.embedded)?;
+            dict.set_item("skipped_no_text", report.skipped_no_text)?;
+            dict.set_item("not_text", report.not_text)?;
+            dict.set_item("skipped_changed", report.skipped_changed)?;
+            dict.set_item("skipped_removed", report.skipped_removed)?;
+            dict.set_item("units", report.units)?;
+            dict.set_item("schema_changed", report.schema_changed)?;
+            dict.set_item(
+                "elapsed_ms",
+                u64::try_from(report.elapsed.as_millis()).unwrap_or(u64::MAX),
+            )?;
+            dict.set_item(
+                "embedder",
+                resolved.as_ref().map(|e| e.info().name.to_string()),
+            )?;
+            dict.set_item(
+                "model",
+                resolved.as_ref().map(|e| e.info().model.to_string()),
+            )?;
+            Ok(dict.into_any().unbind())
+        };
+        let Some(outcome) = outcome else {
+            return Err(map_diagnostic(
+                py,
+                "Error: the embed_property job ended without a result",
+            ));
+        };
+        match (outcome, interrupted) {
+            (Ok(report), None) => report_of(&report),
+            (Ok(report), Some(err)) => {
+                let _ = err.value(py).setattr("report", report_of(&report)?);
+                Err(err)
+            }
+            (Err(failed), Some(err)) => {
+                let _ = err.value(py).setattr("report", report_of(&failed.report)?);
+                Err(err)
+            }
+            (Err(failed), None) => {
+                let report = report_of(&failed.report)?;
+                Err(crate::error::embed_property_error(
+                    py,
+                    &format_diagnostic(&*failed.error),
+                    report,
+                ))
+            }
+        }
     }
 }
 
@@ -1165,6 +1470,8 @@ impl Graph {
     ) -> PyResult<Py<PyAny>> {
         let request = self.request(script, params, policy)?;
         let graph = Arc::clone(&self.inner);
+        // The registry now: a later `register_embedder` does not reach this run.
+        let embedders = self.embedders.current();
         let AssertUngil(result) = py.detach(move || {
             on_script_thread(move || {
                 let ScriptRequest {
@@ -1180,10 +1487,12 @@ impl Graph {
                 };
                 // A traversal returned without a terminal runs as with `.to_list()`: Python gets
                 // data, never a traversal object (after the commit for `atomic=True`).
-                AssertUngil(
+                // The engine and scope `eval` builds take the graph's registry
+                // (`Embedders::scope`).
+                AssertUngil(embedders.scope(|| {
                     eval(graph, &script, params, &limits, authorizer)
-                        .and_then(|value| materialize_traversals(value, limits.max_value_depth)),
-                )
+                        .and_then(|value| materialize_traversals(value, limits.max_value_depth))
+                }))
             })
         });
         match result {

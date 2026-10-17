@@ -25,6 +25,55 @@ pub fn authorizer() -> Arc<dyn graphersal::auth::Authorizer> {
     Arc::new(graphersal::auth::AllowAll)
 }
 
+/// The registry [`install_embedders`] built at start.
+static EMBEDDERS: std::sync::OnceLock<Arc<graphersal::vector::Embedders>> =
+    std::sync::OnceLock::new();
+
+/// The embedders the CLI's scripts and its dev server call: the registry of the command line's
+/// `--embedder`/`--default-embedder` ([`install_embedders`]), else the default registry, which
+/// holds the built-in `hash-ngram/1`.
+pub fn embedders() -> Arc<graphersal::vector::Embedders> {
+    EMBEDDERS
+        .get()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(graphersal::vector::Embedders::default()))
+}
+
+/// Loads the models of `--embedder NAME=PATH|REPO` (once, at start) and registers them with
+/// `--default-embedder` as the default; [`embedders`] answers this registry from then on. A
+/// model that does not load is the error (with its help); the process then exits with
+/// [`EXIT_USAGE_ERROR`].
+pub fn install_embedders(cli: &Cli) -> Result<(), String> {
+    if cli.embedders.is_empty() && cli.default_embedder.is_none() {
+        return Ok(());
+    }
+    let registry_error =
+        |err: graphersal::vector::EmbedError| format!("{err}\nHelp: {}", err.help());
+    #[allow(unused_mut)]
+    let mut builder = graphersal::vector::Embedders::builder();
+    for (name, spec) in &cli.embedders {
+        #[cfg(feature = "model2vec")]
+        {
+            let model = crate::embed_model::load_embedder(name, spec)?;
+            builder = builder
+                .with(Arc::new(model))
+                .map_err(|err| format!("--embedder {name}={spec}: {}", registry_error(err)))?;
+        }
+        #[cfg(not(feature = "model2vec"))]
+        return Err(format!(
+            "--embedder {name}={spec}: this graphersal was built without the `model2vec` \
+             feature (real embedding models); only the built-in hash-ngram/1 is available"
+        ));
+    }
+    if let Some(name) = &cli.default_embedder {
+        builder = builder
+            .default_name(name)
+            .map_err(|err| format!("--default-embedder {name}: {}", registry_error(err)))?;
+    }
+    let _ = EMBEDDERS.set(Arc::new(builder.build()));
+    Ok(())
+}
+
 /// Exit code returned when every script evaluated successfully.
 pub const EXIT_OK: i32 = 0;
 /// Exit code returned when a script failed to evaluate.
@@ -49,6 +98,8 @@ USAGE:
                                          # DEV server: the playground UI over HTTP (unstable),
                                          # optionally an MCP endpoint for AI agents
     graphersal store <COMMAND> <DIR> ... # manage a Store (graphersal store help)
+    graphersal embed-model <COMMAND> ... # download and list embedding models
+                                         # (graphersal embed-model help)
 
 OPTIONS:
     -g, --graph <SOURCE>   Graph to run against: "modern" (TinkerPop Modern, the default),
@@ -161,6 +212,18 @@ OPTIONS:
                            compatible servers: Azure, OpenRouter, Groq, Ollama, LM Studio,
                            vLLM through base_url). The key is read from the environment
                            variable api_key_env names and stays in this process.
+        --embedder <NAME=PATH|REPO>
+                           Register a Model2Vec embedding model under NAME for the scripts
+                           (embed(), the embed step) of every mode, the --server and its MCP
+                           tools: PATH is a model directory (config.json, tokenizer.json,
+                           model.safetensors), REPO a model fetched with `graphersal
+                           embed-model download REPO` (looked up in $GRAPHERSAL_EMBED_MODELS or
+                           ~/.cache/graphersal/embed-models). May be repeated. Loaded once at
+                           start, locally (no network); a model that does not load exits 2.
+                           The built-in hash-ngram/1 is always registered.
+        --default-embedder <NAME>
+                           The embedder embed() uses without #{embedder: ..}: a --embedder NAME
+                           or hash-ngram/1 (the default).
         --repl             Start the REPL even when stdin is not a terminal: lines are read
                            without editing, commands (/help, /set ...) work, no history file
                            (for scripted sessions of the shell).
@@ -210,6 +273,9 @@ EXAMPLES:
     graphersal --graph large --memory-limit auto -e 'g.v().out().out().fold()'
     graphersal --graph ./mygraph.json --server --port 8080      # then open http://localhost:8080/
     graphersal store create data/ --from modern && graphersal --graph data/ --server
+    graphersal embed-model download minishlab/potion-base-8M
+    graphersal --embedder potion=minishlab/potion-base-8M --default-embedder potion \
+        -e 'g.v().values("name").embed().to_list()'
 "#;
 
 /// What the process should do once the command line has been parsed.
@@ -651,6 +717,10 @@ pub struct Cli {
     pub mcp_query_tools: bool,
     /// `--ai`: the AI Chat configuration file of the dev server.
     pub ai: Option<String>,
+    /// `--embedder NAME=PATH|REPO` (repeatable, in order): Model2Vec models to register.
+    pub embedders: Vec<(String, String)>,
+    /// `--default-embedder NAME`: the default of the registry.
+    pub default_embedder: Option<String>,
 }
 
 /// Default port of `--server`.
@@ -728,6 +798,8 @@ impl Default for Cli {
             mcp_token: None,
             mcp_query_tools: false,
             ai: None,
+            embedders: Vec::new(),
+            default_embedder: None,
         }
     }
 }
@@ -836,6 +908,24 @@ impl Cli {
                 "--mcp-read-only" => cli.mcp_read_only = true,
                 "--mcp-query-tools" => cli.mcp_query_tools = true,
                 "--ai" => cli.ai = Some(value(&mut args)?),
+                "--embedder" => {
+                    let raw = value(&mut args)?;
+                    match raw.split_once('=') {
+                        Some((name, spec)) if !name.is_empty() && !spec.is_empty() => {
+                            if cli.embedders.iter().any(|(n, _)| n == name) {
+                                return Err(format!("--embedder {name} is given twice"));
+                            }
+                            cli.embedders.push((name.to_string(), spec.to_string()));
+                        }
+                        _ => {
+                            return Err(format!(
+                                "Invalid --embedder value: {raw}. Expected NAME=PATH or \
+                                 NAME=REPO (for example potion=minishlab/potion-base-8M)"
+                            ));
+                        }
+                    }
+                }
+                "--default-embedder" => cli.default_embedder = Some(value(&mut args)?),
                 "--mcp-token" => {
                     let token = value(&mut args)?;
                     if token.trim().is_empty() || !token.chars().all(|c| c.is_ascii_graphic()) {
@@ -1249,6 +1339,7 @@ impl ScriptBudget {
             authorizer(),
             &self.traversal_options(),
         );
+        graphersal::script::set_engine_embedders(&mut engine, embedders());
         self.install(&mut engine);
         engine
     }
@@ -1259,7 +1350,9 @@ impl ScriptBudget {
     pub fn scope(&self, graph: Arc<Graph>, render: &RenderOptions) -> Scope<'static> {
         let mut options = self.traversal_options();
         options.extend(graphersal::script::render_scope_options(render));
-        graphersal::script::graph_scope_with_options(graph, &options, authorizer())
+        let mut scope = graphersal::script::graph_scope_with_options(graph, &options, authorizer());
+        graphersal::script::set_scope_embedders(&mut scope, embedders());
+        scope
     }
 
     /// Replaces the traversal sources `g`, `_g` and `__` of a session scope by fresh ones carrying
@@ -1566,5 +1659,33 @@ mod tests {
             GraphSpec::parse("some_graph_from_disk.graphml"),
             GraphSpec::File("some_graph_from_disk.graphml".to_string())
         );
+    }
+
+    #[test]
+    fn parses_the_embedder_flags() {
+        let cli = Cli::parse([
+            "--embedder",
+            "a=minishlab/potion-base-8M",
+            "--embedder=b=./models/x=y",
+            "--default-embedder",
+            "a",
+            "--server",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.embedders,
+            vec![
+                ("a".to_string(), "minishlab/potion-base-8M".to_string()),
+                ("b".to_string(), "./models/x=y".to_string()),
+            ]
+        );
+        assert_eq!(cli.default_embedder.as_deref(), Some("a"));
+        assert_eq!(cli.mode, Mode::Server);
+        assert!(Cli::parse(["--embedder", "a"]).is_err());
+        assert!(Cli::parse(["--embedder", "a="]).is_err());
+        assert!(Cli::parse(["--embedder", "a=x", "--embedder", "a=y"]).is_err());
+        assert!(Cli::parse(["--embedder"]).is_err());
+        let plain = Cli::parse(["-e", "1"]).unwrap();
+        assert!(plain.embedders.is_empty() && plain.default_embedder.is_none());
     }
 }

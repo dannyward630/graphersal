@@ -749,7 +749,7 @@ pub(crate) mod tests {
                 properties.insert(key, value(&mut mix, 0));
             }
             let handle = graph
-                .add_vertex(Some(id.into()), label_set, properties)
+                .insert_vertex(Some(id.into()), label_set, properties)
                 .expect("vertex");
             handles.push(handle);
         }
@@ -769,7 +769,7 @@ pub(crate) mod tests {
                 }
                 let id = format!("e{:x}-{i}", mix.next());
                 graph
-                    .add_edge(Some(id.into()), label, from, to, properties)
+                    .insert_edge(Some(id.into()), label, from, to, properties)
                     .expect("edge");
             }
         }

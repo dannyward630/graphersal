@@ -15,6 +15,7 @@ pub(crate) fn render_source(
     has: &[crate::traversal::step::PropertyFilter],
     count_only: bool,
     group_count_by_label: bool,
+    index: Option<&crate::traversal::step::IndexAccess>,
 ) -> String {
     let args = match (ids, labels) {
         (Some(ids), Some(labels)) => format!(
@@ -42,5 +43,11 @@ pub(crate) fn render_source(
             crate::value::literal::rhai_literal(&filter.value)
         ));
     }
-    format!("{name}({args}){filters}{suffix}")
+    let index = match (index, labels) {
+        (Some(index), Some(labels)) => {
+            index.render(if name == "e" { "edge" } else { "vertex" }, labels)
+        }
+        _ => String::new(),
+    };
+    format!("{name}({args}){filters}{suffix}{index}")
 }

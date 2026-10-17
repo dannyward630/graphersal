@@ -10,7 +10,7 @@ use quick_xml::reader::Reader;
 use quick_xml::writer::Writer;
 
 use crate::error::{GraphError, IOError};
-use crate::graph::{GraphNodeType, GraphStorage, JsonType};
+use crate::graph::{GraphNodeType, GraphStorage, JsonType, SchemaFormat};
 use crate::traversal::memory_budget::UnitBudget;
 use crate::value::depth::DEFAULT_MAX_VALUE_DEPTH;
 use crate::value::physical::{
@@ -527,7 +527,7 @@ impl GraphMLImport {
         let mut vertex_data = vertex_data;
         lift_declared_properties(g, GraphNodeType::Vertex, &labels, &mut vertex_data)?;
         let index = g
-            .add_vertex(Some(v_id.clone()), labels, vertex_data)
+            .insert_vertex(Some(v_id.clone()), labels, vertex_data)
             .map_err(IOError::Graph)?;
 
         node_map.insert(v_id, index);
@@ -593,7 +593,7 @@ impl GraphMLImport {
             )?;
         }
 
-        g.add_edge(edge_id, edge_label, *source_idx, *target_idx, edge_data)
+        g.insert_edge(edge_id, edge_label, *source_idx, *target_idx, edge_data)
             .map_err(IOError::Graph)?;
 
         crate::traversal::memory_budget::tick(budget, &*g).map_err(IOError::Graph)
@@ -1098,15 +1098,15 @@ fn physical_text<'a>(
 }
 
 /// Whether a declared node admits an `array`/`object` (also through `anyOf`).
-fn contains_container(kinds: &[(JsonType, bool)]) -> bool {
+fn contains_container(kinds: &[(JsonType, Option<SchemaFormat>)]) -> bool {
     kinds
         .iter()
         .any(|(kind, _)| matches!(kind, JsonType::Array | JsonType::Object))
 }
 
 /// Whether a declared node admits a value that GraphML writes as plain text (a `string` or a
-/// `uuid`).
-fn admits_text(kinds: &[(JsonType, bool)]) -> bool {
+/// `uuid` or a temporal value).
+fn admits_text(kinds: &[(JsonType, Option<SchemaFormat>)]) -> bool {
     kinds.iter().any(|(kind, _)| *kind == JsonType::String)
 }
 
@@ -1495,7 +1495,7 @@ mod tests {
             data1.insert("age", (30i64).into());
             data1.insert("active", true.into());
             graph
-                .add_vertex(Some("1".into()), vec!["person".into()], data1)
+                .insert_vertex(Some("1".into()), vec!["person".into()], data1)
                 .unwrap()
         };
 
@@ -1505,14 +1505,14 @@ mod tests {
             data2.insert("age", (25i64).into());
             data2.insert("active", false.into());
             graph
-                .add_vertex(Some("2".into()), vec!["person".into()], data2)
+                .insert_vertex(Some("2".into()), vec!["person".into()], data2)
                 .unwrap()
         };
 
         let mut edge_data = PropertyMap::default();
         edge_data.insert("weight", (0.75f64).into());
         graph
-            .add_edge(None, Some("knows".into()), idx1, idx2, edge_data)
+            .insert_edge(None, Some("knows".into()), idx1, idx2, edge_data)
             .unwrap();
 
         let mut xml_bytes = Vec::new();
