@@ -11,7 +11,7 @@ description = "In-memory graph database and traversal engine modelled on Apache 
 readme = "README.md"
 keywords = ["graph", "gremlin", "tinkerpop", "vector-search", "graphrag"]
 categories = ["data-structures", "database-implementations"]
-include = ["/src/**", "/README.md", "/LICENSE-APACHE", "/NOTICE"]
+include = ["/src/**", "!/src/**/CLAUDE.md", "/README.md", "/LICENSE-APACHE", "/NOTICE"]
 
 [package.metadata.docs.rs]
 # docs.rs documents every feature (every feature is off by default, so without this docs.rs would show only the core API).

@@ -1,0 +1,38 @@
+# graphersal-cli
+
+Agent guidance for the REPL, the one-shot runner, the dev server, MCP, the AI Chat and `embed-model`. Not packaged (`include` lists the packaged files). Store commands: `crates/graphersal/src/persist/CLAUDE.md`.
+
+## CLI and REPL
+
+- REPL `graphersal>` (`src/repl.rs`): `/` commands; Tab completion and `/help <name>` read `graphersal_session::views::completion_entries`/`token_values` (the playground's catalogue), never a CLI list. `--repl` runs it on a piped stdin.
+- Output only through `out!`/`outln!`/`errln!` (`src/out.rs`); `print!`/`eprintln!` are denied by clippy (they panic on a closed pipe). stdout = result only, stderr = diagnostics and truncation notices. Exit codes `0` ok, `1` script failed, `2` invalid invocation, `141` stdout closed early.
+- `--server`, `graphersal store` and every mode on a `--graph <store>` install `src/log.rs`, a minimal stderr `tracing` subscriber (no `tracing-subscriber`; `GRAPHERSAL_LOG`, default `warn`; never stdout). SIGINT/SIGTERM close an open store (`signals.rs`).
+- Scripts evaluate on a 64 MiB stack thread (`main.rs`), which also installs the `alloc-tracking` allocator.
+
+## Dev server (`--server`, feature `dev-server`, default on)
+
+- `tiny_http`, loopback only (127.0.0.1 plus `[::1]` on the same port when available), unstable. Serves the playground embedded in the binary: `build.rs` generates an `include_bytes!` table from `ui/` (symlink to `../../playground`, followed by `cargo package`; entries `index.html`, `css/`, `js/`, `assets/`, `reset/`); a file of `--ui-dir` (default `./playground` if present) wins. `src/server/ui.rs`'s test fails when the embedded set differs from `playground/`.
+- `src/server/`: `mod.rs` HTTP API + change feed `GET /api/changes`, `store.rs` `/api/store*`, `layout.rs` engine force layout `/api/layout*` (slices; Stop ends a running one), `mcp.rs`, `ai.rs`, `start_stats.rs` (load time + statistics on stderr at start, from `Session::statistics`; stdout keeps only the address line). Book `persistence/dev_server.md`.
+- CLI limit flags become `graphersal_session::SessionPresets` (`server::session_presets`); display flags are refused with `--server`.
+- "Save to file" (`POST /api/save`) writes the graph back to its `--graph` file and, with `--schema FILE`, the schema to that file (both atomic); without it a GraphML/GraphSON save of a graph with a schema answers a `warning`.
+- `/api/queries*` saved queries, `/api/compression*` compression rules, `/api/indexes*` property indexes, `/api/catalog/export|load` the ONE catalog file (every kind).
+- Every session job that moves the commit position is recorded in the change feed with its client (`X-Graphersal-Client` of a page, `mcp`, or `ai` + conversation id as `detail`); the playground polls it (`js/change-feed.js`) and reloads on changes it did not make.
+
+## MCP (`--mcp [--mcp-read-only] [--mcp-token] [--mcp-query-tools]`, `POST /mcp`)
+
+- Hand-written MCP Streamable HTTP (initialize-based revisions, JSON answers, no SSE, no `rmcp`/tokio). Tools wrap session methods and queue on the session thread like browser calls.
+- Graph only: `query`, schema tools, `statistics`, `graph_info`, saved queries (`list_saved_queries`/`run_saved_query`, resource `graphersal://saved-queries`; `--mcp-query-tools` lists each saved query as a tool, `listChanged: false`), compression (`list_compressions`; `define_compression`/`drop_compression`/`recompress` refused read-only), indexes (`list_indexes`; `create_index`/`drop_index` refused read-only). NO persistence tools (the Store menu is the user's).
+- Read-only runs `query` under `graphersal_session::read_only_authorizer` (denies every catalog write). A read-only view the browser opens is server-wide: `graph_info` and every tool error carry a `note` ("the served state is a read-only view at commit N ...").
+- **Verify MCP changes end to end with curl** as a client (initialize -> tools/list -> tools/call).
+
+## AI Chat (`--ai FILE`, feature `ai`, default on, needs `--server`, not `--mcp`; EXPERIMENTAL)
+
+- `src/ai/`: `config.rs` (strict JSON checked at start: provider `openai`/`anthropic`, model, key from the variable `api_key_env` names, limits; the key is never logged or shown), `client.rs` (provider-neutral `Conversation` -> `Client::complete` -> `AssistantTurn`, `AiError` with `help()`), `openai.rs` (Chat Completions + tools; the answer message kept as `raw`, tool-call fields it does not rebuild such as Gemini's `extra_content` copied back by id, message-level only `extra_content`, never `reasoning_content`), `anthropic.rs` (Messages + tool use, `cache_control` on the system prefix, assistant content replayed unchanged); over `ureq` + rustls (synchronous, no tokio). Tested against a local `tiny_http` mock with recorded fixtures (`src/ai/fixtures/`), never a real provider.
+- Agent loop `src/server/ai.rs`: conversations in memory (random 128-bit ids, owned by the creating `X-Graphersal-Client`, `403` for others), one turn at a time (`409`), each on its own thread. Tool calls through `mcp::tool_listings`/`mcp::call_tool` (shared with MCP; `ToolCaller` carries read-only, the feed client, and the turn's own `CancelToken` via `Session::execute_with_cancel`, so Stop cancels only that conversation, never the session-wide token). System prompt = MCP instructions + agent rules (tool results are untrusted data, queries in ```` ```graphersal ```` blocks, GFM tables) + DSL reference + a graph summary from the first turn (fixed for the prompt cache). Endpoints `/api/ai/conversations[/<id>[/messages|/events?after=N|/stop]]`, `GET /api/info` `ai`. Tests `tests/server_tests.rs` (`ai_chat`, scripted mock).
+- User docs: "AI Chat" in `book/src/persistence/dev_server.md` (every key, provider examples, what leaves the machine); example configs `examples/ai-{anthropic,openai,ollama}.json` (no keys; `ai::config` tests parse them).
+
+## Embedding models (feature `model2vec`, default on)
+
+- `src/embed_model.rs`: `graphersal embed-model download <repo> [--revision] [--dir]` fetches the three files from `<endpoint>/<repo>/resolve/<rev>/<file>` (endpoint `GRAPHERSAL_HF_ENDPOINT` or `https://huggingface.co`; `HF_TOKEN` as bearer to the endpoint host only, never logged). Redirects by hand (`max_redirects(0)`) so `X-Linked-Etag` (SHA-256) or a 40-hex ETag (git blob SHA-1) is checked with `ring` while streaming to `.part` files in `.<name>.download-<pid>`; manifest `graphersal-embed-model.json` {format, repo, revision, commit, files, downloaded_at}; the model is loaded once as a check, then renamed to `<models-dir>/<repo>`; **any failure leaves no model**. `embed-model list [--dir]`. Models dir = `--dir`, `$GRAPHERSAL_EMBED_MODELS`, `%LOCALAPPDATA%`, `$XDG_CACHE_HOME`, `~/.cache` + `graphersal/embed-models`.
+- `--embedder NAME=PATH|REPO` (repeatable), `--default-embedder NAME`: loaded once in `main.rs` (`cli::install_embedders`, failure exits 2 with help) into a `OnceLock` read by `cli::embedders()` (scripts, REPL, `server::session_presets`); `GET /api/info` `embedders`.
+- Tests: `tests/cli_tests.rs` (`embed_models`: tiny model, raw-TCP mock of the HF endpoint: success, hash mismatches, broken body, 404/401, not a model, token only to the endpoint host), `tests/server_tests.rs` (`an_embedder_of_the_command_line_serves_the_session`).

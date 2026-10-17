@@ -104,7 +104,7 @@ mod tests {
     use super::*;
 
     /// The files of the repository's `playground/` the embedded copy must hold: everything but
-    /// the wasm build output, the tests, the scripts, the README and hidden files.
+    /// the wasm build output, the tests, the scripts, README, CLAUDE.md and hidden files.
     fn playground_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
@@ -117,8 +117,15 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("/");
             if name.starts_with('.')
-                || ["pkg", "tests", "build.sh", "serve.py", "README.md"]
-                    .contains(&relative.as_str())
+                || [
+                    "pkg",
+                    "tests",
+                    "build.sh",
+                    "serve.py",
+                    "README.md",
+                    "CLAUDE.md",
+                ]
+                .contains(&relative.as_str())
             {
                 continue;
             }

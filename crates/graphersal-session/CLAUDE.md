@@ -1,0 +1,19 @@
+# graphersal-session
+
+Agent guidance. The playground session logic, JSON in, JSON out, shared by `graphersal-wasm` and the dev server so both answer with the same structures (the server's `/api/store*` endpoints are thin wrappers). Publishable (the CLI depends on it) but internal, no stability guarantees; denies `missing_docs`. Not packaged.
+
+## Modules
+
+- execute, schema methods, views. The Graph panel's drawing is the columnar `display::CompactGraph`; properties come per clicked element from `Session::element`. `views::completion_entries`/`token_values` are the function catalogue (REPL, playground completion, generated book step reference).
+- `layout.rs`: the Graph panel's force layout (ForceAtlas2-style, Barnes-Hut quadtree, no dependency, deterministic from a seed), run in slices with a time budget and the session's cancel token; jobs and a cache of finished layouts keyed by the drawn topology; `Session::layout_start/step/cancel/positions`.
+- `selection.rs`: bounded, cancellable selections: `Session::neighbourhood` (centre, depth 1-5, direction, `keep` for an expansion, `leftOut` when cut), `label_sample`, `meta_graph`. The result subgraph limit is `RunOptions::subgraph_max_elements`.
+- load/save; `queries.rs` saved queries (list, get, define/replace with field errors, drop, move, call text; the catalog file `save_catalog_text`/`load_catalog` holds every kind; a GraphML/GraphSON load keeps the catalog); `compression.rs` (list with stats, define/replace with field errors, drop, recompress); `indexes.rs` (list with stats, create with field errors, drop); `store.rs` the Store menu's operations with a registry of databases.
+- Helpers are generic over `S: GraphStorage` (`views`, `display`, `selection`, `edit`'s `element_view`, `create`'s `label_choices_in`/`drawn_in`/`delete_in`, `queries`' `*_in`/`catalog_text`, `compression`'s and `indexes`' `*_in`: trait read API, `Transactional::dry_run`/`transaction`), tested against `Forwarding` of `graphersal-storage-tests` (dev-dependency). A compression entry's `stats` is `null` where the storage reports none; `recompress` there is `Unsupported`.
+
+## Any storage (`storage.rs`)
+
+The graph is an `Arc<dyn SessionGraph>` (`AnyGraph` by upcasting + one method per view/selection/edit/create/queries/compression/index/run-unit operation, blanket for `Graph<S>`, each calling the generic helper), stores are `Arc<dyn SessionStore>` (blanket for `Store<S>`). Every graph it builds (samples and GraphML/GraphSON loads read into a `TraversalGraph` then `GraphFactory::adopt`ed; `.gsnap`; memory stores; forks) comes from the host's `GraphFactory`: `Session::with_storage(Arc::new(StorageKind::<S>::persistent()))` (lossless copy through the load sink in source order, `.gsnap`, stores) or `StorageKind::<S>::new()` (copy through the write API; no `.gsnap`, no stores, the Store menu says so). `Session::new()` = `TraversalGraph` (nothing copied), used by wasm, the dev server and MCP. `load_shared` takes any `IntoSessionGraph`. Tests over `Forwarding` and a `NoCompression` wrapper: `storage/tests.rs`; host example `tests/custom_storage_example.rs` (included in the book by anchors).
+
+## Book tests that live here
+
+`book_playground_examples` runs every `rhai,graph=<sample>` block of the book; `book_step_reference` generates the step reference (see `book/CLAUDE.md`).

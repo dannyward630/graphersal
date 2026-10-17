@@ -1,0 +1,10 @@
+# TinkerPop conformance suite
+
+Agent guidance (also see `README.md` here and `book/src/for_developers/tinkerpop_compliance.md`). Commands are in the root `CLAUDE.md`.
+
+- `--test tinkerpop_features` runs the vendored Apache TinkerPop 3.8.2 Gherkin scenarios (`features/`) through the Rhai DSL and gates them against the ratchet `baseline.toml`. Harness (parser, translator, runner, classifier, report) in `harness/`. Every run writes `target/tinkerpop-report.md`, which ranks failures (missing steps/tokens, wrong results): the fix backlog.
+- **Principle (user decision):** an unimplemented step is fine; an implemented step follows the TinkerPop specification (the feature files win over assumptions) unless a user decision says otherwise. Error-message text is not chased.
+- Scope: the denominator is the compatibility scope (live numbers only in the generated page blocks and the report; never repeat counts elsewhere). Excluded: scenarios with `withStrategies(...)`/`withoutStrategies(...)`, and the deliberate incompatibilities, an explicit reviewed table of scenario ids grouped by reason (`INCOMPATIBILITIES` in `harness/scope.rs`; ids only, never tags; remove an id and regenerate to re-include). The headline separates **Unsupported** (`missing`/`translate`) from **Wrong behaviour of supported steps** (`runtime`, `wrong_result`, `wrong_error`, `timeout`, `panic`), which must stay 0.
+- The page's generated blocks (`<!-- tinkerpop:begin NAME -->` .. `end`) are compared on every run (fails on drift); `TINKERPOP_UPDATE_BASELINE=1` rewrites them with the baseline (root rules 16, 19).
+- Float normalization: the harness compares float64 results within 1 ulp (`compare::floats_within_one_ulp`); nothing else is normalized.
+- `GRAPHERSAL_TEST_STORAGE=forwarding` runs every dataset on `Graph<Forwarding>` (`harness/storage.rs`; the harness holds `Arc<dyn AnyGraph>` in both modes): same baseline and page, no class change allowed, never rewrites them, report `target/tinkerpop-report-forwarding.md`; not in CI, run it locally before a release.
