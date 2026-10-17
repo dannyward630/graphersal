@@ -1,4 +1,4 @@
-# TinkerPop conformance suite
+# TinkerPop 3.8.2 conformance suite
 
 Agent guidance (also see `README.md` here and `book/src/for_developers/tinkerpop_compliance.md`). Commands are in the root `CLAUDE.md`.
 
