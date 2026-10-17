@@ -423,8 +423,8 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "Counts the stream per key (the first by(), default the element) into a map; with a key it is a side effect.",
         "g.v().group_count().by(T.label).next()" => "#{\"person\": 4, \"software\": 2}";
     "traversal" "has":
-        "Keeps elements that have the property (and, with a value or predicate, whose value matches; with a traversal, for whose value the traversal yields a result, like filter(__.values(key)...)); the 3-argument form also tests the label.",
-        "{ [g.v().has(\"person\", \"age\", P.gt(30)).count().next(), g.v().has(\"name\", __.to_lower().is(\"josh\")).count().next()] }" => "[2, 1]";
+        "Keeps elements that have the property (and, with a value or predicate, whose value matches; with a traversal, for whose value the traversal yields a result, like filter(__.values(key)...)); with T.id or T.label first it tests the id or label; the 3-argument form also tests the label.",
+        "{ [g.v().has(\"person\", \"age\", P.gt(30)).count().next(), g.v().has(\"name\", __.to_lower().is(\"josh\")).count().next(), g.v().has(T.label, __.is(\"software\")).count().next()] }" => "[2, 1, 2]";
     "traversal" "has_id":
         "Keeps elements whose id is one of the given ids (ids are strings, see the book page Id Arguments).",
         "g.v().has_id(1, 2).values(\"name\").to_list()" => "[\"marko\", \"vadas\"]";

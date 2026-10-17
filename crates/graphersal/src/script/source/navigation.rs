@@ -12,14 +12,14 @@ impl ScriptGraphTraversalSource {
 
     /// Moves to the adjacent vertices over outgoing edges, optionally only edges with the given
     /// labels. Rhai binding of `out()`, the overload with one argument.
-    pub fn out_single(&mut self, arg: Dynamic) -> Self {
-        self.add_step(Step::Out(vec_dynamic_to_compact_string(vec![arg])))
+    pub fn out_single(&mut self, arg: Dynamic) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::Out(vec_dynamic_to_compact_string("out", vec![arg])?)))
     }
 
     /// Moves to the adjacent vertices over outgoing edges, optionally only edges with the given
     /// labels. Rhai binding of `out()`.
-    pub fn out(&mut self, arg: Vec<Dynamic>) -> Self {
-        self.add_step(Step::Out(vec_dynamic_to_compact_string(arg)))
+    pub fn out(&mut self, arg: Vec<Dynamic>) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::Out(vec_dynamic_to_compact_string("out", arg)?)))
     }
 
     /// Moves to the adjacent vertices over incoming edges, optionally only edges with the given
@@ -30,14 +30,14 @@ impl ScriptGraphTraversalSource {
 
     /// Moves to the adjacent vertices over incoming edges, optionally only edges with the given
     /// labels. Rhai binding of `in()`, the overload with one argument.
-    pub fn in_single(&mut self, arg: Dynamic) -> Self {
-        self.add_step(Step::In(vec_dynamic_to_compact_string(vec![arg])))
+    pub fn in_single(&mut self, arg: Dynamic) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::In(vec_dynamic_to_compact_string("in", vec![arg])?)))
     }
 
     /// Moves to the adjacent vertices over incoming edges, optionally only edges with the given
     /// labels. Rhai binding of `in()`.
-    pub fn in_(&mut self, arg: Vec<Dynamic>) -> Self {
-        self.add_step(Step::In(vec_dynamic_to_compact_string(arg)))
+    pub fn in_(&mut self, arg: Vec<Dynamic>) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::In(vec_dynamic_to_compact_string("in", arg)?)))
     }
 
     /// Moves from a property to the vertex or edge that owns it. Rhai binding of `element()`.
@@ -59,14 +59,17 @@ impl ScriptGraphTraversalSource {
 
     /// Moves to the adjacent vertices over incoming and outgoing edges, optionally only edges with
     /// the given labels. Rhai binding of `both()`, the overload with one argument.
-    pub fn both_single(&mut self, arg: Dynamic) -> Self {
-        self.add_step(Step::Both(vec_dynamic_to_compact_string(vec![arg])))
+    pub fn both_single(&mut self, arg: Dynamic) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::Both(vec_dynamic_to_compact_string(
+            "both",
+            vec![arg],
+        )?)))
     }
 
     /// Moves to the adjacent vertices over incoming and outgoing edges, optionally only edges with
     /// the given labels. Rhai binding of `both()`.
-    pub fn both(&mut self, arg: Vec<Dynamic>) -> Self {
-        self.add_step(Step::Both(vec_dynamic_to_compact_string(arg)))
+    pub fn both(&mut self, arg: Vec<Dynamic>) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::Both(vec_dynamic_to_compact_string("both", arg)?)))
     }
 
     /// Moves to the incident edges in both directions, optionally only edges with the given labels.
@@ -77,14 +80,17 @@ impl ScriptGraphTraversalSource {
 
     /// Moves to the incident edges in both directions, optionally only edges with the given labels.
     /// Rhai binding of `both_e()`, the overload with one argument.
-    pub fn both_e_single(&mut self, arg: Dynamic) -> Self {
-        self.add_step(Step::BothE(vec_dynamic_to_compact_string(vec![arg])))
+    pub fn both_e_single(&mut self, arg: Dynamic) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::BothE(vec_dynamic_to_compact_string(
+            "both_e",
+            vec![arg],
+        )?)))
     }
 
     /// Moves to the incident edges in both directions, optionally only edges with the given labels.
     /// Rhai binding of `both_e()`.
-    pub fn both_e(&mut self, arg: Vec<Dynamic>) -> Self {
-        self.add_step(Step::BothE(vec_dynamic_to_compact_string(arg)))
+    pub fn both_e(&mut self, arg: Vec<Dynamic>) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::BothE(vec_dynamic_to_compact_string("both_e", arg)?)))
     }
 
     /// Moves to the incoming edges, optionally only edges with the given labels. Rhai binding of
@@ -95,14 +101,14 @@ impl ScriptGraphTraversalSource {
 
     /// Moves to the incoming edges, optionally only edges with the given labels. Rhai binding of
     /// `in_e()`, the overload with one argument.
-    pub fn in_e_single(&mut self, arg: Dynamic) -> Self {
-        self.add_step(Step::InE(vec_dynamic_to_compact_string(vec![arg])))
+    pub fn in_e_single(&mut self, arg: Dynamic) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::InE(vec_dynamic_to_compact_string("in_e", vec![arg])?)))
     }
 
     /// Moves to the incoming edges, optionally only edges with the given labels. Rhai binding of
     /// `in_e()`.
-    pub fn in_e(&mut self, arg: Vec<Dynamic>) -> Self {
-        self.add_step(Step::InE(vec_dynamic_to_compact_string(arg)))
+    pub fn in_e(&mut self, arg: Vec<Dynamic>) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::InE(vec_dynamic_to_compact_string("in_e", arg)?)))
     }
 
     /// Moves from an edge to its in (head) vertex. Rhai binding of `in_v()`.
@@ -118,14 +124,17 @@ impl ScriptGraphTraversalSource {
 
     /// Moves to the outgoing edges, optionally only edges with the given labels. Rhai binding of
     /// `out_e()`, the overload with one argument.
-    pub fn out_e_single(&mut self, arg: Dynamic) -> Self {
-        self.add_step(Step::OutE(vec_dynamic_to_compact_string(vec![arg])))
+    pub fn out_e_single(&mut self, arg: Dynamic) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::OutE(vec_dynamic_to_compact_string(
+            "out_e",
+            vec![arg],
+        )?)))
     }
 
     /// Moves to the outgoing edges, optionally only edges with the given labels. Rhai binding of
     /// `out_e()`.
-    pub fn out_e(&mut self, arg: Vec<Dynamic>) -> Self {
-        self.add_step(Step::OutE(vec_dynamic_to_compact_string(arg)))
+    pub fn out_e(&mut self, arg: Vec<Dynamic>) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::OutE(vec_dynamic_to_compact_string("out_e", arg)?)))
     }
 
     /// Moves from an edge to its out (tail) vertex. Rhai binding of `out_v()`.
@@ -320,14 +329,14 @@ impl ScriptGraphTraversalSource {
 
     /// Labels the current step so select(), where() and path() can refer back to it. Rhai binding
     /// of `as()`, the overload with one argument.
-    pub fn as_single(&mut self, arg: Dynamic) -> Self {
-        self.add_step(Step::As(vec_dynamic_to_compact_string(vec![arg])))
+    pub fn as_single(&mut self, arg: Dynamic) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::As(vec_dynamic_to_compact_string("as", vec![arg])?)))
     }
 
     /// Labels the current step so select(), where() and path() can refer back to it. Rhai binding
     /// of `as()`.
-    pub fn as_(&mut self, arg: Vec<Dynamic>) -> Self {
-        self.add_step(Step::As(vec_dynamic_to_compact_string(arg)))
+    pub fn as_(&mut self, arg: Vec<Dynamic>) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::As(vec_dynamic_to_compact_string("as", arg)?)))
     }
 
     /// Sets the out vertex of the edge add_e() creates: a vertex id, a path label or a child
@@ -337,13 +346,13 @@ impl ScriptGraphTraversalSource {
         if arg.is::<ScriptGraphTraversalSource>() {
             return Ok(self.add_step(Step::FromTraversal(try_dynamic_to_gts(arg)?)));
         }
-        Ok(self.add_step(Step::From(vec_dynamic_to_compact_string(vec![arg]))))
+        Ok(self.add_step(Step::From(vec![name_arg("from", arg)?])))
     }
 
     /// Sets the out vertex of the edge add_e() creates: a vertex id, a path label or a child
     /// traversal; for path() it starts the window at a label. Rhai binding of `from()`.
-    pub fn from_step(&mut self, arg: Vec<Dynamic>) -> Self {
-        self.add_step(Step::From(vec_dynamic_to_compact_string(arg)))
+    pub fn from_step(&mut self, arg: Vec<Dynamic>) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::From(vec_dynamic_to_compact_string("from", arg)?)))
     }
 
     /// `to(Direction)`: `out()`/`in()`/`both()` without a label filter; see
@@ -390,9 +399,12 @@ impl ScriptGraphTraversalSource {
         let mut labels = Vec::new();
         for arg in args {
             if arg.is_array() {
-                labels.extend(vec_dynamic_to_compact_string(arg.cast::<rhai::Array>()));
+                labels.extend(vec_dynamic_to_compact_string(
+                    name,
+                    arg.cast::<rhai::Array>(),
+                )?);
             } else {
-                labels.push(dynamic_to_compact_string(arg));
+                labels.push(name_arg(name, arg)?);
             }
         }
         Ok(self.direction_step(direction, labels, kind))
@@ -422,13 +434,13 @@ impl ScriptGraphTraversalSource {
         if arg.is::<ScriptGraphTraversalSource>() {
             return Ok(self.add_step(Step::ToTraversal(try_dynamic_to_gts(arg)?)));
         }
-        Ok(self.add_step(Step::To(vec_dynamic_to_compact_string(vec![arg]))))
+        Ok(self.add_step(Step::To(vec![name_arg("to", arg)?])))
     }
 
     /// Sets the in vertex of the edge add_e() creates (vertex id, path label or child traversal);
     /// with a Direction it moves like out()/in()/both(). Rhai binding of `to()`.
-    pub fn to(&mut self, arg: Vec<Dynamic>) -> Self {
-        self.add_step(Step::To(vec_dynamic_to_compact_string(arg)))
+    pub fn to(&mut self, arg: Vec<Dynamic>) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::To(vec_dynamic_to_compact_string("to", arg)?)))
     }
 
     /// Selects path labels, map keys or side effects (one label: the value, several: a map; an
@@ -473,7 +485,7 @@ impl ScriptGraphTraversalSource {
                     position + 1
                 )));
             }
-            return Ok(self.add_step(Step::Select(vec_dynamic_to_compact_string(all))));
+            return Ok(self.add_step(Step::Select(vec_dynamic_to_compact_string("select", all)?)));
         };
         let rest: Vec<Dynamic> = args.collect();
         if rest.is_empty() {

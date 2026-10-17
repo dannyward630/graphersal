@@ -130,7 +130,8 @@ fn test_is_mutating_coverage() {
         .v_empty()
         .has_label(vec![Dynamic::from("person")])
         .expect("has_label")
-        .values_single(Dynamic::from("name"));
+        .values_single(Dynamic::from("name"))
+        .expect("values");
     assert!(!read_source.is_mutating());
 
     // Mutating: add_v
@@ -189,6 +190,7 @@ fn test_is_mutating_coverage() {
     let by_read = source
         .v_empty()
         .project_single(Dynamic::from("a"))
+        .expect("project")
         .by(Dynamic::from(ScriptGraphSource::empty().out_empty()))
         .expect("by(traversal)");
     assert!(!by_read.is_mutating());
@@ -201,6 +203,7 @@ fn test_is_mutating_coverage() {
     let by_mut = source
         .v_empty()
         .project_single(Dynamic::from("a"))
+        .expect("project")
         .by(Dynamic::from(
             ScriptGraphSource::empty().add_v("x".to_string()),
         ))
@@ -214,6 +217,7 @@ fn test_is_mutating_coverage() {
     let by_nested = source
         .v_empty()
         .project_single(Dynamic::from("a"))
+        .expect("project")
         .by(Dynamic::from(nested))
         .expect("by(traversal)");
     assert!(by_nested.is_mutating());

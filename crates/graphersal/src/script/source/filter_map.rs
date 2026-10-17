@@ -222,14 +222,14 @@ impl ScriptGraphTraversalSource {
 
     /// Emits the value of the named side effect(s) (one map for several keys) after the stream is
     /// exhausted. Rhai binding of `cap()`, the overload with one argument.
-    pub fn cap_single(&mut self, arg: Dynamic) -> Self {
-        self.add_step(Step::Cap(vec![dynamic_to_compact_string(arg)]))
+    pub fn cap_single(&mut self, arg: Dynamic) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::Cap(vec![name_arg("cap", arg)?])))
     }
 
     /// Emits the value of the named side effect(s) (one map for several keys) after the stream is
     /// exhausted. Rhai binding of `cap()`.
-    pub fn cap(&mut self, arg: Vec<Dynamic>) -> Self {
-        self.add_step(Step::Cap(vec_dynamic_to_compact_string(arg)))
+    pub fn cap(&mut self, arg: Vec<Dynamic>) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::Cap(vec_dynamic_to_compact_string("cap", arg)?)))
     }
 
     /// Collects the whole stream into one list; with a seed and an Operator it reduces the stream
@@ -470,9 +470,9 @@ impl ScriptGraphTraversalSource {
     /// Keeps properties whose key is one of the given keys. Rhai binding of `has_key()`.
     pub fn has_key(&mut self, arg: Vec<Dynamic>) -> Result<Self, Box<rhai::EvalAltResult>> {
         Ok(match split_token_args("has_key", arg)? {
-            TokenArgs::Literals(values) => {
-                self.add_step(Step::HasKey(vec_dynamic_to_compact_string(values)))
-            }
+            TokenArgs::Literals(values) => self.add_step(Step::HasKey(
+                vec_dynamic_to_compact_string("has_key", values)?,
+            )),
             TokenArgs::Predicate(predicate) => self.add_step(Step::HasKeyP(predicate)),
         })
     }
@@ -497,9 +497,9 @@ impl ScriptGraphTraversalSource {
     /// unlabeled ones (Graphersal extension). Rhai binding of `has_label()`.
     pub fn has_label(&mut self, arg: Vec<Dynamic>) -> Result<Self, Box<rhai::EvalAltResult>> {
         Ok(match split_token_args("has_label", arg)? {
-            TokenArgs::Literals(values) => {
-                self.add_step(Step::HasLabel(vec_dynamic_to_compact_string(values)))
-            }
+            TokenArgs::Literals(values) => self.add_step(Step::HasLabel(
+                vec_dynamic_to_compact_string("has_label", values)?,
+            )),
             TokenArgs::Predicate(predicate) => self.add_step(Step::HasLabelP(predicate)),
         })
     }
@@ -513,6 +513,7 @@ impl ScriptGraphTraversalSource {
         this: &mut Self,
         arg: Dynamic,
     ) -> Result<Self, Box<rhai::EvalAltResult>> {
+        refuse_traversal("has_value", "a value or a predicate", &arg)?;
         if arg.is::<ArgP>() || arg.type_name() == std::any::type_name::<ArgP>() {
             let val = try_dynamic_to_argp(&arg)?;
             Ok(this.add_step(Step::HasValueP(val)))
@@ -530,6 +531,9 @@ impl ScriptGraphTraversalSource {
         this: &mut Self,
         arg: Vec<Dynamic>,
     ) -> Result<Self, Box<rhai::EvalAltResult>> {
+        for value in &arg {
+            refuse_traversal("has_value", "values", value)?;
+        }
         let values = value_args(&ctx, arg)?;
         Ok(this.add_step(Step::HasValueAny(values)))
     }
@@ -538,6 +542,7 @@ impl ScriptGraphTraversalSource {
     /// dispatch, mirroring [`Self::has_p`]'s own direct-predicate script method. Like `has_p()`,
     /// a bare scalar is also accepted here (`try_dynamic_to_argp` wraps it as `P.eq(value)`).
     pub fn has_value_p(&mut self, arg: Dynamic) -> Result<Self, Box<rhai::EvalAltResult>> {
+        refuse_traversal("has_value", "a value or a predicate", &arg)?;
         let val = try_dynamic_to_argp(&arg)?;
         Ok(self.add_step(Step::HasValueP(val)))
     }
@@ -552,10 +557,10 @@ impl ScriptGraphTraversalSource {
         prop: Dynamic,
         arg: Dynamic,
     ) -> Result<Self, Box<rhai::EvalAltResult>> {
-        let prop = dynamic_to_prop_key(prop);
+        let prop = dynamic_to_prop_key("has", prop)?;
         if arg.is::<ScriptGraphTraversalSource>() {
             let child = try_dynamic_to_gts(arg)?;
-            Ok(this.add_step(Step::HasTraversal(prop, child)))
+            Ok(this.add_step(Step::HasTraversal(prop.into(), child)))
         } else if arg.is::<ArgP>() || arg.type_name() == std::any::type_name::<ArgP>() {
             let val = try_dynamic_to_argp(&arg)?;
             Ok(this.add_step(Step::HasP(prop, val)))
@@ -582,19 +587,20 @@ impl ScriptGraphTraversalSource {
     /// element/property that carries `key`, regardless of value. Distinct from `hasKey()`, which
     /// vanilla TinkerPop reserves for a property-level check after `properties()`; see
     /// `step_has_property.rs`'s doc comment.
-    pub fn has_property(&mut self, key: Dynamic) -> Self {
-        self.add_step(Step::HasProperty(dynamic_to_prop_key(key)))
+    pub fn has_property(&mut self, key: Dynamic) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::HasProperty(dynamic_to_prop_key("has", key)?)))
     }
 
     /// `hasNot(key)`: keeps the element/property that does *not* carry `key`.
-    pub fn has_not(&mut self, key: Dynamic) -> Self {
-        self.add_step(Step::HasNot(dynamic_to_prop_key(key)))
+    pub fn has_not(&mut self, key: Dynamic) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::HasNot(dynamic_to_prop_key("has_not", key)?)))
     }
 
     /// `has(T.id, value)`/`has(T.label, value)`: TinkerPop's token form of `has()`, rewritten to
     /// the equivalent `has_id(..)`/`has_label(..)` step. The value is a literal, `P.eq(v)` or
     /// `P.within(..)`; any other predicate or token is a script error, since `has_id()`/
-    /// `has_label()` only match by equality.
+    /// `has_label()` only match by equality. With a traversal (`has(T.id, __.is("1"))`,
+    /// TinkerPop's `has(T, Traversal)`) it is the `has_traversal` step on the id or label.
     pub fn has_t(&mut self, token: ArgBy, arg: Dynamic) -> Result<Self, Box<rhai::EvalAltResult>> {
         let is_id = match token {
             ArgBy::Id => true,
@@ -614,6 +620,15 @@ impl ScriptGraphTraversalSource {
                 ));
             }
         };
+        if arg.is::<ScriptGraphTraversalSource>() {
+            let child = try_dynamic_to_gts(arg)?;
+            let token = if is_id {
+                crate::RecordKey::Id
+            } else {
+                crate::RecordKey::Label
+            };
+            return Ok(self.add_step(Step::HasTraversal(token.into(), child)));
+        }
         if arg.is_array() {
             return Err(has_t_mismatch(
                 "a value or a predicate with T.id/T.label",
@@ -742,26 +757,28 @@ impl ScriptGraphTraversalSource {
 
     /// Yields the values of the given (or all) properties; a jpath() key reads a nested value. Rhai
     /// binding of `values()`, the overload with one argument.
-    pub fn values_single(&mut self, arg: Dynamic) -> Self {
-        self.add_step(Step::Values(vec![dynamic_to_prop_key(arg)]))
+    pub fn values_single(&mut self, arg: Dynamic) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::Values(vec![dynamic_to_prop_key("values", arg)?])))
     }
 
     /// Yields the values of the given (or all) properties; a jpath() key reads a nested value. Rhai
     /// binding of `values()`.
-    pub fn values(&mut self, arg: Vec<Dynamic>) -> Self {
-        self.add_step(Step::Values(vec_dynamic_to_prop_key(arg)))
+    pub fn values(&mut self, arg: Vec<Dynamic>) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::Values(vec_dynamic_to_prop_key("values", arg)?)))
     }
 
     /// Turns each traverser into a map with the given keys, one by() per key in order. Rhai binding
     /// of `project()`, the overload with one argument.
-    pub fn project_single(&mut self, arg: Dynamic) -> Self {
-        self.add_step(Step::Project(vec![dynamic_to_compact_string(arg)]))
+    pub fn project_single(&mut self, arg: Dynamic) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::Project(vec![name_arg("project", arg)?])))
     }
 
     /// Turns each traverser into a map with the given keys, one by() per key in order. Rhai binding
     /// of `project()`.
-    pub fn project(&mut self, arg: Vec<Dynamic>) -> Self {
-        self.add_step(Step::Project(vec_dynamic_to_compact_string(arg)))
+    pub fn project(&mut self, arg: Vec<Dynamic>) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::Project(vec_dynamic_to_compact_string(
+            "project", arg,
+        )?)))
     }
 
     /// Turns each vertex or edge into a map of its id, label and the given (or all) properties; an
@@ -774,14 +791,20 @@ impl ScriptGraphTraversalSource {
     /// Turns each vertex or edge into a map of its id, label and the given (or all) properties; an
     /// edge also gets its endpoints. Rhai binding of `element_map()`, the overload with one
     /// argument.
-    pub fn element_map_single(&mut self, arg: Dynamic) -> Self {
-        self.add_step(Step::ElementMap(vec![dynamic_to_prop_key(arg)]))
+    pub fn element_map_single(&mut self, arg: Dynamic) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::ElementMap(vec![dynamic_to_prop_key(
+            "element_map",
+            arg,
+        )?])))
     }
 
     /// Turns each vertex or edge into a map of its id, label and the given (or all) properties; an
     /// edge also gets its endpoints. Rhai binding of `element_map()`.
-    pub fn element_map(&mut self, arg: Vec<Dynamic>) -> Self {
-        self.add_step(Step::ElementMap(vec_dynamic_to_prop_key(arg)))
+    pub fn element_map(&mut self, arg: Vec<Dynamic>) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::ElementMap(vec_dynamic_to_prop_key(
+            "element_map",
+            arg,
+        )?)))
     }
 
     /// Yields the property elements of vertices/edges (all, or the given keys). Rhai binding of
@@ -792,14 +815,20 @@ impl ScriptGraphTraversalSource {
 
     /// Yields the property elements of vertices/edges (all, or the given keys). Rhai binding of
     /// `properties()`, the overload with one argument.
-    pub fn properties_single(&mut self, arg: Dynamic) -> Self {
-        self.add_step(Step::Properties(vec![dynamic_to_prop_key(arg)]))
+    pub fn properties_single(&mut self, arg: Dynamic) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::Properties(vec![dynamic_to_prop_key(
+            "properties",
+            arg,
+        )?])))
     }
 
     /// Yields the property elements of vertices/edges (all, or the given keys). Rhai binding of
     /// `properties()`.
-    pub fn properties(&mut self, arg: Vec<Dynamic>) -> Self {
-        self.add_step(Step::Properties(vec_dynamic_to_prop_key(arg)))
+    pub fn properties(&mut self, arg: Vec<Dynamic>) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::Properties(vec_dynamic_to_prop_key(
+            "properties",
+            arg,
+        )?)))
     }
 
     /// Yields the value of each property. Rhai binding of `value()`.

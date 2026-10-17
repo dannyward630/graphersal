@@ -90,7 +90,7 @@ pub use pop::Pop;
 #[cfg(feature = "script")]
 pub(crate) use predicate::TextRegex;
 pub use predicate::{P, PValue};
-pub use prop_key::{PropKey, PropKeys};
+pub use prop_key::{HasKey, PropKey, PropKeys};
 pub use property_map::PropertyMap;
 pub use record_key::RecordKey;
 pub(crate) use sack::{SackArena, SackRef, SackSpec};

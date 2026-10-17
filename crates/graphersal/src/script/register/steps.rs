@@ -395,7 +395,9 @@ pub(super) fn register(registry: &mut Registry) {
             &["addV", "add_v"],
             |ctx: NativeCallContext,
              this: &mut ScriptGraphTraversalSource,
-             labels: Vec<Dynamic>| { this.add_v_labels(labels).stamped(&ctx) },
+             labels: Vec<Dynamic>| {
+                this.add_v_labels(labels).map(|source| source.stamped(&ctx))
+            },
         )
         .register_fn_as(
             &["addV", "add_v"],

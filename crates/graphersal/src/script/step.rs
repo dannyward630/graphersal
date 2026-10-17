@@ -212,7 +212,7 @@ pub(super) enum Step {
     Has(PropKey, ElementProperty),
     /// `has(key, traversal)`: TinkerPop's `has(String, Traversal)`, i.e.
     /// `filter(values(key).traversal)`.
-    HasTraversal(PropKey, ScriptGraphTraversalSource),
+    HasTraversal(crate::value::HasKey, ScriptGraphTraversalSource),
     /// `has(key)` (element-level existence: keeps the element/property carrying `key`,
     /// regardless of value) — distinct from `HasKey`/`hasKey()`, which in vanilla TinkerPop is a
     /// property-level filter used after `properties()`. See `step_has_property.rs`'s doc comment.

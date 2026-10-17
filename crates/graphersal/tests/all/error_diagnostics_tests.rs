@@ -6961,3 +6961,162 @@ fn embed_property_and_text_query_errors_carry_their_help() {
         "{report}"
     );
 }
+
+/// A traversal given to a step that takes values (ids, labels, names, property keys, property
+/// values) is an argument error naming the traversal, never a filter or name made of its type
+/// name that silently matches nothing (issue #9); the help names the step's value forms and the
+/// step that runs the traversal instead, and every suggested query gives the expected result.
+#[cfg(feature = "script")]
+#[test]
+fn a_traversal_where_a_step_takes_values_is_refused() {
+    use crate::script_host::{eval, eval_value};
+
+    let graph = std::sync::Arc::new(GraphSource::tinkerpop_modern());
+    let cases = [
+        (
+            r#"g.v().has_value(__.is("marko")).count().next()"#,
+            "'has_value': expected a value or a predicate, got a traversal (__.is(",
+            r#"g.v().filter(__.values().is("marko"))"#,
+        ),
+        (
+            r#"g.v().has_value([__.out(), "x"]).count().next()"#,
+            "'has_value': expected values, got a traversal (__.out())",
+            r#"g.v().has("name", __.is("marko"))"#,
+        ),
+        (
+            r#"g.v().has_label(__.is("person")).count().next()"#,
+            "'has_label': expected values or a single predicate, got a traversal",
+            r#"g.v().filter(__.label().is("person"))"#,
+        ),
+        (
+            r#"g.v().hasLabel("person", __.out()).count().next()"#,
+            "'has_label': expected values or a single predicate, got a traversal (__.out())",
+            r#"g.v().filter(__.label().is("person"))"#,
+        ),
+        (
+            r#"g.v().has_id(__.is("1")).count().next()"#,
+            "'has_id': expected values or a single predicate, got a traversal",
+            r#"g.v().filter(__.id().is("1"))"#,
+        ),
+        (
+            r#"g.v().properties().has_key(__.is("name")).count().next()"#,
+            "'has_key': expected values or a single predicate, got a traversal",
+            r#"g.v().properties().filter(__.key().is("name"))"#,
+        ),
+        (
+            r#"g.v().has(__.out(), 1).count().next()"#,
+            "'has': expected a property key (a string or a jpath(..)), got a traversal",
+            r#"g.v().has("name", __.is("marko"))"#,
+        ),
+        (
+            r#"g.v().has_not(__.out()).count().next()"#,
+            "'has_not': expected a property key (a string or a jpath(..)), got a traversal",
+            r#"g.v().has_not("age")"#,
+        ),
+        (
+            r#"g.v().out(__.out()).count().next()"#,
+            "'out': expected names (strings), got a traversal (__.out())",
+            r#"g.v().out_e().where(__.in_v().has("name", "josh")).in_v()"#,
+        ),
+        (
+            r#"g.v().inE("knows", __.out()).count().next()"#,
+            "'in_e': expected names (strings), got a traversal",
+            r#"g.v().out("knows", "created")"#,
+        ),
+        (
+            r#"g.v().to(Direction.OUT, [__.out()]).count().next()"#,
+            "'to': expected names (strings), got a traversal",
+            r#"g.v().project("n").by(__.out().count())"#,
+        ),
+        (
+            r#"g.v().values(__.out()).count().next()"#,
+            "'values': expected a property key (a string or a jpath(..)), got a traversal",
+            r#"g.v().project("name", "friends").by("name").by(__.out("knows").count())"#,
+        ),
+        (
+            r#"g.v().properties("name", __.out()).count().next()"#,
+            "'properties': expected a property key (a string or a jpath(..)), got a traversal",
+            r#"g.v().values(jpath("meta.k"))"#,
+        ),
+        (
+            r#"g.v().element_map(__.out()).next()"#,
+            "'element_map': expected a property key (a string or a jpath(..)), got a traversal",
+            r#"g.v().values("name")"#,
+        ),
+        (
+            r#"g.v().as(__.out()).count().next()"#,
+            "'as': expected names (strings), got a traversal",
+            r#"g.v().as("a").out().as("b").select("a", "b")"#,
+        ),
+        (
+            r#"g.v().as("a").select("a", __.out()).next()"#,
+            "'select': expected names (strings), got a traversal",
+            r#"g.v("1").as("a").select(__.constant("a"))"#,
+        ),
+        (
+            r#"g.v().project(__.out()).by("name").next()"#,
+            "'project': expected names (strings), got a traversal",
+            r#"g.v().project("n").by(__.out().count())"#,
+        ),
+        (
+            r#"g.v().cap(__.out()).next()"#,
+            "'cap': expected names (strings), got a traversal",
+            r#"g.v().project("name").by("name")"#,
+        ),
+        (
+            r#"g.add_v([__.out()]).next()"#,
+            "'add_v': expected names (strings), got a traversal",
+            r#"g.inject(1).add_v(__.constant("person"))"#,
+        ),
+    ];
+    for (query, error, fix) in cases {
+        let report = eval(graph.clone(), query)
+            .expect_err(&format!("{query} must fail"))
+            .to_string();
+        assert!(report.contains(error), "{query}: {report}");
+        assert!(
+            report.contains(fix),
+            "{query}: the help must name {fix} in: {report}"
+        );
+    }
+
+    // The suggested queries run and give what the failing ones meant.
+    for (query, expected) in [
+        (r#"g.v().filter(__.values().is("marko")).count().next()"#, 1),
+        (r#"g.v().has("name", __.is("marko")).count().next()"#, 1),
+        (r#"g.v().filter(__.label().is("person")).count().next()"#, 4),
+        (r#"g.v().filter(__.id().is("1")).count().next()"#, 1),
+        (
+            r#"g.v().properties().filter(__.key().is("name")).count().next()"#,
+            6,
+        ),
+        (r#"g.v().has_not("age").count().next()"#, 2),
+        (
+            r#"g.v().out_e().where(__.in_v().has("name", "josh")).in_v().count().next()"#,
+            1,
+        ),
+        (r#"g.v().out("knows", "created").count().next()"#, 6),
+        (
+            r#"g.v().project("name", "friends").by("name").by(__.out("knows").count()).count().next()"#,
+            6,
+        ),
+        (
+            r#"g.v().as("a").out().as("b").select("a", "b").count().next()"#,
+            6,
+        ),
+        (
+            r#"g.v("1").as("a").select(__.constant("a")).count().next()"#,
+            1,
+        ),
+        (
+            r#"g.inject(1).add_v(__.constant("person")).count().next()"#,
+            1,
+        ),
+    ] {
+        let count = eval_value(graph.clone(), query)
+            .unwrap_or_else(|err| panic!("{query}: {err}"))
+            .as_int()
+            .unwrap_or_else(|_| panic!("{query}: not an integer"));
+        assert_eq!(count, expected, "{query}");
+    }
+}

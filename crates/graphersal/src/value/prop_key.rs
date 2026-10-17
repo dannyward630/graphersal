@@ -86,6 +86,39 @@ impl From<&JsonPath> for PropKey {
     }
 }
 
+/// What `has_traversal(key, traversal)` runs its traversal on: a property key (a name or a
+/// [`JsonPath`], everything that converts to a [`PropKey`]) or the token
+/// [`RecordKey::Id`](crate::RecordKey::Id) / [`RecordKey::Label`](crate::RecordKey::Label)
+/// (TinkerPop's `has(T.id, traversal)` / `has(T.label, traversal)`). A
+/// [`RecordKey::Name`](crate::RecordKey::Name) is the property of that name; any other token
+/// fails when the traversal runs.
+///
+/// Public because `has_traversal` takes `impl Into<HasKey>`; it is built only through its
+/// `From` conversions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HasKey {
+    /// A property key.
+    Property(PropKey),
+    /// A token key (`T.id`, `T.label`).
+    Token(crate::RecordKey),
+}
+
+impl<T: Into<PropKey>> From<T> for HasKey {
+    fn from(key: T) -> Self {
+        HasKey::Property(key.into())
+    }
+}
+
+impl From<crate::RecordKey> for HasKey {
+    fn from(key: crate::RecordKey) -> Self {
+        match key {
+            crate::RecordKey::Name(name) => HasKey::Property(PropKey::Name(name)),
+            token => HasKey::Token(token),
+        }
+    }
+}
+
 /// The property-key arguments of `values(..)`/`properties(..)`: none, one key, or a list.
 ///
 /// Anything that converts to a list of literal names (`None`, `"name"`, `vec!["a", "b"]`, ...) keeps working

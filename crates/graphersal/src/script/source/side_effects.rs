@@ -207,8 +207,10 @@ impl ScriptGraphTraversalSource {
 
     /// `add_v(["Person", "Admin"])` — a list argument creates a multi-label vertex (D8), in the
     /// order given. Mirrors `has_label`'s single-arg/`Vec<Dynamic>` overload split.
-    pub fn add_v_labels(&mut self, arg: Vec<Dynamic>) -> Self {
-        self.add_step(Step::AddV(Some(vec_dynamic_to_compact_string(arg))))
+    pub fn add_v_labels(&mut self, arg: Vec<Dynamic>) -> Result<Self, Box<rhai::EvalAltResult>> {
+        Ok(self.add_step(Step::AddV(Some(vec_dynamic_to_compact_string(
+            "add_v", arg,
+        )?))))
     }
 
     // pub fn add_v_(&mut self, arg: String) -> Self {
@@ -241,8 +243,9 @@ impl ScriptGraphTraversalSource {
     /// Graphersal form of has(key, predicate): keeps elements whose property matches the predicate
     /// (a bare value means P.eq). Rhai binding of `has_p()`.
     pub fn has_p(&mut self, prop: Dynamic, arg: Dynamic) -> Result<Self, Box<rhai::EvalAltResult>> {
+        let prop = dynamic_to_prop_key("has", prop)?;
         let val = try_dynamic_to_argp(&arg)?;
-        Ok(self.add_step(Step::HasP(dynamic_to_prop_key(prop), val)))
+        Ok(self.add_step(Step::HasP(prop, val)))
     }
 
     /// `property(key, value|traversal)`: `key` is a plain name or a `jpath(..)` (written below the

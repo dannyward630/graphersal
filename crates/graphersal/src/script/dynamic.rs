@@ -159,18 +159,31 @@ pub(super) fn nullable_string(
     ))
 }
 
-/// A property key from a script value: a `JsonPath` (from `jpath("...")`) is a path key, anything
-/// else is the literal name exactly as [`dynamic_to_compact_string`] reads it. A string is never
-/// parsed as a path.
-pub(super) fn dynamic_to_prop_key(arg: Dynamic) -> PropKey {
+/// What a property-key argument takes, in the diagnostic of a refused one.
+const PROPERTY_KEY: &str = "a property key (a string or a jpath(..))";
+
+/// A property key of `step` from a script value: a `JsonPath` (from `jpath("...")`) is a path
+/// key, anything else is the literal name exactly as [`dynamic_to_compact_string`] reads it. A
+/// string is never parsed as a path. A traversal is refused ([`refuse_traversal`]).
+pub(super) fn dynamic_to_prop_key(
+    step: &str,
+    arg: Dynamic,
+) -> Result<PropKey, Box<rhai::EvalAltResult>> {
+    refuse_traversal(step, PROPERTY_KEY, &arg)?;
     if let Some(path) = arg.read_lock::<crate::value::JsonPath>() {
-        return PropKey::Path(path.clone());
+        return Ok(PropKey::Path(path.clone()));
     }
-    PropKey::Name(dynamic_to_compact_string(arg))
+    Ok(PropKey::Name(dynamic_to_compact_string(arg)))
 }
 
-pub(super) fn vec_dynamic_to_prop_key(arg: Vec<Dynamic>) -> Vec<PropKey> {
-    arg.into_iter().map(dynamic_to_prop_key).collect()
+/// [`dynamic_to_prop_key`] for every item of `arg`.
+pub(super) fn vec_dynamic_to_prop_key(
+    step: &str,
+    arg: Vec<Dynamic>,
+) -> Result<Vec<PropKey>, Box<rhai::EvalAltResult>> {
+    arg.into_iter()
+        .map(|key| dynamic_to_prop_key(step, key))
+        .collect()
 }
 
 pub(super) fn vec_dynamic_to_string(arg: Vec<Dynamic>) -> Vec<String> {
@@ -264,6 +277,30 @@ pub(super) fn ids_from_dynamic(
     Ok(out)
 }
 
+/// Refuses a traversal where `step` takes values (ids, labels, keys, property values): its
+/// text would be the type name `GraphTraversalSource`, which matches nothing, so the step would
+/// filter everything out without an error (issue #9). `expected` names what the step takes.
+pub(super) fn refuse_traversal(
+    step: &str,
+    expected: &str,
+    arg: &Dynamic,
+) -> Result<(), Box<rhai::EvalAltResult>> {
+    if !arg.is::<ScriptGraphTraversalSource>() {
+        return Ok(());
+    }
+    let actual = match super::render::token_literal(arg) {
+        Some(literal) => format!("{} ({literal})", crate::error::TRAVERSAL_ARGUMENT),
+        None => crate::error::TRAVERSAL_ARGUMENT.to_string(),
+    };
+    Err(script_error_from_script(
+        crate::error::ScriptError::ArgumentMismatch {
+            step_name: step.to_string(),
+            expected: expected.to_string(),
+            actual,
+        },
+    ))
+}
+
 /// The arguments of `hasId`/`hasLabel`/`hasKey`: plain values, or one predicate.
 pub(super) enum TokenArgs {
     Literals(Vec<Dynamic>),
@@ -273,11 +310,14 @@ pub(super) enum TokenArgs {
 /// Splits the arguments of a token filter. A predicate is never stringified into an id, label or
 /// key: `P.eq(x)` and `P.within(xs)` become the literal form (so the optimizer can still fold it
 /// into the source step), any other predicate is kept, and a predicate mixed with other
-/// arguments is an argument error.
+/// arguments is an argument error. A traversal is refused ([`refuse_traversal`]).
 pub(super) fn split_token_args(
     step_name: &str,
     args: Vec<Dynamic>,
 ) -> Result<TokenArgs, Box<rhai::EvalAltResult>> {
+    for arg in &args {
+        refuse_traversal(step_name, "values or a single predicate", arg)?;
+    }
     let predicates = args.iter().filter(|a| a.is::<ArgP>()).count();
     if predicates == 0 {
         return Ok(TokenArgs::Literals(args));
@@ -331,8 +371,22 @@ pub(super) fn argp_to_p(arg: &ArgP) -> P<PValue> {
     }
 }
 
-pub(super) fn vec_dynamic_to_compact_string(arg: Vec<Dynamic>) -> Vec<CompactString> {
-    arg.into_iter().map(dynamic_to_compact_string).collect()
+/// A name argument of `step` (a label, a step label, a side-effect or projection key) as
+/// [`dynamic_to_compact_string`] reads it; a traversal is refused ([`refuse_traversal`]).
+pub(super) fn name_arg(
+    step: &str,
+    arg: Dynamic,
+) -> Result<CompactString, Box<rhai::EvalAltResult>> {
+    refuse_traversal(step, "names (strings)", &arg)?;
+    Ok(dynamic_to_compact_string(arg))
+}
+
+/// [`name_arg`] for every item of `arg`.
+pub(super) fn vec_dynamic_to_compact_string(
+    step: &str,
+    arg: Vec<Dynamic>,
+) -> Result<Vec<CompactString>, Box<rhai::EvalAltResult>> {
+    arg.into_iter().map(|name| name_arg(step, name)).collect()
 }
 
 /// A `to_list()`/`next()` result as a script value: a graph becomes a traversal source over it,

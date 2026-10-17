@@ -3,7 +3,7 @@
 
 `has` · category: [Filters](../../traversal/step_reference.md#filters)
 
-Keeps elements that have the property (and, with a value or predicate, whose value matches; with a traversal, for whose value the traversal yields a result, like filter(__.values(key)...)); the 3-argument form also tests the label.
+Keeps elements that have the property (and, with a value or predicate, whose value matches; with a traversal, for whose value the traversal yields a result, like filter(__.values(key)...)); with T.id or T.label first it tests the id or label; the 3-argument form also tests the label.
 
 ## Forms
 
@@ -17,7 +17,7 @@ has(arg1: string, arg2: any, arg3: any)
 ## Example
 
 ```rhai,graph=modern
-{ [g.v().has("person", "age", P.gt(30)).count().next(), g.v().has("name", __.to_lower().is("josh")).count().next()] }   // [2, 1]
+{ [g.v().has("person", "age", P.gt(30)).count().next(), g.v().has("name", __.to_lower().is("josh")).count().next(), g.v().has(T.label, __.is("software")).count().next()] }   // [2, 1, 2]
 ```
 
 ## See also

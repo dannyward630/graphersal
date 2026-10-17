@@ -93,7 +93,7 @@ impl ScriptGraphTraversalSource {
     ) -> Result<Self, Box<rhai::EvalAltResult>> {
         if is_key(&first) {
             let query = query_arg(&ctx, "similarity", second)?;
-            let key = dynamic_to_prop_key(first);
+            let key = dynamic_to_prop_key("similarity", first)?;
             return Ok(this.add_step(Step::Similarity(Some(key), query, None)));
         }
         let query = query_arg(&ctx, "similarity", first)?;
@@ -125,7 +125,7 @@ impl ScriptGraphTraversalSource {
     ) -> Result<Self, Box<rhai::EvalAltResult>> {
         let query = query_arg(&ctx, "similarity", q)?;
         let metric = metric_arg("similarity", metric)?;
-        let key = dynamic_to_prop_key(key);
+        let key = dynamic_to_prop_key("similarity", key)?;
         Ok(this.add_step(Step::Similarity(Some(key), query, Some(metric))))
     }
 
@@ -192,7 +192,7 @@ impl ScriptGraphTraversalSource {
             }
         }
         let query = query_arg(&ctx, "nearest", q)?;
-        let key = dynamic_to_prop_key(key);
+        let key = dynamic_to_prop_key("nearest", key)?;
         Ok(this.add_step(Step::Nearest(key, query, k, metric)))
     }
 
@@ -215,7 +215,7 @@ impl ScriptGraphTraversalSource {
             return Ok(self.add_step(Step::Embed(None, embedder)));
         }
         if is_key(&arg) {
-            return Ok(self.add_step(Step::Embed(Some(dynamic_to_prop_key(arg)), None)));
+            return Ok(self.add_step(Step::Embed(Some(dynamic_to_prop_key("embed", arg)?), None)));
         }
         Err(script_error_from_script(
             crate::error::ScriptError::ArgumentMismatch {
@@ -245,7 +245,10 @@ impl ScriptGraphTraversalSource {
             ));
         }
         let embedder = embed_options(&options)?;
-        Ok(self.add_step(Step::Embed(Some(dynamic_to_prop_key(key)), embedder)))
+        Ok(self.add_step(Step::Embed(
+            Some(dynamic_to_prop_key("embed", key)?),
+            embedder,
+        )))
     }
 
     /// `g.embedders()`: the embedders of the session, one map each (`name`, `model`,
@@ -392,7 +395,7 @@ impl EmbedPropertyOptions {
                             type_name_of(value),
                         ));
                     }
-                    from = Some(dynamic_to_prop_key(value.clone()));
+                    from = Some(dynamic_to_prop_key("embed_property", value.clone())?);
                 }
                 "element" => {
                     parsed.element = match text("element", value)?.as_str() {

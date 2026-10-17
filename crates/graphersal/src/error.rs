@@ -2598,6 +2598,66 @@ pub enum ScriptError {
     },
 }
 
+/// The `actual` text of a [`ScriptError::ArgumentMismatch`] for a traversal given where a step
+/// takes values (issue #9); the `help()` arm recognizes it by this prefix.
+pub(crate) const TRAVERSAL_ARGUMENT: &str = "a traversal";
+
+/// The help of a traversal given to a step that takes values (ids, labels, names, property
+/// keys): the step's own value forms, and the step that runs the traversal instead.
+fn traversal_argument_help(step_name: &str) -> String {
+    match step_name {
+        "has_value" => "has_value() compares property values with a value or a predicate, not \
+             a traversal: g.v().has_value(\"marko\") or g.v().has_value(P.within(\"marko\", \
+             \"josh\")). To test the values with a traversal, use filter(): \
+             g.v().filter(__.values().is(\"marko\")), or has(key, traversal) for one property: \
+             g.v().has(\"name\", __.is(\"marko\"))."
+            .to_string(),
+        "has_label" => "has_label() takes labels or a predicate, not a traversal: \
+             g.v().has_label(\"person\") or g.v().has_label(P.within(\"person\", \"software\")). \
+             To test the label with a traversal, use filter(): \
+             g.v().filter(__.label().is(\"person\"))."
+            .to_string(),
+        "has_id" => "has_id() takes ids or a predicate, not a traversal: g.v().has_id(\"1\") or \
+             g.v().has_id(P.within(\"1\", \"2\")). To test the id with a traversal, use \
+             filter(): g.v().filter(__.id().is(\"1\"))."
+            .to_string(),
+        "has_key" => "has_key() takes property keys or a predicate, not a traversal: \
+             g.v().properties().has_key(\"name\"). To test the key with a traversal, use \
+             filter(): g.v().properties().filter(__.key().is(\"name\"))."
+            .to_string(),
+        "has_not" => "has_not() takes a property key (a string or a jpath(..)), not a \
+             traversal: g.v().has_not(\"age\")."
+            .to_string(),
+        "has" => "has() takes a property key (a string or a jpath(..)) or T.id/T.label first, \
+             not a traversal, then a value, a predicate or a traversal: \
+             g.v().has(\"name\", \"marko\"), g.v().has(\"name\", __.is(\"marko\")), \
+             g.v().has(T.id, \"1\") or g.v().has(T.label, __.is(\"person\"))."
+            .to_string(),
+        "values" | "properties" | "element_map" | "similarity" | "nearest" | "embed"
+        | "embed_property" => format!(
+            "{step_name}() takes property keys as strings or jpath(..) values, not a traversal, \
+             for example g.v().values(\"name\") or g.v().values(jpath(\"meta.k\")). To read a \
+             value through a traversal, project it: \
+             g.v().project(\"name\", \"friends\").by(\"name\").by(__.out(\"knows\").count())."
+        ),
+        "out" | "in" | "both" | "out_e" | "in_e" | "both_e" | "to_e" => format!(
+            "{step_name}() takes edge labels as strings, not a traversal, for example \
+             g.v().out(\"knows\") or g.v().out(\"knows\", \"created\"). To follow only the \
+             edges a traversal picks, filter them: \
+             g.v().out_e().where(__.in_v().has(\"name\", \"josh\")).in_v()."
+        ),
+        _ => format!(
+            "{step_name}() takes names (strings) here, not a traversal, for example \
+             g.v().as(\"a\").out().as(\"b\").select(\"a\", \"b\"), \
+             g.v().project(\"name\").by(\"name\") or g.add_v(\"person\"). Where a step runs \
+             a traversal it takes it as its only argument or in by(): \
+             g.v(\"1\").as(\"a\").select(__.constant(\"a\")), \
+             g.v().project(\"n\").by(__.out().count()), g.inject(1).add_v(__.constant(\"person\")) \
+             or g.v(\"1\").as(\"a\").v(\"2\").add_e(\"knows\").from(__.select(\"a\"))."
+        ),
+    }
+}
+
 /// The reason of the [`TraverserError::PermissionDenied`] a saved query's read-only
 /// restriction gives; its help explains the rule instead of the host's authorizer.
 pub(crate) const SAVED_QUERY_READ_ONLY: &str = "a saved query is read-only";
@@ -2669,6 +2729,12 @@ impl DiagnosticError for ScriptError {
                  A list of labels is not accepted."
                     .to_string(),
             ),
+            ScriptError::ArgumentMismatch {
+                step_name, actual, ..
+            } if actual.starts_with(TRAVERSAL_ARGUMENT) =>
+            {
+                Some(traversal_argument_help(step_name))
+            }
             ScriptError::ArgumentMismatch { step_name, .. }
                 if matches!(step_name.as_str(), "property" | "has" | "values" | "has_not" | "has_property") =>
             {
@@ -4464,6 +4530,16 @@ impl TraverserError {
                      To sort plain values, use order() with no by()."
                 ))
             }
+            TraverserError::QueryExecution { query, .. } if query == "has_traversal" => Some(
+                "has(key, traversal) runs the traversal on the value of a property, on the id \
+                 (T.id) or on the label (T.label), for example \
+                 g.v().has(\"name\", __.is(\"marko\")), g.v().has(T.id, __.is(\"1\")) or \
+                 g.v().has(T.label, __.is(\"person\")) (Rust: has_traversal(\"name\", ..), \
+                 has_traversal(RecordKey::Id, ..), has_traversal(RecordKey::Label, ..)). An edge's \
+                 endpoints are no key here: test them with a traversal, for example \
+                 g.e().where(__.out_v().has(\"name\", \"marko\"))."
+                    .to_string(),
+            ),
             TraverserError::QueryExecution { query, reason } if query == "to_graph" => {
                 Some(to_graph_help(reason))
             }

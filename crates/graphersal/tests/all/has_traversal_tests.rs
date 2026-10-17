@@ -223,3 +223,107 @@ fn the_rust_api_builds_the_same_step() {
         .unwrap();
     assert_eq!(anonymous, vec![ElementProperty::from(2_i64)]);
 }
+
+/// `has(T.id, traversal)` / `has(T.label, traversal)`: TinkerPop's `has(T, Traversal)`, i.e.
+/// `filter(id().traversal)` / `filter(label().traversal)`. Before, the DSL turned the traversal
+/// into the string "GraphTraversalSource" and matched nothing (issue #9).
+#[test]
+fn the_token_forms_run_the_child_on_the_id_or_the_label() {
+    let g = modern();
+    assert_eq!(ids(&g, r#"V().has(T.id, __.is("1"))"#), strings(&["1"]));
+    assert_eq!(
+        ids(&g, r#"V().has(T.label, __.is("person"))"#),
+        strings(&["1", "2", "4", "6"])
+    );
+    assert_eq!(
+        ids(
+            &g,
+            r#"V().hasLabel("software").has(T.id, __.is(P.neq("3")))"#
+        ),
+        strings(&["5"])
+    );
+    // Edges, both spellings and the anonymous start.
+    let created = run(&g, r#"g.E().has(T.label, __.is("created")).count().next()"#).unwrap();
+    assert_eq!(created.as_int().unwrap(), 4);
+    let nested = run(
+        &g,
+        r#"g.v().where(__.has(T.label, __.is("person"))).count().next()"#,
+    )
+    .unwrap();
+    assert_eq!(nested.as_int().unwrap(), 4);
+    // The same as the filter it expands to.
+    assert_eq!(
+        ids(
+            &g,
+            r#"V().has(T.label, __.is(P.within("person", "software")).is(P.neq("software")))"#
+        ),
+        ids(
+            &g,
+            r#"V().filter(__.label().is(P.within("person", "software")).is(P.neq("software")))"#
+        )
+    );
+}
+
+#[test]
+fn the_token_forms_render_as_written_with_the_child_step_ids() {
+    let g = modern();
+    let metrics = run(&g, r#"g.V().has(T.id, __.is("1")).profile()"#)
+        .unwrap()
+        .try_cast::<graphersal::profile::TraversalMetrics>()
+        .expect("metrics");
+    let names: Vec<String> = metrics
+        .metrics()
+        .iter()
+        .map(|step| step.name().to_string())
+        .collect();
+    assert_eq!(names[1], r#"has(T.id, __.is(P.eq("1")))"#, "{names:?}");
+    // The child is label() followed by the given steps: math() on a label string is the
+    // failing step 1.0.1.
+    let err = run(&g, r#"g.V().has(T.label, __.math("_ + 1")).to_list()"#).unwrap_err();
+    assert!(err.contains("Step #1.0.1"), "{err}");
+}
+
+#[test]
+fn the_rust_api_takes_a_record_key_token() {
+    let graph = TraversalGraph::tinkerpop_modern();
+    let count = |key: RecordKey, child| {
+        graph
+            .traversal()
+            .v(None)
+            .has_traversal(key, child)
+            .count()
+            .to_list()
+            .unwrap()
+    };
+    assert_eq!(
+        count(RecordKey::Label, __::is("person")),
+        vec![ElementProperty::from(4_i64)]
+    );
+    assert_eq!(
+        count(RecordKey::Id, __::is("1")),
+        vec![ElementProperty::from(1_i64)]
+    );
+    // A RecordKey::Name is the property of that name.
+    assert_eq!(
+        count(RecordKey::Name("name".into()), __::is("josh")),
+        vec![ElementProperty::from(1_i64)]
+    );
+    // Direction.OUT/IN name nothing to test: refused before the run, even on an empty graph.
+    for key in [RecordKey::Out, RecordKey::In] {
+        let err = TraversalGraph::default()
+            .traversal()
+            .v(None)
+            .has_traversal(key, __::identity())
+            .to_list()
+            .expect_err("only T.id and T.label");
+        let report = format_diagnostic(&err);
+        assert!(
+            report.contains("names nothing a traversal can test"),
+            "{report}"
+        );
+        assert!(
+            report.contains("has(T.label, __.is(\"person\"))"),
+            "{report}"
+        );
+    }
+}
