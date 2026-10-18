@@ -287,10 +287,12 @@ The Fast tier draws the first 10 000 vertices of the generated 110k-element grap
 
 ## Saved queries
 
-[Saved queries](saved_queries.md) are named, parameterized, read-only queries stored in the
-graph. The top bar's **Catalog ▾ ▸ Saved queries** manager lists them by folder (the description
-and the signature; a query whose body no longer compiles is marked `error`) and manages them, on
-the WebAssembly playground and on the [dev server](../persistence/dev_server.md) alike:
+[Saved queries](saved_queries.md) are named, parameterized queries stored in the graph. The top
+bar's **Catalog ▾ ▸ Saved queries** manager lists them by folder (the description and the
+signature) with a badge each: **R/O** (it only reads), **R/W** (it changes data; the tooltip lists
+what, as inferred from its body), **R/O ⚠** (read-only, its writing steps are denied until it is
+saved again) or **unavailable** (it cannot run; the tooltip says why). It manages them on the
+WebAssembly playground and on the [dev server](../persistence/dev_server.md) alike:
 
 - **New saved query…** / **✎** opens the editor: name, folder, description, the parameter list and
   the body. Each parameter has a name, a type (`string`, `integer`, `number`, `boolean`, `uuid`,

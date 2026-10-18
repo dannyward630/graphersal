@@ -428,6 +428,31 @@ def test_saved_queries_define_list_call_and_drop():
     assert graph.drop_query("older_than") is False
 
 
+def test_a_saved_query_that_writes_lists_its_effects_and_writes_once():
+    graph = graphersal.Graph.tinkerpop_modern()
+    graph.define_query(
+        {
+            "name": "add_person",
+            "params": {"name": "string"},
+            "body": 'fn add_person(name) { g.add_v("person").property("name", name).next() }',
+        }
+    )
+    entry = graph.get_query("add_person")
+    assert entry["dialect"] == "graphersal-rhai/2"
+    assert entry["writes"] is True
+    assert [e["text"] for e in entry["effects"]] == [
+        'Create Data(vertex "person")',
+        'Update Data(vertex "person")',
+    ]
+    graph.call_query("add_person", {"name": "ann"})
+    assert graph.execute('g.v().has("name", "ann").count().next()') == 1
+    # Under a read-only policy the call is denied before it writes.
+    with pytest.raises(graphersal.GraphersalError) as excinfo:
+        graph.call_query("add_person", {"name": "bob"}, policy=graphersal.AccessPolicy.read_only())
+    assert "Permission denied" in str(excinfo.value)
+    assert graph.execute('g.v().has("name", "bob").count().next()') == 0
+
+
 def test_compression_rules_define_list_recompress_and_drop():
     graph = graphersal.Graph()
     cv = "Senior engineer, led the platform team in Rust. " * 20

@@ -28,7 +28,7 @@ import {
 import {
   ruleRow, totals, newDraft, draftFromRule, draftToSpec, labelSuggestions,
 } from '../compression.js';
-import { queryTree, signatureText, errorsByField } from '../saved-queries.js';
+import { queryTree, signatureText, errorsByField, accessBadge } from '../saved-queries.js';
 import {
   catalogMenuItems, indexRow, indexTotals, newTransformIndexDraft, indexDraftToSpec, defaultIndexName,
   INDEX_TYPES, INDEX_TRANSFORMS, indexTypeOf, indexTransformOf, indexNotServedReason,
@@ -91,10 +91,11 @@ export const SavedQueriesManager = {
     function close() {
       if (dlg.value && dlg.value.open) dlg.value.close();
     }
-    // The editor and run form are a dialog of their own: this one closes first.
-    function openNew() { close(); editor.value.openNew(''); }
-    function openEdit(q) { close(); editor.value.openEdit(q.name); }
-    function openRun(q) { close(); editor.value.openRun(q.name); }
+    // The editor and run form are a dialog of their own: this one closes first and reopens when
+    // that one closes (after a Save, Cancel or Delete), except after a Run.
+    function openNew() { close(); editor.value.openNew('', { back: open }); }
+    function openEdit(q) { close(); editor.value.openEdit(q.name, { back: open }); }
+    function openRun(q) { close(); editor.value.openRun(q.name, { back: open }); }
     async function remove(q) {
       if (!window.confirm(`Delete the saved query "${q.name}"? Scripts that call it fail afterwards.`)) return;
       try {
@@ -107,7 +108,7 @@ export const SavedQueriesManager = {
     const tooltip = (q) => [signatureText(q), q.description, q.status === 'error' ? `Fails: ${q.error}` : null]
       .filter(Boolean).join('\n');
     expose({ open, close });
-    return { state, dlg, editor, tree, count, close, openNew, openEdit, openRun, remove, tooltip };
+    return { state, dlg, editor, tree, count, close, openNew, openEdit, openRun, remove, tooltip, accessBadge };
   },
   template: `
   <dialog ref="dlg" class="catalog-dialog" aria-labelledby="cq-title">
@@ -116,14 +117,14 @@ export const SavedQueriesManager = {
       <button type="button" class="icon-btn" @click="close" aria-label="Close">×</button>
     </div>
     <div class="dialog-body">
-      <p class="muted sq-note">Named, parameterized, read-only queries stored in the graph; call one with g.query("name", #{…}) or Run it here. They travel with the catalog file (Catalog ▸ Save catalog) and with a snapshot.</p>
+      <p class="muted sq-note">Named, parameterized queries stored in the graph; call one with g.query("name", #{…}) or Run it here. R/O queries only read; an R/W query changes data, only what its body writes (inferred when it is saved), and Run asks first. They travel with the catalog file (Catalog ▸ Save catalog) and with a snapshot.</p>
       <div v-if="state.savedQueriesError" class="field-error">{{ state.savedQueriesError }}</div>
       <p v-else-if="!count" class="muted">No saved queries yet.</p>
       <template v-for="grp in tree" :key="grp.folder">
         <h3 v-if="grp.folder">{{ grp.folder }}</h3>
         <div v-for="q in grp.queries" :key="q.name" class="catalog-row">
           <span class="code" :title="tooltip(q)">{{ q.name }}</span>
-          <span v-if="q.status === 'error'" class="badge danger" title="Its body does not compile any more">error</span>
+          <span :class="'badge ' + accessBadge(q).kind" :title="accessBadge(q).title">{{ accessBadge(q).text }}</span>
           <span v-if="q.description" class="faint sq-desc">{{ q.description }}</span>
           <span class="spacer"></span>
           <button type="button" class="btn small" @click="openRun(q)">Run…</button>

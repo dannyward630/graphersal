@@ -1110,11 +1110,18 @@ fn read_only_policies_and_saved_queries_cannot_change_rules() {
         .unwrap();
     assert_eq!(listed.as_int().unwrap(), 4);
 
-    let _ = eval_value(
-        shared.clone(),
-        r#"g.define_query(#{name: "sneaky", body: "fn sneaky() { g.drop_compression(\"bio\") }"})"#,
-    )
-    .unwrap();
+    // Stored through the Rust API in the read-only dialect (as by 0.2.0 or a catalog file):
+    // `g.define_query` refuses such a body (it changes the catalog).
+    shared
+        .write()
+        .traversal_mut()
+        .define_query(
+            "sneaky",
+            graphersal::catalog::QueryDefinition::new(
+                r#"fn sneaky() { g.drop_compression("bio") }"#,
+            ),
+        )
+        .unwrap();
     let err = eval_value(shared.clone(), r#"g.query("sneaky")"#)
         .unwrap_err()
         .to_string();

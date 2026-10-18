@@ -8,22 +8,24 @@
 //   enum, a checkbox for a boolean, UUID text, one line per item of a list; defaults prefilled,
 //   required fields marked, descriptions as hints). Run WRITES `g.query("name", #{..})` into a
 //   tab and runs it there (visible, editable, in the history); the last values per query are
-//   kept in localStorage.
+//   kept in localStorage. A query that writes (badge R/W) lists its inferred effects, and Run
+//   first shows a preview of what the call would change (a dry run, rolled back) and asks.
 // The models are js/saved-queries.js (tested under Node); the engine calls go through store.js.
 
-import { ref, reactive, computed, nextTick, onBeforeUnmount, markRaw } from 'vue';
+import { ref, reactive, computed, watch, nextTick, onBeforeUnmount, markRaw } from 'vue';
 import { EditorState } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { bracketMatching, indentOnInput } from '@codemirror/language';
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete';
 import {
-  state, toast, defineSavedQuery, dropSavedQuery, runSavedQuery,
+  state, toast, defineSavedQuery, dropSavedQuery, runSavedQuery, previewSavedQuery,
 } from '../store.js';
 import { storage } from '../util.js';
 import {
   PARAM_TYPES, ITEM_TYPES, newParam, newDraft, draftFromQuery, draftToSpec,
   errorsByField, formFields, initialValues, formArgs, rememberValues, formatExample,
+  accessBadge, previewText,
 } from '../saved-queries.js';
 import { dslLanguage, dslHighlight } from '../editor/dsl-language.js';
 import { dslCompletionSource } from '../editor/completion.js';
@@ -46,10 +48,13 @@ export const SavedQueryDialog = {
       fields: [],
       values: {},
       errors: {}, // field -> [messages] (edit) or name -> message (run)
+      preview: null, // a query that writes: {text} or {error} of the call preview, before Run
       busy: false,
       loading: false,
     });
     let view = null;
+    // A changed argument needs a new preview before a query that writes runs.
+    watch(() => d.values, () => { d.preview = null; }, { deep: true });
 
     const message = (err) => (err && err.message ? err.message : String(err));
 
@@ -91,14 +96,28 @@ export const SavedQueryDialog = {
       if (dlg.value && !dlg.value.open) dlg.value.showModal();
     }
 
+    // Called when this dialog closes (Save, Cancel, Delete, Esc): the Saved queries manager
+    // that opened it reopens, so the next query can be run or edited from the list. A Run
+    // clears it (the call goes to a query tab).
+    let back = null;
+
     function close() {
       destroyEditor();
       if (dlg.value && dlg.value.open) dlg.value.close();
       d.mode = null;
     }
 
-    /** "New saved query" (in `folder`). */
-    async function openNew(folder = '') {
+    /** The dialog closed (by `close()` or Esc): return to where it was opened from. */
+    function onClosed() {
+      d.mode = null;
+      const reopen = back;
+      back = null;
+      if (reopen) reopen();
+    }
+
+    /** "New saved query" (in `folder`); `options.back` is called when the dialog closes. */
+    async function openNew(folder = '', options = {}) {
+      back = options.back || null;
       Object.assign(d, { mode: 'edit', draft: newDraft(folder), entry: null, errors: {}, busy: false });
       show();
       await mountEditor();
@@ -115,8 +134,9 @@ export const SavedQueryDialog = {
       }
     }
 
-    /** "Edit" of a stored query. */
-    async function openEdit(name) {
+    /** "Edit" of a stored query; `options.back` as for `openNew`. */
+    async function openEdit(name, options = {}) {
+      back = options.back || null;
       try {
         const entry = await loadEntry(name);
         Object.assign(d, { mode: 'edit', draft: draftFromQuery(entry), entry, errors: {}, busy: false });
@@ -127,14 +147,16 @@ export const SavedQueryDialog = {
       }
     }
 
-    /** "Run…": the parameter form of a stored query. */
-    async function openRun(name) {
+    /** "Run…": the parameter form of a stored query; `options.back` as for `openNew` (not called
+     * after a Run). */
+    async function openRun(name, options = {}) {
+      back = options.back || null;
       try {
         const entry = await loadEntry(name);
         destroyEditor();
         const fields = formFields(entry);
         const saved = (storage.get(VALUES_KEY, {}) || {})[name] || {};
-        Object.assign(d, { mode: 'run', entry, draft: null, fields, values: initialValues(fields, saved), errors: {}, busy: false });
+        Object.assign(d, { mode: 'run', entry, draft: null, fields, values: initialValues(fields, saved), errors: {}, preview: null, busy: false });
         show();
         if (!fields.length) return; // nothing to ask: the form shows Run only
       } catch (err) {
@@ -214,11 +236,28 @@ export const SavedQueryDialog = {
       const { args, errors } = formArgs(d.fields, d.values);
       d.errors = errors;
       if (Object.keys(errors).length) return;
+      // A query that writes: the first Run shows what the call would change and asks; Run
+      // again (the confirm button) runs it. Changing an argument asks again.
+      if (d.entry.writes && !(d.preview && !d.preview.error)) {
+        d.busy = true;
+        try {
+          const res = await previewSavedQuery(d.entry.name, args);
+          d.preview = res && res.ok
+            ? { text: previewText(res.changes) }
+            : { error: (res && res.error && (res.error.message || res.error.diagnostic)) || 'The preview failed.' };
+        } catch (err) {
+          d.preview = { error: message(err) };
+        } finally {
+          d.busy = false;
+        }
+        return;
+      }
       const kept = Object.fromEntries(Object.entries(d.values).map(([k, v]) => [k, typeof v === "boolean" ? v : String(v ?? "")]));
       storage.set(VALUES_KEY, rememberValues(storage.get(VALUES_KEY, {}), d.entry.name, kept));
       d.busy = true;
       try {
         const name = d.entry.name;
+        back = null;
         close();
         await runSavedQuery(name, args);
       } catch (err) {
@@ -230,18 +269,18 @@ export const SavedQueryDialog = {
 
     function editFromRun() {
       const name = d.entry && d.entry.name;
-      if (name) openEdit(name);
+      if (name) openEdit(name, { back });
     }
 
     onBeforeUnmount(destroyEditor);
 
     return {
-      state, dlg, host, d, PARAM_TYPES, ITEM_TYPES, fieldErrors, signature, close, formatExample,
-      addParam, removeParam, moveParam, paramErrors, save, remove, runNow, editFromRun,
+      state, dlg, host, d, PARAM_TYPES, ITEM_TYPES, fieldErrors, signature, close, formatExample, accessBadge,
+      addParam, removeParam, moveParam, paramErrors, save, remove, runNow, editFromRun, onClosed,
     };
   },
   template: `
-  <dialog ref="dlg" class="saved-query-dialog" aria-labelledby="sq-title" @close="d.mode = null">
+  <dialog ref="dlg" class="saved-query-dialog" aria-labelledby="sq-title" @close="onClosed">
     <form v-if="d.mode === 'edit' && d.draft" method="dialog" @submit.prevent="save">
       <div class="dialog-head">
         <h2 id="sq-title">{{ d.draft.replaces ? 'Edit saved query' : 'New saved query' }}</h2><span class="spacer"></span>
@@ -303,7 +342,7 @@ export const SavedQueryDialog = {
         <div ref="host" class="sq-editor" :class="{ invalid: fieldErrors.body }"></div>
         <div v-if="!d.draft.raw" class="sq-signature mono">}</div>
         <div v-for="m in fieldErrors.body || []" class="field-error">{{ m }}</div>
-        <p class="muted sq-note">A saved query is read-only: it may read the graph, never change it. Return a traversal (callers can continue it) or a value.</p>
+        <p class="muted sq-note">Return a traversal (callers can continue it, read-only) or a value. A body that writes data is saved as R/W: a returned writing traversal such as <code>g.add_v("person").property("name", name)</code> runs when the query is called, and callers continue over what it wrote.</p>
         <div v-for="m in [...(fieldErrors.general || []), ...(fieldErrors.meta || [])]" class="field-error">{{ m }}</div>
 
         <div class="sq-buttons">
@@ -317,12 +356,16 @@ export const SavedQueryDialog = {
 
     <form v-else-if="d.mode === 'run' && d.entry" method="dialog" @submit.prevent="runNow">
       <div class="dialog-head">
-        <h2 id="sq-title">Run "{{ d.entry.name }}"</h2><span class="spacer"></span>
+        <h2 id="sq-title">Run "{{ d.entry.name }}"</h2>
+        <span :class="'badge ' + accessBadge(d.entry).kind" :title="accessBadge(d.entry).title">{{ accessBadge(d.entry).text }}</span>
+        <span class="spacer"></span>
         <button type="button" class="icon-btn" @click="close" aria-label="Close">×</button>
       </div>
       <div class="dialog-body">
         <p v-if="d.entry.description" class="sq-description">{{ d.entry.description }}</p>
-        <p v-if="d.entry.status === 'error'" class="field-error">It currently fails: {{ d.entry.error }}</p>
+        <p v-if="d.entry.status === 'error'" class="field-error">It cannot run: {{ d.entry.error }}</p>
+        <p v-if="d.entry.writes" class="sq-note">This query changes data: <code>{{ (d.entry.effects || []).map((e) => e.text).join(', ') }}</code>. Run shows what it would change first.</p>
+        <p v-else-if="(d.entry.denied_writes || []).length" class="muted sq-note">Read-only: the writes of its body are denied. Save the query again (Edit… then Save) to let it write.</p>
         <p v-if="!d.fields.length" class="muted sq-note">No parameters.</p>
         <div v-else class="form-grid">
           <template v-for="f in d.fields" :key="f.name">
@@ -345,11 +388,15 @@ export const SavedQueryDialog = {
           </template>
         </div>
         <p class="muted sq-note">Run writes <code>g.query("{{ d.entry.name }}", #{…})</code> into a query tab and runs it there: visible, editable and in the history. An empty field takes the parameter's default.</p>
+        <div v-if="d.preview" role="status" :class="d.preview.error ? 'field-error' : 'sq-preview'">
+          <template v-if="d.preview.error">The preview failed: {{ d.preview.error }}</template>
+          <template v-else>{{ d.preview.text }} Run it?</template>
+        </div>
         <div class="sq-buttons">
           <button type="button" class="btn" @click="editFromRun">Edit…</button>
           <span class="spacer"></span>
           <button type="button" class="btn" @click="close">Cancel</button>
-          <button type="submit" class="btn primary" :disabled="d.busy || state.running">Run</button>
+          <button type="submit" class="btn primary" :disabled="d.busy || state.running">{{ d.entry.writes ? (d.preview && !d.preview.error ? 'Run and change data' : 'Preview…') : 'Run' }}</button>
         </div>
       </div>
     </form>

@@ -487,8 +487,8 @@ as one unit) the job releases nothing: it runs every phase under the unit's lock
 savepoints of that unit, and it commits or rolls back with it. The CLI runs it two-phase.
 
 The job asks `Read` and `Update` on the label's data, `Execute` on the embedder and, when it
-declares the property, `Update` on `Schema` ([Permissions](permissions.md)); a saved query is
-read-only and cannot run it. From Rust it is `Graph::embed_property(&EmbedJob, &Embedders,
+declares the property, `Update` on `Schema` ([Permissions](permissions.md)); a saved query
+cannot run it (it may write data only, never the schema). From Rust it is `Graph::embed_property(&EmbedJob, &Embedders,
 &CancelToken, &mut progress)` (two-phase, a progress callback after every page, a partial
 report in the error) or `EmbedJob::run_in(&mut storage, ..)` inside a transaction you hold.
 

@@ -66,6 +66,7 @@ const JSON_METHODS = {
   dropQuery: (name) => playground.dropQuery(name),
   moveQuery: (name, folder) => playground.moveQuery(name, folder || ''),
   queryCallText: (name, args) => playground.queryCallText(name, JSON.stringify(args || {})),
+  previewQuery: (name, args) => playground.previewQuery(name, JSON.stringify(args || {})),
   loadCatalog: (text, replace) => playground.loadCatalog(text, !!replace),
   // Compression rules (the catalog's kind `compression`).
   listCompressions: () => playground.listCompressions(),

@@ -131,6 +131,7 @@ mod robustness_input_tests;
 mod sack_merge_tests;
 mod sack_tests;
 mod sack_update_tests;
+mod saved_query_effects_tests;
 mod saved_query_tests;
 mod schema_api_tests;
 mod schema_apply_tests;

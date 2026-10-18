@@ -207,6 +207,72 @@ mod default_allow_all {
 mod request_mapping {
     use super::*;
 
+    /// Denies every write of `created` edges and of elements whose label the request leaves
+    /// open (they could be `created` edges).
+    struct ProtectCreated;
+
+    impl Authorizer for ProtectCreated {
+        fn authorize(&self, request: &AccessRequest<'_>) -> Result<(), Denied> {
+            let writes = matches!(
+                request.action,
+                Action::Create | Action::Update | Action::Delete
+            );
+            match request.resource {
+                Resource::Data { element, label }
+                    if writes
+                        && element != Some(ElementKind::Vertex)
+                        && label.is_none_or(|label| label == "created") =>
+                {
+                    Err(Denied::new("created edges are protected"))
+                }
+                _ => Ok(()),
+            }
+        }
+    }
+
+    #[test]
+    fn a_write_names_the_kind_and_edge_labels_the_plan_states_before_it() {
+        let graph = modern();
+        let recorder = Arc::new(Recorder::default());
+        let _ = run(
+            &graph,
+            r#"g.e().has_label("knows").limit(1).property("w", 1).iterate();
+               g.v().has_label("person").property("x", 1).iterate();
+               g.v().values("name").drop().iterate();"#,
+            recorder.clone(),
+        )
+        .unwrap();
+        let seen = recorder.seen();
+        assert!(
+            seen.contains(&r#"Update Data(edge "knows")"#.to_string()),
+            "{seen:?}"
+        );
+        // A vertex has a label set: has_label states the kind only.
+        assert!(
+            seen.contains(&"Update Data(vertex)".to_string()),
+            "{seen:?}"
+        );
+        assert!(seen.contains(&"Delete Data".to_string()), "{seen:?}");
+        // A policy protecting one edge label lets writes of other labelled edges through.
+        let _ = run(
+            &graph,
+            r#"g.e().has_label("knows").drop().iterate()"#,
+            ProtectCreated,
+        )
+        .unwrap();
+        let err = run(&graph, r#"g.e().drop().iterate()"#, ProtectCreated).unwrap_err();
+        assert!(err.contains("created edges are protected"), "{err}");
+        // The denied step is located even though its request depends on the steps before it.
+        assert!(err.contains("at #1: e().drop()"), "{err}");
+        assert_eq!(
+            run(&graph, "g.E().count().next()", AllowAll)
+                .unwrap()
+                .as_int()
+                .unwrap(),
+            4
+        );
+    }
+
     #[test]
     fn each_distinct_request_is_asked_once_in_plan_order() {
         let graph = modern();
@@ -225,10 +291,11 @@ mod request_mapping {
                 "Read Data(vertex)",
                 "Read Data(edge)",
                 "Create Data(vertex \"person\")",
-                "Update Data",
+                // a write of the elements the steps before it state
+                "Update Data(vertex \"person\")",
                 "Create Data(edge \"rel\")",
                 // the `to(..)` modulator asks nothing
-                "Delete Data",
+                "Delete Data(edge \"rel\")",
             ]
         );
     }
@@ -330,7 +397,7 @@ mod request_mapping {
                 "Read Schema",
                 "Read Data",
                 "Read Data(vertex)",
-                "Update Data",
+                "Update Data(vertex)",
             ]
         );
     }
@@ -1413,6 +1480,66 @@ mod saved_queries {
         assert!(err.contains("a saved query is read-only"), "{err}");
         assert_eq!(count(&graph), 6);
     }
+
+    /// The modern graph with the saved query `renew` that writes: it creates a `person` and
+    /// deletes every `knows` edge.
+    fn with_writing_query() -> Arc<Graph> {
+        let graph = modern();
+        let _ = run(
+            &graph,
+            r#"g.define_query(#{name: "renew", body: `fn renew() {
+                g.add_v("person").iterate();
+                g.e().has_label("knows").drop().iterate()
+            }`})"#,
+            AllowAll,
+        )
+        .unwrap();
+        graph
+    }
+
+    #[test]
+    fn a_query_that_writes_asks_its_whole_effect_set_before_the_body_runs() {
+        let graph = with_writing_query();
+        let recorder = Arc::new(Recorder::default());
+        let _ = run(&graph, r#"g.query("renew")"#, recorder.clone()).unwrap();
+        let seen = recorder.seen();
+        assert_eq!(
+            seen[..3],
+            [
+                r#"Execute Definition(query "renew")"#.to_string(),
+                r#"Create Data(vertex "person")"#.to_string(),
+                r#"Delete Data(edge "knows")"#.to_string(),
+            ],
+            "{seen:?}"
+        );
+    }
+
+    #[test]
+    fn a_query_that_writes_is_bounded_by_the_callers_rights() {
+        let graph = with_writing_query();
+        // The host may create but not delete: the call is denied before its first write.
+        let err = run(
+            &graph,
+            r#"g.query("renew")"#,
+            AccessPolicy::allow_all().deny(ActionKind::Delete, ResourceKind::Data),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains(r#"Permission denied for 'query("renew")' (Delete Data(edge "knows"))"#),
+            "{err}"
+        );
+        assert_eq!(count(&graph), 6);
+        // A read-only host: denied too, nothing written.
+        let err = run(&graph, r#"g.query("renew")"#, AccessPolicy::read_only()).unwrap_err();
+        assert!(
+            err.contains("Permission denied for 'query(\"renew\")'"),
+            "{err}"
+        );
+        assert_eq!(count(&graph), 6);
+        // The host allows it: the call writes.
+        let _ = run(&graph, r#"g.query("renew")"#, AllowAll).unwrap();
+        assert_eq!(count(&graph), 7);
+    }
 }
 
 /// Denies reading vertices, allows everything else.
@@ -1701,12 +1828,18 @@ mod embed_jobs {
     fn a_saved_query_cannot_run_the_job() {
         let graph = modern();
         let _ = run(&graph, ATTACH, AllowAll).unwrap();
-        let _ = run(
-            &graph,
-            r#"g.define_query(#{name: "fill", body: "fn fill() { g.embed_property(#{label: \"person\", from: \"name\", to: \"emb\"}) }"})"#,
-            AllowAll,
-        )
-        .unwrap();
+        // Stored through the Rust API in the read-only dialect (as by 0.2.0 or a catalog file):
+        // `g.define_query` refuses such a body (it changes the schema).
+        graph
+            .write()
+            .traversal_mut()
+            .define_query(
+                "fill",
+                graphersal::catalog::QueryDefinition::new(
+                    r#"fn fill() { g.embed_property(#{label: "person", from: "name", to: "emb"}) }"#,
+                ),
+            )
+            .unwrap();
         let err = run(&graph, r#"g.query("fill")"#, AllowAll).unwrap_err();
         assert!(
             err.contains("Permission denied for 'embed_property'"),

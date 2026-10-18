@@ -2586,8 +2586,9 @@ pub enum ScriptError {
         reason: String,
     },
 
-    /// A saved query returned a traversal with a writing step: saved queries are read-only,
-    /// also through what they return.
+    /// A saved query returned a traversal with a writing step that it cannot run: a read-only
+    /// query returned one, or any query returned an anonymous one (`__.add_v(..)`). A query
+    /// that writes runs a returned writing traversal of the graph inside its call.
     #[error("Saved query '{query}' returned a traversal with a writing step ({location})")]
     #[non_exhaustive]
     QueryReturnedWrite {
@@ -2661,6 +2662,15 @@ fn traversal_argument_help(step_name: &str) -> String {
 /// The reason of the [`TraverserError::PermissionDenied`] a saved query's read-only
 /// restriction gives; its help explains the rule instead of the host's authorizer.
 pub(crate) const SAVED_QUERY_READ_ONLY: &str = "a saved query is read-only";
+
+/// The start of the reason of the [`TraverserError::PermissionDenied`] a saved query that
+/// writes gives for a write of the schema, the catalog or a file.
+pub(crate) const SAVED_QUERY_DATA_ONLY: &str = "a saved query writes data only";
+
+/// The start of the reason of the [`TraverserError::PermissionDenied`] a saved query that
+/// writes gives for a data write its inferred effects do not cover (an inference bug).
+pub(crate) const SAVED_QUERY_OUTSIDE_EFFECTS: &str =
+    "a saved query writes only what its inferred effects name";
 
 impl DiagnosticError for ScriptError {
     fn help(&self) -> Option<String> {
@@ -2924,16 +2934,23 @@ impl DiagnosticError for ScriptError {
                  g.define_query(#{{name: \"{query}\", params: #{{limit: \"integer\"}}, body: \
                  \"fn {query}(limit) {{ g.v().limit(limit) }}\"}}). Several queries at once go \
                  through g.define_queries(folder, source) (one query per function, doc comments \
-                 as descriptions). A stored body that no longer compiles is listed by \
-                 g.queries() with status \"error\"; redefine it to fix it."
+                 as descriptions). A body that writes data (it is then saved as a query that \
+                 writes) names its steps and the saved queries it calls literally, without Fn(..), \
+                 call, curry, eval, import or a query name computed at run time, and writes data \
+                 only: never the schema, saved queries, indexes or files. A stored body that no \
+                 longer compiles is listed by g.queries() with status \"error\"; redefine it \
+                 to fix it."
             )),
-            ScriptError::QueryReturnedWrite { .. } => Some(
-                "Saved queries are read-only, also through a traversal they return. Return a \
-                 reading traversal (or its values) and write in a traversal of your own, for \
-                 example let ids = g.query(\"q\").id().to_list(); \
+            ScriptError::QueryReturnedWrite { query, .. } => Some(format!(
+                "A read-only saved query cannot write, also not through a traversal it returns, \
+                 and no saved query can return an anonymous writing traversal (__.add_v(..)). \
+                 A query whose body writes data is saved as one that writes (define \"{query}\" \
+                 again with g.define_query(..)); it runs a returned writing traversal of the \
+                 graph inside its call and returns a read-only traversal over what it wrote. Or \
+                 return a reading traversal (or its values) and write in a traversal of your \
+                 own, for example let ids = g.query(\"{query}\").id().to_list(); \
                  g.v(ids).property(\"seen\", true).to_list()."
-                    .to_string(),
-            ),
+            )),
         }
     }
 }
@@ -4446,13 +4463,38 @@ impl TraverserError {
                 if reason.starts_with(SAVED_QUERY_READ_ONLY) =>
             {
                 Some(
-                    "A saved query never writes: not the data, the schema, the saved queries or \
-                     files, also not through a query it calls or a traversal it returns (a \
-                     g.query(..) result cannot be continued with a writing step). Write in a \
-                     traversal of your own after the call, for example \
+                    "A read-only saved query (dialect graphersal-rhai/1, or any query called from \
+                     one) never writes: not the data, the schema, the saved queries or files, also \
+                     not through a query it calls or a traversal it returns (a g.query(..) result \
+                     cannot be continued with a writing step). A query whose body writes data \
+                     becomes a query that writes when it is saved again: define it once more \
+                     with g.define_query(..) and g.get_query(\"q\")[\"effects\"] lists what it \
+                     may write. Or write in a traversal of your own after the call, for example \
                      let ids = g.query(\"q\").id().to_list(); \
                      g.v(ids).property(\"seen\", true).to_list(). A graph the query builds \
                      itself (GraphSource::empty(), __) stays writable."
+                        .to_string(),
+                )
+            }
+            TraverserError::PermissionDenied { reason, .. }
+                if reason.starts_with(SAVED_QUERY_DATA_ONLY) =>
+            {
+                Some(
+                    "A saved query that writes changes data only: never the schema, saved \
+                     queries, indexes, compression rules or files. Change those in a script of \
+                     your own, outside the query."
+                        .to_string(),
+                )
+            }
+            TraverserError::PermissionDenied { reason, .. }
+                if reason.starts_with(SAVED_QUERY_OUTSIDE_EFFECTS) =>
+            {
+                Some(
+                    "The effects of a saved query are inferred from its body when it is saved \
+                     and checked on every write of a call; this write was not inferred, which is \
+                     a bug of Graphersal. Please report the body of the query \
+                     (g.get_query(\"q\")[\"body\"]). Until it is fixed, write in a traversal of \
+                     your own after the call."
                         .to_string(),
                 )
             }
@@ -6734,6 +6776,34 @@ impl TraverserError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The denials of a saved query that writes which the inference prevents (it refuses such
+    /// bodies when they are saved) explain the rule, not the host's authorizer.
+    #[test]
+    fn saved_query_effect_denials_carry_their_help() {
+        use crate::graph::{AccessRequest, Action, Resource};
+        for (reason, expected) in [
+            (
+                format!("{SAVED_QUERY_DATA_ONLY}: \"q\" cannot create, change or delete .."),
+                "A saved query that writes changes data only",
+            ),
+            (
+                format!("{SAVED_QUERY_OUTSIDE_EFFECTS} (Create Data), and this write .."),
+                "this write was not inferred, which is a bug of Graphersal",
+            ),
+        ] {
+            let err = TraverserError::PermissionDenied {
+                step: "drop".to_string(),
+                request: Box::new(
+                    AccessRequest::new(Action::Delete, Resource::data(None, None))
+                        .to_owned_request(),
+                ),
+                reason,
+            };
+            let help = err.help().expect("help");
+            assert!(help.contains(expected), "{help}");
+        }
+    }
 
     /// The embedding errors a query cannot trigger with the built-in embedder (they come from a
     /// host's embedder or its registration) carry their help through `TraverserError::Embed`.

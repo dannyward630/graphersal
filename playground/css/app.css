@@ -1281,6 +1281,7 @@ dialog * { overscroll-behavior: auto; }
 .saved-query-dialog .form-grid textarea { width: 100%; min-width: 0; }
 .saved-query-dialog .sq-span { grid-column: 2; margin-top: -6px; }
 .sq-note { margin: 6px 0; font-size: 12px; }
+.sq-preview { margin: 8px 0; padding: 6px 8px; border-radius: 6px; font-size: 13px; background: var(--warn-soft); color: var(--warn); }
 .sq-description { margin: 0 0 10px; font-size: 13px; }
 .sq-param { margin-bottom: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius); }
 .sq-param.invalid { border-color: var(--danger); }

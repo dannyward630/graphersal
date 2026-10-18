@@ -14,22 +14,41 @@
 //!    parameter names and source text, so a changed definition (also one restored by a
 //!    rollback) never meets a stale compiled form;
 //! 4. runs the function with the caller's engine in a scope whose `g` is the caller's graph
-//!    under a READ-ONLY restriction ([`ReadOnly`]): nothing the body runs, and nothing built
-//!    from what it returns, can write data, the schema, the catalog or files (a graph the body
-//!    builds itself stays writable). Nested calls inherit it; the call depth is bounded by
-//!    [`MAX_QUERY_DEPTH`];
-//! 5. returns the function's result as is (a traversal can be continued by the caller, a value
-//!    is a value); a returned traversal with a writing step is refused.
+//!    under a restriction:
+//!    - a query of the dialect [`QUERY_DIALECT`] (or one called from a read-only body) runs
+//!      READ-ONLY ([`ReadOnly`]): nothing the body runs, and nothing built from what it
+//!      returns, can write data, the schema, the catalog or files (a graph the body builds
+//!      itself stays writable);
+//!    - a query of the dialect [`WRITING_QUERY_DIALECT`] may write the data its body's
+//!      inferred effects name ([`effects`], with the effects of the queries it calls), and
+//!      nothing else ([`Effects`]): the whole effect set is asked of the caller's authorizer
+//!      first, then the body runs as ONE unit (a savepoint inside an open one) whose commit
+//!      carries the query's name and arguments ([`CommitMetadata`]); a failure rolls back
+//!      everything it wrote;
+//!
+//!    Nested calls inherit the restriction; the call depth is bounded by [`MAX_QUERY_DEPTH`];
+//! 5. returns the function's result (a traversal can be continued by the caller, read-only, a
+//!    value is a value); a returned traversal with a writing step is refused.
+//!
+//! The dialect is not chosen by the user: every save ([`ScriptGraphTraversalSource::define_query`],
+//! [`ScriptGraphTraversalSource::define_queries`], [`with_inferred_dialect`]) sets
+//! [`WRITING_QUERY_DIALECT`] when the inferred effects are not empty and [`QUERY_DIALECT`]
+//! otherwise. Opening a graph never changes a dialect.
 //!
 //! Errors from the body keep their diagnostic and gain a line `in saved query: "name"` (one per
 //! nested call), so the origin is named.
 
+use super::effects::{self, BodyEffects};
 use super::*;
-use crate::error::{SAVED_QUERY_READ_ONLY, ScriptError};
-use crate::graph::definition::{
-    Definition, DefinitionKind, QUERY_DIALECT, QueryDefinition, QueryParam,
+use crate::error::{
+    SAVED_QUERY_DATA_ONLY, SAVED_QUERY_OUTSIDE_EFFECTS, SAVED_QUERY_READ_ONLY, ScriptError,
 };
-use crate::graph::{AccessRequest, Action, Authorizer, Denied, Resource};
+use crate::graph::definition::{
+    Definition, DefinitionKind, QUERY_DIALECT, QueryDefinition, QueryParam, WRITING_QUERY_DIALECT,
+};
+use crate::graph::{
+    AccessRequest, AccessRequestBuf, Action, Authorizer, CommitMetadata, Denied, Resource,
+};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -75,10 +94,67 @@ impl Authorizer for ReadOnly {
     }
 }
 
-/// A compiled body: the AST holding the function and its signature.
+/// The authorizer a saved query that writes runs under: the caller's, restricted to the
+/// inferred `effects`. A write of data that no effect covers ([`effects::covers`]) is denied
+/// (it means the inference missed it, a bug, and the message says so); writes of the schema,
+/// the catalog and files are denied as under [`ReadOnly`]; everything else is the caller's
+/// authorizer's decision.
+pub(crate) struct Effects {
+    inner: Arc<dyn Authorizer>,
+    query: String,
+    effects: Vec<AccessRequestBuf>,
+}
+
+impl Authorizer for Effects {
+    fn authorize(&self, request: &AccessRequest<'_>) -> Result<(), Denied> {
+        let writes = matches!(
+            request.action,
+            Action::Create | Action::Update | Action::Delete
+        );
+        match request.resource {
+            Resource::Data { .. } if writes => {
+                if !self
+                    .effects
+                    .iter()
+                    .any(|effect| effects::covers(effect, request))
+                {
+                    return Err(Denied::new(format!(
+                        "{SAVED_QUERY_OUTSIDE_EFFECTS} ({}), and this write of \"{}\" is not \
+                         among them; the inference missed it, a bug of Graphersal",
+                        effects_text(&self.effects),
+                        self.query,
+                    )));
+                }
+            }
+            Resource::Schema | Resource::Definition { .. } | Resource::File { .. } if writes => {
+                return Err(Denied::new(format!(
+                    "{SAVED_QUERY_DATA_ONLY}: \"{}\" cannot create, change or delete the \
+                     schema, saved queries or files",
+                    self.query
+                )));
+            }
+            _ => {}
+        }
+        self.inner.authorize(request)
+    }
+
+    fn resolve_file(&self, path: &std::path::Path) -> Result<std::path::PathBuf, Denied> {
+        self.inner.resolve_file(path)
+    }
+}
+
+/// The effects as one line of text (`Create Data(vertex "person"), Delete Data`).
+fn effects_text(effects: &[AccessRequestBuf]) -> String {
+    let texts: Vec<String> = effects.iter().map(ToString::to_string).collect();
+    texts.join(", ")
+}
+
+/// A compiled body: the AST holding the function, its signature and its own effects (`Err`:
+/// why the body cannot be a query that writes, [`effects::analyze`]).
 struct Compiled {
     ast: rhai::AST,
     signature: Vec<String>,
+    effects: Result<BodyEffects, String>,
 }
 
 /// What [`compile`] yields: the compiled body or why it is not a valid body.
@@ -122,11 +198,13 @@ fn compile(engine: &Engine, name: &str, query: &QueryDefinition) -> CompileResul
 }
 
 /// Checks the body of the saved query `name` the way a call does, without running it: the
-/// dialect is this version's, the source compiles with `engine` and is exactly one function
-/// named `name` whose parameters are the declared ones. `Err` is the reason (the `status:
-/// "error"` text of `g.queries()`). Front ends use it before storing a definition they built
-/// themselves (the playground's editor) and to list a catalog with its status; the compiled
-/// form is cached per thread like a call's.
+/// dialect is one this version runs, the source compiles with `engine` and is exactly one
+/// function named `name` whose parameters are the declared ones, and a query of the dialect
+/// [`WRITING_QUERY_DIALECT`] has a body whose effects can be inferred. `Err` is the reason (the
+/// `status: "error"` text of `g.queries()`: the query is unavailable). Front ends use it before
+/// storing a definition they built themselves (the playground's editor) and to list a catalog
+/// with its status; the compiled form is cached per thread like a call's.
+/// [`saved_query_effects`] also gives what a call may write.
 pub fn check_saved_query(
     engine: &Engine,
     name: &str,
@@ -138,16 +216,138 @@ pub fn check_saved_query(
     }
 }
 
-/// Compiles a body and checks it: the dialect is this version's, the text is exactly one
-/// function named `name` (no statements beside it) whose parameters are the declared ones.
+/// What a call of a saved query may write, inferred from its body now
+/// ([`saved_query_effects`], the `writes` / `effects` / `denied_writes` of `g.queries()`).
+/// Never stored: a newer version may infer more or less for the same text.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SavedQueryEffects {
+    /// Whether a call may write: the dialect is [`WRITING_QUERY_DIALECT`] and `effects` is not
+    /// empty.
+    pub writes: bool,
+    /// The data writes a call may make (requests as the authorizer sees them; an open element
+    /// kind or label covers every value), with those of the queries it calls. Empty unless
+    /// `writes`.
+    pub effects: Vec<AccessRequestBuf>,
+    /// The writes the body of a read-only query (dialect [`QUERY_DIALECT`]) has, which a call
+    /// denies; saving the query again makes it a query that writes. Empty otherwise.
+    pub denied_writes: Vec<AccessRequestBuf>,
+}
+
+/// The effects of the saved query `name` (definition `query`), resolving the queries it calls
+/// through `catalog` (a query by name, `None` when there is none): what a call may write, or
+/// `Err` with the reason the query cannot run ([`check_saved_query`]). Front ends list a
+/// catalog with it (`R/O` / `R/W` badges, the MCP `writes` flag).
+pub fn saved_query_effects(
+    engine: &Engine,
+    catalog: &dyn Fn(&str) -> Option<QueryDefinition>,
+    name: &str,
+    query: &QueryDefinition,
+) -> Result<SavedQueryEffects, String> {
+    let compiled = compile(engine, name, query);
+    let compiled = compiled.as_ref().as_ref().map_err(Clone::clone)?;
+    let Ok(own) = &compiled.effects else {
+        return Ok(SavedQueryEffects::default());
+    };
+    let (effects, _) = resolve_effects(engine, catalog, name, own);
+    Ok(if query.dialect() == WRITING_QUERY_DIALECT {
+        SavedQueryEffects {
+            writes: !effects.is_empty(),
+            effects,
+            denied_writes: Vec::new(),
+        }
+    } else {
+        SavedQueryEffects {
+            writes: false,
+            effects: Vec::new(),
+            denied_writes: effects,
+        }
+    })
+}
+
+/// `query` (the definition of the saved query `name`) checked like
+/// [`ScriptGraphTraversalSource::define_query`] checks a body, with the dialect its inferred
+/// effects give: [`WRITING_QUERY_DIALECT`] when they are not empty, [`QUERY_DIALECT`]
+/// otherwise (also lowering a query that no longer writes). The queries it calls are resolved
+/// through `catalog`. `Err` is why it cannot be stored: the body does not compile, is not one
+/// function named `name` with the declared parameters, writes the schema, the catalog or files,
+/// or writes data while hiding what it calls (`Fn`, `call`, `eval`, `import`, a computed query
+/// name). Front ends that build definitions themselves (the playground's editor) store what it
+/// returns.
+pub fn with_inferred_dialect(
+    engine: &Engine,
+    catalog: &dyn Fn(&str) -> Option<QueryDefinition>,
+    name: &str,
+    query: QueryDefinition,
+) -> Result<QueryDefinition, String> {
+    let query = query.with_dialect(QUERY_DIALECT);
+    let compiled = compile_uncached(engine, name, &query)?;
+    let own = compiled.effects?;
+    let (effects, dynamic) = resolve_effects(engine, catalog, name, &own);
+    dialect_for(&effects, dynamic.as_deref()).map(|dialect| query.with_dialect(dialect))
+}
+
+/// The dialect of a query with the inferred `effects` whose body (or a called query) uses the
+/// `dynamic` construct; `Err` for a dynamic body that writes.
+fn dialect_for(
+    effects: &[AccessRequestBuf],
+    dynamic: Option<&str>,
+) -> Result<&'static str, String> {
+    match (effects.is_empty(), dynamic) {
+        (true, _) => Ok(QUERY_DIALECT),
+        (false, None) => Ok(WRITING_QUERY_DIALECT),
+        (false, Some(construct)) => Err(format!(
+            "it writes data ({}) and uses {construct}, which hides what it calls, so its \
+             effects cannot be inferred; call steps and saved queries by their literal names",
+            effects_text(effects)
+        )),
+    }
+}
+
+/// The effects of the query `name` whose own effects are `own` together with those of every
+/// query it calls that writes (dialect [`WRITING_QUERY_DIALECT`]), looked up in `catalog`; and
+/// the first construct that hides calls, if any.
+fn resolve_effects(
+    engine: &Engine,
+    catalog: &dyn Fn(&str) -> Option<QueryDefinition>,
+    name: &str,
+    own: &BodyEffects,
+) -> (Vec<AccessRequestBuf>, Option<String>) {
+    effects::transitive(name, &mut |next| {
+        if next == name {
+            return Some(effects::Node {
+                effects: own.clone(),
+                counts: true,
+            });
+        }
+        node_of(engine, next, &catalog(next)?)
+    })
+}
+
+/// The node of the stored query `name` for [`effects::transitive`]: its own effects, counted
+/// when it writes; `None` when it cannot run.
+fn node_of(engine: &Engine, name: &str, query: &QueryDefinition) -> Option<effects::Node> {
+    let compiled = compile(engine, name, query);
+    let compiled = compiled.as_ref().as_ref().ok()?;
+    Some(effects::Node {
+        effects: compiled.effects.as_ref().ok()?.clone(),
+        counts: query.dialect() == WRITING_QUERY_DIALECT,
+    })
+}
+
+/// Compiles a body and checks it: the dialect is one this version runs, the text is exactly one
+/// function named `name` (no statements beside it) whose parameters are the declared ones, and
+/// a query that writes has a body whose effects can be inferred.
 fn compile_uncached(
     engine: &Engine,
     name: &str,
     query: &QueryDefinition,
 ) -> Result<Compiled, String> {
-    if query.dialect() != QUERY_DIALECT {
+    let writing = query.dialect() == WRITING_QUERY_DIALECT;
+    if query.dialect() != QUERY_DIALECT && !writing {
         return Err(format!(
-            "its dialect is '{}', this version runs '{QUERY_DIALECT}'",
+            "its dialect is '{}', this version runs '{QUERY_DIALECT}' and \
+             '{WRITING_QUERY_DIALECT}'",
             query.dialect()
         ));
     }
@@ -157,7 +357,32 @@ fn compile_uncached(
     let signature = single_function(&ast, name)?;
     let declared: Vec<&str> = query.params().iter().map(|(p, _)| p.as_str()).collect();
     check_signature(&signature, &declared)?;
-    Ok(Compiled { ast, signature })
+    let effects = effects::analyze(&ast);
+    if writing {
+        match &effects {
+            Err(reason) => {
+                return Err(format!(
+                    "it is saved as a query that writes, but its effects cannot be inferred: \
+                     {reason}"
+                ));
+            }
+            Ok(BodyEffects {
+                dynamic: Some(construct),
+                ..
+            }) => {
+                return Err(format!(
+                    "it is saved as a query that writes, but it uses {construct}, which hides \
+                     what it calls, so its effects cannot be inferred"
+                ));
+            }
+            Ok(_) => {}
+        }
+    }
+    Ok(Compiled {
+        ast,
+        signature,
+        effects,
+    })
 }
 
 /// The signature of the one function `ast` defines, which must be named `name`.
@@ -409,6 +634,89 @@ fn returned_write(value: &Dynamic, location: &str, levels: usize) -> Option<Stri
     None
 }
 
+/// What the body of a saved query that writes returned, with every traversal in it that writes
+/// (also inside arrays and maps, bounded by `levels`) run now, inside the call's unit, and
+/// replaced by a reading traversal over its results (`inject(results..)` on the same graph; an
+/// anonymous one is left, and refused):
+/// `fn add(n) { g.add_v("person").property("name", n) }` writes when it is called, and
+/// `g.query("add", #{n: "x"}).count()` continues what it wrote like the result of a read-only
+/// query.
+fn run_returned_writes(
+    ctx: &NativeCallContext,
+    mut value: Dynamic,
+    levels: usize,
+) -> Result<Dynamic, Box<EvalAltResult>> {
+    if value.is::<ScriptGraphTraversalSource>() {
+        let mut source = value.cast::<ScriptGraphTraversalSource>();
+        // An anonymous traversal (`__.add_v(..)`) is a child for the caller's steps, not a
+        // query of the graph: it stays as it is, and the call refuses it below.
+        if source.anonymous || !source.plan_writes() {
+            return Ok(Dynamic::from(source));
+        }
+        let results = value_args(ctx, source.to_list()?)?;
+        let reading = ScriptGraphTraversalSource {
+            g: source.g.clone(),
+            steps: Vec::new(),
+            options: source.options.clone(),
+            access: source.access.clone(),
+            private: source.private,
+            anonymous: false,
+            now: None,
+        }
+        .add_step(Step::Inject(results));
+        return Ok(Dynamic::from(reading));
+    }
+    let Some(inner) = levels.checked_sub(1) else {
+        return Ok(value);
+    };
+    if let Ok(mut items) = value.as_array_mut() {
+        for item in items.iter_mut() {
+            *item = run_returned_writes(ctx, std::mem::take(item), inner)?;
+        }
+    } else if let Ok(mut map) = value.as_map_mut() {
+        for item in map.values_mut() {
+            *item = run_returned_writes(ctx, std::mem::take(item), inner)?;
+        }
+    }
+    Ok(value)
+}
+
+/// What a saved query that writes returns, made safe to use after its unit: every traversal in
+/// `value` (also inside arrays and maps, bounded by `levels`) that targets the unit's `private`
+/// graph is retargeted to the caller's `shared` one, and every traversal gets the read-only
+/// `access` (it runs outside the unit and outside the query's effects).
+fn seal_returned(
+    mut value: Dynamic,
+    private: &Arc<dyn AnyGraph>,
+    shared: &Arc<dyn AnyGraph>,
+    access: &Arc<access::ScriptAccess>,
+    levels: usize,
+) -> Dynamic {
+    if let Some(mut source) = value.write_lock::<ScriptGraphTraversalSource>() {
+        if source
+            .g
+            .as_ref()
+            .is_some_and(|g| plan::same_graph(g, private))
+        {
+            source.g = Some(shared.clone());
+        }
+        source.access = access.clone();
+    } else if let Some(inner) = levels.checked_sub(1)
+        && let Ok(mut items) = value.as_array_mut()
+    {
+        for item in items.iter_mut() {
+            *item = seal_returned(std::mem::take(item), private, shared, access, inner);
+        }
+    } else if let Some(inner) = levels.checked_sub(1)
+        && let Ok(mut map) = value.as_map_mut()
+    {
+        for item in map.values_mut() {
+            *item = seal_returned(std::mem::take(item), private, shared, access, inner);
+        }
+    }
+    value
+}
+
 /// A string argument that may also be `()` (absent): `None` for `()` and for `""`.
 pub(super) fn optional_text(
     operation: &str,
@@ -477,11 +785,43 @@ fn optional_map(
     }))
 }
 
+/// One effect as a script map: `#{action, element, label, text}` (`element` / `label` `()`
+/// when open: every kind, every label).
+fn effect_entry(effect: &AccessRequestBuf) -> Dynamic {
+    let request = effect.as_request();
+    let mut map = rhai::Map::new();
+    map.insert(
+        "action".into(),
+        Dynamic::from(request.action.kind().name().to_string()),
+    );
+    let (element, label) = match request.resource {
+        Resource::Data { element, label } => (element, label),
+        _ => (None, None),
+    };
+    map.insert(
+        "element".into(),
+        element.map_or(Dynamic::UNIT, |kind| Dynamic::from(kind.to_string())),
+    );
+    map.insert(
+        "label".into(),
+        label.map_or(Dynamic::UNIT, |label| Dynamic::from(label.to_string())),
+    );
+    map.insert("text".into(), Dynamic::from(effect.to_string()));
+    Dynamic::from_map(map)
+}
+
 /// The entry of `queries()` / `get_query()` for a saved query: name, folder, description,
 /// params (in signature order: `#{name, schema, default?, required}`), status (`"ok"` or
-/// `"error"` with `error`, the reason its body does not run); with `full` also body, dialect
-/// and meta.
-fn query_entry(engine: &Engine, name: &str, query: &QueryDefinition, full: bool) -> rhai::Map {
+/// `"error"` with `error`, the reason it cannot run: it is unavailable), `writes`, `effects`
+/// and `denied_writes` ([`SavedQueryEffects`], each effect `#{action, element, label, text}`);
+/// with `full` also body, dialect and meta. `catalog` resolves the queries it calls.
+fn query_entry(
+    engine: &Engine,
+    catalog: &dyn Fn(&str) -> Option<QueryDefinition>,
+    name: &str,
+    query: &QueryDefinition,
+    full: bool,
+) -> rhai::Map {
     let text = |value: Option<&str>| value.map_or(Dynamic::UNIT, |v| Dynamic::from(v.to_string()));
     let mut map = rhai::Map::new();
     map.insert("name".into(), Dynamic::from(name.to_string()));
@@ -508,15 +848,23 @@ fn query_entry(engine: &Engine, name: &str, query: &QueryDefinition, full: bool)
         })
         .collect();
     map.insert("params".into(), Dynamic::from_array(params));
-    match compile(engine, name, query).as_ref() {
-        Ok(_) => {
+    let effects = match saved_query_effects(engine, catalog, name, query) {
+        Ok(effects) => {
             map.insert("status".into(), Dynamic::from("ok".to_string()));
+            effects
         }
         Err(reason) => {
             map.insert("status".into(), Dynamic::from("error".to_string()));
-            map.insert("error".into(), Dynamic::from(reason.clone()));
+            map.insert("error".into(), Dynamic::from(reason));
+            SavedQueryEffects::default()
         }
-    }
+    };
+    let list = |effects: &[AccessRequestBuf]| {
+        Dynamic::from_array(effects.iter().map(effect_entry).collect())
+    };
+    map.insert("writes".into(), Dynamic::from_bool(effects.writes));
+    map.insert("effects".into(), list(&effects.effects));
+    map.insert("denied_writes".into(), list(&effects.denied_writes));
     if full {
         map.insert("body".into(), Dynamic::from(query.source().to_string()));
         map.insert("dialect".into(), Dynamic::from(query.dialect().to_string()));
@@ -537,6 +885,16 @@ fn in_folder(folder: Option<&str>, prefix: &str) -> bool {
                 .strip_prefix(prefix)
                 .is_some_and(|rest| rest.starts_with('/'))
     })
+}
+
+/// The catalog of `graph` as the lookup [`saved_query_effects`] and [`with_inferred_dialect`]
+/// take: the saved query of a name, `None` when there is none (or it is kept opaque).
+fn stored_queries(graph: &Arc<dyn AnyGraph>) -> impl Fn(&str) -> Option<QueryDefinition> + '_ {
+    move |name| {
+        graph
+            .definition(DefinitionKind::QUERY, name)
+            .and_then(|definition| definition.as_query().cloned())
+    }
 }
 
 impl ScriptGraphTraversalSource {
@@ -685,6 +1043,9 @@ impl ScriptGraphTraversalSource {
         for (parameter, param) in params {
             query = query.with_param(parameter, param);
         }
+        let graph = this.catalog_graph(operation)?.clone();
+        let query = with_inferred_dialect(ctx.engine(), &stored_queries(&graph), &name, query)
+            .map_err(invalid)?;
         this.store_queries(operation, vec![(name, query)])
     }
 
@@ -783,10 +1144,10 @@ impl ScriptGraphTraversalSource {
                 query = query.with_param(parameter, param);
             }
             // The extracted text must stand on its own as the body of the query.
-            if let Err(reason) = compile_uncached(ctx.engine(), &name, &query) {
-                return Err(invalid(&name, reason));
-            }
-            queries.push((name, query));
+            let own = compile_uncached(ctx.engine(), &name, &query)
+                .and_then(|compiled| compiled.effects)
+                .map_err(|reason| invalid(&name, reason))?;
+            queries.push((name, query, own));
         }
         if let Some(unknown) = declared.keys().next() {
             return Err(invalid(
@@ -796,9 +1157,31 @@ impl ScriptGraphTraversalSource {
                     .to_string(),
             ));
         }
+        // The dialects: a query of the source calling another one of it sees that one's effects
+        // (it is saved in the same unit), any other through the catalog.
+        let stored = stored_queries(this.catalog_graph(operation)?);
+        let mut dialects = Vec::with_capacity(queries.len());
+        for (name, _, _) in &queries {
+            let (effects, dynamic) = effects::transitive(name, &mut |next| match queries
+                .iter()
+                .find(|(other, _, _)| other == next)
+            {
+                Some((_, _, own)) => Some(effects::Node {
+                    effects: own.clone(),
+                    counts: true,
+                }),
+                None => node_of(ctx.engine(), next, &stored(next)?),
+            });
+            dialects.push(dialect_for(&effects, dynamic.as_deref()).map_err(|r| invalid(name, r))?);
+        }
         let names: rhai::Array = queries
             .iter()
-            .map(|(name, _)| Dynamic::from(name.clone()))
+            .map(|(name, _, _)| Dynamic::from(name.clone()))
+            .collect();
+        let queries = queries
+            .into_iter()
+            .zip(dialects)
+            .map(|((name, query, _), dialect)| (name, query.with_dialect(dialect)))
             .collect();
         this.store_queries(operation, queries)?;
         Ok(names)
@@ -899,6 +1282,7 @@ impl ScriptGraphTraversalSource {
         }
         let depth = access::value_depth_of(ctx);
         let mut values = Vec::with_capacity(compiled.signature.len());
+        let mut bound = Vec::with_capacity(compiled.signature.len());
         for parameter in &compiled.signature {
             let Some(param) = query.param(parameter) else {
                 return Err(invalid_body(format!(
@@ -935,25 +1319,124 @@ impl ScriptGraphTraversalSource {
                     }
                 },
             };
+            bound.push((parameter.clone(), value.clone()));
             values.push(element_property_to_dynamic(value));
         }
 
-        // The body's access: the caller's, read-only, one level deeper.
-        let authorizer: Arc<dyn Authorizer> = if self.access.read_only {
-            self.access.authorizer.clone()
-        } else {
-            Arc::new(ReadOnly {
-                inner: self.access.authorizer.clone(),
-            })
+        // What the call may write: the inferred effects of a query that writes (with those of
+        // the queries it calls), none when it is read-only or called from a read-only body.
+        let effects = match &compiled.effects {
+            Ok(own) if query.dialect() == WRITING_QUERY_DIALECT && !self.access.read_only => {
+                resolve_effects(ctx.engine(), &stored_queries(graph), name, own).0
+            }
+            _ => Vec::new(),
         };
-        let access = Arc::new(access::ScriptAccess {
-            authorizer,
+        // A read-only body: the caller's access, read-only, one level deeper.
+        let read_only = Arc::new(access::ScriptAccess {
+            authorizer: if self.access.read_only {
+                self.access.authorizer.clone()
+            } else {
+                Arc::new(ReadOnly {
+                    inner: self.access.authorizer.clone(),
+                })
+            },
             presets: self.access.presets.clone(),
             max_value_depth: self.access.max_value_depth,
             read_only: true,
             query_depth: self.access.query_depth + 1,
             embedders: self.access.embedders.clone(),
         });
+        if effects.is_empty() {
+            let result = self.run_body(ctx, compiled, name, graph, read_only, values)?;
+            if let Some(location) = returned_write(&result, "the result", depth) {
+                return Err(fail(ScriptError::QueryReturnedWrite {
+                    query: name.to_string(),
+                    location,
+                }));
+            }
+            return Ok(result);
+        }
+
+        // A body that writes. The whole effect set is asked of the caller's authorizer before
+        // anything runs, so a denial comes before the first write.
+        for effect in &effects {
+            let request = effect.as_request();
+            self.access
+                .authorizer
+                .authorize(&request)
+                .map_err(|denied| {
+                    script_error(crate::traversal::permission_check::permission_denied(
+                        &format!("query(\"{name}\")"),
+                        &request,
+                        denied.reason(),
+                    ))
+                })?;
+        }
+        let writing = Arc::new(access::ScriptAccess {
+            authorizer: Arc::new(Effects {
+                inner: self.access.authorizer.clone(),
+                query: name.to_string(),
+                effects,
+            }),
+            presets: self.access.presets.clone(),
+            max_value_depth: self.access.max_value_depth,
+            read_only: false,
+            query_depth: self.access.query_depth + 1,
+            embedders: self.access.embedders.clone(),
+        });
+        let mut arguments = crate::value::ValueMap::new();
+        for (parameter, value) in bound {
+            arguments.insert(ElementProperty::from(parameter), value);
+        }
+        let metadata = CommitMetadata::new()
+            .with_attribute("saved_query", name)
+            .with_attribute("saved_query_args", arguments.into_property());
+        // ONE unit over the whole body (a savepoint inside an open one): the storage moves into
+        // a private graph the body writes. A returned traversal that writes runs in the unit
+        // too and is replaced by a reading one over its results; what is returned is then
+        // retargeted to the caller's graph and keeps only the read-only access (a returned
+        // traversal runs after the unit).
+        let mut values = Some(values);
+        let mut body = |private: &Arc<dyn AnyGraph>| {
+            let Some(values) = values.take() else {
+                return plan::UnitBody(Err(fail(ScriptError::InvalidQueryBody {
+                    query: name.to_string(),
+                    reason: "its unit ran twice".to_string(),
+                })));
+            };
+            plan::UnitBody(
+                self.run_body(ctx, compiled, name, private, writing.clone(), values)
+                    .and_then(|value| {
+                        run_returned_writes(ctx, value, depth)
+                            .map_err(|err| in_saved_query(*err, name))
+                    })
+                    .and_then(|value| match returned_write(&value, "the result", depth) {
+                        Some(location) => Err(fail(ScriptError::QueryReturnedWrite {
+                            query: name.to_string(),
+                            location,
+                        })),
+                        None => Ok(value),
+                    })
+                    .map(|value| seal_returned(value, private, graph, &read_only, depth)),
+            )
+        };
+        graph
+            .run_unit(plan::UnitKind::Call(metadata), &mut body)
+            .0
+            .map(|(value, _)| value)
+    }
+
+    /// Runs the compiled body of the saved query `name` with the argument `values` on `graph`
+    /// under `access`; its result as it is.
+    fn run_body(
+        &self,
+        ctx: &NativeCallContext,
+        compiled: &Compiled,
+        name: &str,
+        graph: &Arc<dyn AnyGraph>,
+        access: Arc<access::ScriptAccess>,
+        values: Vec<Dynamic>,
+    ) -> Result<Dynamic, Box<EvalAltResult>> {
         let g = ScriptGraphTraversalSource {
             g: Some(graph.clone()),
             steps: Vec::new(),
@@ -966,8 +1449,7 @@ impl ScriptGraphTraversalSource {
         let mut scope = eval::scope_with_access(g, access);
         // The body sees the caller's `now()` (one value per evaluation, `access.rs`).
         let tag = access::nested_tag(ctx, access::ScriptAccess::of_context(ctx));
-        let result = ctx
-            .engine()
+        ctx.engine()
             .call_fn_with_options::<Dynamic>(
                 rhai::CallFnOptions::new()
                     .eval_ast(false)
@@ -978,14 +1460,7 @@ impl ScriptGraphTraversalSource {
                 name,
                 values,
             )
-            .map_err(|err| in_saved_query(*err, name))?;
-        if let Some(location) = returned_write(&result, "the result", depth) {
-            return Err(fail(ScriptError::QueryReturnedWrite {
-                query: name.to_string(),
-                location,
-            }));
-        }
-        Ok(result)
+            .map_err(|err| in_saved_query(*err, name))
     }
 
     /// `g.queries()`: every saved query as a list of maps, by name (name,
@@ -1006,15 +1481,21 @@ impl ScriptGraphTraversalSource {
     ) -> Result<rhai::Array, Box<EvalAltResult>> {
         this.require_query("queries", Action::Read, None)?;
         let prefix = folder.trim().trim_end_matches('/');
-        let definitions = this
-            .catalog_graph("queries")?
-            .definitions(Some(DefinitionKind::QUERY));
+        let graph = this.catalog_graph("queries")?;
+        let catalog = stored_queries(graph);
+        let definitions = graph.definitions(Some(DefinitionKind::QUERY));
         Ok(definitions
             .iter()
             .filter_map(|definition| {
                 let query = definition.as_query()?;
                 in_folder(query.folder(), prefix).then(|| {
-                    Dynamic::from_map(query_entry(ctx.engine(), definition.name(), query, false))
+                    Dynamic::from_map(query_entry(
+                        ctx.engine(),
+                        &catalog,
+                        definition.name(),
+                        query,
+                        false,
+                    ))
                 })
             })
             .collect())
@@ -1029,14 +1510,19 @@ impl ScriptGraphTraversalSource {
         name: &str,
     ) -> Result<Dynamic, Box<EvalAltResult>> {
         this.require_query("get_query", Action::Read, Some(name))?;
-        let definition = this
-            .catalog_graph("get_query")?
-            .definition(DefinitionKind::QUERY, name);
+        let graph = this.catalog_graph("get_query")?;
+        let definition = graph.definition(DefinitionKind::QUERY, name);
         Ok(definition
             .as_ref()
             .and_then(Definition::as_query)
             .map_or(Dynamic::UNIT, |query| {
-                Dynamic::from_map(query_entry(ctx.engine(), name, query, true))
+                Dynamic::from_map(query_entry(
+                    ctx.engine(),
+                    &stored_queries(graph),
+                    name,
+                    query,
+                    true,
+                ))
             }))
     }
 

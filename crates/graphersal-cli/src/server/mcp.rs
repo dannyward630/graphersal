@@ -28,11 +28,14 @@
 //! definition is denied).
 //!
 //! Saved queries (`book/src/users_guide/saved_queries.md`): `list_saved_queries` and
-//! `run_saved_query` are always offered (read-only mode included: a saved query never writes),
-//! with the resource `graphersal://saved-queries`; the instructions and the `query` tool tell
-//! the agent to look for a saved query before writing a new one. `--mcp-query-tools` also lists
-//! every saved query as a tool of its own (name, description, `inputSchema` from the parameter
-//! schemas); `tools/list` reflects the catalog at the time of the call. The endpoint has no SSE
+//! `run_saved_query` are always offered, with the resource `graphersal://saved-queries`; the
+//! instructions and the `query` tool tell the agent to look for a saved query before writing a
+//! new one, and to run one marked `writes: true` (it changes data, its `effects` say what) only
+//! when the user asked for that change. Read-only mode lists only the queries that do not write
+//! and refuses a call of one that does. `--mcp-query-tools` also lists every saved query as a
+//! tool of its own (name, description, `inputSchema` from the parameter schemas, `readOnlyHint` /
+//! `destructiveHint` from its effects); `tools/list` reflects the catalog at the time of the
+//! call. The endpoint has no SSE
 //! stream, so it cannot send `notifications/tools/list_changed` (`listChanged: false`): a
 //! client re-lists the tools to see a changed catalog.
 //!
@@ -378,7 +381,7 @@ fn dispatch(context: &Context, mcp: &Mcp, method: &str, params: &Value) -> RpcRe
             let Some(resource) = RESOURCES.iter().find(|r| r.uri == uri) else {
                 return Err((-32002, format!("resource not found: {uri}")));
             };
-            let text = read_resource(context, uri).map_err(|err| (-32603, err))?;
+            let text = read_resource(context, uri, mcp.read_only).map_err(|err| (-32603, err))?;
             plain(json!({ "contents": [{
                 "uri": uri, "mimeType": resource.mime, "text": text,
             }] }))
@@ -442,9 +445,10 @@ model: vertices and edges with labels and properties) that a user works with LIV
 playground at the same time; the browser reloads when you change the graph. Use `query` to run \
 traversals (Gremlin in Rhai syntax, see its description), `get_schema`/`statistics`/`graph_info` \
 to learn the data first, and the schema tools to read or evolve the schema. Before writing a \
-new query, check `list_saved_queries`: saved queries are named, parameterized, read-only \
-queries the user stored in the graph; run one with `run_saved_query` {name, params} instead of \
-writing it again. Large text that queries rarely read (CVs, descriptions) can be kept \
+new query, check `list_saved_queries`: saved queries are named, parameterized queries the user \
+stored in the graph; run one with `run_saved_query` {name, params} instead of writing it again. \
+Saved queries marked `writes: true` change data (their `effects` say what); run them only when \
+the user asked for that change. Large text that queries rarely read (CVs, descriptions) can be kept \
 compressed in memory with a compression rule: `list_compressions`, `define_compression`, \
 `drop_compression`, `recompress` (reads stay plain). A query that filters a label on a \
 property (`g.v().has_label(\"person\").has(\"age\", P.gt(30))`) and is slow on a large \
@@ -476,7 +480,7 @@ pub(super) fn instructions() -> &'static str {
 /// The DSL reference (the resource `graphersal://dsl-reference`), built once from the engine.
 #[cfg(feature = "ai")]
 pub(super) fn dsl_reference_text(context: &Context) -> Result<String, String> {
-    read_resource(context, "graphersal://dsl-reference")
+    read_resource(context, "graphersal://dsl-reference", false)
 }
 
 /// What a tool does, for its annotations and for `--mcp-read-only`.
@@ -611,11 +615,12 @@ fn all_tools() -> Vec<Tool> {
             "list_saved_queries",
             "Saved queries",
             Kind::Read,
-            "The saved queries stored in the graph: named, parameterized, read-only queries \
-             the user wrote for recurring questions. Each has a name, a folder, a description, \
-             its parameters (JSON Schema, default, required, description) and a status (error: \
-             it no longer compiles). Check them before writing a new query, and run one with \
-             run_saved_query.",
+            "The saved queries stored in the graph: named, parameterized queries the user wrote \
+             for recurring questions and tasks. Each has a name, a folder, a description, its \
+             parameters (JSON Schema, default, required, description), a status (error: it \
+             cannot run) and writes (true: it changes data, effects lists what; run it only when \
+             the user asked for that change). Check them before writing a new query, and run \
+             one with run_saved_query.",
             json!({
                 "type": "object",
                 "properties": {
@@ -627,12 +632,13 @@ fn all_tools() -> Vec<Tool> {
         tool(
             "run_saved_query",
             "Run a saved query",
-            Kind::Read,
+            Kind::Destructive,
             "Runs a saved query by name with named parameters, exactly like the script \
              g.query(name, #{..}): the parameters are checked against their declared schemas \
              (missing required, wrong type, violated constraint: an error with a Help line), \
-             defaults fill the omitted ones, and the answer is bounded like query's. Saved \
-             queries never write.",
+             defaults fill the omitted ones, and the answer is bounded like query's. A query \
+             listed with writes: true changes data (only what its effects name, as one \
+             transaction): run it only when the user asked for that change.",
             json!({
                 "type": "object",
                 "properties": {
@@ -852,12 +858,14 @@ fn all_tools() -> Vec<Tool> {
     ]
 }
 
-/// The tools offered: all of them, only the reading ones (and `query`) when `read_only`
-/// (`--mcp-read-only`, an `--ai` file's `read_only`).
+/// The tools offered: all of them, only the reading ones (and `query`, `run_saved_query`) when
+/// `read_only` (`--mcp-read-only`, an `--ai` file's `read_only`).
 fn tools(read_only: bool) -> Vec<Tool> {
     all_tools()
         .into_iter()
-        .filter(|t| !read_only || t.kind == Kind::Read || t.name == "query")
+        .filter(|t| {
+            !read_only || t.kind == Kind::Read || t.name == "query" || t.name == "run_saved_query"
+        })
         .collect()
 }
 
@@ -912,7 +920,7 @@ pub(super) fn tool_listings(
         .map(|tool| tool.listing(read_only))
         .collect();
     if query_tools {
-        listed.extend(query_tool_listings(context)?);
+        listed.extend(query_tool_listings(context, read_only)?);
     }
     Ok(listed)
 }
@@ -1107,7 +1115,7 @@ fn run_tool(
         "statistics" => Ok(pretty(
             &context.call(|s| s.statistics()).map_err(http_failed)?,
         )),
-        "list_saved_queries" => list_saved_queries(context, args),
+        "list_saved_queries" => list_saved_queries(context, caller.read_only, args),
         "run_saved_query" => run_saved_query(context, caller, args),
         "list_compressions" => {
             let list = context
@@ -1225,10 +1233,14 @@ fn fallible(
 
 /// The saved queries as the agent sees them: the session's entries (`folder` prefix, `search`
 /// in name or description), compact.
+/// The saved queries as compact entries (no `null` fields, `effects` as their texts, no empty
+/// `denied_writes`), `folder` and `search` as `list_saved_queries` takes them; `read_only`
+/// leaves out every query that writes.
 fn saved_queries(
     context: &Context,
     folder: Option<String>,
     search: Option<String>,
+    read_only: bool,
 ) -> Result<Vec<Value>, String> {
     let list = context
         .call(move |s| s.list_queries(folder.as_deref()))
@@ -1238,6 +1250,7 @@ fn saved_queries(
         .as_array()
         .into_iter()
         .flatten()
+        .filter(|entry| !(read_only && entry["writes"].as_bool().unwrap_or(false)))
         .filter(|entry| {
             search.as_deref().is_none_or(|needle| {
                 ["name", "description"].iter().any(|key| {
@@ -1250,8 +1263,21 @@ fn saved_queries(
         .map(|entry| {
             let mut compact = serde_json::Map::new();
             for (key, value) in entry.as_object().into_iter().flatten() {
-                if !value.is_null() {
-                    compact.insert(key.clone(), value.clone());
+                let value = match key.as_str() {
+                    // The effect texts are enough for an agent (`Create Data(vertex "person")`).
+                    "effects" | "denied_writes" => Value::Array(
+                        value
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|effect| effect.get("text").cloned())
+                            .collect(),
+                    ),
+                    _ => value.clone(),
+                };
+                let empty = value.as_array().is_some_and(Vec::is_empty);
+                if !value.is_null() && !(empty && key != "params") {
+                    compact.insert(key.clone(), value);
                 }
             }
             Value::Object(compact)
@@ -1260,11 +1286,11 @@ fn saved_queries(
 }
 
 /// The `list_saved_queries` tool.
-fn list_saved_queries(context: &Context, args: &Value) -> Result<String, String> {
+fn list_saved_queries(context: &Context, read_only: bool, args: &Value) -> Result<String, String> {
     let folder = str_arg(args, "folder").map(str::to_string);
     let search = str_arg(args, "search").map(str::to_string);
     let filtered = folder.is_some() || search.is_some();
-    let list = saved_queries(context, folder, search)?;
+    let list = saved_queries(context, folder, search, read_only)?;
     if list.is_empty() {
         return Ok(if filtered {
             "No saved query matches (call list_saved_queries without arguments to see all).".into()
@@ -1274,7 +1300,8 @@ fn list_saved_queries(context: &Context, args: &Value) -> Result<String, String>
     }
     Ok(format!(
         "{} saved quer{} (run one with run_saved_query {{name, params}}; status \"error\" means \
-         it currently fails, see \"error\"):\n{}",
+         it cannot run, see \"error\"; writes: true means it changes data, see \"effects\": run \
+         it only when the user asked for that change):\n{}",
         list.len(),
         if list.len() == 1 { "y" } else { "ies" },
         pretty(&Value::Array(list))
@@ -1292,6 +1319,17 @@ fn run_saved_query(context: &Context, caller: &ToolCaller, args: &Value) -> Resu
         Some(other) => other.clone(),
     };
     let script = graphersal_session::queries::query_call_text(name, &params)?;
+    if caller.read_only {
+        let wanted = name.to_string();
+        let entry = context
+            .call(move |s| s.get_query(&wanted))
+            .map_err(http_failed)?;
+        if entry["writes"].as_bool().unwrap_or(false) {
+            return Err(format!(
+                "the saved query \"{name}\" changes data, and this server is read-only for MCP"
+            ));
+        }
+    }
     let max_rows = args
         .get("max_rows")
         .and_then(Value::as_u64)
@@ -1302,8 +1340,8 @@ fn run_saved_query(context: &Context, caller: &ToolCaller, args: &Value) -> Resu
 
 /// With `--mcp-query-tools`: every saved query as a tool listing (`inputSchema` from its
 /// parameters); a query named like a built-in tool is left out (`run_saved_query` reaches it).
-fn query_tool_listings(context: &Context) -> Result<Vec<Value>, String> {
-    let list = saved_queries(context, None, None)?;
+fn query_tool_listings(context: &Context, read_only: bool) -> Result<Vec<Value>, String> {
+    let list = saved_queries(context, None, None, read_only)?;
     Ok(list
         .iter()
         .filter_map(|entry| {
@@ -1335,10 +1373,28 @@ fn query_tool_listings(context: &Context) -> Result<Vec<Value>, String> {
             if let Some(folder) = entry["folder"].as_str() {
                 description.push_str(&format!(" Folder: {folder}."));
             }
-            description.push_str(" Saved query (read-only); the same as run_saved_query.");
-            if let Some(error) = entry["error"].as_str() {
-                description.push_str(&format!(" It currently fails: {error}"));
+            let writes = entry["writes"].as_bool().unwrap_or(false);
+            let effects: Vec<&str> = entry["effects"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            if writes {
+                description.push_str(&format!(
+                    " Saved query that CHANGES DATA ({}); run it only when the user asked for \
+                     that change. The same as run_saved_query.",
+                    effects.join(", ")
+                ));
+            } else {
+                description.push_str(" Saved query (read-only); the same as run_saved_query.");
             }
+            if let Some(error) = entry["error"].as_str() {
+                description.push_str(&format!(" It cannot run: {error}"));
+            }
+            let destructive = effects
+                .iter()
+                .any(|effect| effect.starts_with("Update") || effect.starts_with("Delete"));
             Some(json!({
                 "name": name,
                 "title": name,
@@ -1351,9 +1407,9 @@ fn query_tool_listings(context: &Context) -> Result<Vec<Value>, String> {
                 },
                 "annotations": {
                     "title": name,
-                    "readOnlyHint": true,
-                    "destructiveHint": false,
-                    "idempotentHint": true,
+                    "readOnlyHint": !writes,
+                    "destructiveHint": writes && destructive,
+                    "idempotentHint": !writes,
                     "openWorldHint": false,
                 },
             }))
@@ -1579,12 +1635,14 @@ const RESOURCES: [Resource; 5] = [
     },
 ];
 
-fn read_resource(context: &Context, uri: &str) -> Result<String, String> {
+/// The text of the resource `uri`; `read_only` leaves the saved queries that write out of
+/// `graphersal://saved-queries`.
+fn read_resource(context: &Context, uri: &str, read_only: bool) -> Result<String, String> {
     match uri {
         "graphersal://schema" => context.call(|s| s.get_schema_text()).map_err(http_failed),
-        "graphersal://saved-queries" => {
-            Ok(pretty(&Value::Array(saved_queries(context, None, None)?)))
-        }
+        "graphersal://saved-queries" => Ok(pretty(&Value::Array(saved_queries(
+            context, None, None, read_only,
+        )?))),
         "graphersal://statistics" => Ok(pretty(
             &context.call(|s| s.statistics()).map_err(http_failed)?,
         )),

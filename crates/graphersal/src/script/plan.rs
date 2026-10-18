@@ -170,13 +170,16 @@ fn run_terminal<'g, T: GraphStorage + 'g>(
 
 /// How [`AnyGraph::run_unit`] closes the whole-script unit.
 #[doc(hidden)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum UnitKind {
     /// Commit when the body succeeds, roll back when it fails (`eval_value_atomic`).
     Atomic,
     /// Always roll back, without hooks, and report what the body changed
     /// (`eval_value_dry_run`).
     DryRun,
+    /// [`Self::Atomic`] for the call of a saved query that writes: the unit (a savepoint inside
+    /// an open one) carries this metadata to its commit (the query's name and arguments).
+    Call(crate::graph::CommitMetadata),
 }
 
 /// What the body of a whole-script unit returns: the script's value or its error.
@@ -203,8 +206,13 @@ pub(crate) fn run_unit_on<S: GraphStorage + Default + Send + Sync + 'static>(
     body: &mut dyn FnMut(&Arc<dyn AnyGraph>) -> UnitBody,
 ) -> UnitResult {
     let mut shared = graph.write();
-    UnitResult(match kind {
-        UnitKind::Atomic => in_private_lock(graph, &mut *shared, |private, any| {
+    let (atomic, metadata) = match kind {
+        UnitKind::Atomic => (true, None),
+        UnitKind::Call(metadata) => (true, Some(metadata)),
+        UnitKind::DryRun => (false, None),
+    };
+    UnitResult(match atomic {
+        true => in_private_lock(graph, &mut *shared, |private, any| {
             let mark = private.write().begin_unit();
             // A panic (an engine bug) rolls the whole script back before it continues to the
             // host; the storage then moves back into the shared lock.
@@ -219,10 +227,19 @@ pub(crate) fn run_unit_on<S: GraphStorage + Default + Send + Sync + 'static>(
                 },
             );
             match evaluated {
-                Ok(value) => match private.write().commit_unit(mark) {
-                    Ok(()) => Ok((value, None)),
-                    Err(err) => Err(script_error(Box::new(TraverserError::from(err)))),
-                },
+                Ok(value) => {
+                    let committed = {
+                        let mut storage = private.write();
+                        if let Some(metadata) = metadata {
+                            storage.set_unit_metadata(metadata);
+                        }
+                        storage.commit_unit(mark)
+                    };
+                    match committed {
+                        Ok(()) => Ok((value, None)),
+                        Err(err) => Err(script_error(Box::new(TraverserError::from(err)))),
+                    }
+                }
                 Err(err) => {
                     private
                         .write()
@@ -231,7 +248,7 @@ pub(crate) fn run_unit_on<S: GraphStorage + Default + Send + Sync + 'static>(
                 }
             }
         }),
-        UnitKind::DryRun => shared
+        false => shared
             .dry_run(|unit| {
                 in_private_lock(graph, unit, |_, any| body(any).0).map_err(DryRunFailure)
             })

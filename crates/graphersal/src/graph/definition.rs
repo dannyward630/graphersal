@@ -10,8 +10,15 @@ use crate::graph::schema::PropertySchema;
 use crate::value::physical::{PhysicalValue, lift_untyped, lower, read_json, write_json};
 use crate::value::{ElementProperty, PropertyMap};
 
-/// The dialect of a saved query's source this version writes: Rhai, Graphersal DSL version 1.
+/// The dialect of a saved query's source this version writes for a query that only reads:
+/// Rhai, Graphersal DSL version 1. A query of this dialect is read-only, also when its body has
+/// writing steps (they are denied).
 pub const QUERY_DIALECT: &str = "graphersal-rhai/1";
+/// The dialect of a saved query that may write data (Graphersal DSL version 2): the script
+/// layer saves a query in it when the effects inferred from its body are not empty, and in
+/// [`QUERY_DIALECT`] otherwise (book `users_guide/saved_queries.md`). A version that runs only
+/// [`QUERY_DIALECT`] lists such a query as not runnable.
+pub const WRITING_QUERY_DIALECT: &str = "graphersal-rhai/2";
 /// Keys a definition's payload map never has (format spec 6.3): `kind`, `name` and `flags` are
 /// the envelope keys of the exchange form ([`Definition::to_json`]), which puts the payload
 /// keys beside them. A stored payload with one of them is invalid.

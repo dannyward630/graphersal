@@ -105,7 +105,7 @@ that violates the schema stops the start with exit code `1` and the violation re
 unreadable or invalid schema file, an unknown `--schema-mode`, and `--schema` with a Store or a
 `.gsnap` (both carry their own schema) are exit code `2`.
 
-Saved queries (stored in the database, called by name, read-only; see [Saved Queries](saved_queries.md)):
+Saved queries (stored in the database, called by name; a query whose body writes data writes as one transaction; see [Saved Queries](saved_queries.md)):
 
 ```bash
 graphersal -e 'g.define_query(#{name: "people", body: "fn people() { g.v().has_label(\"person\") }"})' \

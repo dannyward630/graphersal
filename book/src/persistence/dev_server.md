@@ -372,8 +372,8 @@ The list is the same on every `--graph` source; there are no persistence tools:
 | `define_compression` `{name, label, path, element?, minBytes?, dictionary?, replaces?}`, `drop_compression` `{name}`, `recompress` `{name}` | Define, drop or re-run a compression rule (refused in read-only mode); a refused rule answers its field errors |
 | `list_indexes` | The [property indexes](../users_guide/property_indexes.md) with their `type` and stats (`entries`, `distinctValues`, `bytes`; `served: false` with a `reason` when the storage serves none or the index type is unknown to this version) (also in read-only mode) |
 | `create_index` `{label, key, element?, name?, type?}`, `drop_index` `{name}` | Create (built from the data in the same commit) or drop a property index; `type` is an enum of the known [index types](../users_guide/property_indexes.md#index-types) (`memory-ordered`, the default); refused in read-only mode, where `query` also refuses `g.create_index`/`g.drop_index`; a refused index answers its field errors (an unknown type, a key the schema declares as a vector, a list or a map) |
-| `list_saved_queries` `{folder?, search?}` | The [saved queries](../users_guide/saved_queries.md) stored in the graph: name, folder, description, parameters (JSON Schema, default, required, description) and status (`error` with the reason when a body no longer compiles); `folder` keeps a folder and those below it, `search` a text in the name or description (case-insensitive) |
-| `run_saved_query` `{name, params?, max_rows?}` | Runs `g.query(name, #{..})` like `query` (bounded answer, the call text on its first line): the arguments are checked against the parameter schemas, omitted ones take their default, a wrong one is a tool error with its `Help:` line. A saved query never writes |
+| `list_saved_queries` `{folder?, search?}` | The [saved queries](../users_guide/saved_queries.md) stored in the graph: name, folder, description, parameters (JSON Schema, default, required, description), status (`error` with the reason when it cannot run), `writes` and `effects` (`true` and what it changes, for a query that writes); `folder` keeps a folder and those below it, `search` a text in the name or description (case-insensitive). With `--mcp-read-only` the queries that write are left out |
+| `run_saved_query` `{name, params?, max_rows?}` | Runs `g.query(name, #{..})` like `query` (bounded answer, the call text on its first line): the arguments are checked against the parameter schemas, omitted ones take their default, a wrong one is a tool error with its `Help:` line. A query that writes changes only its effects, as one transaction; with `--mcp-read-only` it is refused |
 | `statistics`, `graph_info` | Counts per label, memory and limits; what the server serves (name, counts, schema mode, source file or Store directory, `view` and a `note` while a read-only view is open, `damageFound`, `mcpReadOnly`) |
 
 **A read-only view opened in the browser** is server-wide: the agent's queries read that past
@@ -391,11 +391,15 @@ generated from the engine's function docs, about 55 KB),
 **Saved queries first.** The server's instructions and the `query` tool's description tell the
 agent to look for a saved query (`list_saved_queries`) before it writes a new query, and to run
 it with `run_saved_query`: the queries a user stored for recurring questions are reused instead of
-rewritten. Both tools are offered with `--mcp-read-only` too (a saved query is read-only by
-definition). With `--mcp-query-tools`, `tools/list` also lists every saved query as a tool named
-like the query, with its description (and folder) and an `inputSchema` built from its parameter
-schemas (defaults included, required parameters in `required`, no other properties); calling it
-is `run_saved_query` with those arguments. `tools/list` reflects the catalog at the time of the
+rewritten. A query listed with `writes: true` changes data (its `effects` say what), and the
+instructions tell the agent to run one only when the user asked for that change. Both tools are
+offered with `--mcp-read-only` too, which lists only the queries that do not write and refuses a
+call of one that does. With `--mcp-query-tools`, `tools/list` also lists every saved query as a
+tool named like the query, with its description (and folder; a query that writes says so and
+names its effects), an `inputSchema` built from its parameter schemas (defaults included,
+required parameters in `required`, no other properties) and annotations from its effects
+(`readOnlyHint` false for a query that writes, `destructiveHint` when it updates or deletes);
+calling it is `run_saved_query` with those arguments. `tools/list` reflects the catalog at the time of the
 call; the endpoint has no event stream, so it announces `tools.listChanged: false` and a client
 lists the tools again to see a changed catalog. A saved query named like a built-in tool
 (`statistics`, ...) is not listed as a tool of its own; `run_saved_query` reaches it.
@@ -462,6 +466,11 @@ than one person?"*. The transcript shows:
 - a query the agent proposes in its answer (a fenced block) with **Copy** and **Run** (Run opens
   a new query tab and runs it there);
 - errors with their help text (a refused key, an unknown model, the provider's rate limit, ...).
+
+A [saved query that writes](../users_guide/saved_queries.md#queries-that-read-and-queries-that-write)
+(`writes: true`) runs only after you confirmed it: the agent's first `run_saved_query` of it in a
+turn is not run but answered "ask the user first", so the agent asks you in the chat what it is
+about to change; when it calls the query again in the turn of your next message, it runs (once).
 
 **Stop** ends the agent's turn: the pending provider call is abandoned (the client is synchronous,
 so the answer is dropped when it arrives) and the query the agent runs is cancelled and rolled
@@ -644,11 +653,12 @@ For reference while it exists; it follows the playground's engine boundary
 | `GET /api/store/compaction` | `compactionAdvice()`: `{compaction: {recommended, reason, decidedBy, compactable, totalBytes, liveBytes, garbageBytes, pruneBytes, pruneFirst, reclaimableBytes, spaceNeeded, freeSpace, policy, ...}}` (also in `GET /api/store` as `compaction`, with `kind` and `space`) |
 | `POST /api/store/compact` | `compactStore({dropMarks})`, optional body `{"dropMarks": true}` (an empty body is `{}`): `{compact: {keptFrom, snapshotsRemoved, segmentsRemoved, marksUnreachable, compacted, bytesBefore, bytesAfter, bytesFreed}, compaction}`; 409 in a read-only view; 409 `{"error", "marksUnreachable": [...]}` with nothing changed when the prune would make marks unreachable and `dropMarks` is not `true` (the playground sends it after the user confirmed) |
 | `POST /api/store/attic/restore`, `/fork` (`{id, dir}`), `/remove` (`{id}`) | `atticRestore(id)`, `atticFork(id, dir)`, `atticRemove(id)` |
-| `GET /api/queries?folder=` | `listQueries(folder)`: the saved queries `[{name, folder, description, params, status, error?}]` |
+| `GET /api/queries?folder=` | `listQueries(folder)`: the saved queries `[{name, folder, description, params, status, error?, writes, effects, denied_writes}]` (an effect `{action, element, label, text}`) |
 | `GET /api/queries/get?name=` | `getQuery(name)`: one with its `body`, `dialect`, `meta`; `null` when there is none |
 | `POST /api/queries/define` `{name, folder?, description?, params?: [{name, schema, default?}], body, replaces?}` | `defineQuery(spec)`: `{ok: true, query}` or `{ok: false, errors: [{field, message, help?}]}` (always 200); `replaces` renames in the same commit |
 | `POST /api/queries/drop` `{name}`, `POST /api/queries/move` `{name, folder}` | `dropQuery(name)`: `{dropped}`; `moveQuery(name, folder)`: the entry |
 | `POST /api/queries/call-text` `{name, args}` | `queryCallText(name, args)`: `{text}`, the call `g.query("name", #{..})` with the arguments as Rhai literals |
+| `POST /api/queries/preview` `{name, args}` | `previewQuery(name, args)`: the call run as a dry run and rolled back, `{ok: true, changes: {vertices_added, vertices_dropped, edges_added, edges_dropped, properties_set, properties_removed, labels_changed, other}}` or `{ok: false, error}`; the run form shows it before it runs a query that writes |
 | `GET /api/catalog/export`, `POST /api/catalog/load?replace=true` | `saveCatalog()`: the catalog file (`{"definitions": [..]}`: saved queries, compression rules, every kind); `loadCatalog(file)`: stores a catalog file in one commit (`replace=true`: drops what the file does not have; a compression rule compresses its values), `{loaded, graph}` |
 | `GET /api/compression` | `listCompressions()`: the [compression rules](../users_guide/compressed_properties.md) `[{name, element, label, path, codec, minBytes, dictionary, stats: {compressedValues, plainBytes, storedBytes, dictionaryBytes}}]` |
 | `POST /api/compression/define` `{name, label, path, element?, codec?, minBytes?, dictionary?, replaces?}` | `defineCompression(spec)`: `{ok: true, rule}` or `{ok: false, errors: [{field, message, help?}]}` (always 200); `replaces` renames in the same commit |

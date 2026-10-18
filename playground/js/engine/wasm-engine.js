@@ -408,6 +408,10 @@ export class WasmEngine extends Engine {
     return this.call('queryCallText', name, plain(args || {}));
   }
 
+  async previewQuery(name, args) {
+    return this.call('previewQuery', name, plain(args || {}));
+  }
+
   async saveCatalog() {
     return this.call('saveCatalog');
   }

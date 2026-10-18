@@ -514,7 +514,8 @@ class Graph:
         self, folder: Optional[str] = None, *, policy: Optional[AccessPolicy] = None
     ) -> list[dict[str, Any]]:
         """The saved queries (in ``folder`` and below it): ``name``, ``folder``,
-        ``description``, ``params``, ``status`` and ``error`` each."""
+        ``description``, ``params``, ``status`` and ``error``, ``writes``, ``effects`` and
+        ``denied_writes`` each (an effect ``{"action", "element", "label", "text"}``)."""
     def get_query(
         self, name: str, *, policy: Optional[AccessPolicy] = None
     ) -> Optional[dict[str, Any]]:
@@ -603,7 +604,8 @@ class Graph:
         policy: Optional[AccessPolicy] = None,
     ) -> Any:
         """Calls the saved query ``name`` with named arguments (``g.query(name, #{..})``) and
-        returns its result like ``execute``. Saved queries never write."""
+        returns its result like ``execute``. A query whose body writes data (``writes`` in
+        ``queries()``) changes only its inferred ``effects``, as one transaction."""
     def execute(
         self,
         script: str,

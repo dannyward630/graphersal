@@ -575,6 +575,14 @@ export class Engine {
   async queryCallText(name, args) { throw notImplemented('queryCallText'); }
 
   /**
+   * The preview of a call of the saved query `name` with named arguments `args`, run as a dry
+   * run and rolled back (the run form shows it before running a query that writes): `{ok: true,
+   * changes: {vertices_added, vertices_dropped, edges_added, edges_dropped, properties_set,
+   * properties_removed, labels_changed, other}}` or `{ok: false, error}`.
+   */
+  async previewQuery(name, args) { throw notImplemented('previewQuery'); }
+
+  /**
    * "Catalog ▸ Save catalog": the whole catalog (saved queries, compression rules, every other
    * kind) as JSON text (`{"definitions": [..]}`).
    */

@@ -23,6 +23,20 @@ pub(crate) mod prop_path;
 pub mod sideeffect_steps;
 pub mod start_steps;
 
+/// What the plan as written states about the traversers reaching a step, for the requests of
+/// a write of the received elements ([`GraphStep::for_each_access_in`]): their element kind
+/// and labels when known. The default states nothing. Labels are stated only where they are
+/// complete for each element: an edge's one label, the labels `add_v(labels)` gives a new
+/// vertex ([`GraphStep::access_flow_after`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AccessFlow {
+    /// The element kind, when known.
+    pub(crate) element: Option<crate::graph::ElementKind>,
+    /// Every label the elements can carry (an element carries no other); a write asks once per
+    /// label. Empty when unknown.
+    pub(crate) labels: Vec<String>,
+}
+
 pub(crate) enum GraphStep<'g, S: GraphStorage + 'g> {
     Init(&'static str, Box<dyn GraphStepInit<'g, S> + 'g>),
     Append(&'static str, Box<dyn GraphStepAppend<'g, S> + 'g>),
@@ -328,10 +342,12 @@ impl<'g, S: GraphStorage + 'g> GraphStep<'g, S> {
     ///   request per statically known label (`None` when the label comes from a traversal or is
     ///   absent);
     /// - `merge_v` / `merge_e`: `Create` and `Update` on `Data { Vertex | Edge, None }`;
-    /// - `property`, `property_json`, `remove_property`: `Update` on `Data { None, None }`;
-    /// - `add_label` / `drop_label`: `Update` on `Data { Vertex, None }`; `set_label`: `Update`
-    ///   on `Data { Edge, None }` (the label of the changed element is not known from the plan);
-    /// - `drop()`: `Delete` on `Data { None, None }`;
+    /// - `property`, `property_json`, `remove_property`: `Update` on `Data` of the elements the
+    ///   step receives as far as the plan states them (`flow`, [`AccessFlow`]): one request per
+    ///   known label, `Data { None, None }` when nothing is known;
+    /// - `add_label` / `drop_label`: `Update` on `Data { Vertex, label }`; `set_label`: `Update`
+    ///   on `Data { Edge, label }`, the labels again from `flow`;
+    /// - `drop()`: `Delete` on `Data` of the elements it receives, like `property`;
     /// - `schema()`: `Read` on `Schema`;
     /// - `v()` / `e()`: `Read` on `Data { Vertex | Edge, None }`; `out`/`in`/`both`: `Read` on
     ///   edges and on vertices; `out_e`/`in_e`/`both_e`: `Read` on edges;
@@ -345,14 +361,49 @@ impl<'g, S: GraphStorage + 'g> GraphStep<'g, S> {
     ///
     /// Labels of reads are not reported (label-level read security is a later storage
     /// decorator, see `book/src/users_guide/permissions.md`).
+    ///
+    /// This form knows nothing about the step's input ([`AccessFlow::default`]); the
+    /// authorization check walks a plan with [`Self::for_each_access_in`] and
+    /// [`Self::access_flow_after`].
     pub(crate) fn for_each_access<E>(
         &self,
+        visit: impl FnMut(crate::graph::AccessRequest<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.for_each_access_in(&AccessFlow::default(), visit)
+    }
+
+    /// [`Self::for_each_access`] for a step whose input the plan states as `flow` (the
+    /// element kind and labels of the traversers reaching it): a write of the received
+    /// elements (`property`, `drop()`, ...) names them.
+    pub(crate) fn for_each_access_in<E>(
+        &self,
+        flow: &AccessFlow,
         mut visit: impl FnMut(crate::graph::AccessRequest<'_>) -> Result<(), E>,
     ) -> Result<(), E> {
         use crate::graph::{AccessRequest, Action, ElementKind, Resource};
         let vertex = Some(ElementKind::Vertex);
         let edge = Some(ElementKind::Edge);
         let read = |element| AccessRequest::new(Action::Read, Resource::data(element, None));
+        // A write of the received elements (of the kind `element` when the step fixes it): one
+        // request per label the flow knows.
+        fn received<E>(
+            flow: &AccessFlow,
+            action: Action<'_>,
+            element: Option<ElementKind>,
+            visit: &mut impl FnMut(AccessRequest<'_>) -> Result<(), E>,
+        ) -> Result<(), E> {
+            let element = element.or(flow.element);
+            if flow.labels.is_empty() || element != flow.element {
+                return visit(AccessRequest::new(action, Resource::data(element, None)));
+            }
+            for label in &flow.labels {
+                visit(AccessRequest::new(
+                    action,
+                    Resource::data(element, Some(label.as_str())),
+                ))?;
+            }
+            Ok(())
+        }
         match self {
             GraphStep::SideEffectMut(kind, step) => {
                 let element = match *kind {
@@ -387,16 +438,10 @@ impl<'g, S: GraphStorage + 'g> GraphStep<'g, S> {
                             Resource::data(element, None),
                         ))
                     }
-                    _ => visit(AccessRequest::new(
-                        Action::Update,
-                        Resource::data(element, None),
-                    )),
+                    _ => received(flow, Action::Update, element, &mut visit),
                 }
             }
-            GraphStep::Filter("drop", _) => visit(AccessRequest::new(
-                Action::Delete,
-                Resource::data(None, None),
-            )),
+            GraphStep::Filter("drop", _) => received(flow, Action::Delete, None, &mut visit),
             GraphStep::Barrier("infer_schema", _) => {
                 visit(AccessRequest::new(Action::Read, Resource::Schema))
             }
@@ -458,6 +503,92 @@ impl<'g, S: GraphStorage + 'g> GraphStep<'g, S> {
             | GraphStep::SideEffect(_, _)
             | GraphStep::Modulator(_, _)
             | GraphStep::Count(_, _) => Ok(()),
+        }
+    }
+
+    /// What the plan states about the traversers leaving this step, given `flow` for the ones
+    /// reaching it: the input of the next step for [`Self::for_each_access_in`].
+    ///
+    /// - `v()` / `merge_v()` and `out`/`in`/`both` and the endpoint steps yield vertices,
+    ///   `add_v(labels)` vertices with exactly these labels; `e(labels)` / `add_e(label)` /
+    ///   `merge_e()` / `out_e(labels)` / `in_e(labels)` / `both_e(labels)` yield edges (with
+    ///   the labels when given);
+    /// - `has_label(labels)` keeps the kind and, for edges, states the labels (an edge has
+    ///   exactly one label, so a passing edge has one of them; a label set already stated
+    ///   stays). A vertex has a label SET: `has_label("a")` says nothing about its other labels,
+    ///   and a request naming only `a` would let a vertex labelled `{a, secret}` past a policy
+    ///   that protects `secret`, so vertex labels are stated only where the plan gives all of
+    ///   them (`add_v(labels)`);
+    /// - every step that passes its input on unchanged keeps the flow: filters, side effects,
+    ///   modulators, step labels, `identity()`, the ordering and windowing barriers
+    ///   (`barrier`, `dedup`, `limit`, `order`, `range`, `sample`, `skip`, `tail`; their
+    ///   `Scope.local` forms are map steps) and the writes of the received
+    ///   elements (`property`, ...); `add_label` / `drop_label` / `set_label` keep the kind but
+    ///   forget the labels;
+    /// - every other step yields something the plan does not state ([`AccessFlow::default`]).
+    ///
+    /// A child traversal starts from [`AccessFlow::default`]: the check never assumes what a
+    /// parent hands its children.
+    pub(crate) fn access_flow_after(&self, flow: AccessFlow) -> AccessFlow {
+        use crate::graph::ElementKind;
+        let of = |element, labels: Option<&[String]>| AccessFlow {
+            element: Some(element),
+            labels: labels.unwrap_or_default().to_vec(),
+        };
+        match self {
+            GraphStep::Init("v", _) => of(ElementKind::Vertex, None),
+            GraphStep::Init("e", step) => of(ElementKind::Edge, step.labels()),
+            GraphStep::FlatMap(
+                "out" | "in" | "both" | "out_v" | "in_v" | "both_v" | "other_v",
+                _,
+            ) => of(ElementKind::Vertex, None),
+            GraphStep::FlatMap("out_e" | "in_e" | "both_e", step) => {
+                of(ElementKind::Edge, step.labels())
+            }
+            GraphStep::SideEffectMut("add_v", step) => AccessFlow {
+                element: Some(ElementKind::Vertex),
+                labels: step.static_labels().into_iter().map(String::from).collect(),
+            },
+            GraphStep::SideEffectMut("add_e", step) => AccessFlow {
+                element: Some(ElementKind::Edge),
+                labels: step.static_labels().into_iter().map(String::from).collect(),
+            },
+            GraphStep::SideEffectMut("merge_v", _) => of(ElementKind::Vertex, None),
+            GraphStep::SideEffectMut("merge_e", _) => of(ElementKind::Edge, None),
+            GraphStep::SideEffectMut("add_label" | "drop_label" | "set_label", _) => AccessFlow {
+                element: flow.element,
+                labels: Vec::new(),
+            },
+            GraphStep::Filter("has_label", step) => match step.labels() {
+                Some(labels)
+                    if flow.element == Some(ElementKind::Edge)
+                        && flow.labels.is_empty()
+                        && !labels.is_empty() =>
+                {
+                    AccessFlow {
+                        element: flow.element,
+                        labels: labels.to_vec(),
+                    }
+                }
+                _ => flow,
+            },
+            GraphStep::Filter(_, _)
+            | GraphStep::SideEffect(_, _)
+            | GraphStep::SideEffectMut(_, _)
+            | GraphStep::Modulator(_, _)
+            | GraphStep::As(_, _)
+            | GraphStep::Map("identity", _)
+            | GraphStep::FlatBarrier(
+                "barrier" | "dedup" | "limit" | "order" | "range" | "sample" | "skip" | "tail",
+                _,
+            ) => flow,
+            GraphStep::Init(_, _)
+            | GraphStep::Append(_, _)
+            | GraphStep::Map(_, _)
+            | GraphStep::FlatMap(_, _)
+            | GraphStep::Barrier(_, _)
+            | GraphStep::FlatBarrier(_, _)
+            | GraphStep::Count(_, _) => AccessFlow::default(),
         }
     }
 

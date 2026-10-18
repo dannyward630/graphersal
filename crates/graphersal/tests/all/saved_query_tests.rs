@@ -56,6 +56,16 @@ fn with_people() -> Arc<Graph> {
     graph
 }
 
+/// Stores a query through the Rust API, which keeps the read-only dialect it is given (a query
+/// saved by 0.2.0 or loaded from a catalog file): its writes are denied when it is called.
+fn store_read_only(graph: &Arc<Graph>, name: &str, body: &str) {
+    graph
+        .write()
+        .traversal_mut()
+        .define_query(name, QueryDefinition::new(body))
+        .unwrap();
+}
+
 fn query_count(graph: &Arc<Graph>) -> usize {
     graph
         .read()
@@ -432,25 +442,27 @@ fn a_required_parameter_must_be_passed() {
 #[test]
 fn a_query_cannot_write_directly() {
     let graph = modern();
-    let _ = ok(
-        &graph,
-        r#"g.define_query(#{name: "writer", body: "fn writer() { g.add_v(\"x\").next() }"})"#,
-    );
+    store_read_only(&graph, "writer", r#"fn writer() { g.add_v("x").next() }"#);
     let message = err(&graph, r#"g.query("writer")"#);
     assert_contains(&message, "Permission denied for 'add_v'");
     assert_contains(&message, "a saved query is read-only");
     assert_contains(&message, r#"in saved query: "writer""#);
-    assert_contains(&message, "Help: A saved query never writes");
+    assert_contains(&message, "Help: A read-only saved query");
     assert_eq!(graph.read().vertex_count(), 6);
 }
 
 #[test]
 fn a_query_cannot_write_the_schema_or_the_catalog() {
     let graph = modern();
-    let _ = ok(
+    store_read_only(
         &graph,
-        r#"g.define_query(#{name: "schema", body: "fn schema() { g.set_schema(g.infer_schema()) }"});
-           g.define_query(#{name: "definer", body: "fn definer() { g.drop_query(\"schema\") }"});"#,
+        "schema",
+        "fn schema() { g.set_schema(g.infer_schema()) }",
+    );
+    store_read_only(
+        &graph,
+        "definer",
+        r#"fn definer() { g.drop_query("schema") }"#,
     );
     assert_contains(
         &err(&graph, r#"g.query("schema")"#),
@@ -467,10 +479,14 @@ fn a_query_cannot_write_the_schema_or_the_catalog() {
 #[test]
 fn a_nested_query_cannot_write_either() {
     let graph = modern();
+    store_read_only(
+        &graph,
+        "inner",
+        r#"fn inner() { g.v().property("k", 1).to_list() }"#,
+    );
     let _ = ok(
         &graph,
-        r#"g.define_query(#{name: "inner", body: "fn inner() { g.v().property(\"k\", 1).to_list() }"});
-           g.define_query(#{name: "outer", body: "fn outer() { g.query(\"inner\") }"});"#,
+        r#"g.define_query(#{name: "outer", body: "fn outer() { g.query(\"inner\") }"});"#,
     );
     let message = err(&graph, r#"g.query("outer")"#);
     assert_contains(&message, "a saved query is read-only");
@@ -526,11 +542,14 @@ fn nothing_built_from_a_query_result_is_mutating() {
 #[test]
 fn a_query_cannot_return_a_writing_traversal() {
     let graph = modern();
-    let _ = ok(
+    // Read-only queries (a query that writes runs a returned writing traversal of the graph,
+    // `saved_query_effects_tests.rs`).
+    store_read_only(
         &graph,
-        r#"g.define_query(#{name: "sneaky", body: "fn sneaky() { [1, g.v().property(\"k\", 1)] }"});
-           g.define_query(#{name: "anon", body: "fn anon() { __.add_v(\"x\") }"});"#,
+        "sneaky",
+        r#"fn sneaky() { [1, g.v().property("k", 1)] }"#,
     );
+    store_read_only(&graph, "anon", r#"fn anon() { __.add_v("x") }"#);
     let message = err(&graph, r#"g.query("sneaky")"#);
     assert_contains(
         &message,

@@ -4,14 +4,21 @@
 //!
 //! Every operation works on the catalog of the graph the session serves (a Store's graph too:
 //! a change is a commit like any other, journaled and recorded in the dev server's change
-//! feed). Saved queries are read-only when called (enforced by the engine); managing them
-//! (define, replace, drop, move) is the playground's business, under its authorizer.
+//! feed). A call may write only the data its body's inferred effects name, and only a query
+//! saved as one that writes (enforced by the engine: `graphersal::script::saved_query_effects`);
+//! managing them (define, replace, drop, move) is the playground's business, under its
+//! authorizer. Saving a query here sets its dialect from the inferred effects
+//! (`graphersal::script::with_inferred_dialect`), like the DSL's `g.define_query`.
 //!
 //! JSON forms:
 //!
 //! - an **entry** (`list_queries`, `get_query`): `{name, folder, description, params: [{name,
-//!   schema, default?, required, description?}], status: "ok"|"error", error?}`; `get_query`
-//!   adds `body` (the stored function text), `dialect` and `meta`;
+//!   schema, default?, required, description?}], status: "ok"|"error", error?, writes,
+//!   effects: [effect], denied_writes: [effect]}` with an effect `{action, element, label,
+//!   text}` (`element` / `label` `null` when open); `status: "error"` means the query cannot
+//!   run (unavailable: its body does not compile, its dialect is unknown, ...); `writes` says a
+//!   call may write, `denied_writes` lists the writes of a read-only query's body that a call
+//!   denies; `get_query` adds `body` (the stored function text), `dialect` and `meta`;
 //! - a **spec** (`define_query`): `{name, folder?, description?, params?: [{name, schema,
 //!   default?}], body, meta?, replaces?}`: `body` is the text of ONE Rhai function named
 //!   `name` whose parameters are the declared ones; `replaces` names the query an edit started
@@ -20,10 +27,12 @@
 //!   of `name`, `folder`, `description`, `meta`, `body`, `params`, `params.<parameter>`, or
 //!   `general`, so an editor shows each next to its input.
 
+use graphersal::auth::{AccessRequestBuf, Resource};
 use graphersal::catalog::{Definition, DefinitionKind, QueryDefinition, QueryParam};
 use graphersal::catalog::{catalog_from_json, catalog_to_json};
+use graphersal::changes::Mutation;
 use graphersal::prelude::*;
-use graphersal::script::check_saved_query;
+use graphersal::script::{saved_query_effects, with_inferred_dialect};
 use serde_json::{Map, Value, json};
 
 use crate::Session;
@@ -89,6 +98,22 @@ impl FieldError {
 }
 
 /// JSON of a value of the engine (plain JSON; a uuid as its canonical text).
+/// One effect of a saved query: `{action, element, label, text}` (`element` / `label` `null`
+/// when open: every kind, every label).
+fn effect_json(effect: &AccessRequestBuf) -> Value {
+    let request = effect.as_request();
+    let (element, label) = match request.resource {
+        Resource::Data { element, label } => (element.map(|kind| kind.to_string()), label),
+        _ => (None, None),
+    };
+    json!({
+        "action": request.action.kind().name(),
+        "element": element,
+        "label": label,
+        "text": effect.to_string(),
+    })
+}
+
 fn value_json(value: &ElementProperty) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
 }
@@ -289,13 +314,21 @@ impl Session {
             "description": query.description(),
             "params": params,
         });
-        match check_saved_query(&self.engine, name, query) {
-            Ok(()) => entry["status"] = json!("ok"),
+        let catalog = |name: &str| self.graph.query(name);
+        let effects = match saved_query_effects(&self.engine, &catalog, name, query) {
+            Ok(effects) => {
+                entry["status"] = json!("ok");
+                effects
+            }
             Err(reason) => {
                 entry["status"] = json!("error");
                 entry["error"] = json!(reason);
+                Default::default()
             }
-        }
+        };
+        entry["writes"] = json!(effects.writes);
+        entry["effects"] = effects.effects.iter().map(effect_json).collect();
+        entry["denied_writes"] = effects.denied_writes.iter().map(effect_json).collect();
         if full {
             entry["body"] = json!(query.source());
             entry["dialect"] = json!(query.dialect());
@@ -487,23 +520,80 @@ impl Session {
         for (parameter, param) in declared {
             query = query.with_param(parameter, param);
         }
-        let definition = Definition::query(name.as_str(), query);
-        if let Err(err) = definition.validate() {
+        if let Err(err) = Definition::query(name.as_str(), query.clone()).validate() {
             return Err(vec![FieldError::of(&err)]);
         }
-        if let Some(query) = definition.as_query()
-            && let Err(reason) = check_saved_query(&self.engine, &name, query)
-        {
-            return Err(vec![FieldError::new(
-                "body",
-                format!("The body is not a valid saved query: {reason}"),
-            )]);
-        }
+        // The body checked like `g.define_query` checks it, and the dialect its effects give.
+        let catalog = |name: &str| self.graph.query(name);
+        let query =
+            with_inferred_dialect(&self.engine, &catalog, &name, query).map_err(|reason| {
+                vec![FieldError::new(
+                    "body",
+                    format!("The body is not a valid saved query: {reason}"),
+                )]
+            })?;
+        let definition = Definition::query(name.as_str(), query);
 
         // New, replace or rename: the name rules of the editor.
         self.graph
             .store_query(definition, is_edit, replaces.as_deref())?;
         Ok(self.get_query(&name))
+    }
+
+    /// The preview of a call of the saved query `name` with the named arguments `args` (a JSON
+    /// object, as [`query_call_text`] takes them): the run form shows it before it runs a query
+    /// that writes. The call runs as a dry run (`graphersal::script::eval_value_dry_run`, under
+    /// the playground's authorizer) and everything is rolled back. Answers `{ok: true, changes:
+    /// {vertices_added, vertices_dropped, edges_added, edges_dropped, properties_set,
+    /// properties_removed, labels_changed, other}}` (counts of the net changes) or `{ok: false,
+    /// error}` (the error JSON of a run).
+    pub fn preview_query(&mut self, name: &str, args: &Value) -> Value {
+        let script = match query_call_text(name, args) {
+            Ok(script) => script,
+            Err(message) => {
+                return json!({"ok": false, "error": {"message": message, "diagnostic": message}});
+            }
+        };
+        let any: std::sync::Arc<dyn graphersal::storage::AnyGraph> = self.graph.clone();
+        let limits = &self.presets().limits.clone();
+        match graphersal::script::eval_value_dry_run(
+            any,
+            &script,
+            Default::default(),
+            limits,
+            crate::session::playground_authorizer(),
+        ) {
+            Ok((_, changes)) => {
+                let mut counts = json!({
+                    "vertices_added": 0, "vertices_dropped": 0, "edges_added": 0,
+                    "edges_dropped": 0, "properties_set": 0, "properties_removed": 0,
+                    "labels_changed": 0, "other": 0,
+                });
+                for mutation in changes.compact().mutations() {
+                    let key = match mutation {
+                        Mutation::AddVertex { .. } => "vertices_added",
+                        Mutation::DropVertex { .. } => "vertices_dropped",
+                        Mutation::AddEdge { .. } => "edges_added",
+                        Mutation::DropEdge { .. } => "edges_dropped",
+                        Mutation::SetProperty { .. } => "properties_set",
+                        Mutation::RemoveProperty { .. } => "properties_removed",
+                        Mutation::AddLabel { .. }
+                        | Mutation::RemoveLabel { .. }
+                        | Mutation::SetEdgeLabel { .. } => "labels_changed",
+                        _ => "other",
+                    };
+                    counts[key] = json!(counts[key].as_u64().unwrap_or(0) + 1);
+                }
+                json!({"ok": true, "changes": counts})
+            }
+            Err(err) => json!({
+                "ok": false,
+                "error": crate::session::script_error(
+                    &graphersal::script::map_eval_error(err, limits),
+                    limits,
+                ),
+            }),
+        }
     }
 
     /// Drops the saved query `name`: `true`, or `false` when there was none. One commit.
@@ -738,6 +828,64 @@ mod tests {
             ],
             "body": "fn older_than(label, age) {\n  g.v().has_label(label).has(\"age\", P.gt(age)).values(\"name\")\n}",
         })
+    }
+
+    #[test]
+    fn a_query_that_writes_is_listed_with_its_effects_and_previewed() {
+        let mut s = modern();
+        let answer = s.define_query(&json!({
+            "name": "add_person",
+            "params": [{"name": "name", "schema": {"type": "string"}}],
+            "body": "fn add_person(name) { g.add_v(\"person\").property(\"name\", name).next() }",
+        }));
+        assert_eq!(answer["ok"], true, "{answer}");
+        let entry = s.get_query("add_person");
+        assert_eq!(entry["dialect"], "graphersal-rhai/2");
+        assert_eq!(entry["writes"], true);
+        assert_eq!(
+            entry["effects"][0],
+            json!({"action": "Create", "element": "vertex", "label": "person",
+                   "text": "Create Data(vertex \"person\")"})
+        );
+        assert_eq!(entry["denied_writes"], json!([]));
+        assert_eq!(s.list_queries(None)[0]["writes"], true);
+        // The preview runs the call as a dry run: nothing stays.
+        let preview = s.preview_query("add_person", &json!({"name": "ann"}));
+        assert_eq!(preview["ok"], true, "{preview}");
+        assert_eq!(preview["changes"]["vertices_added"], 1);
+        assert_eq!(preview["changes"]["properties_set"], 0);
+        assert_eq!(
+            run(&mut s, "g.v().count().next()")["execution"]["results"][0],
+            6
+        );
+        let failed = s.preview_query("add_person", &json!({"name": 5}));
+        assert_eq!(failed["ok"], false);
+        assert!(
+            failed["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Invalid argument 'name'"),
+            "{failed}"
+        );
+        // Saved again without writes: the read-only dialect.
+        let answer = s.define_query(&json!({
+            "name": "add_person", "replaces": "add_person",
+            "params": [{"name": "name", "schema": {"type": "string"}}],
+            "body": "fn add_person(name) { g.v().has(\"name\", name).count() }",
+        }));
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert_eq!(s.get_query("add_person")["dialect"], "graphersal-rhai/1");
+        assert_eq!(s.get_query("add_person")["writes"], false);
+        // A body that writes the schema is refused at its field.
+        let refused = s.define_query(&json!({"name": "s", "body": "fn s() { g.set_schema(#{}) }"}));
+        assert_eq!(refused["errors"][0]["field"], "body");
+        assert!(
+            refused["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("it changes the schema"),
+            "{refused}"
+        );
     }
 
     #[test]

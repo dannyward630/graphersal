@@ -927,6 +927,12 @@ fn route(context: &Arc<Context>, request: &mut Request) -> Result<Answer, HttpEr
                 .to_string();
             value(context.call_fallible(move |s| s.move_query(&name, Some(&folder)))?)
         }
+        (Method::Post, "queries/preview") => {
+            let body = json_body(request)?;
+            let name = body_name(&body)?;
+            let args = body.get("args").cloned().unwrap_or(Value::Null);
+            value(context.call(move |s| s.preview_query(&name, &args))?)
+        }
         (Method::Post, "queries/call-text") => {
             let body = json_body(request)?;
             let name = body_name(&body)?;

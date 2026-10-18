@@ -13,7 +13,7 @@ use crate::graph::{
     AccessRequest, AccessRequestBuf, Action, AllowAll, Authorizer, GraphStorage, Resource,
 };
 use crate::traversal::context::is_admin_option;
-use crate::traversal::step::GraphStep;
+use crate::traversal::step::{AccessFlow, GraphStep};
 use crate::value::ElementProperty;
 
 /// What a restricted traversal source may do: the host's authorizer, the options the host
@@ -148,30 +148,40 @@ impl Restrictions {
                 &AccessRequest::new(Action::Update, Resource::Option { key }),
             )?;
         }
-        self.check_steps(steps, &mut seen).map_err(|err| {
-            // A denied step is located like a failing one (`at #N`); ids are positions of the
-            // plan as written, the only plan there is before the optimizer runs.
-            GraphStep::number_children(steps);
-            crate::traversal::source::locate_pre_run_error(steps, None, err, &|step| {
-                self.check_step(step).is_err()
+        let mut denied: *const GraphStep<'g, S> = std::ptr::null();
+        self.check_steps(steps, &mut seen, &mut denied)
+            .map_err(|err| {
+                // A denied step is located like a failing one (`at #N`); ids are positions of
+                // the plan as written, the only plan there is before the optimizer runs. The
+                // denied step is known by its address: its requests depend on the steps before
+                // it (`AccessFlow`), so it cannot be re-checked on its own.
+                GraphStep::number_children(steps);
+                crate::traversal::source::locate_pre_run_error(steps, None, err, &|step| {
+                    std::ptr::eq(step, denied)
+                })
             })
-        })
     }
 
-    fn check_step<'g, S: GraphStorage + 'g>(&self, step: &GraphStep<'g, S>) -> TraverserResult<()> {
-        step.for_each_access(|request| self.authorize(step.kind_name(), &request))
-    }
-
+    /// Checks `steps` (one level, children depth first), each step with the
+    /// [`AccessFlow`] the steps before it state; on a denial `denied` is the denied step.
     fn check_steps<'g, S: GraphStorage + 'g>(
         &self,
         steps: &mut [GraphStep<'g, S>],
         seen: &mut Vec<AccessRequestBuf>,
+        denied: &mut *const GraphStep<'g, S>,
     ) -> TraverserResult<()> {
+        let mut flow = AccessFlow::default();
         for step in steps {
-            step.for_each_access(|request| self.authorize_once(seen, step.kind_name(), &request))?;
-            for child in step.child_traversals_mut() {
-                self.check_steps(&mut child.steps, seen)?;
+            if let Err(err) = step.for_each_access_in(&flow, |request| {
+                self.authorize_once(seen, step.kind_name(), &request)
+            }) {
+                *denied = step;
+                return Err(err);
             }
+            for child in step.child_traversals_mut() {
+                self.check_steps(&mut child.steps, seen, denied)?;
+            }
+            flow = step.access_flow_after(flow);
         }
         Ok(())
     }

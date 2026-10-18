@@ -47,14 +47,14 @@ What each step requests is decided in one place in the engine (`GraphStep::for_e
 | `addV("person")`, `addV(["a", "b"])` | `Create` on `Data(vertex "person")`, one request per label (`Data(vertex)` without a static label) |
 | `addE("knows")` | `Create` on `Data(edge "knows")` |
 | `mergeV(..)` / `mergeE(..)` | `Create` and `Update` on `Data(vertex)` / `Data(edge)` |
-| `property(..)`, `removeProperty(..)` | `Update` on `Data` |
-| `addLabel(..)`, `dropLabel(..)` / `setLabel(..)` | `Update` on `Data(vertex)` / `Data(edge)` |
-| `drop()` | `Delete` on `Data` |
+| `property(..)`, `removeProperty(..)` | `Update` on the `Data` the steps before it state (see below), `Data` when they state nothing |
+| `addLabel(..)`, `dropLabel(..)` / `setLabel(..)` | `Update` on `Data(vertex)` / `Data(edge)`, with the edge label the steps before it state |
+| `drop()` | `Delete` on the `Data` the steps before it state, `Data` when they state nothing |
 | `infer_schema()`, `g.get_schema()`, `g.infer_schema()`, `g.diff_schema(..)`, `g.validate_schema(..)`, `g.validate_schema_patch(..)` | `Read` on `Schema` |
 | `g.statistics()`, `g.memory_usage()` | `Read` on `Data` |
 | `embed(..)` (the step) and `embed(text)` (the function) | `Execute` on `Embedder("name")`, the embedder that runs (the default resolved to its name), for every embedder including the built-in `hash-ngram/1` |
 | `g.embedders()` | nothing (it lists what the host registered and runs none of them) |
-| `g.embed_property(..)` | `Read` and `Update` on `Data(element "label")`, `Execute` on `Embedder("name")`, and `Update` on `Schema` when it declares the property (or its `embedder`) in the schema; denied in a saved query (read-only) |
+| `g.embed_property(..)` | `Read` and `Update` on `Data(element "label")`, `Execute` on `Embedder("name")`, and `Update` on `Schema` when it declares the property (or its `embedder`) in the schema; never in a saved query (refused when the query is saved, denied in a read-only one) |
 | `nearest(key, "text", k)`, `similarity(key, "text")` (a text query) | `Execute` on the embedder of the model the schema declares for the property (on each one when labels declare different models) |
 | `g.set_schema(..)`, `g.patch_schema(..)` | `Update` on `Schema` (a schema is never read from a file) |
 | `list_definitions(kind)` (Rust) | `Read` on `Definition(kind)` (`Definition` for every kind) |
@@ -62,7 +62,7 @@ What each step requests is decided in one place in the engine (`GraphStep::for_e
 | `set_definition(..)`, `define_query(..)` (Rust) | `Create` on `Definition(kind "name")` for a new definition, `Update` when it replaces one |
 | `move_query(..)`, `describe_query(..)` (Rust) | `Update` on `Definition(query "name")` |
 | `remove_definition(kind, name)` (Rust) | `Delete` on `Definition(kind "name")` |
-| `g.query("name", ..)` | `Execute` on `Definition(query "name")` before the body runs; the body's own requests then go through the host's authorizer under the saved query's read-only restriction (every write denied; see [Saved Queries](saved_queries.md)) |
+| `g.query("name", ..)` | `Execute` on `Definition(query "name")` before the body runs; for a query that writes, then each of its inferred effects (`Create Data(vertex "person")`, ...); the body's own requests then go through the host's authorizer under the saved query's restriction (a read-only query: every write denied; a query that writes: every write outside its effects denied; see [Saved Queries](saved_queries.md)) |
 | `g.queries()`, `g.queries(folder)` | `Read` on `Definition(query)` |
 | `g.get_query("name")` | `Read` on `Definition(query "name")` |
 | `g.define_query(..)`, `g.define_queries(..)` | `Create` on `Definition(query "name")` per query, `Update` when it replaces one |
@@ -80,6 +80,18 @@ What each step requests is decided in one place in the engine (`GraphStep::for_e
 | `GraphSource::file(path)` | `Read` on `File(path)` |
 | `import "module"` (Rhai) | `Execute` on `File("module.rhai")` |
 | an administrative `g.with(key, ..)` | `Update` on `Option(key)` |
+
+A write of the elements a step receives (`property`, `removeProperty`, `drop()`, the label steps)
+names what the steps before it in the same traversal state, so a policy can tell
+`g.E().hasLabel("knows").drop()` (`Delete` on `Data(edge "knows")`) from `g.E().drop()` (`Delete`
+on `Data(edge)`): `V()`, `out()`, the endpoint steps and `mergeV()` give vertices, `E()`,
+`outE("knows")` and `mergeE()` edges (with the labels given), `addV("person")` /
+`addE("knows")` their new element, and `hasLabel(..)` the labels of edges; filters, side effects,
+modulators and the ordering and windowing steps (`limit`, `order`, `dedup`, ...) keep what is
+stated, every other step ends it, and a child traversal starts from nothing. A vertex has a label
+SET, so a vertex label is stated only where the plan gives all of them (`addV(labels)`):
+`g.V().hasLabel("person").drop()` asks `Delete` on `Data(vertex)`, because a vertex labelled
+`{person, secret}` passes that filter.
 
 Only steps that **reach graph data** ask for a read: the sources (`V()`, `E()`, also in the middle
 of a traversal) and the adjacency steps. A value-only step works on what earlier steps produced,
@@ -270,13 +282,15 @@ throwing.
 "Once per execution" means once per traversal that runs. A script, and a saved query's body, may
 run several traversals: each one is checked when it runs, so a denial in a later one comes after
 the earlier ones have run (in the playground the whole script is one unit and is rolled back; a
-saved query only reads). A **saved query** is checked in two layers. `g.query("name", ..)` asks
-`Execute` on the query before its body runs. The body's traversals then go through the same check
-with the host's authorizer **plus** the saved query's read-only restriction: a step the host
-denies is denied inside the body too (the error carries a line `in saved query: "name"`), and
-every write is denied whatever the host allows. A traversal the query returns keeps that
-restriction, so `g.query("name").drop()` is denied as well. Nothing in a saved query can do more
-than its caller may.
+saved query that writes runs as one unit too). A **saved query** is checked in layers.
+`g.query("name", ..)` asks `Execute` on the query before its body runs; a query that writes then
+asks its whole effect set, so a denial comes before its first write. The body's traversals then
+go through the same check with the host's authorizer **plus** the saved query's restriction: a
+step the host denies is denied inside the body too (the error carries a line `in saved query:
+"name"`); in a read-only query every write is denied whatever the host allows, in a query that
+writes every write outside its effects. A traversal any query returns is read-only, so
+`g.query("name").drop()` is denied as well. Nothing in a saved query can do more than its caller
+may.
 
 Functions are never hidden: a denied step is still registered, listed by `help()` and completed by
 the playground. Only running it is denied.

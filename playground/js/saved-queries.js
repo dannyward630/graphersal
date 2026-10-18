@@ -3,7 +3,8 @@
 //
 // The engine's forms (crates/graphersal-session/src/queries.rs):
 // - an ENTRY (listQueries/getQuery): {name, folder, description, params: [{name, schema,
-//   default?, required, description?}], status: 'ok'|'error', error?}, getQuery adds `body`
+//   default?, required, description?}], status: 'ok'|'error', error?, writes, effects: [effect],
+//   denied_writes: [effect]} with an effect {action, element, label, text}; getQuery adds `body`
 //   (the stored function text), `dialect`, `meta`;
 // - a SPEC (defineQuery): {name, folder, description, params: [{name, schema, default?}], body,
 //   replaces?}: `body` is the text of ONE Rhai function named like the query whose parameters
@@ -70,6 +71,53 @@ export function queryTree(list) {
       depth: folder ? folder.split('/').length : 0,
       queries: [...queries].sort((a, b) => a.name.localeCompare(b.name)),
     }));
+}
+
+/**
+ * The access badge of a saved query in the Catalog manager and the run form: `{text, kind,
+ * title}` (`kind` is a badge class).
+ * - `unavailable`: it cannot run (its body does not compile, its dialect is unknown, ...);
+ * - `R/W`: a call may write; the title lists the inferred effects;
+ * - `R/O ⚠`: read-only, but its body has writing steps, which a call denies (saved before
+ *   queries could write, or stored with the read-only dialect): saving it again allows them;
+ * - `R/O`: it only reads.
+ * @param {{status?:string, error?:string, writes?:boolean, effects?:Array<{text:string}>, denied_writes?:Array<{text:string}>}} entry
+ */
+export function accessBadge(entry) {
+  const texts = (list) => (list || []).map((effect) => effect.text).join(', ');
+  if (entry.status === 'error') {
+    return { text: 'unavailable', kind: 'danger', title: `It cannot run: ${entry.error || 'unknown reason'}` };
+  }
+  if (entry.writes) {
+    return { text: 'R/W', kind: 'warn', title: `Changes data when it runs: ${texts(entry.effects)}` };
+  }
+  if ((entry.denied_writes || []).length) {
+    return {
+      text: 'R/O ⚠',
+      kind: 'accent',
+      title: `Read-only: its writes (${texts(entry.denied_writes)}) are denied; save the query again to allow them`,
+    };
+  }
+  return { text: 'R/O', kind: 'ok', title: 'Read-only: never changes the graph' };
+}
+
+/** The changes of a call preview (`previewQuery`'s `changes`) as one sentence. */
+export function previewText(changes) {
+  const parts = [
+    ['vertices_added', 'adds', 'vertex', 'vertices'],
+    ['vertices_dropped', 'deletes', 'vertex', 'vertices'],
+    ['edges_added', 'adds', 'edge', 'edges'],
+    ['edges_dropped', 'deletes', 'edge', 'edges'],
+    ['properties_set', 'sets', 'property', 'properties'],
+    ['properties_removed', 'removes', 'property', 'properties'],
+    ['labels_changed', 'changes', 'label', 'labels'],
+    ['other', 'makes', 'other change', 'other changes'],
+  ]
+    .filter(([key]) => (changes || {})[key] > 0)
+    .map(([key, verb, one, many]) => `${verb} ${changes[key]} ${changes[key] === 1 ? one : many}`);
+  if (!parts.length) return 'With these arguments it changes nothing.';
+  const sentence = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+  return `With these arguments it ${sentence}.`;
 }
 
 /** A one-line signature for a menu row's tooltip: `top(country, limit = 20)`. */

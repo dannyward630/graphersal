@@ -1386,7 +1386,7 @@ fn script_timeout_diagnostic(limit: std::time::Duration, elapsed: std::time::Dur
 
 /// The error map of a script that failed outside an `execute()`: `{message, help?, diagnostic,
 /// position?}` (`position` 1-based, when Rhai knows it).
-fn script_error(err: &EvalAltResult, limits: &ScriptLimits) -> Value {
+pub(crate) fn script_error(err: &EvalAltResult, limits: &ScriptLimits) -> Value {
     let inner = err.unwrap_inner();
     let diagnostic = if let Some(limit) = graphersal::script::resource_limit_from_rhai(err, limits)
     {

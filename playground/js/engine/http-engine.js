@@ -344,6 +344,10 @@ export class HttpEngine extends Engine {
     return (await this.request('POST', 'queries/call-text', JSON.stringify({ name, args: args || {} }))).text;
   }
 
+  async previewQuery(name, args) {
+    return this.request('POST', 'queries/preview', JSON.stringify({ name, args: args || {} }));
+  }
+
   /** The catalog file's text (every kind) exactly as the server writes it. */
   async saveCatalog() {
     let r;

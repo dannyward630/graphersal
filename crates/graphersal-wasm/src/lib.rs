@@ -630,6 +630,19 @@ impl Playground {
             .map_err(|e| JsError::new(&e))
     }
 
+    /// The preview of a call of the saved query `name` with the named arguments `args` (JSON
+    /// text of an object), run as a dry run and rolled back: `{ok, changes}` or `{ok: false,
+    /// error}` (`graphersal_session::Session::preview_query`).
+    #[wasm_bindgen(js_name = previewQuery)]
+    pub fn preview_query(&mut self, name: &str, args: &str) -> Result<String, JsError> {
+        let args: Value = if args.trim().is_empty() {
+            Value::Null
+        } else {
+            body_json(args)?
+        };
+        Ok(to_text(&self.session.preview_query(name, &args)))
+    }
+
     /// "Catalog ▸ Save catalog": the whole catalog (saved queries, compression rules, every
     /// other kind) as its JSON exchange form (`{"definitions": [..]}`).
     #[wasm_bindgen(js_name = saveCatalog)]

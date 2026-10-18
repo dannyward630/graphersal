@@ -5015,12 +5015,12 @@ fn permission_denied_help_names_the_request_the_policy_and_an_alternative() {
         AccessPolicy::read_only(),
     );
     assert!(
-        err.contains("Permission denied for 'property' (Update Data)"),
+        err.contains("Permission denied for 'property' (Update Data(vertex))"),
         "{err}"
     );
     assert!(
         err.contains(
-            "'property' needs Update Data, which the host running this script does not allow"
+            "'property' needs Update Data(vertex), which the host running this script does not allow"
         ),
         "{err}"
     );
@@ -6212,10 +6212,18 @@ fn saved_query_errors_carry_their_help() {
         graph.clone(),
         r#"g.define_query(#{name: "top", params: #{limit: #{schema: #{type: "integer", minimum: 1}, default: 2}},
                body: "fn top(limit) { g.v().limit(limit) }"});
-           g.define_query(#{name: "again", body: "fn again() { g.query(\"again\") }"});
-           g.define_query(#{name: "writer", body: "fn writer() { g.v().drop() }"});"#,
+           g.define_query(#{name: "again", body: "fn again() { g.query(\"again\") }"});"#,
     )
     .unwrap();
+    // A read-only query (a query that writes runs a returned writing traversal itself).
+    graph
+        .write()
+        .traversal_mut()
+        .define_query(
+            "writer",
+            graphersal::catalog::QueryDefinition::new("fn writer() { g.v().drop() }"),
+        )
+        .unwrap();
 
     let cases: [(&str, &[&str]); 10] = [
         (
@@ -6258,14 +6266,14 @@ fn saved_query_errors_carry_their_help() {
             r#"g.query("writer")"#,
             &[
                 "Saved query 'writer' returned a traversal with a writing step (the result)",
-                "Help: Saved queries are read-only, also through a traversal they return",
+                "Help: A read-only saved query cannot write, also not through a traversal it returns",
             ],
         ),
         (
             r#"g.query("top").property("k", 1).to_list()"#,
             &[
                 "a saved query is read-only",
-                "Help: A saved query never writes",
+                "Help: A read-only saved query",
             ],
         ),
         (

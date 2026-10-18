@@ -20,8 +20,9 @@
 // - `plan.rs`: the script group of `AnyGraph` (`ScriptPlan`/`Terminal`/`TerminalOutput`,
 //   `run_plan_on`, the whole-script unit `run_unit_on`) and the scratch graph of a source
 //   without one.
-// - `saved_query.rs`: saved queries (`define_query`, `query`, `queries`, ...): the read-only
-//   access a call runs under, the compiled-body cache, argument binding.
+// - `saved_query.rs`: saved queries (`define_query`, `query`, `queries`, ...): the access a
+//   call runs under (read-only, or the inferred effects), the compiled-body cache, argument
+//   binding; `effects.rs` infers a body's effects from its AST.
 // - `compression.rs`: compression rules (`define_compression`, `compressions`,
 //   `drop_compression`, `recompress`).
 // - `property_index.rs`: property indexes (`create_index`, `indexes`, `drop_index`).
@@ -51,6 +52,9 @@ mod compression;
 mod connective;
 mod convert;
 mod dynamic;
+mod effects;
+#[cfg(test)]
+mod effects_tests;
 mod engine;
 mod eval;
 mod execution;
@@ -90,7 +94,9 @@ pub use render::{
     render_scope_options, render_value, schema_of_value, set_scope_render_options,
     try_render_value,
 };
-pub use saved_query::check_saved_query;
+pub use saved_query::{
+    SavedQueryEffects, check_saved_query, saved_query_effects, with_inferred_dialect,
+};
 pub(crate) use source::ScriptGraphTarget;
 pub use source::{ScriptGraphSource, ScriptGraphTraversalSource};
 use step::*;

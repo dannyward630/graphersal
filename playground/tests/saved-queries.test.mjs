@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import {
   queryTree, signatureText, splitSource, composeSource, newParam, paramFromEntry, paramDeclaration,
   parseDefault, newDraft, draftFromQuery, draftToSpec, errorsByField, formFields, initialValues,
-  formArgs, rememberValues, queryNameContext,
+  formArgs, rememberValues, queryNameContext, accessBadge, previewText,
 } from '../js/saved-queries.js';
 
 const TOP = {
@@ -164,4 +164,28 @@ test('completion context: the name typed in g.query("', () => {
   assert.deepEqual(queryNameContext('g.query( "'), { quote: '"', prefix: '' });
   assert.equal(queryNameContext('g.query("a", #{x: "'), null);
   assert.equal(queryNameContext('g.v().has("'), null);
+});
+
+test('the access badge says whether a query writes, may not or cannot run', () => {
+  const effect = (text) => ({ action: 'Create', element: 'vertex', label: 'person', text });
+  assert.deepEqual(accessBadge({ status: 'ok', writes: false, effects: [], denied_writes: [] }),
+    { text: 'R/O', kind: 'ok', title: 'Read-only: never changes the graph' });
+  const rw = accessBadge({ status: 'ok', writes: true, effects: [effect('Create Data(vertex "person")'), effect('Delete Data')] });
+  assert.equal(rw.text, 'R/W');
+  assert.equal(rw.title, 'Changes data when it runs: Create Data(vertex "person"), Delete Data');
+  const denied = accessBadge({ status: 'ok', writes: false, denied_writes: [effect('Delete Data')] });
+  assert.equal(denied.text, 'R/O ⚠');
+  assert.match(denied.title, /\(Delete Data\) are denied; save the query again/);
+  const broken = accessBadge({ status: 'error', error: 'it does not compile', writes: false });
+  assert.deepEqual([broken.text, broken.kind, broken.title], ['unavailable', 'danger', 'It cannot run: it does not compile']);
+  // An entry of an older engine (no effect fields) reads as read-only.
+  assert.equal(accessBadge({ status: 'ok' }).text, 'R/O');
+});
+
+test('a call preview reads as one sentence', () => {
+  assert.equal(previewText({ vertices_added: 1, properties_set: 2, edges_dropped: 0 }),
+    'With these arguments it adds 1 vertex and sets 2 properties.');
+  assert.equal(previewText({ edges_dropped: 2, labels_changed: 1, other: 1 }),
+    'With these arguments it deletes 2 edges, changes 1 label and makes 1 other change.');
+  assert.equal(previewText({}), 'With these arguments it changes nothing.');
 });

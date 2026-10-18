@@ -2731,6 +2731,100 @@ fn mcp_saved_query_tools_and_resource() {
     assert_eq!(gone["error"]["code"], -32602, "{gone}");
 }
 
+/// A saved query that writes over HTTP and MCP: its preview, `writes` and `effects` in the
+/// listing, tool annotations from its effects, and the read-only mode that neither lists nor
+/// runs it.
+#[test]
+fn saved_queries_that_write_over_http_and_mcp() {
+    let ui = ui_dir("mcp-writing-queries");
+    let ui_arg = ui.to_str().unwrap().to_string();
+    let define = r#"{"name": "add_ghost", "body": "fn add_ghost() { g.add_v(\"ghost\").property(\"n\", 1).next() }"}"#;
+    let ghosts = |port: u16| {
+        execute(port, "g.v().has_label(\"ghost\").count().next()")["execution"]["results"][0]
+            .clone()
+    };
+    let server = start(&[
+        "--graph",
+        "modern",
+        "--ui-dir",
+        &ui_arg,
+        "--mcp",
+        "--mcp-query-tools",
+    ]);
+    let port = server.port;
+    assert_eq!(post(port, "/api/queries/define", define).json()["ok"], true);
+    let preview = post(port, "/api/queries/preview", r#"{"name": "add_ghost"}"#).json();
+    assert_eq!(preview["changes"]["vertices_added"], 1, "{preview}");
+    assert_eq!(ghosts(port), 0);
+    let mut mcp = McpClient::connect(port, &[]);
+    let init = mcp_post(
+        port,
+        &[],
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"x","version":"1"}}}"#,
+    )
+    .json();
+    assert!(
+        init["result"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("Saved queries marked `writes: true` change data"),
+        "{init}"
+    );
+    let (error, text) = mcp.call("list_saved_queries", serde_json::json!({}));
+    assert!(!error, "{text}");
+    assert!(text.contains("\"writes\": true"), "{text}");
+    assert!(text.contains(r#"Create Data(vertex \"ghost\")"#), "{text}");
+    let tools = mcp.rpc("tools/list", serde_json::json!({}));
+    let own = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "add_ghost")
+        .unwrap()
+        .clone();
+    assert_eq!(own["annotations"]["readOnlyHint"], false, "{own}");
+    assert_eq!(own["annotations"]["destructiveHint"], true, "{own}");
+    assert!(
+        own["description"]
+            .as_str()
+            .unwrap()
+            .contains("CHANGES DATA"),
+        "{own}"
+    );
+    let (error, text) = mcp.call("run_saved_query", serde_json::json!({"name": "add_ghost"}));
+    assert!(!error, "{text}");
+    assert_eq!(ghosts(port), 1);
+    drop(server);
+
+    let server = start(&[
+        "--graph",
+        "modern",
+        "--ui-dir",
+        &ui_arg,
+        "--mcp",
+        "--mcp-read-only",
+        "--mcp-query-tools",
+    ]);
+    let port = server.port;
+    assert_eq!(post(port, "/api/queries/define", define).json()["ok"], true);
+    let mut mcp = McpClient::connect(port, &[]);
+    let (_, text) = mcp.call("list_saved_queries", serde_json::json!({}));
+    assert!(text.contains("no saved queries"), "{text}");
+    assert!(!mcp.tool_names().iter().any(|n| n == "add_ghost"));
+    let resource = mcp.rpc(
+        "resources/read",
+        serde_json::json!({"uri": "graphersal://saved-queries"}),
+    );
+    assert!(!resource.to_string().contains("add_ghost"), "{resource}");
+    let (error, text) = mcp.call("run_saved_query", serde_json::json!({"name": "add_ghost"}));
+    assert!(error, "{text}");
+    assert!(
+        text.contains("changes data, and this server is read-only for MCP"),
+        "{text}"
+    );
+    assert_eq!(ghosts(port), 0);
+}
+
 /// MCP works with the graph only, also on a Store: exactly the graph tools, the persistence
 /// tools are unknown; a read-only view the browser opens is server-wide: `graph_info` and a
 /// refused write say so, the change feed carries it.
@@ -3811,8 +3905,9 @@ mod ai_chat {
     /// result>`; `GEMINI <script>` does the same like Google Gemini's OpenAI-compatible endpoint
     /// (the call carries `extra_content.google.thought_signature`, and a request that sends the
     /// call back without it is refused with HTTP 400); `FAIL <script>` calls `query` and then
-    /// answers HTTP 400; `LOOP` calls `query` forever; `SLOW` answers after 1.5 s; anything
-    /// else is answered `hello`. Every request body is recorded.
+    /// answers HTTP 400; `LOOP` calls `query` forever; `SLOW` answers after 1.5 s; `SAVED
+    /// <name>` calls `run_saved_query` with the name and answers like `RUN`; anything else is
+    /// answered `hello`. Every request body is recorded.
     struct MockLlm {
         base_url: String,
         requests: Arc<Mutex<Vec<Value>>>,
@@ -3940,6 +4035,17 @@ mod ai_chat {
                 Duration::ZERO,
             );
         }
+        if let Some(name) = user.strip_prefix("SAVED ") {
+            return if after_tool {
+                let result = last["content"].as_str().unwrap_or("");
+                (text(&format!("RESULT: {result}")), Duration::ZERO)
+            } else {
+                (
+                    tool_call(id, "run_saved_query", json!({ "name": name })),
+                    Duration::ZERO,
+                )
+            };
+        }
         if let Some(script) = user.strip_prefix("RUN ") {
             return if after_tool {
                 let result = last["content"].as_str().unwrap_or("");
@@ -4055,6 +4161,47 @@ mod ai_chat {
 
     fn of<'a>(events: &'a [Value], kind: &str) -> Vec<&'a Value> {
         events.iter().filter(|e| e["type"] == kind).collect()
+    }
+
+    /// A saved query that writes runs only in a turn after the one that asked the user.
+    #[test]
+    fn a_saved_query_that_writes_waits_for_the_users_confirmation() {
+        let mock = MockLlm::start();
+        let server = start_ai("ai-confirm", &mock, "");
+        let port = server.port;
+        let define =
+            r#"{"name": "add_ghost", "body": "fn add_ghost() { g.add_v(\"ghost\").next() }"}"#;
+        let answer = request(port, "POST", "/api/queries/define", Some(define), &[JSON]);
+        assert_eq!(answer.json()["ok"], true, "{}", answer.body);
+        let count = || {
+            super::execute(port, "g.v().has_label(\"ghost\").count().next()")["execution"]
+                ["results"][0]
+                .clone()
+        };
+        let id = create(port, "page");
+        assert_eq!(send(port, "page", &id, "SAVED add_ghost").status, 200);
+        let events = finished(port, "page", &id);
+        let results = of(&events, "tool_result");
+        assert_eq!(results[0]["ok"], false, "{events:?}");
+        assert!(
+            results[0]["text"].as_str().unwrap().contains(
+                r#"Not run: the saved query "add_ghost" changes data (Create Data(vertex "ghost"))"#
+            ),
+            "{events:?}"
+        );
+        assert_eq!(count(), 0);
+        // The user's next message confirms: the call runs, once.
+        assert_eq!(send(port, "page", &id, "SAVED add_ghost").status, 200);
+        let events = finished(port, "page", &id);
+        let results = of(&events, "tool_result");
+        assert_eq!(results.last().unwrap()["ok"], true, "{events:?}");
+        assert_eq!(count(), 1);
+        assert_eq!(send(port, "page", &id, "hi").status, 200);
+        finished(port, "page", &id);
+        assert_eq!(send(port, "page", &id, "SAVED add_ghost").status, 200);
+        let events = finished(port, "page", &id);
+        assert_eq!(of(&events, "tool_result").last().unwrap()["ok"], false);
+        assert_eq!(count(), 1);
     }
 
     #[test]

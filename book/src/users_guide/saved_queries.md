@@ -11,8 +11,10 @@ g.query("older_than", #{age: 30}).values("name").toList()
 - The body is the text of ONE Rhai function; its parameters are named and typed.
 - A call returns what the function returns: a **traversal** can be continued by the caller (like a
   SQL view), a **value** (a number, a list, a map) is a value (like a stored procedure).
-- Saved queries are **read-only, always**: a query never writes data, the schema, the saved
-  queries or files, not even through a query it calls or a traversal it returns.
+- A query **reads**, unless its body writes data: then it is saved as a query that **writes**,
+  and a call may write exactly what the engine infers from the body (its *effects*), as one
+  transaction. Nobody declares effects, and a query never writes the schema, the saved queries
+  or files.
 - Queries live in **folders** (an attribute, not part of the name) and carry an optional
   **description**.
 
@@ -154,18 +156,163 @@ body, and the plan is made anew on every call (new optimizations apply to old qu
 Saved queries may call each other up to **16 levels** deep; a deeper call (usually a query that
 calls itself without an end) fails with `Saved query calls nested deeper than 16 levels`.
 
-## Read-only, always
+## Queries that read and queries that write
 
-A saved query never writes. The call runs under a read-only restriction on top of the host's
-authorizer: creating, changing or deleting data, the schema, saved queries or files is denied
-with `PermissionDenied` (`a saved query is read-only`) before anything runs, and nested queries
-inherit it, so no chain of calls can write. A traversal the query returns carries the
+Whether a query may write is decided when it is SAVED, from its body: the engine walks the body's
+Rhai syntax tree and infers its **effects**, the data writes its steps can make. A query with no
+effects is saved in the dialect `graphersal-rhai/1` and only reads; a query with effects is saved
+in `graphersal-rhai/2` and may write exactly those. Every save (`define_query`, `define_queries`,
+a replacement, the playground's editor) sets the dialect again, also back to `/1` when the body
+no longer writes; moving or describing a query does not.
+
+```
+g.define_query(#{name: "add_person", params: #{name: "string", age: "integer"},
+                 body: "fn add_person(name, age) { g.add_v(\"person\").property(\"name\", name).property(\"age\", age).next() }"})
+g.get_query("add_person")["dialect"]
+// graphersal-rhai/2
+g.get_query("add_person")["effects"].map(|e| e.text)
+// "Create Data(vertex \"person\")"
+// "Update Data(vertex \"person\")"
+g.query("add_person", #{name: "ann", age: 41})
+// v[7]
+```
+
+An effect is a request as an [authorizer](permissions.md) sees it: an action (`Create`, `Update`,
+`Delete`) on `Data`, with the element kind and label the chain states before the writing step.
+The inference follows the same rules as the authorization check of a plan, so the run-time
+check can hold every write against it:
+
+| Body | Inferred |
+|---|---|
+| `add_v("person")`, `add_e("knows")` | `Create` on that label |
+| `add_v(label)` (a variable) | `Create` on any vertex |
+| `g.e().has_label("knows").drop()`, `out_e("knows").property(..)` | `Delete` / `Update` on `knows` edges |
+| `g.v().has_label("person").property(..)` | `Update` on any vertex: a vertex has a label SET, so `has_label("person")` says nothing about its other labels |
+| a chain from a variable or `__` (`t.drop()`, `side_effect(__.property(..))`) | `Delete` / `Update` on any data |
+| `merge_v(..)` / `merge_e(..)` | `Create` and `Update` on the kind |
+| `g.query("other")` | the effects of `other`, when it writes |
+| a method of the same name on something else (`m.drop()` on a map) | counted as a write |
+
+The inference may claim more than a body writes, never less. What it cannot see, it refuses:
+
+- a body that writes the **schema, the catalog or files** (`set_schema`, `define_query`,
+  `create_index`, `export_graphml`, `import_graphson`, `mark`, ...) is refused when it is saved:
+  a saved query writes data only;
+- a body that **writes and hides what it calls** (`Fn(..)`, `call`, `curry`, `eval`, `import`, or
+  `g.query(name)` with a computed name) is refused when it is saved. Without writes such a body is
+  saved as a read-only query, and whatever it reaches stays read-only.
+
+```
+g.define_query(#{name: "q", params: #{n: "string"}, body: "fn q(n) { g.query(n); g.add_v(\"x\").next() }"})
+// Error: Invalid body of saved query 'q': it writes data (Create Data(vertex "x")) and uses g.query(name) with a computed name, which hides what it calls, so its effects cannot be inferred; ...
+```
+
+Effects are never stored. They are inferred again when a query is saved, listed or called, so a
+newer version of Graphersal may infer more or less for the same text; a call always uses the
+effects inferred now.
+
+### A call of a query that writes
+
+- **Invoker rights.** The whole effect set is asked of the caller's authorizer before the body
+  runs (`Permission denied for 'query("name")' (Delete Data(edge "knows"))`), so a denial comes
+  before the first write. The body then runs under the caller's rights restricted to the
+  effects: a write the effects do not cover is denied (it would be a bug of the inference, and
+  the message says so).
+- **One unit.** The body runs as one transaction: a failing body rolls back everything it wrote,
+  and the commit's [`ChangeSet`](transactions.md) carries the query's name and arguments as
+  metadata (`saved_query`, `saved_query_args`). Inside a running unit (the playground runs a
+  whole script as one) the call is a savepoint: a later failure of the script rolls it back
+  too. A dry run (`eval_value_dry_run`) of a call previews its changes; nothing stays.
+- **Nesting.** A query that writes may call queries that read and queries that write; their
+  effects are part of its own. A read-only query that calls one that writes stays read-only:
+  that call's writes are denied.
+- **The result is read-only.** What the query returns is used after the call, outside its
+  unit, so it can be continued only by reading; a returned traversal that writes runs INSIDE the
+  call (next section).
+
+```
+g.define_query(#{name: "unfriend", params: #{name: "string"},
+                 body: "fn unfriend(name) { g.v().has(\"name\", name).out_e(\"knows\").drop().iterate(); g.v().has(\"name\", name).out(\"knows\").count().next() }"})
+g.get_query("unfriend")["effects"].map(|e| e.text)
+// "Delete Data(edge \"knows\")"
+g.query("unfriend", #{name: "marko"})
+// 0
+```
+
+### What a query that writes returns
+
+A query that writes may end with the writing traversal itself, without a terminal. The call runs
+that traversal inside its unit, as if it ended in `toList()`, and returns a **read-only
+traversal over what it wrote** (`inject(results)` on the caller's graph). The caller continues it
+like the result of a read-only query:
+
+```
+g.define_query(#{name: "add_person", params: #{p_name: "string"},
+                 body: "fn add_person(p_name) { g.add_v(\"person\").property(\"name\", p_name) }"})
+g.query("add_person", #{p_name: "Bill"}).count().next()
+// 1
+```
+
+Each call writes once, whatever the caller does with the result; the result only reads what
+was written:
+
+```
+g.query("add_person", #{p_name: "Bill"}).values("name").toList()
+// ["Bill"]
+g.query("add_person", #{p_name: "Bill"}).id().toList()
+// ["7"]
+g.v().has("name", "Bill").count().next()
+// 1
+```
+
+Without a step after it, the result is shown like any traversal (in the playground and the CLI:
+the written elements as a table). The written elements are the stored ones, so the
+continuation walks the graph from them:
+
+```
+g.define_query(#{name: "befriend", params: #{a: "string", b: "string"},
+                 body: "fn befriend(a, b) { g.v().has(\"name\", a).add_e(\"knows\").to(__.v().has(\"name\", b)) }"})
+g.query("befriend", #{a: "vadas", b: "peter"}).in_v().values("name").toList()
+// ["peter"]
+```
+
+The continuation itself may not write: the call's effects end with the call.
+
+```
+g.query("add_person", #{p_name: "Bill"}).property("age", 30).iterate()
+// Error: ... Permission denied for 'property' (Update Data): a saved query is read-only: ...
+```
+
+Write the change into the query, or write in a traversal of your own after the call. The rules in
+detail:
+
+- **Only the returned traversal is run.** A traversal the body ends with a terminal
+  (`next()`, `toList()`, `iterate()`) has already run; its value is returned as a value
+  (`fn add(n) { g.add_v("person").property("name", n).next() }` returns the vertex `v[7]`, which
+  is no traversal: `g.query("add", ..).count()` fails with `Function not found: count`). Return
+  the traversal, or `g.v(written)` after `let written = ...toList();`, to let callers continue.
+- **Also inside a list or a map**: `fn pair() { [g.add_v("a"), g.add_v("b")] }` writes both and
+  returns two read-only traversals.
+- **In the call's unit**: a returned traversal that fails rolls back everything the body wrote,
+  and a dry run of the call previews its writes too.
+- **The results are kept in memory** until the caller reads them, like a `toList()`: a query
+  that writes millions of elements should end the writing traversal with `iterate()` and return
+  a count or nothing instead.
+- **An anonymous writing traversal** (`__.add_v("x")`) is no query of the graph: returning one
+  fails the call (`returned a traversal with a writing step`).
+
+### Read-only queries
+
+A query of the dialect `graphersal-rhai/1` never writes. The call runs under a read-only
+restriction on top of the host's authorizer: creating, changing or deleting data, the schema,
+saved queries or files is denied with `PermissionDenied` (`a saved query is read-only`) before
+anything runs, and nested queries inherit it. A traversal ANY query returns carries the
 restriction too:
 
 ```
 g.define_query(#{name: "people", body: "fn people() { g.v().has_label(\"person\") }"})
 g.query("people").property("seen", true).toList()
-// Error: ... Permission denied for 'property' (Update Data): a saved query is read-only: ...
+// Error: ... Permission denied for 'property' (Update Data(vertex)): a saved query is read-only: ...
 ```
 
 Write in a traversal of your own after the call:
@@ -177,17 +324,27 @@ g.v().has("seen").count().next()
 // 4
 ```
 
-- A query that returns a traversal with a writing step (`fn f() { g.v().drop() }`) fails at the
-  call (`returned a traversal with a writing step`).
 - A graph the query builds itself (`GraphSource::empty()`, `__`) stays writable; it is not the
   database.
 - Terminals inside the body (`next()`, `toList()`) are allowed: a value-returning query needs
-  them. Each runs as a reading traversal of its own.
-- For the analysis of a host, nothing built from a query result is mutating
-  (`is_mutating()` is false), so a read-only host can offer every saved query and the playground
-  needs no confirmation before running one.
+  them.
+- Nothing built from a query result is mutating (`is_mutating()` is false); whether a script that
+  calls a query that writes changed the graph is what its run reports (`mutated`).
+- **Stored before queries could write.** Opening a database never changes a dialect: a
+  `graphersal-rhai/1` query whose body has writing steps (saved by 0.2.0, or through the Rust API
+  or a catalog file, which keep the dialect as given) stays read-only and its writes are denied;
+  `g.queries()` lists them as `denied_writes`. Saving the query again makes it one that writes.
 
-A writing kind of stored code ("procedure") may come later as a definition kind of its own.
+### Unavailable queries and older versions
+
+A query that cannot run is listed with `status: "error"` and the reason, and a call fails with
+`Invalid body of saved query`: its body does not compile (after an upgrade of the language, or
+stored through the Rust API), it is a `graphersal-rhai/2` query whose effects cannot be inferred,
+or its dialect is one this version does not know. Such a query never blocks opening a database.
+
+A database written by this version keeps every read-only query in `graphersal-rhai/1`, so
+Graphersal 0.2.0 runs them; 0.2.0 lists a query that writes (`graphersal-rhai/2`) as not runnable
+("its dialect is 'graphersal-rhai/2', this version runs 'graphersal-rhai/1'").
 
 ## Errors name the query
 
@@ -221,15 +378,18 @@ errors naming the query and a `Help:` line with the fix.
 | `g.describe_query(name, text)` / `describeQuery` | sets the description (`""` or `()` removes it) |
 
 An entry of `queries()` has `name`, `folder` and `description` (`()` when absent), `params` (a
-list in signature order: `#{name, schema, default?, required}`) and `status`: `"ok"`, or
-`"error"` with `error`, the reason the body does not run (a body stored by an older version or
-through the Rust API that does not compile). `get_query` adds `body`, `dialect` and `meta`.
+list in signature order: `#{name, schema, default?, required}`), `status`: `"ok"`, or `"error"`
+with `error`, the reason the query cannot run (see
+[Unavailable queries](#unavailable-queries-and-older-versions)), `writes` (a call may write),
+`effects` (what it may write) and `denied_writes` (the writes of a read-only query's body that a
+call denies), each effect `#{action, element, label, text}` (`element` / `label` `()` when open).
+`get_query` adds `body`, `dialect` and `meta`.
 
 ```
 g.define_query(#{name: "older_than", folder: "reports/people", params: #{age: #{schema: #{type: "integer"}, default: 30}},
                  body: "fn older_than(age) { g.v().has(\"age\", P.gt(age)) }"})
 g.queries("reports")
-// [#{"description": (), "folder": "reports/people", "name": "older_than", "params": [#{"default": 30, "name": "age", "required": false, "schema": #{"type": "integer"}}], "status": "ok"}]
+// [#{"denied_writes": [], "description": (), "effects": [], "folder": "reports/people", "name": "older_than", "params": [#{"default": 30, "name": "age", "required": false, "schema": #{"type": "integer"}}], "status": "ok", "writes": false}]
 ```
 
 Moving a query or renaming a folder never breaks a caller: a call uses the name only. Dropping a
@@ -243,10 +403,11 @@ visible to commit hooks as a `SetDefinition` mutation (see [Transactions](transa
 
 ## Permissions
 
-Calling a query asks `Execute` on `Definition(query "name")` before the body runs; the body's own
-reads are then asked as usual. Listing asks `Read`, defining `Create` (`Update` to replace, move
-or describe), dropping `Delete`. `AccessPolicy::read_only()` allows calling and listing. See
-[Permissions](permissions.md).
+Calling a query asks `Execute` on `Definition(query "name")` before the body runs; a query that
+writes then asks its whole effect set; the body's own reads and writes are then asked as usual.
+Listing asks `Read`, defining `Create` (`Update` to replace, move or describe), dropping
+`Delete`. `AccessPolicy::read_only()` allows calling and listing, so under it a query that writes
+is denied before it writes anything. See [Permissions](permissions.md).
 
 ## Limits
 
@@ -272,15 +433,22 @@ saved queries, like they carry no schema. The byte layout is in the
 ## Front ends
 
 - **Playground** (WebAssembly and the dev server alike): the **Catalog ▾ ▸ Saved queries** manager
-  lists the queries by folder, creates and edits them in an editor with a parameter list and the
-  body in the code editor, deletes them, and runs one from a form built from its parameter
-  schemas, which writes the `g.query(..)` call into a query tab. Saved queries travel in the catalog file with the other
+  lists the queries by folder with a badge each (**R/O** reads, **R/W** writes, its tooltip lists
+  the effects; **R/O ⚠** read-only with writing steps that a call denies; **unavailable** with the
+  reason), creates and edits them in an editor with a parameter list and the body in the code
+  editor, deletes them, and runs one from a form built from its parameter schemas, which writes
+  the `g.query(..)` call into a query tab. Running an **R/W** query shows a preview of what the
+  call would change first (a dry run, rolled back) and asks. Saved queries travel in the catalog file with the other
   definitions (**Catalog ▾ ▸ Save catalog**, **Load catalog**), like the schema. See
   [Web Playground](web_playground.md#saved-queries).
 - **MCP** (the [dev server](../persistence/dev_server.md#what-the-agent-gets) with `--mcp`): an AI
   agent lists them with `list_saved_queries`, runs one with `run_saved_query`, reads
-  `graphersal://saved-queries`, and is told to look for a saved query before writing a new one;
-  `--mcp-query-tools` also offers each query as a tool of its own. All of it works read-only.
+  `graphersal://saved-queries`, and is told to look for a saved query before writing a new one
+  and to run one with `writes: true` only when the user asked for that change;
+  `--mcp-query-tools` also offers each query as a tool of its own (`readOnlyHint` /
+  `destructiveHint` from its effects). With `--mcp-read-only` the queries that write are neither
+  listed nor run. The **AI Chat** runs a query that writes only after the user confirmed it in the
+  chat.
 - **Python**: `graph.queries(folder)`, `graph.get_query(name)`, `graph.define_query(spec)`,
   `graph.drop_query(name)` and `graph.call_query(name, params)` (`graph.query` stays the alias of
   `execute`).
@@ -306,7 +474,11 @@ query tab and runs it there:
 The catalog is reachable without the DSL: `GraphTraversalSource::list_definitions`,
 `get_definition`, `define_query(name, QueryDefinition)`, `remove_definition`, `move_query`,
 `describe_query` (module `graphersal::catalog`). The Rust API stores a body without
-compiling it (the core has no Rhai); the DSL compiles it on definition and on every call.
+compiling it (the core has no Rhai) and keeps the dialect as given (`QUERY_DIALECT` by default,
+`WRITING_QUERY_DIALECT` for a query that writes); the DSL compiles it on definition and on every
+call. A front end that builds definitions itself runs them through
+`graphersal::script::with_inferred_dialect` (the body checked like `define_query` checks it, the
+dialect set from the effects) and lists them with `graphersal::script::saved_query_effects`.
 
 ## Host-defined catalog kinds
 

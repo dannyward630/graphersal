@@ -1038,6 +1038,15 @@ export async function dropSavedQuery(name) {
 }
 
 /**
+ * The preview of a call of a saved query that writes (the run form asks before it runs one):
+ * `{ok, changes}` or `{ok: false, error}`; the call runs as a dry run and is rolled back.
+ */
+export async function previewSavedQuery(name, args) {
+  if (!state.engine) return { ok: false, error: { message: 'The engine is not available.' } };
+  return state.engine.previewQuery(name, args);
+}
+
+/**
  * The run form's Run: writes `g.query("name", #{..})` into a tab (the active one when it is
  * empty or holds an unmodified example, else a new one named after the query) and runs it
  * there, so the call is visible, editable and in the history.

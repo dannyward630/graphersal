@@ -116,7 +116,7 @@ graph.traversal_mut().define_compression("customer_cv", rule).unwrap();
 **Authorization**: a rule is the resource `Definition { kind: compression, name }`: define asks
 `Create` (`Update` when it replaces one), drop `Delete`, recompress `Update`, listing `Read`. No data
 request is made (the logical data does not change). `AccessPolicy::read_only()`, the MCP read-only
-mode and a saved query (which always runs read-only) cannot change rules.
+mode and a saved query (which never writes the catalog) cannot change rules.
 
 **The catalog file**: rules travel with the saved queries in one catalog file
 (`{"definitions": [..]}`, the playground's **Catalog ▾ ▸ Save catalog**, the dev server's

@@ -221,7 +221,9 @@ run reports what it changed: `execute()` of a script ending in `.execute()` retu
 
 ## Saved queries
 
-Named, parameterized, read-only queries stored in the graph (book page "Saved Queries"):
+Named, parameterized queries stored in the graph (book page "Saved Queries"); a query whose
+body writes data is saved as one that writes, and a call changes only what its `effects` name, as
+one transaction:
 
 ```python
 graph.define_query({
@@ -231,7 +233,7 @@ graph.define_query({
     "body": 'fn older_than(age) { g.v().has_label("person").has("age", P.gt(age)).values("name") }',
 })
 graph.call_query("older_than", {"age": 29})   # ["josh", "peter"]; graph.query stays execute's alias
-graph.queries("people")                        # [{"name", "folder", "description", "params", "status", ...}]
+graph.queries("people")                        # [{"name", "folder", "description", "params", "status", "writes", "effects", ...}]
 graph.get_query("older_than")["body"]
 graph.drop_query("older_than")                 # True
 ```
