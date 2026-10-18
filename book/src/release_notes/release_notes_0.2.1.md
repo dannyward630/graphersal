@@ -1,5 +1,13 @@
 # Release 0.2.1
 
+> **Warning: do not use 0.2.0 on a store written by 0.2.1.** Graphersal 0.2.0 reads a store that
+> holds a compression rule with the codec `dedup` (new in 0.2.1) as **damaged** from the commit
+> that defined the rule on: it opens it in maintenance mode, reports the commits from there on as
+> lost, and `graphersal store repair` run from 0.2.0 would really drop them, although nothing on
+> disk is damaged. Do not open such a store with 0.2.0 and never run `graphersal store repair`
+> from 0.2.0 on it. Upgrade to 0.2.1; 0.2.0 is not recommended. From 0.2.1 on, what a newer
+> version writes is never read as damage (see "Changed" below).
+
 A patch release of the 0.2 line. It changes no format: stores, snapshots and journals of 0.2.0 are
 read and written exactly as before. Its additions are additive API (a new `GraphStorage` method
 with a default, new `#[non_exhaustive]` types).
@@ -46,5 +54,35 @@ with a default, new `#[non_exhaustive]` types).
   `CompressionCandidate::dedup`/`matching_codecs`, Python `define_compression(..., codec="dedup")`
   and `estimate_compression(..., codec=[...])`, the playground's codec choice and dedup rows in the
   estimate table, the MCP tools `define_compression`/`estimate_compression`. A 0.2.0 reader cannot
-  decode a dedup rule (it reports the definition as damage): drop dedup rules before opening a store
-  with 0.2.0.
+  decode a dedup rule (it reports the definition as damage, see the warning at the top): drop dedup
+  rules before opening a store with 0.2.0.
+
+## Changed
+
+- **What a newer version writes is never damage**
+  ([format spec 16 rule 9](../persistence/format.md#16-extensibility)): content behind a valid
+  checksum that this version cannot interpret is kept or refused, never reported as damage and
+  never offered for a repair that would drop it.
+  - A compression rule whose `codec` or `element` this version does not know, or whose `path` it
+    cannot parse, is kept and written back byte for byte through every store path (journal,
+    checkpoint, fork, backup, ZIP, repair), not applied (its values stay plain), and listed with
+    `served: false` and a `reason` by `g.compressions()`, Python, the session, MCP's
+    `list_compressions` and the playground (a *not applied* badge); `g.recompress` refuses it
+    with the reason. New: `CompressionDefinition::unserved_reason`, `codec_name`,
+    `element_name`.
+  - A property index of an unknown `element` kind is handled like one of an unknown `type`: kept,
+    not served, listed with the reason, refused when created
+    (`PropertyIndexDefinition::element_name`).
+  - A saved query whose stored parameters this version cannot read (a schema keyword of a newer
+    version) is kept, listed with the reason and refused when called
+    (`QueryDefinition::unsupported_reason`).
+  - A definition of a known kind whose payload fields this version cannot read is kept opaque,
+    byte for byte, like a definition of an unknown kind.
+  - A graph schema this version cannot parse (in a snapshot or a WAL record) opens the store
+    read-only with the reason (the data without the schema); a checkpoint, fork or repair of it
+    is refused, a backup copies it as it is.
+  - An unknown interrupted operation (`INTENT`), an unknown `GRAPH` state value and a
+    well-formed backup archive entry this version does not know are refused as unsupported.
+  - New error `PersistError::UnsupportedContent` (*written by a newer Graphersal, not damage*);
+    `graphersal store verify` lists such content as a `note:`, not as damage.
+

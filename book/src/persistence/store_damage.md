@@ -23,6 +23,14 @@ that already exist, into a new directory.
   never cut. A lost, emptied or replaced newest WAL segment, or a cleanly closed store whose files
   end earlier, is damage too: never a silently shorter history.
 - `prune` always keeps the last two verified snapshots and the WAL between them: the **donors**.
+- What a **newer Graphersal** wrote is never damage (format spec 16 rule 9): an unknown value in
+  a catalog definition (a compression codec, an index type or element kind, a saved query's
+  parameter schema) keeps the definition, not served; a graph schema this version cannot parse
+  opens the store **read-only** (the data without the schema, no damage report); an unknown
+  interrupted operation or store state is refused with *Unsupported content ... written by a
+  newer Graphersal, not damage*. Such a store is never repaired by this version (a repair would
+  drop what it cannot read): open it with the newer version. `verify` lists newer content as a
+  `note:`, not as a problem.
 
 ## Maintenance mode
 

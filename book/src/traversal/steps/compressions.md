@@ -3,7 +3,7 @@
 
 `compressions` · category: [Compressed properties](../../traversal/step_reference.md#compressed-properties)
 
-Lists the compression rules as maps: name, element, label, path, codec, min_bytes, dictionary and the current compressed_values, plain_bytes, stored_bytes, dictionary_bytes.
+Lists the compression rules as maps: name, element, label, path, codec, min_bytes, dictionary, served (with reason when not applied) and the current compressed_values, plain_bytes, stored_bytes, dictionary_bytes.
 
 ## Forms
 

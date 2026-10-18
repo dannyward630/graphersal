@@ -140,7 +140,10 @@ known to this version*. It can be dropped like any index. Creating or redefining
 unknown type is refused with an error whose help lists the known types. Indexes of different
 types may cover the same `(element, label, key)`. A **transform** this version does not know is
 handled the same way: kept byte for byte, built and served never, listed with the reason *index
-transform 'x' is not known to this version*, refused when created (the field `transform`).
+transform 'x' is not known to this version*, refused when created (the field `transform`). So is
+an **element kind** other than `vertex` and `edge` (since 0.2.1; `g.indexes()` shows the name as
+read, the reason *element kind 'x' is not known to this version*, refused when created with the
+field `element`).
 
 ## Case-insensitive search
 

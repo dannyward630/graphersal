@@ -137,6 +137,25 @@ shared text once, part of `property_bytes`).
 `lz4` and `dedup` are one rule per element kind, label and path: redefining the rule with the other
 codec re-encodes its values in the same commit.
 
+> **Warning (0.2.0):** Graphersal 0.2.0 does not know the codec `dedup` and reads a store that
+> holds a `dedup` rule as **damaged** from the commit that defined it on (maintenance mode; its
+> repair would drop those commits). Do not open such a store with 0.2.0, and never run
+> `graphersal store repair` from 0.2.0 on it; use 0.2.1 or later.
+
+## A rule from a newer version
+
+A store (or a catalog file, a change set) written by a newer Graphersal may hold a rule whose
+`codec` or `element` this version does not know, or whose `path` it cannot parse. Since 0.2.1 such
+a rule is **never damage**: it is kept in the catalog exactly as read and written back unchanged
+(its payload byte for byte through the journal, checkpoints, backups, forks and snapshots), but it
+is **not applied**: its values stay plain in memory, as they are on disk anyway. `g.compressions()`
+(and the playground, the dev server and MCP's `list_compressions`, Python's `compressions()`) shows
+it with the codec, element and path as read, `served: false` and a `reason` such as *codec 'zstd'
+is not known to this version*; `g.recompress(name)` refuses it with that reason. It can be dropped
+like any rule. A rule of a known codec on the same element kind, label and path conflicts with it
+(so the newer version never finds two rules on one path). Creating a rule of an unknown codec is
+refused by every front end (they take only the known codec names).
+
 ## Estimating the gain
 
 Before defining a rule, an **estimate** measures what rules for one element kind, label and path

@@ -227,7 +227,7 @@ A fixed part of 256 bytes, followed by the lineage chain:
 |---:|---:|---|
 | 0 | 8 | magic `GRSLGRPH` |
 | 8 | 4 | store format version (`u32`, 3; see 15) |
-| 12 | 4 | state: 0 = closed cleanly, 1 = open (a writer has it, or it was not closed cleanly); other values are invalid |
+| 12 | 4 | state: 0 = closed cleanly, 1 = open (a writer has it, or it was not closed cleanly); another value in an intact file (both checksums valid) is a newer writer's: the store is refused as unsupported, never damage (16 rule 9) |
 | 16 | 16 | `graph_id` of the current lineage |
 | 32 | 8 | created at (time) |
 | 40 | 4 | lineage entry count `n` (at least 1) |
@@ -405,10 +405,14 @@ payload     = property map (3) with inline keys (as in a WAL record)
   `name` or `flags`: these are the envelope keys of the exchange form of a definition, a JSON
   object that puts the payload keys beside them. A writer never writes such a key; a reader
   that decodes the payload treats one as invalid.
-- A reader that knows the kind decodes the payload; a payload that is not a valid property map
-  of its kind (a missing or mistyped known key, trailing bytes, a reserved key) is damage (13;
-  a repair takes the catalog from a donor, 13.4). It ignores, and keeps, keys it does not know
-  (16 rule 1).
+- A reader that knows the kind decodes the payload. A payload that is not a valid property map
+  (truncated or invalid bytes, trailing bytes, a repeated or reserved key) is damage (13; a
+  repair takes the catalog from a donor, 13.4). A valid map is NEVER damage (16 rule 9): keys
+  the reader does not know are ignored and kept (16 rule 1); an unknown VALUE of a known key it
+  can represent (a compression `codec`, `element` or `path`, an index `element`, `type` or
+  `transform`, a saved query's parameter schema) keeps the definition, not served, its payload
+  written back exactly as read; a map it cannot read as its kind at all (a missing or mistyped
+  known key) keeps the definition as opaque bytes like an unknown kind (16 rules 2 and 3).
 - A reader that does not know the kind keeps the definition as opaque bytes (kind, flags, name,
   payload) and writes it back unchanged (16 rules 2 and 3).
 - A load does not validate a definition beyond this (as it does not validate data against the
@@ -437,7 +441,10 @@ order, followed by the keys the writer does not know in the order it read them:
 | `meta` | string, free, never interpreted; absent = none |
 
 `source` is required; every other key is optional. The text is stored, never a compiled plan:
-every call plans it anew.
+every call plans it anew. A `params` value the reader cannot read (a schema keyword or a
+parameter form of a newer writer) keeps the query: it is listed with the reason, written back
+exactly as read and refused when called (since 0.2.1; the exchange form a user imports stays
+strict).
 
 A **compression rule** (kind 3, not critical) keeps the strings of one element kind and label at
 one property path compressed in memory (book page "Compressed Properties"). Its name is an
@@ -457,10 +464,17 @@ order, followed by the unknown keys:
 
 `label` and `path` are required; `element` defaults to `"vertex"`, `codec` to `"lz4"`,
 `min_bytes` to 256 (`lz4`) or 25 (`dedup`), `dictionary` to `true` (`lz4`) or `false` (`dedup`);
-writers always write `min_bytes` and `dictionary`. A reader that does not know a `codec` value
-cannot decode the payload (it is damage, like any invalid payload of a known kind); the codec
-changes no stored data, which stays plain. Two rules with the same `element`, `label` and `path`
-are invalid (a writer refuses the second).
+writers always write `min_bytes` and `dictionary`. A `codec` or an `element` the reader does not
+know, or a `path` it cannot parse (a newer writer's), is NOT damage and needs no new format
+version (16 rules 1 and 9): the reader keeps the definition, writes its payload back exactly as
+read (every key, in the order read), does not apply it (the values stay plain in memory as on
+disk) and lists it as not applied with the reason; a front end never creates such a rule. The
+codec changes no stored data, which stays plain. Two rules with the same `element`, `label` and
+`path` (compared as read) are invalid (a writer refuses the second).
+
+> **0.2.0** decodes an unknown `codec` as an invalid payload, that is as damage: it reads a store
+> holding a `dedup` rule (0.2.1) as damaged from that commit on and proposes a repair that would
+> drop commits. Open such a store with 0.2.1 or later only; 0.2.1 and later follow the rule above.
 
 A **property index** (kind 2, not critical) orders the elements of one element kind and label by
 the value of one top-level property (book page "Property Indexes"). Its name is an identifier as
@@ -480,11 +494,12 @@ speed-up. Its payload keys, in this order, followed by the unknown keys:
 (a payload written before the key existed has none), `transform` to none. A writer of this
 version always writes `type` and writes `transform` only for an index with a transform. Two
 indexes with the same `element`, `label`, `key`, `type` and `transform` are invalid (a writer
-refuses the second); indexes of different types or transforms may cover the same key. A `type`
-or a `transform` the reader does not know (a newer writer's) is NOT damage and needs no new
-format version (16 rule 1): the reader keeps the definition, writes its payload back exactly as
-read (every key, in the order read), builds no entries for it and serves no query from it. A store written before this kind
-was decoded never holds it (kind 2 was reserved), so no format version changes.
+refuses the second); indexes of different types or transforms may cover the same key. A `type`,
+a `transform` or (since 0.2.1) an `element` the reader does not know (a newer writer's) is NOT
+damage and needs no new format version (16 rules 1 and 9): the reader keeps the definition,
+writes its payload back exactly as read (every key, in the order read), builds no entries for it
+and serves no query from it. A store written before this kind was decoded never holds it (kind 2
+was reserved), so no format version changes.
 
 ## 7. Segment files and chunks
 
@@ -683,7 +698,8 @@ definitions table (6.3); other presence bytes are invalid. Op 10 serves every de
 so a new kind needs no new op: a define has no before, a removal no after, a change (replace,
 move, describe) both; at least one is present, and each present image MUST carry the op's kind
 and name. A definition the reader cannot decode follows 6.3: an unknown kind is kept opaque
-(and replayed as such), an invalid payload of a known kind is damage. A writer MUST NOT write an
+(and replayed as such), a payload of a known kind that is not a valid property map is damage,
+and a valid map is never damage (kept, not served, or kept opaque; 16 rule 9). A writer MUST NOT write an
 after image that is a critical definition of a kind it does not know (16 rule 3).
 
 Mutations are in execution order. Before images are always present: a reader can reconstruct
@@ -792,7 +808,8 @@ A mark that is not listed keeps its name taken; resolving it as a target fails.
 A multi-file operation writes `INTENT` (compact JSON, replaced atomically and synced) before its
 first file change and removes it after its last one. Every step is idempotent; a read-write open
 that finds `INTENT` completes (or, for a backup increment, rolls back) the operation before
-anything else. An unknown `op` MUST fail the open. Every path in it follows 4.2.
+anything else. An unknown `op` MUST fail the open, as unsupported content of a newer writer
+(16 rule 9), never as damage. Every path in it follows 4.2.
 
 ```json
 {"op": "<operation>", "files": ["<store-relative names>"], "started_at": <micros>, ...}
@@ -858,6 +875,13 @@ the newest), then replay its replay set (9.7) along the lineage chain (5.4) up t
   `INTENT`, removing leftovers, applying a recorded WAL cut) MAY have run; they do not change the
   graph. Reading, verification, export, fork and backups work; a fork or backup keeps the
   definition and is read-only for that reader too.
+- A read-write open whose snapshot `schema.json` or a schema image of op 9 the reader cannot
+  parse (a newer writer's keyword or mode; its checksum is valid) loads the data WITHOUT the
+  schema and opens the store **read-only** in the same way (16 rule 9). As the loaded state
+  lacks the schema, every store operation that would write a state derived from the files (a
+  checkpoint, a fork, a repair) is refused as unsupported; a file-level backup and
+  the export of a stored snapshot copy the bytes as they are. A snapshot written from the
+  loaded graph in memory (`g.export_snapshot`) has no schema.
 - Recovery to a target before the end yields a read-only past state. A writable state from it
   is either a fork (a new store, 12.5) or an in-place rollback.
 - Without a snapshot (a journal over a stream), the first journal MUST start at commit 1.
@@ -1068,7 +1092,9 @@ header, zip64 extended fields always (sizes in the local header, sizes and offse
 header), then the zip64 end record, its locator and the end record. The archive's `GRAPH` carries
 the backup marker; unpacking it is the explicit restore and clears the marker. A reader MUST
 accept only the store's names and MUST refuse compressed, encrypted or streamed (data
-descriptor) entries. The reference writer reads the archive back after writing it (12.6): every
+descriptor) entries. A well-formed name outside the layout it knows (plain segments, at most
+four) is a newer writer's file: the restore is refused as unsupported, never as damage (16
+rule 9); any other name is damage. The reference writer reads the archive back after writing it (12.6): every
 entry's CRC-32 and every checksum of the store files in it, which arrive in an order a one-pass
 reader can check (`GRAPH`, `GRAPH.copy`, `marks`, then each snapshot's `manifest` before its
 other files, then the WAL segments).
@@ -1481,6 +1507,23 @@ store format version 3 and file format version 2:
    opaque bytes under rules 2 and 3 (a critical one opens the store read-only), never damage. A
    host SHOULD encode its payload as the property map of 6.3 (the reference implementation
    offers that codec publicly), so the payload stays inspectable and extensible by key.
+9. **An unknown value of a known key is not damage.** Damage is what a checksum, a length or
+   the byte structure (value tags, record types, mutation ops, guarded by the format version,
+   15) says is wrong. Content behind a valid checksum that the reader cannot interpret was
+   written by a newer writer, and a reader MUST NOT report it as damage or offer a repair that
+   would drop it (a repair by a reader that cannot read it loses it):
+   - in a definition payload (6.3): kept and not served (an unknown value it can represent), or
+     kept opaque (a payload it cannot read as its kind at all); a critical one opens the store
+     read-only (rule 3);
+   - in the graph schema (`schema.json`, 6.1; a schema image of op 9, 9.3): the schema changes
+     what writes are allowed, so it is never ignored. A reader opens the store READ-ONLY (the
+     data without the schema; nothing is written, not even a torn-tail cut) and refuses every
+     operation that would write a state derived from it (a checkpoint, a fork, a repair) as
+     unsupported; a backup copies its bytes as they are; verify reports it as a note, not a
+     problem;
+   - an `INTENT` operation (11.1) or a `GRAPH` state value (5.1) the reader does not know, and a
+     well-formed entry outside its layout in a backup archive (12.8): refused as unsupported,
+     never damage.
 
 ## 17. Conformance notes
 
@@ -1491,8 +1534,10 @@ store format version 3 and file format version 2:
 - Never treat damage as a torn tail: apply 9.6 and 14.4 exactly. Never skip an unknown record
   type, value tag or mutation op.
 - Keep what you do not know (16): an unknown definition byte for byte, unknown payload keys of a
-  known kind, an ignorable file of an unknown segment kind in every file-level copy; open a
-  store with something critical you do not know read-only.
+  known kind, an unknown value of a known key (not served, written back as read), an ignorable
+  file of an unknown segment kind in every file-level copy; open a store with something critical
+  you do not know, or a graph schema you cannot parse, read-only. Content behind a valid
+  checksum that you cannot interpret is never damage (16 rule 9).
 - Replay only files whose `graph_id` is on the lineage chain, each ancestor only up to its branch
   point (5.4), and require commit continuity (9.7).
 - A read-only reader of a store MUST NOT write anything into it, take the writer lock, or cut a
