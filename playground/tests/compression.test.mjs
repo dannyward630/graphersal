@@ -253,3 +253,22 @@ test('a rule of a newer version: listed, not applied, with its reason', () => {
   assert.equal(ruleRow(RULE).served, true);
   assert.equal(ruleRow({ ...RULE, element: 'property' }).target, 'property customer');
 });
+
+test('estimate view: candidates that would hold nothing are left out and named in a note', async () => {
+  const m = await import('../js/compression.js');
+  const c = (codec, minBytes, dictionary, compressedValues, savedBytes) => ({
+    codec, minBytes, dictionary, compressedValues, plainBytes: compressedValues * 40,
+    storedBytes: compressedValues * 4, dictionaryBytes: dictionary ? 65536 : 0, distinctValues: 3, savedBytes,
+  });
+  const estimate = {
+    best: 4,
+    candidates: [c('lz4', 64, false, 0, 0), c('lz4', 64, true, 0, -65536), c('lz4', 128, false, 0, 0),
+      c('dedup', 64, false, 0, 0), c('dedup', 25, false, 12, 360)],
+  };
+  const view = m.estimateView(estimate);
+  assert.deepEqual(view.rows.map((r) => r.name + ' ' + r.threshold), ['dedup ≥ 25 B']);
+  assert.equal(view.empty, 'Not shown: lz4 from ≥ 64 B, dedup from ≥ 64 B (with and without a dictionary): '
+    + 'no string at the path is that long, so they would hold nothing.');
+  // Nothing left out: no note.
+  assert.equal(m.estimateView({ best: 0, candidates: [c('lz4', 64, false, 5, 100)] }).empty, '');
+});

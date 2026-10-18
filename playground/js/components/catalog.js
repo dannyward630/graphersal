@@ -30,7 +30,7 @@ import {
 } from '../store.js';
 import {
   ruleRow, totals, newDraft, draftFromRule, draftToSpec, labelSuggestions,
-  canEstimate, draftToEstimateSpec, estimateRows, estimateSummary, histogramRows, applyCandidate,
+  canEstimate, draftToEstimateSpec, estimateView, estimateSummary, histogramRows, applyCandidate,
   CODECS, ESTIMATE_CODECS, withCodec,
 } from '../compression.js';
 import { queryTree, signatureText, errorsByField, accessBadge } from '../saved-queries.js';
@@ -164,7 +164,7 @@ export const CompressionManager = {
     const rows = computed(() => (state.compressions || []).map((rule) => ({ rule, row: ruleRow(rule) })));
     const sum = computed(() => totals(state.compressions || []));
     const suggestions = computed(() => (d.draft ? d.labels[d.draft.element] || [] : []));
-    const estimateTable = computed(() => estimateRows(d.estimate));
+    const estimateTable = computed(() => estimateView(d.estimate));
     const estimateText = computed(() => estimateSummary(d.estimate));
     const histogram = computed(() => histogramRows(d.estimate));
     const estimable = computed(() => canEstimate(d.draft));
@@ -309,12 +309,12 @@ export const CompressionManager = {
           <table class="data-table catalog-table">
             <thead><tr>
               <th>Name</th><th>Codec</th><th>Applies to</th><th>Path</th><th>Min. size</th><th>Dictionary</th>
-              <th class="num">Values</th><th class="num" title="dedup: the distinct texts the shared values hold">Distinct</th><th>Plain → stored</th><th class="num">Ratio</th><th class="num">Saved</th><th></th>
+              <th class="num" title="dedup: also the distinct texts the shared values hold">Values</th><th>Plain → stored</th><th class="num">Ratio</th><th class="num">Saved</th><th></th>
             </tr></thead>
             <tbody>
               <tr v-for="{ rule, row } in rows" :key="rule.name">
-                <td class="code">{{ row.name }} <span v-if="!row.served" class="badge" :title="row.reason">not applied</span></td><td>{{ row.codec }}<div v-if="!row.served && row.reason" class="muted" style="font-size: 12px">{{ row.reason }}</div></td><td>{{ row.target }}</td><td class="code">{{ row.path }}</td>
-                <td>{{ row.threshold }}</td><td>{{ row.dictionary }}</td><td class="num">{{ row.values }}</td><td class="num">{{ row.distinct }}</td>
+                <td class="code">{{ row.name }} <span v-if="!row.served" class="badge" :title="row.reason">not applied</span></td><td>{{ row.codec }}<div v-if="!row.served && row.reason" class="muted cc-reason">{{ row.reason }}</div></td><td>{{ row.target }}</td><td class="code">{{ row.path }}</td>
+                <td>{{ row.threshold }}</td><td>{{ row.dictionary }}</td><td class="num">{{ row.values }}<div v-if="row.distinct !== '—'" class="muted cc-sub">{{ row.distinct }} distinct</div></td>
                 <td>{{ row.sizes }}</td><td class="num">{{ row.ratio }}</td><td class="num">{{ row.saved }}</td>
                 <td class="catalog-actions">
                   <button type="button" class="btn small" :disabled="d.busy || state.running || !row.served" @click="startEdit(rule)">Edit…</button>
@@ -378,16 +378,16 @@ export const CompressionManager = {
             <p class="muted sq-note">{{ estimateText.found }}</p>
             <p v-for="n in estimateText.notes" :key="n" class="muted sq-note">{{ n }}</p>
             <div v-for="w in estimateText.warnings" :key="w" class="field-error">{{ w }}</div>
-            <div v-if="estimateTable.length" class="catalog-table-wrap">
+            <div v-if="estimateTable.rows.length" class="catalog-table-wrap">
               <table class="data-table catalog-table cc-estimate-table">
                 <thead><tr>
-                  <th>Codec</th><th>Min. size</th><th class="num">Values</th><th class="num" title="dedup: the distinct texts among the values">Distinct</th><th>Plain → stored</th><th>Dictionary</th>
+                  <th>Codec</th><th>Min. size</th><th class="num" title="dedup: also the distinct texts among the values">Values</th><th>Plain → stored</th><th>Dictionary</th>
                   <th class="num">Ratio</th><th>Saved</th><th title="Decompression speed: every read of a compressed value pays it (a shared dedup value reads as plain)">Reads</th><th></th>
                 </tr></thead>
                 <tbody>
-                  <tr v-for="r in estimateTable" :key="r.index" :class="{ 'cc-best': r.best }">
+                  <tr v-for="r in estimateTable.rows" :key="r.index" :class="{ 'cc-best': r.best }">
                     <td>{{ r.name }} <span v-if="r.best" class="cc-tag">best</span> <span v-if="r.current" class="cc-tag">current</span></td>
-                    <td>{{ r.threshold }}</td><td class="num">{{ r.values }}</td><td class="num">{{ r.distinct }}</td><td>{{ r.sizes }}</td><td>{{ r.dictionary }}</td>
+                    <td>{{ r.threshold }}</td><td class="num">{{ r.values }}<div v-if="r.distinct !== '—'" class="muted cc-sub">{{ r.distinct }} distinct</div></td><td>{{ r.sizes }}</td><td>{{ r.dictionary }}</td>
                     <td class="num">{{ r.ratio }}</td>
                     <td><span class="cc-bar" aria-hidden="true"><span class="cc-bar-fill" :style="{ width: (100 * r.share).toFixed(1) + '%' }"></span></span> {{ r.saved }}</td>
                     <td>{{ r.reads }}</td>
@@ -397,6 +397,7 @@ export const CompressionManager = {
                 </tbody>
               </table>
             </div>
+            <p v-if="estimateTable.empty" class="muted sq-note">{{ estimateTable.empty }}</p>
             <p v-if="histogram.length" class="muted sq-note">String sizes: {{ histogram.map((h) => h.range + ': ' + h.values).join(' · ') }}</p>
           </template>
         </div>

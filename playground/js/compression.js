@@ -273,6 +273,27 @@ export function estimateRows(estimate) {
 }
 
 /**
+ * The estimate table as shown: the rows of [`estimateRows`] without the candidates that would
+ * hold no value (every string at the path is shorter than their minimum size), unless one is the
+ * best or the current rule, and a note naming what was left out (`''` when nothing was).
+ */
+export function estimateView(estimate) {
+  const all = estimateRows(estimate);
+  const rows = all.filter((r) => r.values > 0 || r.best || r.current);
+  const smallest = new Map(); // codec -> the smallest left-out minimum size
+  for (const r of all) {
+    if (rows.includes(r)) continue;
+    const codec = r.candidate.codec || 'lz4';
+    smallest.set(codec, Math.min(smallest.get(codec) ?? Infinity, r.candidate.minBytes));
+  }
+  const parts = [...smallest].map(([codec, min]) => `${codec} from ≥ ${formatBytes(min)}`);
+  const empty = parts.length
+    ? `Not shown: ${parts.join(', ')} (with and without a dictionary): no string at the path is that long, so they would hold nothing.`
+    : '';
+  return { rows, empty };
+}
+
+/**
  * The lines above the estimate table: what was found at the path, whether it was sampled, the
  * current rule as the baseline, and the engine's warnings.
  */
