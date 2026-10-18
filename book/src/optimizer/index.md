@@ -50,7 +50,7 @@ change their stream. `group_count_pushdown` reads the `by()` modulators of the g
 timing table, naming every rule (top-level and nested, deduplicated, in pipeline order) that
 actually changed the plan. The line is omitted when no rule fired.
 
-```
+```console
 $ graphersal -e 'g.v().has_label("person").count().profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -64,7 +64,7 @@ Optimizer rules applied: source_filter_pushdown, count_pushdown
 The same list is available as data: `optimizer_rules_applied` on the `TraversalMetrics` value
 (a property in Rhai, `TraversalMetrics::optimizer_rules_applied()` in Rust).
 
-```
+```console
 $ graphersal -e 'g.v().has_label("person").count().profile().optimizer_rules_applied'
 "source_filter_pushdown"
 "count_pushdown"
@@ -82,7 +82,7 @@ g.with("optimizer.disabled", ["filter_reorder"]).v().has_label("person").count()
 **Disable every rule at once** with the reserved name `"all"`, to see a query's genuinely
 unoptimized plan (the "Optimizer rules applied" line then disappears):
 
-```
+```console
 $ graphersal -e 'g.with("optimizer.disabled", ["all"]).v().has_label("person").count().profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -100,7 +100,7 @@ is a no-op today, since no rule defaults to off, but it is ready for the first r
 A name that is neither a rule above nor `"all"`, or a rule named in both lists, fails with
 `InvalidOption` when the traversal executes (not at `with()` time):
 
-```
+```console
 $ graphersal -e 'g.with("optimizer.disabled", ["no_such_rule"]).v().count().to_list()'
 Error: Invalid value for option 'optimizer.disabled': unknown optimizer rule "no_such_rule"; valid names are: where_unnest, add_property_fold, filter_reorder, has_id_pushdown, source_filter_pushdown, property_index, barrier_pushdown, group_count_pushdown, count_pushdown, lazy_barrier, all
 Help: Set 'optimizer.disabled'/'optimizer.enabled' to an array of optimizer rule names ...

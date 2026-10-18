@@ -3,7 +3,7 @@
 A *saved query* is a named, parameterized piece of DSL stored IN the database, next to the
 schema: written once, called by name from any front end (the CLI, Python, the playground).
 
-```
+```rhai
 g.query("older_than", #{age: 30}).values("name").toList()
 // ["josh", "peter"]
 ```
@@ -23,7 +23,7 @@ Every example on this page was run with `graphersal` on the default modern graph
 
 ## Defining a query
 
-```
+```rhai
 g.define_query(#{
     name: "older_than",
     folder: "reports/people",
@@ -72,7 +72,7 @@ source as a query of its own, named like the function, described by its doc comm
 lines or a `/** .. */` block). `params` maps each function name to its parameter map. All of
 them are stored in one unit: either every query is stored or none. It returns the names.
 
-```
+```rhai
 g.define_queries("reports/sales", `
     /// Persons, oldest first.
     fn oldest(n) { g.v().has_label("person").order().by("age", Order.desc).limit(n) }
@@ -114,7 +114,7 @@ declared, a canonical UUID string where a `uuid` is declared, the ISO 8601 text 
 [date or time format](../dates/schema.md) such as `date-time`). `()` is a value (null), not an omitted
 argument.
 
-```
+```rhai
 g.query("older_than", #{age: 200})
 // Error: Invalid argument 'age' for saved query 'older_than': Constraint violation on 'older_than.age': value <= 150 (actual: 200)
 g.query("older_than", #{years: 30})
@@ -131,7 +131,7 @@ on incoming traversers is a later feature).
 A traversal result is continued like any other traversal, and the optimizer sees the whole plan:
 the caller's filters are pushed into the body's steps.
 
-```
+```rhai
 g.define_query(#{name: "everything", body: "fn everything() { g.v() }"})
 g.query("everything").has_label("person").count().profile()
 // Step                                    Call      In     Out  ...
@@ -141,7 +141,7 @@ g.query("everything").has_label("person").count().profile()
 
 A value result is returned as it is:
 
-```
+```rhai
 g.define_query(#{name: "stats", body: `fn stats() {
     #{people: g.v().has_label("person").count().next(), software: g.v().has_label("software").count().next()}
 }`})
@@ -165,7 +165,7 @@ in `graphersal-rhai/2` and may write exactly those. Every save (`define_query`, 
 a replacement, the playground's editor) sets the dialect again, also back to `/1` when the body
 no longer writes; moving or describing a query does not.
 
-```
+```rhai
 g.define_query(#{name: "add_person", params: #{name: "string", age: "integer"},
                  body: "fn add_person(name, age) { g.add_v(\"person\").property(\"name\", name).property(\"age\", age).next() }"})
 g.get_query("add_person")["dialect"]
@@ -202,7 +202,7 @@ The inference may claim more than a body writes, never less. What it cannot see,
   `g.query(name)` with a computed name) is refused when it is saved. Without writes such a body is
   saved as a read-only query, and whatever it reaches stays read-only.
 
-```
+```rhai
 g.define_query(#{name: "q", params: #{n: "string"}, body: "fn q(n) { g.query(n); g.add_v(\"x\").next() }"})
 // Error: Invalid body of saved query 'q': it writes data (Create Data(vertex "x")) and uses g.query(name) with a computed name, which hides what it calls, so its effects cannot be inferred; ...
 ```
@@ -230,7 +230,7 @@ effects inferred now.
   unit, so it can be continued only by reading; a returned traversal that writes runs INSIDE the
   call (next section).
 
-```
+```rhai
 g.define_query(#{name: "unfriend", params: #{name: "string"},
                  body: "fn unfriend(name) { g.v().has(\"name\", name).out_e(\"knows\").drop().iterate(); g.v().has(\"name\", name).out(\"knows\").count().next() }"})
 g.get_query("unfriend")["effects"].map(|e| e.text)
@@ -246,7 +246,7 @@ that traversal inside its unit, as if it ended in `toList()`, and returns a **re
 traversal over what it wrote** (`inject(results)` on the caller's graph). The caller continues it
 like the result of a read-only query:
 
-```
+```rhai
 g.define_query(#{name: "add_person", params: #{p_name: "string"},
                  body: "fn add_person(p_name) { g.add_v(\"person\").property(\"name\", p_name) }"})
 g.query("add_person", #{p_name: "Bill"}).count().next()
@@ -256,7 +256,7 @@ g.query("add_person", #{p_name: "Bill"}).count().next()
 Each call writes once, whatever the caller does with the result; the result only reads what
 was written:
 
-```
+```rhai
 g.query("add_person", #{p_name: "Bill"}).values("name").toList()
 // ["Bill"]
 g.query("add_person", #{p_name: "Bill"}).id().toList()
@@ -269,7 +269,7 @@ Without a step after it, the result is shown like any traversal (in the playgrou
 the written elements as a table). The written elements are the stored ones, so the
 continuation walks the graph from them:
 
-```
+```rhai
 g.define_query(#{name: "befriend", params: #{a: "string", b: "string"},
                  body: "fn befriend(a, b) { g.v().has(\"name\", a).add_e(\"knows\").to(__.v().has(\"name\", b)) }"})
 g.query("befriend", #{a: "vadas", b: "peter"}).in_v().values("name").toList()
@@ -278,7 +278,7 @@ g.query("befriend", #{a: "vadas", b: "peter"}).in_v().values("name").toList()
 
 The continuation itself may not write: the call's effects end with the call.
 
-```
+```rhai
 g.query("add_person", #{p_name: "Bill"}).property("age", 30).iterate()
 // Error: ... Permission denied for 'property' (Update Data): a saved query is read-only: ...
 ```
@@ -309,7 +309,7 @@ saved queries or files is denied with `PermissionDenied` (`a saved query is read
 anything runs, and nested queries inherit it. A traversal ANY query returns carries the
 restriction too:
 
-```
+```rhai
 g.define_query(#{name: "people", body: "fn people() { g.v().has_label(\"person\") }"})
 g.query("people").property("seen", true).toList()
 // Error: ... Permission denied for 'property' (Update Data(vertex)): a saved query is read-only: ...
@@ -317,7 +317,7 @@ g.query("people").property("seen", true).toList()
 
 Write in a traversal of your own after the call:
 
-```
+```rhai
 let ids = g.query("people").id().toList();
 g.v(ids).property("seen", true).toList();
 g.v().has("seen").count().next()
@@ -350,7 +350,7 @@ Graphersal 0.2.0 runs them; 0.2.0 lists a query that writes (`graphersal-rhai/2`
 
 An error inside a body keeps its diagnostic and gains one line per call, innermost first:
 
-```
+```rhai
 g.define_query(#{name: "broken", body: "fn broken() { g.v().values(\"name\").as_number(GType.LONG).toList() }"})
 g.query("broken")
 // Error: Step #2 'as_number(GType.LONG)' execution failed
@@ -385,7 +385,7 @@ with `error`, the reason the query cannot run (see
 call denies), each effect `#{action, element, label, text}` (`element` / `label` `()` when open).
 `get_query` adds `body`, `dialect` and `meta`.
 
-```
+```rhai
 g.define_query(#{name: "older_than", folder: "reports/people", params: #{age: #{schema: #{type: "integer"}, default: 30}},
                  body: "fn older_than(age) { g.v().has(\"age\", P.gt(age)) }"})
 g.queries("reports")

@@ -60,7 +60,7 @@ The steps `add_label("L")`/`addLabel` and `drop_label("L")`/`dropLabel` add or r
 label on an existing vertex (Graphersal extensions, TinkerPop has no such steps; see
 [add_label, drop_label, set_label](../traversal/steps/label_steps.md)):
 
-```
+```rhai
 g.V("1").add_label("Admin").labels().next()    // ["person", "Admin"]
 g.V("1").drop_label("person").label().next()   // "Admin"
 ```

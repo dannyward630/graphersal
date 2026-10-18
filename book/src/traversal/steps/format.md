@@ -3,7 +3,7 @@
 `format(pattern)` builds a string from `pattern`. Each `%{name}` placeholder is replaced by a value
 read from the incoming traverser.
 
-```
+```rhai
 graphersal> g.V().format("%{name} is %{age} years old").to_list()
 "marko is 29 years old"
 "vadas is 27 years old"
@@ -22,7 +22,7 @@ The two software vertices have no `age`, so they are filtered out.
    map (`elementMap()`, `project()`), then a side-effect key, then the last path value labelled
    `name` (`as("name")`).
 
-```
+```rhai
 graphersal> g.V().hasLabel("person").as("a").values("name").as("p1").select("a").in("knows").format("%{p1} knows %{name}").to_list()
 "vadas knows marko"
 "josh knows marko"
@@ -31,7 +31,7 @@ graphersal> g.V().hasLabel("person").as("a").values("name").as("p1").select("a")
 `%{_}` takes the next `by()` modulator. The `by()`s form a ring: they are used round robin, and the
 ring restarts for every traverser. Without a `by()`, `%{_}` is the incoming value itself.
 
-```
+```rhai
 graphersal> g.V().format("%{name} has %{_} connections").by(__.bothE().count()).to_list()
 "marko has 3 connections"
 "vadas has 1 connections"

@@ -4,7 +4,7 @@
 kept. The incoming value must be a list (see [List Functions](list_functions.md) for the input and
 argument rules shared by all list functions).
 
-```
+```rhai
 graphersal> g.V().values("name").fold().combine(["dave", "marko"])
 [marko, vadas, lop, josh, ripple, peter, dave, marko]
 

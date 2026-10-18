@@ -4,7 +4,7 @@
 versions (and Graphersal before 0.1.0) called `none()`; `none(P)` is now a
 [list predicate](none.md).
 
-```
+```rhai
 g.V().hasLabel("person").discard().to_list()          // []
 g.V().discard().fold().to_list()                      // [[]]: fold() still emits its seed
 g.V().project("x").by(__.coalesce(__.values("age").is(P.gt(29)), __.discard())).select("x").to_list()

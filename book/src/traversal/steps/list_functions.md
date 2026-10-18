@@ -22,7 +22,7 @@ A traverser holds a list after `fold()`, `path()`, a list constant (`constant([.
 `inject([..])`) or a list-valued property (`values("tags")`). A path counts as the list of its
 objects. Anything else, `null` included, is an error that names the step and the fix:
 
-```
+```rhai
 graphersal> g.V().values("name").combine(["x"])
 Error: Step #2 'combine(["x"])' execution failed
   at #2: v().values("name").combine(["x"])
@@ -55,7 +55,7 @@ the way `dedup()` compares traversers: vertices and edges by identity, everythin
 (`1` and `1.0` are different values, as in TinkerPop). `null` is an element like any other. The
 kept elements stay what they were, so a folded vertex list keeps its vertices:
 
-```
+```rhai
 graphersal> g.V("1").out("knows").fold().difference(__.V("4").fold()).unfold().values("name")
 vadas
 ```

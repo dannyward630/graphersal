@@ -5,7 +5,7 @@
 and an empty list gives the empty string. The incoming value must be a list (a `fold()`, a
 `path()`, a list constant or property; see [List Functions](list_functions.md)).
 
-```
+```rhai
 graphersal> g.V().values("age").order().fold().conjoin(";")
 27;29;32;35
 

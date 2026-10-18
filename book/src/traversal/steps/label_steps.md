@@ -10,7 +10,7 @@ changes the element it receives and passes the same element on, so the traversal
 | `drop_label("L")` / `dropLabel("L")` | vertex | removes `L` from the label set; dropping the last one leaves the vertex unlabeled |
 | `set_label("L")` / `setLabel("L")` | edge | replaces the edge's one label (an unlabeled edge gets `L`) |
 
-```
+```rhai
 g.v(1).add_label("employee").labels().next()        // ["person", "employee"]
 g.v(1).drop_label("person").labels().next()         // []
 g.e(0).set_label("met").label().next()              // "met"
@@ -47,7 +47,7 @@ so it always passes). Its complement `not(__.has_label())` selects the unlabeled
 list) still keeps nothing. `label()` yields `null` for an unlabeled vertex, so
 `not(__.label())` does not select them; use `not(__.has_label())`.
 
-```
+```rhai
 g.v().has_label().count().next()             // labeled vertices
 g.v().not(__.has_label()).count().next()     // unlabeled vertices
 g.e().not(__.has_label()).to_list()          // unlabeled edges
@@ -59,7 +59,7 @@ list), and `.profile()` shows it as `has_label()`.
 A typical use is labelling unlabeled elements before freezing a `closed` schema
 ([Freeze the structure you have](../../users_guide/schema_enforcement.md#freeze-the-structure-you-have)):
 
-```
+```rhai
 g.v().not(__.has_label()).add_label("thing").to_list()
 g.e().not(__.has_label()).set_label("link").to_list()
 g.set_schema(g.infer_schema(), SchemaMode.closed)

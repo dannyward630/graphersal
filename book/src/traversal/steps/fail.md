@@ -3,7 +3,7 @@
 `fail()` and `fail(message)` stop the whole traversal with an error as soon as a traverser reaches
 the step (TinkerPop `FailStep`). Use it to assert that a branch is never taken.
 
-```
+```rhai
 g.V().fail("msg").to_list()
 // Error: ... Caused by: msg (fail() reached by v[1])
 

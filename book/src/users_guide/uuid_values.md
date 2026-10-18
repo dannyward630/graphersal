@@ -13,7 +13,7 @@ A UUID stays a UUID end to end, including in the Rhai DSL. A value that `next()`
 returns to a script has the Rhai type `Uuid` (`type_of(x) == "Uuid"`), so you can pass it back
 into a filter and it still matches:
 
-```
+```rhai
 let x = g.v().values("uid").next();   // a Uuid, not a string
 g.v().has("uid", x).count()            // 1
 ```
@@ -35,7 +35,7 @@ string until a query or a schema declaration converts it explicitly (see below).
 Only the canonical form parses: 8-4-4-4-12 **lowercase** hex digits, no braces. An uppercase or
 malformed literal is a cast error, and the error's help shows the canonical form:
 
-```
+```rhai
 UUID.fromString("550E8400-E29B-41D4-A716-446655440000")   // Cast exception: expected type [uuid]
 ```
 
@@ -48,7 +48,7 @@ UUID.fromString("550E8400-E29B-41D4-A716-446655440000")   // Cast exception: exp
 To convert a stream of canonical strings, use `cast(GType::UUID)`. To go the other way, use
 `as_string()`:
 
-```
+```rhai
 g.inject("550e8400-e29b-41d4-a716-446655440000").cast(GType::UUID)
 g.v().values("uid").as_string()
 ```
@@ -58,7 +58,7 @@ g.v().values("uid").as_string()
 A `Uuid` never equals a `String`. This is the same as TinkerGraph, where `UUID.equals(String)` is
 false. A filter never raises an error on a type difference; it just does not match:
 
-```
+```rhai
 g.v().has("uid", "550e8400-e29b-41d4-a716-446655440000")                   // finds nothing
 g.v().has("uid", UUID.fromString("550e8400-e29b-41d4-a716-446655440000"))  // finds the vertex
 ```

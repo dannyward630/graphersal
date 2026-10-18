@@ -5,7 +5,7 @@ traverser holds and `list`. The result is a set: first the incoming elements tha
 `list`, then the elements of `list` that are not in the incoming list, each at most once (see
 [List Functions](list_functions.md) for element equality).
 
-```
+```rhai
 graphersal> g.V().values("age").fold().disjunct([27, 40])
 [29, 32, 35, 40]
 

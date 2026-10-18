@@ -4,7 +4,7 @@
 the **first** result of each child traversal, run on the incoming traverser (its path included).
 The arguments are all strings or all traversals. Without an argument the string passes unchanged.
 
-```
+```rhai
 graphersal> g.V().hasLabel("software").as("s").values("name").concat(" uses ").concat(__.select("s").values("lang")).to_list()
 "lop uses java"
 "ripple uses java"
@@ -23,7 +23,7 @@ The last example shows the first-result rule: `__.inject("c")` yields the incomi
 A `null` is skipped wherever it occurs, as the incoming value, as a constant (`()` in Rhai) or as a
 child result. The result is `null` only when everything was `null`:
 
-```
+```rhai
 graphersal> g.inject((), "a").concat((), "b").to_list()
 "b"
 "ab"

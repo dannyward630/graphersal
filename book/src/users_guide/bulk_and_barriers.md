@@ -8,7 +8,7 @@ and a `count()` adds up the bulks. This is the same idea as TinkerPop's traverse
 Without it, `repeat(out()).times(8).count()` on the grateful-dead graph would have to walk about
 2.5 * 10^15 paths. With it, the loop never holds more than one traverser per distinct vertex:
 
-```
+```rhai
 g.V().repeat(__.out()).times(8).count().next()    // grateful graph: 2505037961767380 in milliseconds
 ```
 

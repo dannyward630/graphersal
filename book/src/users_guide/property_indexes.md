@@ -236,7 +236,7 @@ path label (`where(P.eq("a"))`), which an index cannot know.
 
 The start step names the index it reads, and the rule `property_index` is listed:
 
-```
+```console
 $ graphersal -e 'g.create_index(#{label: "person", key: "age"})' \
              -e 'g.v().has_label("person").has("age", P.gt(30)).values("name").profile()'
 Traversal Metrics

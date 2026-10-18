@@ -10,7 +10,7 @@
 - **Unaffected:** `group()` takes a key `by()` and a value `by()`; `project()`, `order()` and
   `path()` keep their own `by()` rules.
 
-```
+```rhai
 g.V().aggregate("x").by("name").by("age").toList()
 // Caused by: `aggregate()` cannot use its by() #2: aggregate() and store() take a single by()
 

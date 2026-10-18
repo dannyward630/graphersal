@@ -7,7 +7,7 @@ Rule name: `lazy_barrier` (on by default, runs last).
 Between two adjacent adjacency steps the rule inserts a merge point, shown as `lazy_barrier()` in
 `.profile()`:
 
-```
+```rhai
 v().out().out().count()   →   v().out().lazy_barrier().out().count()
 ```
 
@@ -58,7 +58,7 @@ merging (the profile row shows `Out` equal to `In`):
 
 On the modern graph, the six traversers that `out()` produces hold only four distinct vertices:
 
-```
+```console
 $ graphersal -e 'g.v().out().out().count().profile()'
 Traversal Metrics
 Step                                                         Call      In     Out Bulk       Time    % Dur
@@ -89,7 +89,7 @@ the stream stands for; `Out` is the number of traverser objects. On the tiny mod
 pass costs more than it saves. On the `large` graph (about 110k vertices) it cuts a three-hop
 expansion from about 896 ms to about 282 ms (a debug build):
 
-```
+```console
 $ graphersal --graph large -e 'g.v().both().both().both().count().profile()'
 Traversal Metrics
 Step                                                         Call      In     Out    Bulk       Time    % Dur
@@ -122,7 +122,7 @@ count()                                                         1 4884000       
 
 With full path recording the merge point is inserted but passes everything through:
 
-```
+```console
 $ graphersal -e 'g.v().out().out().path().by("name").profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -143,7 +143,7 @@ The same multiset of results with and without the rule (`2` for the count above,
 large graph). Only the order of duplicates may change, because merged traversers are expanded
 together:
 
-```
+```console
 $ graphersal -e 'g.v().out().in().values("name").to_list()'
 "marko"
 "peter"

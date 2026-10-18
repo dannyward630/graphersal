@@ -9,7 +9,7 @@ default modern graph); the line after `//` is its real output.
 
 ## Quick reference
 
-```
+```rhai
 // --graph empty: the first call creates, the second one matches and updates
 g.mergeV(#{"T.label": "person", "name": "marko"}).option(Merge.onCreate, #{"age": 29}).elementMap().toList()
 // #{"age": 29, "id": "1", "label": "person", "name": "marko"}
@@ -71,7 +71,7 @@ unchanged (TinkerPop's `elementMap()` returns `T.id`/`T.label` keys; see the bac
 `Direction.` but is not one of the four keys above, or a key that starts with `~`, is an error,
 never a silent property name:
 
-```
+```rhai
 // --graph empty
 g.mergeV(#{"~id": 1}).toList()
 // Error: Property key can not be a hidden key: ~id (in the merge() map of mergeV())
@@ -103,7 +103,7 @@ with no argument uses the incoming traverser itself as the map (the `inject()` e
 - **Override rule.** A key present in both maps must have the same value; onCreate can only add
   keys. With two constant maps the check runs before execution, even when a match exists:
 
-```
+```rhai
 // --graph empty
 g.mergeV(#{"T.label": "person", "name": "marko"}).option(Merge.onCreate, #{"T.label": "dog"}).toList()
 // Error: option(onCreate) cannot override values from merge() argument: T.label is "person" in mergeV() but "dog" in option(onCreate)
@@ -160,7 +160,7 @@ vertex or a vertex id.
   returns `8` (4 traversers × 2 `knows` edges).
 - **Create.** Needs both vertices after onCreate inheritance:
 
-```
+```rhai
 // --graph empty
 g.mergeE(#{"T.label": "knows"}).toList()
 // Caused by: Out Vertex not specified
@@ -180,7 +180,7 @@ g.mergeE(#{"T.label": "knows", "Direction.OUT": "1", "Direction.IN": "100"}).toL
 Graphersal stores **one value per property key**. Of TinkerPop's three cardinalities only
 `Cardinality.single` (replace the current value) is supported:
 
-```
+```rhai
 g.V("1").property(Cardinality.single, "age", 30).values("age").toList()   // 30
 g.V("1").property(Cardinality.list, "age", 30).toList()
 // Caused by: Cardinality.list is not supported: Graphersal stores one value per property key (property() would write a second value)
@@ -216,7 +216,7 @@ property names (the reserved prefixes above are errors). The id and label of a v
 `addV()` is creating are set with `property(T.id, v)` / `property(T.label, v)`, anywhere among the
 `property()` calls that follow it:
 
-```
+```rhai
 // --graph empty
 g.addV("person").property(#{"name": "marko", "age": 29}).valueMap().toList()
 // #{"age": [29], "name": ["marko"]}

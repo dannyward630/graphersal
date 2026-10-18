@@ -7,7 +7,7 @@ Rule name: `where_unnest` (on by default, runs first).
 A `where(__...)` whose child traversal consists **only** of local element filters is replaced by
 those filters, inlined at the position of the `where()`:
 
-```
+```rhai
 v().where(__.has_label("person").has("age", P.gt(30)))   →   v().has_label("person").has("age", ...)
 ```
 
@@ -38,7 +38,7 @@ them into `v()`/`e()`.
 
 With the rule (the default), the `has_label` inside the `where()` ends up folded into `v()`:
 
-```
+```console
 $ graphersal -e 'g.v().where(__.has_label("person").has("age", P.gt(30))).values("name").profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -53,7 +53,7 @@ Optimizer rules applied: where_unnest, source_filter_pushdown
 
 Without it, the child traversal runs once per vertex:
 
-```
+```console
 $ graphersal -e 'g.with("optimizer.disabled", ["where_unnest"]).v().where(__.has_label("person").has("age", P.gt(30))).values("name").profile()'
 Traversal Metrics
 Step                                                                   Call      In     Out       Time    % Dur

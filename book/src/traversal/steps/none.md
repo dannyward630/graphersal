@@ -4,7 +4,7 @@
 the sibling of `any(P)` and `all(P)` (TinkerPop 3.8 `NoneStep`). The step that filtered out every
 traverser, called `none()` before TinkerPop 3.8, is now [`discard()`](discard.md).
 
-```
+```rhai
 g.V().values("age").fold().none(P.gt(40)).to_list()   // [[29, 27, 32, 35]]
 g.V().values("age").fold().none(P.gt(30)).to_list()   // []
 g.inject([], [1, 2]).none(P.eq(3)).to_list()          // [[], [1, 2]]

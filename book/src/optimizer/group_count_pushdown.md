@@ -8,7 +8,7 @@ A "count per label" directly behind a leading `v()` or `e()` is fused into the s
 then computes the counts from the graph's label index instead of producing one traverser per element
 and grouping them:
 
-```
+```rhai
 v().group_count().by(T.label)                 →   v().group_count().by(T.label)    (one fused step)
 v().group().by(T.label).by(__.count())        →   v().group_count().by(T.label)
 e().group_count().by(T.label)                 →   e().group_count().by(T.label)
@@ -36,7 +36,7 @@ traverser for every element and the grouping step reads each element's label and
 
 ## Example
 
-```
+```console
 $ graphersal -e 'g.v().group_count().by(T.label).profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -49,7 +49,7 @@ Optimizer rules applied: group_count_pushdown
 
 Disabled, the scan produces six traversers that the grouping step consumes:
 
-```
+```console
 $ graphersal -e 'g.with("optimizer.disabled", ["group_count_pushdown"]).v().group_count().by(T.label).profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -62,7 +62,7 @@ group_count().by(T.label)                                       1       6       
 
 Combined with a folded label filter:
 
-```
+```console
 $ graphersal -e 'g.v().has_label("person").group_count().by(T.label).profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -77,7 +77,7 @@ The rule saves the scan, not the result: the cost of building the result map sta
 graph gives every vertex its own label (`V_0_0`, `V_0_1`, ...), so the result has 111110 entries,
 building it dominates both plans, and the fused plan only saves the few milliseconds of the scan:
 
-```
+```console
 $ graphersal --graph large -e 'g.v().group_count().by(T.label).profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -103,7 +103,7 @@ Unchanged. Every vertex is counted once, under its primary label, the value `lab
 vertex without a label is not counted, with or without the rule. A
 [multi-label vertex](../users_guide/multi_label_vertices.md) counts once, under its first label:
 
-```
+```console
 $ graphersal --graph empty -e 'g.add_v(["Person", "Admin"]).next(); g.add_v("Person").next(); g.add_v().next(); g.v().group_count().by(T.label).to_list()'
 #{"Person": 2}
 ```

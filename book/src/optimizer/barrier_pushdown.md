@@ -10,7 +10,7 @@ edge-walking step in front of them.
 The run of `has_label(...)` filters directly behind an `out_e()`, `in_e()` or `both_e()` is folded
 into that step's label parameter:
 
-```
+```rhai
 out_e().has_label("knows")                       →   out_e("knows")
 out_e("knows", "created").has_label("created")   →   out_e("created")      (the intersection)
 ```
@@ -37,7 +37,7 @@ a traverser for every incident edge and dropping most of them in the next step.
 
 ## Example
 
-```
+```console
 $ graphersal -e 'g.v("1").out_e().has_label("knows").in_v().values("name").profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -53,7 +53,7 @@ Optimizer rules applied: barrier_pushdown
 
 Disabled, `out_e()` produces all three edges of vertex 1 and the filter drops one:
 
-```
+```console
 $ graphersal -e 'g.with("optimizer.disabled", ["barrier_pushdown"]).v("1").out_e().has_label("knows").in_v().values("name").profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -69,7 +69,7 @@ values("name")                                                  1       2       
 
 Together with Filter Reorder:
 
-```
+```console
 $ graphersal -e 'g.v("1").out_e().has("weight", P.gt(0.4)).has_label("knows").profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur

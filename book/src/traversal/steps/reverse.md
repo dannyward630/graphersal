@@ -7,7 +7,7 @@
   becomes a list) and a list constant or property.
 - Every other value passes through unchanged: `null`, numbers, booleans, maps, vertices and edges.
 
-```
+```rhai
 graphersal> g.inject("feature", ()).reverse().to_list()
 "erutaef"
 ()

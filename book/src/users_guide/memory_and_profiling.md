@@ -59,7 +59,7 @@ Returns the element counts the graph keeps up to date as it changes: `vertex_cou
 | `primary_vertex_labels` | vertices whose primary (first) label it is, what `label()` returns; every labeled vertex counts once |
 | `edge_labels` | edges per label |
 
-```
+```console
 $ graphersal -e 'g.statistics()'
 "edge_count": 6
 "edge_labels": #{"created": 4, "knows": 2}

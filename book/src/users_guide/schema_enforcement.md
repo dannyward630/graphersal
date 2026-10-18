@@ -83,7 +83,7 @@ Freeze such a graph in `open` mode (it admits unlabeled elements unchecked), or 
 elements a label first with the label steps
 ([add_label, drop_label, set_label](../traversal/steps/label_steps.md)) and freeze again:
 
-```
+```rhai
 g.v("3").add_label("thing").to_list();                                  // a vertex from the report
 g.e().not(__.has_label()).set_label("link").to_list();   // every unlabeled edge
 g.set_schema(g.infer_schema(), SchemaMode.closed)

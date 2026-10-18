@@ -8,7 +8,7 @@ A `has_id(...)` filter in the run of filters directly behind a leading `v()` or 
 its ids are moved into the start step, which then looks the ids up instead of scanning every
 element:
 
-```
+```rhai
 v().has_id("1", "2")         →   v("1", "2")
 v("1", "2").has_id("2", "3") →   v("2")              (the intersection)
 v().has_label("person").has_id("1")  →  v("1").has_label("person")
@@ -35,7 +35,7 @@ the graph.
 
 ## Example
 
-```
+```console
 $ graphersal -e 'g.v("1", "2").has_id("2", "3").values("name").profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -50,7 +50,7 @@ Optimizer rules applied: has_id_pushdown
 With both rules that fold ids disabled, the scan and the filter stay separate (Filter Reorder
 still moves `has_id` to the front):
 
-```
+```console
 $ graphersal -e 'g.with("optimizer.disabled", ["has_id_pushdown", "source_filter_pushdown"]).v().has_label("person").has_id("1", "2", "3").values("name").profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -66,7 +66,7 @@ Optimizer rules applied: filter_reorder
 
 and with both enabled (the default), ids and labels end up in the start step:
 
-```
+```console
 $ graphersal -e 'g.v().has_label("person").has_id("1", "2", "3").values("name").profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -81,7 +81,7 @@ Optimizer rules applied: filter_reorder, has_id_pushdown, source_filter_pushdown
 An empty intersection leaves a start step with an empty id list, which produces nothing. The
 profile renders that empty list as `v([])`; the `Out` column (0) shows that nothing was scanned:
 
-```
+```console
 $ graphersal -e 'g.v("1").has_id("2").profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -109,7 +109,7 @@ so in the default pipeline the two overlap: disabling only `has_id_pushdown` pro
 (Source Filter Pushdown stops at the second `has_label`) and [Filter Reorder](filter_reorder.md) has
 been disabled. With Filter Reorder on, `has_id` is moved in front of every `has_label` first.
 
-```
+```console
 $ graphersal -e 'g.with("optimizer.disabled", ["filter_reorder"]).v().has_label("person").has_label("software").has_id("3").profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur

@@ -5,7 +5,7 @@ titles, addresses, companies and words, plus the random numbers a script needs t
 shape (how many reports a manager has, who knows whom). It is part of the Rhai DSL (feature
 `script`), so it works in the CLI, the playground, the dev server and Python alike.
 
-```
+```rhai
 let f = Fake(42);
 f.full_name()             // "Lawrence Young"
 f.int(1, 6)               // 2: a die roll
@@ -32,7 +32,7 @@ a bug, to compare two versions of a query, or to benchmark on the same data.
 A `Fake` value is a handle. A copy (`let b = a;`, a function argument) draws from the same
 stream, so a helper function advances the caller's generator and every call gets new values:
 
-```
+```rhai
 fn person(f) { #{ name: f.full_name(), age: f.int(18, 90) } }
 let f = Fake(1);
 [person(f), person(f)]   // two different people
@@ -45,7 +45,7 @@ the seed and its name (and the names of the forks above it), never on what was d
 each part of a generator its own fork, and drawing one more value in one part does not shift the
 values of all the others:
 
-```
+```rhai
 let f = Fake(42);
 let people = f.fork("people");
 let social = f.fork("social");   // unchanged when the people part draws more values
@@ -90,7 +90,7 @@ The playground's Examples menu has a complete generator under *Generated test da
 parameters (seed, number of companies, depth and fan-out of the management trees, number of
 `knows` edges, number of cities) are Rhai variables at the top of the script. Its core:
 
-```
+```rhai
 let f = Fake(42);
 let people = f.fork("people");
 let ids = [];

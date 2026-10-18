@@ -5,7 +5,7 @@ two-element list `[a, b]` per pair, `a` from the incoming list (outer loop) and 
 (inner loop). Duplicates are kept; an empty side gives an empty list (see
 [List Functions](list_functions.md) for the input rules).
 
-```
+```rhai
 graphersal> g.inject(["a", "b"]).product([1, 2])
 [[a, 1], [a, 2], [b, 1], [b, 2]]
 

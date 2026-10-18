@@ -8,7 +8,7 @@ Graphersal is primarily provided as a library and can be easily incorporated int
 
 To include Graphersal as a dependency in your Rust project's ```Cargo.toml``` file, refer to the following example:
 
-```
+```toml
 [dependencies]
 graphersal = "0.2"
 ```

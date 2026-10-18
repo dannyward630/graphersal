@@ -343,7 +343,7 @@ a change of the host graph, so a request that writes data or the schema of it
 (`Create`/`Update`/`Delete` on `Data`, `Schema` or `Definition`, `AccessRequest::writes_graph`) is allowed
 without asking the authorizer:
 
-```
+```rhai
 let sg = g.E().hasLabel("knows").subgraph("sg").cap("sg").next();
 sg.addV("note").property("text", "mine").next();   // allowed with AccessPolicy::read_only()
 ```

@@ -6,7 +6,7 @@
 at most once, the incoming elements first (see [List Functions](list_functions.md)). Use
 [combine](combine.md) to keep duplicates.
 
-```
+```rhai
 graphersal> g.V().values("age").fold().merge([27, 40])
 [29, 27, 32, 35, 40]
 ```
@@ -15,7 +15,7 @@ graphersal> g.V().values("age").fold().merge([27, 40])
 constant), `merge(map)` adds the argument's entries to it; an entry of the argument replaces the
 incoming entry with the same key.
 
-```
+```rhai
 graphersal> g.V().hasLabel("person").project("name").by("name").merge(#{kind: "person"})
 ╭────────┬───────╮
 │ kind   │ name  │

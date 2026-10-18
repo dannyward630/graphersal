@@ -8,7 +8,7 @@ The run of `has_label(...)`, `has_id(...)` and `has(key, value)` filters directl
 `v()` or `e()` is folded into the start step, which then reads its candidates from the label index
 or by id instead of scanning the whole graph, and checks the property conditions while it reads:
 
-```
+```rhai
 v().has_label("person")                       →   v(labels: ["person"])
 e().has_label("knows")                        →   e(labels: ["knows"])
 v().has_label("person").has_id("1")           →   v(ids: ["1"], labels: ["person"])
@@ -58,7 +58,7 @@ traversers.
 
 ## Example
 
-```
+```console
 $ graphersal -e 'g.v().has("name", "marko").has_label("person").profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -71,7 +71,7 @@ Optimizer rules applied: filter_reorder, source_filter_pushdown
 
 With the whole optimizer off, the scan touches all six vertices:
 
-```
+```console
 $ graphersal -e 'g.with("optimizer.disabled", ["all"]).v().has_label("person").count().profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -86,7 +86,7 @@ count()                                                         1       4       
 and with the default pipeline the label folds into `v()` (and the count then into the start step,
 see [Count Pushdown](count_pushdown.md)):
 
-```
+```console
 $ graphersal -e 'g.v().has_label("person").count().profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -99,7 +99,7 @@ Optimizer rules applied: source_filter_pushdown, count_pushdown
 
 Only the first of two label filters folds:
 
-```
+```console
 $ graphersal -e 'g.v().has_label("person", "software").has_label("software").count().profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -119,7 +119,7 @@ requested labels is produced once, not once per matching label, and a repeated l
 filter is folded once (`g.e().has_label("knows", "knows").count()` is `2`). The order of the produced elements
 can differ from a full scan: the folded start step reads them label by label from the index.
 
-```
+```console
 $ graphersal -e 'g.v().has_label("software", "person").id().fold().to_list()' -e 'g.with("optimizer.disabled", ["all"]).v().has_label("software", "person").id().fold().to_list()'
 ["3", "5", "1", "2", "4", "6"]
 ["1", "2", "3", "4", "5", "6"]

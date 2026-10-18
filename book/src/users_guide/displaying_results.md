@@ -117,7 +117,7 @@ each element materialized like a `g.v()`/`g.e()` result: exactly what `cap("sg")
 inside a traversal. A table prints the elements in their short form (`[v[1], v[2]]`), JSON with
 all their properties:
 
-```
+```rhai
 graphersal> g.e(0).to_graph()
 ╭────────────────────┬──────────────╮
 │ edges              │ vertices     │

@@ -7,7 +7,7 @@ Rule name: `count_pushdown` (on by default, eighth in the pipeline).
 A `count()` directly behind a leading `v()` or `e()` is fused into the start step, which then
 computes the number without producing a traverser per element:
 
-```
+```rhai
 v().count()                        →   v().count()            (one fused step)
 e().has_label("knows").count()     →   e(labels: ["knows"]).count()
 v("1", "2", "99").count()          →   v("1", "2", "99").count()
@@ -42,7 +42,7 @@ following steps run on the single count value.
 
 On the `large` graph (111110 vertices):
 
-```
+```console
 $ graphersal --graph large -e 'g.v().count().profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -67,7 +67,7 @@ it.
 
 On the modern graph, combined with [Source Filter Pushdown](source_filter_pushdown.md):
 
-```
+```console
 $ graphersal -e 'g.e().has_label("knows").count().profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -80,7 +80,7 @@ Optimizer rules applied: source_filter_pushdown, count_pushdown
 
 A count that is not directly behind the start step stays a separate step:
 
-```
+```console
 $ graphersal -e 'g.v().has("age", P.gt(30)).count().profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur

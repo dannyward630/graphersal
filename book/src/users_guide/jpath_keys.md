@@ -5,7 +5,7 @@ property value (an object or an array). A plain string is always a literal prope
 `"a.b"` names a property called `a.b`, `jpath("a.b")` reads key `b` inside the property `a`.
 Strings are never sniffed.
 
-```
+```rhai
 g.v().values(jpath("meta.tags[0]"))
 g.v().has(jpath("meta.k"), P.gt(1))
 g.v().order().by(jpath("meta.k"))
@@ -107,7 +107,7 @@ are still rejected as values.
 | first segment is an index (`jpath("[0]")`) | error: the first segment names the property |
 | `property(Cardinality.x, jpath(..), v)` | error in v1 (Graphersal stores one value per property) |
 
-```
+```rhai
 g.V("a").property(jpath("meta.k.z"), 1)          // creates meta, k, z as objects
 g.V("a").property(jpath("meta.tags[0]"), "x")    // replace; error when meta.tags does not exist
 g.V("a").property(jpath("meta.tags[-1]"), "z")   // replace the last element
@@ -150,7 +150,7 @@ something that is not there reaches the desired end state, whereas writing throu
 container type would have to overwrite data. `property(k, null)` still stores a `null`;
 `remove_property` is the explicit removal.
 
-```
+```rhai
 g.V("a").remove_property(jpath("meta.k"))          // removes the key k below meta
 g.V("a").remove_property(jpath("meta.tags[0]"))    // removes the first element, the rest shifts down
 g.V("a").remove_property([jpath("meta.k"), "age"]) // paths and names mix
@@ -207,7 +207,7 @@ members), and every write and removal below a stored property honours it. The th
   `patch_schema` describe nested types the same way (`properties`/`items` at any depth), so nested
   writes are enforced against them.
 
-```
+```rhai
 // schema: P.meta = {"type": "object", "properties": {"k": {"type": "integer"},
 //                     "w": {"type": "number"}}, "required": ["k"]}
 g.V("a").property(jpath("meta.w"), 3)          // stored as 3.0

@@ -38,7 +38,7 @@ fold them into the start step.
 `has("age", ...)` is written before `has_label("person")`. The rule swaps them, and the label filter
 then folds into `v()`:
 
-```
+```console
 $ graphersal -e 'g.v().has("age", P.gt(30)).has_label("person").values("name").profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -54,7 +54,7 @@ Optimizer rules applied: filter_reorder, source_filter_pushdown
 Disabled, the plan keeps the written order, and the label filter can no longer be folded because it
 does not follow `v()` directly:
 
-```
+```console
 $ graphersal -e 'g.with("optimizer.disabled", ["filter_reorder"]).v().has("age", P.gt(30)).has_label("person").values("name").profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -69,7 +69,7 @@ values("name")                                                  1       2       
 
 The rule also works in the middle of a traversal, where no pushdown follows:
 
-```
+```console
 $ graphersal -e 'g.v().out().has("lang", "java").has_id("3").values("name").profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -94,7 +94,7 @@ graph or writes a side effect, itself (`drop()`) or anywhere in its child traver
 (`filter(__.aggregate("x"))`, `where(__.sideEffect(..))`, `filter(__.property(..))`), ends the
 run like a non-filter step. It therefore sees exactly the traversers it sees in the written order:
 
-```
+```console
 $ graphersal -e 'g.v().filter(__.aggregate("x")).has_label("software").cap("x").count(Scope.local).to_list()'
 6
 $ graphersal -e 'g.with("optimizer.disabled", ["filter_reorder"]).v().filter(__.aggregate("x")).has_label("software").cap("x").count(Scope.local).to_list()'

@@ -4,7 +4,7 @@
 The result is a set: each element at most once, in the order of its first occurrence; `null` is an
 element like any other (see [List Functions](list_functions.md)).
 
-```
+```rhai
 graphersal> g.V().values("age").fold().intersect([27, 40])
 [27]
 

@@ -8,8 +8,9 @@ title = "The Graphersal Documentation"
 [output.html]
 git-repository-url = "https://github.com/graphersal/graphersal"
 edit-url-template = "https://github.com/graphersal/graphersal/edit/main/book/{path}"
-# "Run in the playground" under the code blocks marked ```rhai,graph=<sample> (see the script)
-additional-js = ["playground-links.js"]
+# Highlighting of the DSL (```rhai blocks), then "Run in the playground" under the code blocks
+# marked ```rhai,graph=<sample> (see the scripts)
+additional-js = ["dsl-highlight.js", "playground-links.js"]
 additional-css = ["playground-links.css"]
 
 # The sidebar shows the parts and their chapters; the pages below a chapter (the steps of the

@@ -9,7 +9,7 @@ Nothing in the plan's shape: it records on a `v()`/`e()` start step which
 [property index](../users_guide/property_indexes.md) the step reads instead of its label buckets.
 `.profile()` shows the choice on the start step:
 
-```
+```rhai
 v().has_label("person").has("title", "CEO")      →   v(labels: ["person"]).has("title", "CEO") [index: vertex person.title]
 v().has_label("person").has("age", P.gt(30))     →   v(labels: ["person"]) [index: vertex person.age]
                                                       has("age", P.gt(30))

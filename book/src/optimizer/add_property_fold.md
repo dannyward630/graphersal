@@ -48,7 +48,7 @@ required property be supplied at creation, where a separate `property()` would c
 
 ## Example
 
-```
+```console
 $ graphersal -e 'g.add_v("Person").property("name", "Ann").property("age", 30).profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -71,7 +71,7 @@ property("age", 30)                                             1       1       
 
 An edge, with `as()` and `from()` inside the run:
 
-```
+```console
 $ graphersal -e 'g.v("1").as("a").v("2").add_e("knows").from("a").property("weight", 0.5).property("since", 2020).profile()'
 Traversal Metrics
 Step                                                         Call      In     Out       Time    % Dur
@@ -88,7 +88,7 @@ Optimizer rules applied: add_property_fold
 A traversal-valued `property()` ends the run; the constant `property("age", 30)` behind it is not
 folded either:
 
-```
+```console
 $ graphersal -e 'g.add_v("Person").property("name", "Ann").property("nick", __.values("name")).property("age", 30).profile()'
 Traversal Metrics
 Step                                                                   Call      In     Out       Time    % Dur
@@ -111,7 +111,7 @@ returns `"Bo"` either way.
 This is the one rule whose absence can change a result: under a schema with required properties,
 the empty creation fails without it. With this schema (both fields are required):
 
-```
+```console
 $ S='g.set_schema(`{"mode": "open", "vertices": {"Person": {"schema": {"type": "object",
      "properties": {"name": {"type": "string"}, "age": {"type": "integer"}},
      "required": ["name", "age"]}}}}`)'

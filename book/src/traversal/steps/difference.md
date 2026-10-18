@@ -4,7 +4,7 @@
 The result is a set: each element at most once, in the order of its first occurrence. Elements
 compare like `dedup()` compares traversers (see [List Functions](list_functions.md)).
 
-```
+```rhai
 graphersal> g.V().values("age").fold().difference([27, 29])
 [32, 35]
 

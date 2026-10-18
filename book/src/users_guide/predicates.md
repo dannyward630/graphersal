@@ -18,7 +18,7 @@ All of these predicates compare through one rule set (TinkerPop's `semantics/Com
   incomparable pair. A vertex, edge, path or collection on the stream against a number is false
   as well; for example `g.V().where(P.eq(111))` is an empty result, not a cast error.
 
-```
+```rhai
 g.V().where(P.eq(111)).count().next()          // 0, no error
 g.V().has("age", P.gt("x")).count().next()     // 0, a number never compares with a string
 ```

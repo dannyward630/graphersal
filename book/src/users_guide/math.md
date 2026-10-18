@@ -181,7 +181,7 @@ An equation that does not parse fails before the traversal runs, even when no tr
 the step. Every other problem fails the traversal for the traverser that hits it. The diagnostic
 underlines the offending token:
 
-```
+```rhai
 g.inject(1).math("2 pi")
 // Error: math("2 pi") failed at column 3: missing operator before name 'pi'; implicit multiplication is not supported, write '*' explicitly
 //   equation: math("2 pi")

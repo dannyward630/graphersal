@@ -60,7 +60,7 @@ that went through a terminal and came back into a query (for example through `in
 map again, and `values(k)`, `select(k)` and `has(k, v)` read its keys like those of a `project()`
 result:
 
-```
+```rhai
 let m = #{name: "x", age: 3};
 g.inject(m).values("name").toList()        // ["x"]
 g.inject(m).select("name", "age").toList() // [#{age: 3, name: "x"}]
@@ -108,7 +108,7 @@ with Rhai's own `Function not found: keys` error. Use `select(Column.keys)` inst
 A map is not a graph element. So `properties()`, `key()`, `value()`, `id()` and `out()` on a map
 or an entry stay errors, as in TinkerPop. The help text shows how to read the map instead:
 
-```
+```rhai
 g.V().group().by("name").by(__.out().count()).properties().key()
 // Cast exception: expected type [vertex or edge], got type 'object'
 // Help: ... Read its keys or values with unfold().select(Column.keys) / unfold().select(Column.values), ...

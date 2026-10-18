@@ -91,7 +91,7 @@ of `where(traversal)`:
 | trailing `as("b")` | end label: some child result must equal `b` | ordinary label of the child's own path |
 | predicate form | `where(P.gt("a"))` | not accepted |
 
-```
+```rhai
 g.V().filter(__.as("a").out("knows").as("b")).values("name")   // ["marko"]
 g.V().where(__.as("a").out("knows").as("b")).values("name")    // []: `a` is not labelled outside
 ```

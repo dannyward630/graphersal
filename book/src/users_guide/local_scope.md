@@ -9,7 +9,7 @@ stored list property — and emits one result per traverser.
 
 On the modern graph:
 
-```
+```rhai
 g.V().fold().count(Scope.local)                          // 6: the size of the one folded list
 g.V().group().by(T.label).count(Scope.local)             // 2: the number of map entries
 g.V().count(Scope.local)                                 // 1, 1, 1, 1, 1, 1: a vertex is one element
@@ -179,7 +179,7 @@ query parameter cannot be called `Scope`.
 
 Feeding a list to a global reducer is a common slip. The error names the fix:
 
-```
+```rhai
 g.V().values("age").fold().sum()
 // Cast exception: expected type [...], got type 'array'
 // The value is a list (for example from fold()): reduce each traverser's list with Scope.local,

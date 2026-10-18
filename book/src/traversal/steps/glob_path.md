@@ -579,7 +579,7 @@ g.v("root").glob_path("**/*.rs").by("name").by(["directory","file"]).count().nex
 The pattern and `by()` errors are raised when the traversal runs. `graphersal` shows the failing step,
 the cause and a help text. For example:
 
-```
+```rhai
 g.v("root").glob_path("src/a**").by("name").to_list()
 ```
 
@@ -618,7 +618,7 @@ help text, which `graphersal` shows in full together with a summary of the patte
 
 In Rhai the backslash pattern is written `"src\\"`, and the last row builds its pattern in a loop:
 
-```
+```rhai
 let p = "a"; for i in 0..63 { p += "/a"; } g.v("root").glob_path(p).by("name").to_list()
 ```
 
@@ -634,7 +634,7 @@ A `max_depth` below 1 or above 4294967295 fails when the traversal runs, after t
 `by()` checks, with `InvalidOption` for the key `glob_path.max_depth`. The help repeats the query
 with a valid value:
 
-```
+```rhai
 g.v("root").glob_path("**", #{max_depth: 0}).by("name").to_list()
 ```
 
@@ -649,7 +649,7 @@ Help: max_depth is the deepest level below the start vertex that glob_path() vis
 An unknown or reserved key, or a value of the wrong type (`max_depth: "3"`, `prune: 5`), fails in
 Rhai as soon as the step is built, with an argument mismatch:
 
-```
+```rhai
 g.v("root").glob_path("**", #{edges: ["contains"]}).by("name").to_list()
 ```
 

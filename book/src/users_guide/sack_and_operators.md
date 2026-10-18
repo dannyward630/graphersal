@@ -27,7 +27,7 @@ Every failure is a `ValueError::OperatorFailed` with a kind (`Overflow`, `Divisi
 
 Examples (each runs in `graphersal`; `inject` with `withSack` shows an operator on its own):
 
-```
+```rhai
 g.withSack(2).inject(5).sack(Operator.mult).sack()       // 10
 g.withSack(2).inject(5).sack(Operator.minus).sack()      // -3
 g.withSack(7).inject(2).sack(Operator.div).sack()        // 3     (int / int truncates)
@@ -174,7 +174,7 @@ With a merge operator or `bulk.one` the automatic merge points are switched off 
 result does not depend on where the optimizer happens to put a `lazy_barrier()`. The `lazy_barrier` rule still
 inserts its steps (the profile shows the row with `Out == In`). A loop body that wants merging writes it:
 
-```
+```rhai
 g.withSack(1, Operator.sum).V().repeat(__.out().barrier()).times(3).sack()
 ```
 

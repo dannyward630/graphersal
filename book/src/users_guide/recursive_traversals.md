@@ -116,7 +116,7 @@ output after it.
 is followed to the end of its loop before its siblings. The walk uses an explicit stack, so deep
 loops cannot overflow the call stack.
 
-```
+```rhai
 // a tree, children in the order out() returns them: r -> (b -> b1, a -> (a2, a1))
 g.V("r").emit().repeat(__.out())                              // r, b, a, b1, a2, a1
 g.with("repeat.order", "dfs").V("r").emit().repeat(__.out())  // r, b, b1, a, a2, a1

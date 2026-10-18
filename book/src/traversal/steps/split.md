@@ -3,7 +3,7 @@
 `split(separator)` turns the string a traverser holds into a list of strings, cut around
 `separator`. The separator itself is not kept.
 
-```
+```rhai
 graphersal> g.inject("that", "this", "test", ()).split("h").to_list()
 ["t", "at"]
 ["t", "is"]
@@ -26,7 +26,7 @@ graphersal> g.inject("that", "this", "test", ()).split("h").to_list()
 list of lists. A `null` element stays `null`, and a single string is split as by the unscoped
 step.
 
-```
+```rhai
 graphersal> g.V().hasLabel("person").values("name").order().fold().split(Scope.local, "a").to_list()
 [["josh"], ["m", "rko"], ["peter"], ["v", "d", "s"]]
 ```

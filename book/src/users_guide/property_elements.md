@@ -24,7 +24,7 @@ g.E().asString()                          // "e[0][1-knows->2]"
 
 The label of a vertex property is its key, as in TinkerPop, where a vertex property is an element:
 
-```
+```rhai
 g.V().properties().label()                // "name", "age", ...
 g.V().properties().hasLabel("name")       // the name properties
 g.V().properties().hasLabel(())           // empty: a null label matches nothing
@@ -76,7 +76,7 @@ g.V().values("age").order().by()           // 27, 29, 32, 35
 property's **own value**: the key inside an object-valued property, never another property of the
 owning element. Graphersal has no meta-properties, so this is where `has()` looks instead:
 
-```
+```rhai
 // vertex: a = 100, meta = {a: 1, b: "x"}
 g.V().properties("meta").has("a", P.eq(1))      // matches: meta.a is 1
 g.V().properties("meta").has("a", P.eq(100))    // empty: the top-level `a` is not read
