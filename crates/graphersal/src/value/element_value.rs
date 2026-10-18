@@ -6,7 +6,7 @@
 
 use compact_str::CompactString;
 
-use crate::value::PropertyMap;
+use crate::value::{PropertyMap, compact_string_heap_bytes, estimated_element_heap_bytes};
 
 /// A vertex returned as a value: its id, its label set and a snapshot of its properties.
 ///
@@ -68,6 +68,20 @@ impl VertexValue {
     pub fn to_ref(&self) -> VertexRef {
         VertexRef::new(self.id.clone(), self.label().map(CompactString::new))
     }
+
+    /// The heap bytes this value owns outside its own struct: the id and labels when they
+    /// spilled to the heap, the label `Vec` and the property map (an estimate, like
+    /// [`crate::ElementProperty::estimated_heap_bytes`]).
+    pub(crate) fn heap_bytes(&self) -> u64 {
+        compact_string_heap_bytes(&self.id)
+            + (self.labels.capacity() * std::mem::size_of::<CompactString>()) as u64
+            + self
+                .labels
+                .iter()
+                .map(compact_string_heap_bytes)
+                .sum::<u64>()
+            + estimated_element_heap_bytes(&self.properties)
+    }
 }
 
 /// An edge endpoint: the vertex's id and primary label, as GraphSON's `outV`/`outVLabel` and
@@ -95,6 +109,12 @@ impl VertexRef {
     /// The vertex's primary label, `None` for a vertex without a label.
     pub fn label(&self) -> Option<&str> {
         self.label.as_deref()
+    }
+
+    /// The heap bytes of the id and the label when they spilled to the heap.
+    fn heap_bytes(&self) -> u64 {
+        compact_string_heap_bytes(&self.id)
+            + self.label.as_ref().map_or(0, compact_string_heap_bytes)
     }
 }
 
@@ -162,5 +182,16 @@ impl EdgeValue {
     /// The properties, consuming the value.
     pub fn into_properties(self) -> PropertyMap {
         self.properties
+    }
+
+    /// The heap bytes this value owns outside its own struct: the id, label and endpoint
+    /// strings when they spilled to the heap, and the property map (an estimate, like
+    /// [`crate::ElementProperty::estimated_heap_bytes`]).
+    pub(crate) fn heap_bytes(&self) -> u64 {
+        compact_string_heap_bytes(&self.id)
+            + self.label.as_ref().map_or(0, compact_string_heap_bytes)
+            + self.out_v.heap_bytes()
+            + self.in_v.heap_bytes()
+            + estimated_element_heap_bytes(&self.properties)
     }
 }

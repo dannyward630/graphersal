@@ -683,3 +683,41 @@ fn t14_memory_profile_renders_aligned_columns() {
         "expected at least 3 data rows to spot-check, got {checked_rows}: {rendered}"
     );
 }
+
+/// `property_bytes` counts both allocations of every property map: the entries (hash, key and
+/// value per slot) and the hash index. A graph of many small vertices therefore reports more
+/// than the bare entry size per property, within what a real allocator measures for this shape
+/// (about 106 bytes per property for five small properties on a 64-bit target, measured with the
+/// tracking allocator).
+#[test]
+fn property_bytes_count_the_hash_index_of_every_map() {
+    let mut graph = TraversalGraph::new();
+    let vertices = 2000usize;
+    let per_vertex = 5usize;
+    for i in 0..vertices {
+        let mut props = PropertyMap::default();
+        for j in 0..per_vertex {
+            props.insert(format!("k{j}"), ElementProperty::from((i * j) as i64));
+        }
+        graph
+            .add_vertex(None, vec!["person".into()], props)
+            .unwrap();
+    }
+    let stats = graph.memory_usage().unwrap();
+    let per_slot = stats.property_bytes as f64 / (vertices * per_vertex) as f64;
+    // Never below the entries alone: a slot holds a cached hash, a key and a value.
+    let entry =
+        (size_of::<usize>() + size_of::<CompactString>() + size_of::<ElementProperty>()) as f64;
+    assert!(per_slot > entry, "{per_slot} per slot");
+    #[cfg(target_pointer_width = "64")]
+    assert!(
+        (64.0..160.0).contains(&per_slot),
+        "{per_slot} bytes per property slot"
+    );
+
+    // A vertex without properties owns no property heap.
+    let mut bare = TraversalGraph::new();
+    bare.add_vertex(None, vec!["person".into()], PropertyMap::default())
+        .unwrap();
+    assert_eq!(bare.memory_usage().unwrap().property_bytes, 0);
+}

@@ -354,6 +354,66 @@ impl fmt::Debug for IntoIter {
     }
 }
 
+/// The control-group width of the `hashbrown` table behind an `IndexMap`'s index: 16 with SSE2
+/// on x86/x86_64, 8 elsewhere on 64-bit targets, aarch64 and wasm32 (NEON or a `u64` word), 4 on
+/// other 32-bit targets (a `u32` word). Mirrors `hashbrown` 0.17's `Group::WIDTH`, which is not
+/// public.
+const HASH_GROUP_WIDTH: usize = if cfg!(all(
+    target_feature = "sse2",
+    any(target_arch = "x86", target_arch = "x86_64")
+)) {
+    16
+} else if cfg!(any(
+    target_pointer_width = "64",
+    target_arch = "aarch64",
+    target_arch = "wasm32"
+)) {
+    8
+} else {
+    4
+};
+
+/// The bucket count of the `hashbrown` table that holds `capacity` items: `0` for no allocation,
+/// 4 or 8 or 16 for small tables, else the next power of two of `capacity * 8 / 7` (load factor
+/// 7/8). Mirrors `hashbrown` 0.17's `capacity_to_buckets` for `usize` items (whose size never
+/// triggers its raised minimum for one- to three-byte items).
+fn hash_table_buckets(capacity: usize) -> u64 {
+    match capacity {
+        0 => 0,
+        1..=3 => 4,
+        4..=7 => 8,
+        8..=14 => 16,
+        _ => (capacity.saturating_mul(8) / 7).next_power_of_two() as u64,
+    }
+}
+
+/// The heap bytes of an `IndexMap<K, V, _>` (or an `IndexSet<K>` with `V = ()`) whose
+/// [`IndexMap::capacity`] is `capacity`. An `IndexMap` owns two allocations:
+///
+/// - the entries, a `Vec` of buckets, each the cached hash (`usize`), the key and the value:
+///   `capacity * size_of::<(usize, K, V)>()`;
+/// - the index, a `hashbrown` table of `usize` positions: `buckets * size_of::<usize>()` (rounded
+///   up to the control alignment) plus one control byte per bucket and one trailing group
+///   (`buckets + Group::WIDTH`).
+///
+/// Neither `indexmap` nor `hashbrown` exposes the index table's bucket count, so it is derived
+/// from `capacity` with `hashbrown`'s own formula ([`hash_table_buckets`]). `IndexMap::capacity`
+/// is the smaller of the two allocations' capacities; `indexmap` grows the entries to match the
+/// index, so the two agree for a map built by insertion. A map that never allocated (`capacity`
+/// 0) owns nothing. Every size comes from `size_of`, so the figure is right on 32-bit targets
+/// (wasm32) as well; allocator rounding and bookkeeping are not counted.
+pub(crate) fn index_map_heap_bytes<K, V>(capacity: usize) -> u64 {
+    use std::mem::{align_of, size_of};
+    let buckets = hash_table_buckets(capacity);
+    if buckets == 0 {
+        return 0;
+    }
+    let entries = capacity as u64 * size_of::<(usize, K, V)>() as u64;
+    let ctrl_align = align_of::<usize>().max(HASH_GROUP_WIDTH) as u64;
+    let slots = (buckets * size_of::<usize>() as u64).next_multiple_of(ctrl_align);
+    entries + slots + buckets + HASH_GROUP_WIDTH as u64
+}
+
 #[cfg(feature = "serde")]
 mod serde_impl {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -413,5 +473,114 @@ mod tests {
         assert_eq!((&a).into_iter().len(), 2);
         a.clear();
         assert!(a.is_empty());
+    }
+
+    use super::{HASH_GROUP_WIDTH, hash_table_buckets, index_map_heap_bytes};
+    use compact_str::CompactString;
+
+    /// The table bytes `index_map_heap_bytes` adds for `buckets` buckets.
+    fn table(buckets: u64) -> u64 {
+        let align = align_of::<usize>().max(HASH_GROUP_WIDTH) as u64;
+        (buckets * size_of::<usize>() as u64).next_multiple_of(align)
+            + buckets
+            + HASH_GROUP_WIDTH as u64
+    }
+
+    #[test]
+    fn an_empty_map_owns_no_heap() {
+        let map = PropertyMapInner::default();
+        assert_eq!(map.capacity(), 0);
+        assert_eq!(
+            index_map_heap_bytes::<CompactString, ElementProperty>(map.capacity()),
+            0
+        );
+        assert_eq!(
+            crate::value::estimated_element_heap_bytes(&PropertyMap::new()),
+            0
+        );
+    }
+
+    #[test]
+    fn buckets_follow_hashbrown() {
+        let expected = [
+            (1, 4),
+            (3, 4),
+            (4, 8),
+            (7, 8),
+            (8, 16),
+            (14, 16),
+            (15, 32),
+            (28, 32),
+            (29, 64),
+            (56, 64),
+            (57, 128),
+            (1000, 2048),
+        ];
+        for (capacity, buckets) in expected {
+            assert_eq!(hash_table_buckets(capacity), buckets, "capacity {capacity}");
+        }
+    }
+
+    /// `with_capacity(n)` gives the entries exactly `n` and the index at least `n`, so
+    /// `capacity()` is `n` and the estimate is `n` buckets plus the index table of `n` items.
+    #[test]
+    fn the_estimate_of_a_presized_map_is_entries_plus_index() {
+        let bucket = size_of::<(usize, CompactString, ElementProperty)>() as u64;
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(bucket, 64);
+        for (n, buckets) in [
+            (1u64, 4),
+            (3, 4),
+            (5, 8),
+            (7, 8),
+            (10, 16),
+            (14, 16),
+            (100, 128),
+        ] {
+            let map = PropertyMapInner::with_capacity_and_hasher(n as usize, Default::default());
+            assert_eq!(map.capacity(), n as usize);
+            assert_eq!(
+                index_map_heap_bytes::<CompactString, ElementProperty>(map.capacity()),
+                n * bucket + table(buckets),
+                "n = {n}"
+            );
+        }
+    }
+
+    /// A map grown by insertion: its entries follow the index capacity (3, 7, 14, 28, ...), and
+    /// the estimate is never below the plain entry bytes.
+    #[test]
+    fn the_estimate_of_a_grown_map_counts_the_index() {
+        let bucket = size_of::<(usize, CompactString, ElementProperty)>() as u64;
+        for (len, capacity, buckets) in [(1, 3, 4), (3, 3, 4), (5, 7, 8), (8, 14, 16), (20, 28, 32)]
+        {
+            let mut map = PropertyMap::new();
+            for key in 0..len {
+                map.insert(format!("k{key}"), ElementProperty::from(key));
+            }
+            assert_eq!(map.0.capacity(), capacity, "len {len}");
+            assert_eq!(
+                crate::value::estimated_element_heap_bytes(&map),
+                capacity as u64 * bucket + table(buckets),
+                "len {len}"
+            );
+        }
+    }
+
+    /// Nested maps count their box, their own table and their heap strings.
+    #[test]
+    fn a_nested_object_counts_its_box_and_table() {
+        let mut inner = PropertyMap::new();
+        inner.insert(
+            "x",
+            ElementProperty::from("a string far longer than the inline limit"),
+        );
+        let inner_bytes = crate::value::estimated_element_heap_bytes(&inner);
+        assert!(inner_bytes > index_map_heap_bytes::<CompactString, ElementProperty>(3));
+        let nested = ElementProperty::Object(Box::new(inner));
+        assert_eq!(
+            nested.estimated_heap_bytes(),
+            size_of::<PropertyMap>() as u64 + inner_bytes
+        );
     }
 }

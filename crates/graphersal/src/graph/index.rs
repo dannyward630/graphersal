@@ -149,35 +149,34 @@ impl GraphIndex {
         self.edge_labels.clear();
     }
 
-    /// Estimated heap footprint of this index's four collections, in bytes: each `IndexMap`'s/
-    /// `HashMap`'s own `.capacity()` times its entry size, plus each label bucket `IndexSet`'s
-    /// own `.capacity()`. Used by [`crate::graph::MemoryStats::index_bytes`] (D1 of the
-    /// memory-inspection spec); walking every bucket, not just the outer maps, is deliberate —
-    /// the bucket sets are where a heavily-labeled graph's memory actually lives.
+    /// Estimated heap footprint of this index's four collections, in bytes: each `IndexMap`'s
+    /// entries and hash index sized from its own `.capacity()`
+    /// ([`crate::value::property_map::index_map_heap_bytes`]), plus each label bucket
+    /// `IndexSet`'s, plus heap-allocated label strings. Used by
+    /// [`crate::graph::MemoryStats::index_bytes`] (D1 of the memory-inspection spec); walking every
+    /// bucket, not just the outer maps, is deliberate — the bucket sets are where a
+    /// heavily-labeled graph's memory actually lives.
     pub(crate) fn estimated_heap_bytes(&self) -> u64 {
-        let node_entry = std::mem::size_of::<(CompactString, VertexHandle)>() as u64;
-        let edge_entry = std::mem::size_of::<(CompactString, EdgeHandle)>() as u64;
-        let mut total = self.nodes.capacity() as u64 * node_entry;
-        total += self.edges.capacity() as u64 * edge_entry;
+        use crate::value::compact_string_heap_bytes;
+        use crate::value::property_map::index_map_heap_bytes;
 
-        let label_bucket_entry =
-            std::mem::size_of::<(CompactString, IndexSet<VertexHandle, FnvBuildHasher>)>() as u64;
-        total += self.node_labels.capacity() as u64 * label_bucket_entry;
+        let mut total = index_map_heap_bytes::<CompactString, VertexHandle>(self.nodes.capacity());
+        total += index_map_heap_bytes::<CompactString, EdgeHandle>(self.edges.capacity());
+
+        total += index_map_heap_bytes::<CompactString, IndexSet<VertexHandle, FnvBuildHasher>>(
+            self.node_labels.capacity(),
+        );
         for (label, bucket) in self.node_labels.iter() {
-            if label.is_heap_allocated() {
-                total += label.capacity() as u64;
-            }
-            total += bucket.capacity() as u64 * std::mem::size_of::<VertexHandle>() as u64;
+            total += compact_string_heap_bytes(label);
+            total += index_map_heap_bytes::<VertexHandle, ()>(bucket.capacity());
         }
 
-        let edge_label_bucket_entry =
-            std::mem::size_of::<(CompactString, IndexSet<EdgeHandle, FnvBuildHasher>)>() as u64;
-        total += self.edge_labels.capacity() as u64 * edge_label_bucket_entry;
+        total += index_map_heap_bytes::<CompactString, IndexSet<EdgeHandle, FnvBuildHasher>>(
+            self.edge_labels.capacity(),
+        );
         for (label, bucket) in self.edge_labels.iter() {
-            if label.is_heap_allocated() {
-                total += label.capacity() as u64;
-            }
-            total += bucket.capacity() as u64 * std::mem::size_of::<EdgeHandle>() as u64;
+            total += compact_string_heap_bytes(label);
+            total += index_map_heap_bytes::<EdgeHandle, ()>(bucket.capacity());
         }
 
         total
