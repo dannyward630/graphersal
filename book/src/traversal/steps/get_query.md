@@ -3,7 +3,7 @@
 
 `get_query` · `getQuery` · category: [Saved queries](../../traversal/step_reference.md#saved-queries)
 
-Returns a saved query as a map (name, folder, description, params, status, body, dialect, meta), unit when there is none.
+Returns a saved query as a map (name, folder, description, params, status, writes, effects, denied_writes, body, dialect, meta), unit when there is none.
 
 ## Forms
 
@@ -14,7 +14,7 @@ get_query(arg1: string)
 ## Example
 
 ```rhai,graph=modern
-{ g.define_query(#{name: "n", body: "fn n() { 1 }"}); g.get_query("n")["body"] }   // fn n() { 1 }
+{ g.define_query(#{name: "add", body: "fn add() { g.add_v(\"person\").next() }"}); g.get_query("add")["effects"].map(|e| e.text) }   // ["Create Data(vertex \"person\")"]
 ```
 
 ## See also

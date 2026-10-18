@@ -3,7 +3,7 @@
 
 `query` · category: [Saved queries](../../traversal/step_reference.md#saved-queries)
 
-Calls a saved query by name with named arguments (start of a traversal only); a traversal result can be continued, read-only (see the book page Saved Queries).
+Calls a saved query by name with named arguments (start of a traversal only); a query that writes writes in the call, and a traversal result can be continued, read-only (see the book page Saved Queries).
 
 ## Forms
 
