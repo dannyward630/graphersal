@@ -547,6 +547,18 @@ class Graph:
         none."""
     def recompress(self, name: str, *, policy: Optional[AccessPolicy] = None) -> None:
         """Rebuilds the rule's dictionary from the current values and re-encodes them."""
+    def estimate_compression(
+        self,
+        label: str,
+        path: str,
+        element: str = "vertex",
+        min_bytes: Optional[int] = None,
+        dictionary: Optional[bool] = None,
+        *,
+        policy: Optional[AccessPolicy] = None,
+    ) -> dict[str, Any]:
+        """What compression rules for ``element``s labelled ``label`` at ``path`` would hold
+        over the current values (candidates, best, current rule, warnings); changes nothing."""
     def create_index(
         self,
         label: str,

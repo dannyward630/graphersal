@@ -20,6 +20,8 @@ pub mod change;
 /// Compressed properties: compression rules ([`compression::CompressionDefinition`]) and their
 /// in-memory state.
 pub mod compression;
+/// Estimating a compression rule before defining it: [`compression_estimate::CompressionEstimate`].
+pub mod compression_estimate;
 // The catalog of definitions (saved queries, ...) stored next to the schema; documented by its
 // own module docs (an outer `///` here would resolve their links in this scope).
 pub mod definition;
@@ -57,6 +59,7 @@ pub use change::{
     ChangeSet, ChangeSetBuilder, CommitMetadata, EdgeState, ElementRef, Mutation, VertexState,
 };
 pub use compression::{CompressionDefinition, CompressionStats};
+pub use compression_estimate::{CompressionEstimate, CompressionEstimateRequest};
 pub use definition::{Definition, DefinitionKind, QueryDefinition};
 pub use execution_policy::ExecutionPolicy;
 pub use handle::{EdgeHandle, VertexHandle};

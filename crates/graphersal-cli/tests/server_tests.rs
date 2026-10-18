@@ -4718,3 +4718,74 @@ fn an_embedder_of_the_command_line_serves_the_session() {
     drop(server);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Issue #12: `POST /api/compression/estimate` and the MCP tool `estimate_compression` answer
+/// the candidates and change nothing; the tool is a reading one, offered and allowed in
+/// read-only mode.
+#[test]
+fn a_compression_estimate_over_http_and_mcp_changes_nothing() {
+    let ui = ui_dir("compression-estimate");
+    let ui_arg = ui.to_str().unwrap().to_string();
+    let server = start(&[
+        "--graph",
+        "modern",
+        "--ui-dir",
+        &ui_arg,
+        "--mcp",
+        "--mcp-read-only",
+    ]);
+    let port = server.port;
+    let answer = post(
+        port,
+        "/api/compression/estimate",
+        r#"{"label": "person", "path": "name"}"#,
+    )
+    .json();
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(answer["estimate"]["valuesFound"], 4);
+    assert_eq!(
+        answer["estimate"]["candidates"].as_array().unwrap().len(),
+        10
+    );
+    assert_eq!(
+        answer["estimate"]["warnings"][0]["code"],
+        "nothing_qualifies"
+    );
+    let refused = post(
+        port,
+        "/api/compression/estimate",
+        r#"{"label": "person", "path": "a[0]"}"#,
+    )
+    .json();
+    assert_eq!(refused["errors"][0]["field"], "path", "{refused}");
+    assert_eq!(get(port, "/api/compression/estimate").status, 405);
+
+    let mut mcp = McpClient::connect(port, &[]);
+    let tools = mcp.rpc("tools/list", serde_json::json!({}));
+    let tool = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "estimate_compression")
+        .cloned()
+        .expect("listed in read-only mode");
+    assert_eq!(tool["annotations"]["readOnlyHint"], true, "{tool}");
+    let (error, text) = mcp.call(
+        "estimate_compression",
+        serde_json::json!({"label": "person", "path": "name", "min_bytes": 1}),
+    );
+    assert!(!error, "{text}");
+    assert!(text.contains("not changed"), "{text}");
+    assert!(text.contains("\"valuesFound\": 4"), "{text}");
+    let (error, text) = mcp.call("estimate_compression", serde_json::json!({"path": "name"}));
+    assert!(error, "{text}");
+    assert!(text.contains("label"), "{text}");
+    // The DSL function is allowed in read-only mode too: it reads data.
+    let (error, text) = mcp.call(
+        "query",
+        serde_json::json!({"script": r#"g.estimate_compression(#{label: "person", path: "name"}).values_found"#}),
+    );
+    assert!(!error && text.contains('4'), "{text}");
+    assert_eq!(changes(port)["version"], 0, "nothing was committed");
+    assert_eq!(get(port, "/api/compression").json(), serde_json::json!([]));
+}

@@ -1059,6 +1059,47 @@ impl Graph {
         Ok(())
     }
 
+    /// ``graph.estimate_compression(label, path, element="vertex", min_bytes=None,
+    /// dictionary=None, *, policy=None)``: what compression rules for ``element``s labelled
+    /// ``label`` at ``path`` would hold over the current values, like the DSL's
+    /// ``g.estimate_compression(#{..})``, without changing the graph. ``min_bytes`` and
+    /// ``dictionary`` narrow the candidates (default: ``lz4`` with and without a dictionary at
+    /// 64, 128, 256, 512 and 1024 bytes, plus the current rule's parameters). A ``dict`` with
+    /// ``values_found``, ``string_values``, ``histogram``, ``candidates`` (``min_bytes``,
+    /// ``dictionary``, ``compressed_values``, ``plain_bytes``, ``stored_bytes``,
+    /// ``dictionary_bytes``, ``saved_bytes``, ``ratio``, ``decode_bytes_per_sec``, ...),
+    /// ``best`` (an index into ``candidates`` or ``None``), ``current`` and ``warnings``.
+    #[pyo3(signature = (label, path, element="vertex", min_bytes=None, dictionary=None, *, policy=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn estimate_compression(
+        &self,
+        py: Python<'_>,
+        label: &str,
+        path: &str,
+        element: &str,
+        min_bytes: Option<i64>,
+        dictionary: Option<bool>,
+        policy: Option<PyRef<'_, AccessPolicy>>,
+    ) -> PyResult<Py<PyAny>> {
+        let params = PyDict::new(py);
+        params.set_item("est_label", label)?;
+        params.set_item("est_path", path)?;
+        params.set_item("est_element", element)?;
+        let mut script = String::from(
+            "g.estimate_compression(#{label: est_label, path: est_path, element: est_element",
+        );
+        if let Some(min_bytes) = min_bytes {
+            params.set_item("est_min_bytes", min_bytes)?;
+            script.push_str(", min_bytes: est_min_bytes");
+        }
+        if let Some(dictionary) = dictionary {
+            params.set_item("est_dictionary", dictionary)?;
+            script.push_str(", dictionary: est_dictionary");
+        }
+        script.push_str("})");
+        self.run(py, &script, Some(&params), false, policy.as_deref())
+    }
+
     /// ``graph.create_index(label, key, element="vertex", name=None, type="memory-ordered", *,
     /// transform=None, policy=None)``: declares (or replaces) a property index, like the DSL's
     /// ``g.create_index(#{..})``: the ``element``s labelled ``label``, ordered by their

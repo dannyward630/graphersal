@@ -186,6 +186,7 @@
   - [embed_property](traversal/steps/embed_property.md)
   - [embedders](traversal/steps/embedders.md)
   - [emit](traversal/steps/emit.md)
+  - [estimate_compression](traversal/steps/estimate_compression.md)
   - [execute](traversal/steps/execute.md)
   - [export_graphml](traversal/steps/export_graphml.md)
   - [export_graphson](traversal/steps/export_graphson.md)
@@ -353,6 +354,7 @@
 
 - [Releases and Versioning](for_developers/release_plan.md)
 - [Version Control and Contributions](for_developers/version_control.md)
+- [Release Notes 0.2.1](release_notes/release_notes_0.2.1.md)
 - [Release Notes 0.2.0](release_notes/release_notes_0.2.0.md)
 - [Release Notes 0.1.1](release_notes/release_notes_0.1.1.md)
 - [Release Notes 0.1.0](release_notes/release_notes_0.1.0.md)

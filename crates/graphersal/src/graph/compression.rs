@@ -354,7 +354,7 @@ impl CompressionDefinition {
 
 /// Why `path` cannot be a rule's path (`None`: it can): it must have 1 to
 /// [`MAX_PATH_SEGMENTS`] segments, all names.
-fn path_problem(path: &JsonPath) -> Option<String> {
+pub(crate) fn path_problem(path: &JsonPath) -> Option<String> {
     let segments = path.segments();
     if segments.is_empty() {
         return Some("the path is empty; name the property, for example \"cv\"".to_string());
@@ -680,7 +680,7 @@ fn normalize_value(value: &mut ElementProperty, rules: &[(&[CompactString], &Rul
 }
 
 /// The value at `path` inside `properties`, when every step is an object key.
-fn value_at<'a>(
+pub(crate) fn value_at<'a>(
     properties: &'a PropertyMap,
     path: &[CompactString],
 ) -> Option<&'a ElementProperty> {
@@ -693,6 +693,30 @@ fn value_at<'a>(
         };
     }
     Some(current)
+}
+
+/// The dictionary of a rule over `elements` (in id order, [`TraversalGraph::compression_elements`]):
+/// the text at `path` of each, at most 1 KiB of each, up to 64 KiB. The ONE sampling code of a
+/// rule's dictionary and of the estimate's trial dictionary (`compression_estimate.rs`), so an
+/// estimate measures the dictionary the rule would get.
+pub(crate) fn dictionary_from(
+    elements: &[(&str, &PropertyMap)],
+    path: &[CompactString],
+) -> Option<Arc<CompressionDictionary>> {
+    let mut sample: Vec<u8> = Vec::new();
+    for (_, properties) in elements {
+        if sample.len() >= MAX_DICTIONARY_BYTES {
+            break;
+        }
+        if let Some(value) = value_at(properties, path) {
+            value.with_text(|text| {
+                let mut end = text.len().min(SAMPLE_BYTES_PER_VALUE);
+                end = end.min(MAX_DICTIONARY_BYTES - sample.len());
+                sample.extend_from_slice(&text.as_bytes()[..end]);
+            });
+        }
+    }
+    CompressionDictionary::new(sample)
 }
 
 /// What one rule holds right now ([`TraversalGraph::compression_stats`]).
@@ -834,6 +858,36 @@ impl TraversalGraph {
             CompressionRules::from_catalog(self.definitions.iter(), &self.compression);
     }
 
+    /// The elements of `(element, label)` with their properties, in id order: the order the
+    /// dictionary sample (and the estimate's sample, `compression_estimate.rs`) reads them in.
+    pub(crate) fn compression_elements(
+        &self,
+        element: ElementKind,
+        label: &str,
+    ) -> Vec<(&str, &PropertyMap)> {
+        let mut ids: Vec<(&str, &PropertyMap)> = Vec::new();
+        match element {
+            ElementKind::Vertex => {
+                for node in self.vertices_by_label(label) {
+                    if let Some(vertex) = self.vertex_weight(node) {
+                        ids.push((vertex.0.as_str(), &vertex.2));
+                    }
+                }
+            }
+            ElementKind::Edge => {
+                for edge in self.edges_by_label(label) {
+                    if let Some(weight) = self.edge_weight(edge)
+                        && let Some(properties) = weight.2.as_ref()
+                    {
+                        ids.push((weight.0.as_str(), properties));
+                    }
+                }
+            }
+        }
+        ids.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        ids
+    }
+
     /// Builds the dictionary of rule `name` from a sample of its current values: the values at
     /// its path of the elements of its label, in id order, at most 1 KiB of each, up to 64 KiB.
     fn compression_build_dictionary(&mut self, name: &str) {
@@ -844,40 +898,8 @@ impl TraversalGraph {
             return;
         }
         let (element, label, path) = (rule.element, rule.label.clone(), rule.path.clone());
-        let mut ids: Vec<(&str, &PropertyMap)> = Vec::new();
-        match element {
-            ElementKind::Vertex => {
-                for node in self.vertices_by_label(&label) {
-                    if let Some(vertex) = self.vertex_weight(node) {
-                        ids.push((vertex.0.as_str(), &vertex.2));
-                    }
-                }
-            }
-            ElementKind::Edge => {
-                for edge in self.edges_by_label(&label) {
-                    if let Some(weight) = self.edge_weight(edge)
-                        && let Some(properties) = weight.2.as_ref()
-                    {
-                        ids.push((weight.0.as_str(), properties));
-                    }
-                }
-            }
-        }
-        ids.sort_unstable_by(|a, b| a.0.cmp(b.0));
-        let mut sample: Vec<u8> = Vec::new();
-        for (_, properties) in ids {
-            if sample.len() >= MAX_DICTIONARY_BYTES {
-                break;
-            }
-            if let Some(value) = value_at(properties, &path) {
-                value.with_text(|text| {
-                    let mut end = text.len().min(SAMPLE_BYTES_PER_VALUE);
-                    end = end.min(MAX_DICTIONARY_BYTES - sample.len());
-                    sample.extend_from_slice(&text.as_bytes()[..end]);
-                });
-            }
-        }
-        let dictionary = CompressionDictionary::new(sample);
+        let elements = self.compression_elements(element, &label);
+        let dictionary = dictionary_from(&elements, &path);
         if let Some(rule) = self.compression.find_mut(name) {
             rule.dictionary = dictionary;
         }

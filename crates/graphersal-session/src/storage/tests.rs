@@ -421,3 +421,37 @@ fn property_indexes_work_and_a_storage_without_them_says_so() {
     assert_eq!(listed[0]["stats"], Value::Null);
     assert!(plain.drop_index("person_age").unwrap());
 }
+
+#[test]
+fn an_estimate_is_the_same_on_both_storages_and_unsupported_without_compression() {
+    let cv = "Senior engineer, led the platform team in Rust. ".repeat(20);
+    let add = format!(r#"g.add_v("customer").property("cv", "{cv}").to_list()"#);
+    let spec = json!({"label": "customer", "path": "cv"});
+    let without_timings = |mut answer: Value| {
+        answer["estimate"]["elapsedMs"] = Value::Null;
+        for candidate in answer["estimate"]["candidates"].as_array_mut().unwrap() {
+            candidate["encodeBytesPerSec"] = Value::Null;
+            candidate["decodeBytesPerSec"] = Value::Null;
+        }
+        answer
+    };
+    let mut s = both(false);
+    same(&mut s, |s| run(s, &add));
+    let estimate = same(&mut s, |s| without_timings(s.estimate_compression(&spec)));
+    assert_eq!(estimate["ok"], true, "{estimate}");
+    assert_eq!(estimate["estimate"]["stringValues"], 1);
+
+    let mut plain = Session::with_storage(Arc::new(StorageKind::<NoCompression>::persistent()));
+    plain.load_sample("modern").unwrap();
+    assert_eq!(run(&mut plain, &add)["ok"], true);
+    let refused = plain.estimate_compression(&spec);
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert_eq!(refused["errors"][0]["field"], "general");
+    assert!(
+        refused["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("does not support compressed properties"),
+        "{refused}"
+    );
+}

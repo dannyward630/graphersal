@@ -212,6 +212,13 @@ pub trait SessionGraph: AnyGraph {
     /// with its `Unsupported` diagnostic.
     fn recompress_rule(&self, name: &str) -> Result<(), String>;
 
+    /// [`crate::compression::estimate_compression_in`] under the read lock; a storage without
+    /// compressed properties fails with its `Unsupported` diagnostic.
+    fn estimate_compression_json(
+        &self,
+        request: &graphersal::catalog::CompressionEstimateRequest,
+    ) -> Result<Value, String>;
+
     /// [`crate::indexes::indexes_in`].
     fn indexes(&self) -> Value;
 
@@ -407,6 +414,13 @@ where
 
     fn recompress_rule(&self, name: &str) -> Result<(), String> {
         crate::compression::recompress_in(&mut *self.write(), name)
+    }
+
+    fn estimate_compression_json(
+        &self,
+        request: &graphersal::catalog::CompressionEstimateRequest,
+    ) -> Result<Value, String> {
+        crate::compression::estimate_compression_in(&*self.read(), request)
     }
 
     fn indexes(&self) -> Value {

@@ -1888,3 +1888,50 @@ mod embed_jobs {
         assert_eq!(n.as_int().unwrap(), 2);
     }
 }
+
+/// `g.estimate_compression(..)` reads the data of its label (issue #12): a `Read` on `Data`,
+/// never a catalog write, so a read-only policy allows it.
+mod compression_estimate {
+    use super::*;
+
+    #[test]
+    fn an_estimate_is_a_read_of_the_label_data() {
+        let graph = modern();
+        let script = r#"g.estimate_compression(#{label: "person", path: "name"}).values_found"#;
+        assert_eq!(
+            run(&graph, script, AccessPolicy::read_only())
+                .unwrap()
+                .as_int()
+                .unwrap(),
+            4
+        );
+        assert_denied(
+            run(
+                &graph,
+                script,
+                AccessPolicy::allow_all().deny(ActionKind::Read, ResourceKind::Data),
+            ),
+            "estimate_compression",
+            "Read Data(vertex \"person\")",
+        );
+        let edges = r#"g.estimate_compression(#{element: "edge", label: "knows", path: "weight"})"#;
+        assert_denied(
+            run(&graph, edges, AccessPolicy::deny_all()),
+            "estimate_compression",
+            "Read Data(edge \"knows\")",
+        );
+        // The Rust API asks the same request.
+        let lock = graph.read();
+        let g = GraphTraversalSource::new(&*lock).with_authorizer(Arc::new(
+            AccessPolicy::allow_all().deny(ActionKind::Read, ResourceKind::Data),
+        ));
+        let request = graphersal::catalog::CompressionEstimateRequest::new(
+            ElementKind::Vertex,
+            "person",
+            "name",
+        )
+        .unwrap();
+        let err = g.estimate_compression(&request).unwrap_err().to_string();
+        assert!(err.contains("Permission denied"), "{err}");
+    }
+}

@@ -152,7 +152,7 @@ impl CompressedText {
 
     /// Decompresses into `out` (cleared first); `false` when the bytes do not decompress to
     /// exactly the recorded length.
-    fn decompress_into(&self, out: &mut Vec<u8>) -> bool {
+    pub(crate) fn decompress_into(&self, out: &mut Vec<u8>) -> bool {
         out.clear();
         out.resize(self.len as usize, 0);
         let result = match &self.dict {

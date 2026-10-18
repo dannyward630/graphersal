@@ -1,6 +1,7 @@
 //! A test storage: [`Forwarding`] without compressed properties and without property indexes.
-//! Every method forwards to the wrapped [`Forwarding`] except `recompress` and
-//! `compression_stats`, which keep the trait defaults (`Unsupported`, `None`), and
+//! Every method forwards to the wrapped [`Forwarding`] except `recompress`,
+//! `compression_stats` and `estimate_compression`, which keep the trait defaults
+//! (`Unsupported`, `None`, `Unsupported`), and
 //! `property_indexes` and the index lookups, which keep theirs (none; the capability is off):
 //! the behaviour of a foreign storage that stores compression rules and index definitions but
 //! never applies them.

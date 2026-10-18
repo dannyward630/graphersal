@@ -449,6 +449,11 @@ export class WasmEngine extends Engine {
     return this.call('recompress', name);
   }
 
+  // Read-only: an estimate changes nothing.
+  async estimateCompression(spec) {
+    return this.call('estimateCompression', plain(spec));
+  }
+
   // Property indexes (the catalog's kind `property_index`).
 
   async listIndexes() {

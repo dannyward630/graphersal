@@ -82,6 +82,11 @@ pub use crate::error::DefinitionError;
 pub use crate::graph::compression::{
     Codec, CompressionDefinition, CompressionStats, DEFAULT_MIN_BYTES, MAX_MIN_BYTES,
 };
+pub use crate::graph::compression_estimate::{
+    CandidateEstimate, CompressionCandidate, CompressionEstimate, CompressionEstimateRequest,
+    CurrentCompression, DEFAULT_ESTIMATE_MAX_BYTES, DEFAULT_ESTIMATE_MAX_VALUES,
+    DEFAULT_ESTIMATE_THRESHOLDS, EstimateWarning, SizeBucket,
+};
 pub use crate::graph::definition::{
     Definition, DefinitionBody, DefinitionFlags, DefinitionKind, MAX_DEFINITION_NAME_BYTES,
     MAX_DEFINITIONS, MAX_DESCRIPTION_BYTES, MAX_DIALECT_BYTES, MAX_FOLDER_BYTES,

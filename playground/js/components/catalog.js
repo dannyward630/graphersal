@@ -12,7 +12,10 @@
 //   * Compression: the rules with their stats (values, plain -> stored size, ratio, saving,
 //     dictionary) with Edit, Recompress and Drop, and the form (name, element, label with the
 //     graph's labels as suggestions, path, minimum size, dictionary) with the engine's field
-//     errors next to their inputs.
+//     errors next to their inputs. Its Estimate button measures the candidate rules on the
+//     current data (the graph is not changed): a table with a saving bar per candidate, the
+//     best one highlighted, and "Use" copying a candidate's codec, threshold and dictionary
+//     into the form.
 //   * Property indexes: the indexes with their stats (entries, distinct values, elements per
 //     value, memory; "not served" on a storage without indexes) with Drop (confirmed), and the
 //     create form (element, label with suggestions, key, optional name with the default name
@@ -22,11 +25,12 @@
 import { ref, reactive, computed, watch, nextTick } from 'vue';
 import {
   state, toast, openCatalog, saveCatalogFile, loadCatalogFile, refreshSavedQueries, refreshCompressions,
-  defineCompressionRule, dropCompressionRule, recompressRule, dropSavedQuery,
+  defineCompressionRule, dropCompressionRule, recompressRule, estimateCompressionRule, dropSavedQuery,
   refreshIndexes, createPropertyIndex, dropPropertyIndex,
 } from '../store.js';
 import {
   ruleRow, totals, newDraft, draftFromRule, draftToSpec, labelSuggestions,
+  canEstimate, draftToEstimateSpec, estimateRows, estimateSummary, histogramRows, applyCandidate,
 } from '../compression.js';
 import { queryTree, signatureText, errorsByField, accessBadge } from '../saved-queries.js';
 import {
@@ -152,10 +156,52 @@ export const CompressionManager = {
       errors: {}, // field -> [messages]
       busy: false,
       labels: { vertex: [], edge: [] },
+      estimate: null, // the engine's estimate for the form's element, label and path
+      estimating: false,
+      estimateErrors: [],
     });
     const rows = computed(() => (state.compressions || []).map((rule) => ({ rule, row: ruleRow(rule) })));
     const sum = computed(() => totals(state.compressions || []));
     const suggestions = computed(() => (d.draft ? d.labels[d.draft.element] || [] : []));
+    const estimateTable = computed(() => estimateRows(d.estimate));
+    const estimateText = computed(() => estimateSummary(d.estimate));
+    const histogram = computed(() => histogramRows(d.estimate));
+    const estimable = computed(() => canEstimate(d.draft));
+    // An estimate belongs to the element, label and path it measured: a change drops it.
+    watch(
+      () => (d.draft ? [d.draft.element, d.draft.label, d.draft.path].join('\u0000') : ''),
+      () => clearEstimate(),
+    );
+
+    function clearEstimate() {
+      Object.assign(d, { estimate: null, estimateErrors: [] });
+    }
+    async function estimate() {
+      if (d.estimating || !d.draft) return;
+      const local = draftToEstimateSpec(d.draft);
+      if (local.errors) {
+        d.errors = errorsByField(local.errors);
+        return;
+      }
+      Object.assign(d, { estimating: true, estimateErrors: [] });
+      try {
+        const res = await estimateCompressionRule(local.spec);
+        if (res && res.ok) {
+          d.estimate = res.estimate;
+        } else {
+          const errors = (res && res.errors) || [{ field: 'general', message: 'The engine refused it.' }];
+          d.estimate = null;
+          d.estimateErrors = errors.map((e) => e.message);
+        }
+      } catch (err) {
+        Object.assign(d, { estimate: null, estimateErrors: [message(err)] });
+      } finally {
+        d.estimating = false;
+      }
+    }
+    function useCandidate(candidate) {
+      if (d.draft) Object.assign(d.draft, applyCandidate(d.draft, candidate));
+    }
 
     async function loadLabels() {
       try {
@@ -175,15 +221,18 @@ export const CompressionManager = {
     }
     async function startNew() {
       Object.assign(d, { draft: newDraft(), errors: {} });
+      clearEstimate();
       await loadLabels();
       await nextTick();
     }
     async function startEdit(rule) {
       Object.assign(d, { draft: draftFromRule(rule), errors: {} });
+      clearEstimate();
       await loadLabels();
     }
     function cancelForm() {
       Object.assign(d, { draft: null, errors: {} });
+      clearEstimate();
     }
     async function save() {
       if (d.busy || !d.draft) return;
@@ -237,6 +286,7 @@ export const CompressionManager = {
     expose({ open, close });
     return {
       state, dlg, d, rows, sum, suggestions, formatBytes, close, startNew, startEdit, cancelForm, save, recompress, drop,
+      estimateTable, estimateText, histogram, estimable, estimate, useCandidate,
     };
   },
   template: `
@@ -306,6 +356,39 @@ export const CompressionManager = {
           <label for="cc-dict">Dictionary</label>
           <span><input id="cc-dict" type="checkbox" v-model="d.draft.dictionary"> <label for="cc-dict" class="muted">built from a sample of the rule's values (better ratio for many similar texts)</label></span>
           <div v-for="m in d.errors.dictionary || []" class="field-error sq-span">{{ m }}</div>
+        </div>
+        <div class="cc-estimate">
+          <div class="cc-estimate-head">
+            <button type="button" class="btn" :disabled="!estimable || d.estimating || d.busy || state.running" @click="estimate"
+                    title="Measure lz4 with and without a dictionary at several minimum sizes on the current values of this label and path; changes nothing">{{ d.estimating ? 'Estimating…' : 'Estimate' }}</button>
+            <span class="muted">{{ estimable ? 'What would a rule here save? Measured on the current data; the graph is not changed.' : 'Fill in the label and the path to estimate what a rule would save.' }}</span>
+          </div>
+          <div v-for="m in d.estimateErrors" class="field-error">{{ m }}</div>
+          <template v-if="d.estimate">
+            <p class="muted sq-note">{{ estimateText.found }}</p>
+            <p v-for="n in estimateText.notes" :key="n" class="muted sq-note">{{ n }}</p>
+            <div v-for="w in estimateText.warnings" :key="w" class="field-error">{{ w }}</div>
+            <div v-if="estimateTable.length" class="catalog-table-wrap">
+              <table class="data-table catalog-table cc-estimate-table">
+                <thead><tr>
+                  <th>Codec</th><th>Min. size</th><th class="num">Values</th><th>Plain → stored</th><th>Dictionary</th>
+                  <th class="num">Ratio</th><th>Saved</th><th title="Decompression speed: every read of a compressed value pays it">Reads</th><th></th>
+                </tr></thead>
+                <tbody>
+                  <tr v-for="r in estimateTable" :key="r.index" :class="{ 'cc-best': r.best }">
+                    <td>{{ r.name }} <span v-if="r.best" class="cc-tag">best</span> <span v-if="r.current" class="cc-tag">current</span></td>
+                    <td>{{ r.threshold }}</td><td class="num">{{ r.values }}</td><td>{{ r.sizes }}</td><td>{{ r.dictionary }}</td>
+                    <td class="num">{{ r.ratio }}</td>
+                    <td><span class="cc-bar" aria-hidden="true"><span class="cc-bar-fill" :style="{ width: (100 * r.share).toFixed(1) + '%' }"></span></span> {{ r.saved }}</td>
+                    <td>{{ r.reads }}</td>
+                    <td><button type="button" class="btn small" @click="useCandidate(r.candidate)"
+                                :aria-label="'Use ' + r.name + ' at ' + r.threshold">Use</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p v-if="histogram.length" class="muted sq-note">String sizes: {{ histogram.map((h) => h.range + ': ' + h.values).join(' · ') }}</p>
+          </template>
         </div>
         <div v-for="m in [...(d.errors.general || []), ...(d.errors.codec || [])]" class="field-error">{{ m }}</div>
         <p class="muted sq-note">Saving re-encodes every value of the label at once (one commit); no data changes.</p>

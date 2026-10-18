@@ -19,6 +19,10 @@ g.compressions()                                                         // the 
 g.memory_usage()                                                         // compressed_values, ...
 ```
 
+Not sure a rule pays off, or which `min_bytes` to take? [Estimate it first](#estimating-the-gain):
+`g.estimate_compression(#{label: "customer", path: "bio"})` measures the candidate rules on the
+current data without changing anything.
+
 ## When it pays off
 
 - Long strings (hundreds of bytes and more) that are written once and read seldom: CVs,
@@ -85,16 +89,69 @@ written before a dictionary exists (a rule on an empty label) is compressed with
 next `recompress` or load. Every compressed value carries its dictionary, so it stays readable when
 the rule changes.
 
+## Estimating the gain
+
+Before defining a rule, an **estimate** measures what rules for one element kind, label and path
+would hold over the current values, **without changing the graph** (no commit, no catalog change,
+no value re-encoded; it only reads):
+
+```rhai,graph=modern
+g.estimate_compression(#{label: "person", path: "name"})   // short names: nothing qualifies
+```
+
+```rhai
+let e = g.estimate_compression(#{label: "customer", path: "bio"});
+e.candidates[e.best]          // the candidate that saves the most
+// Only some candidates: each key given narrows the set.
+g.estimate_compression(#{label: "customer", path: "details.career.cv", min_bytes: 512});
+g.estimate_compression(#{element: "edge", label: "bought", path: "notes", dictionary: false});
+```
+
+Without `codec`, `min_bytes` and `dictionary` the **candidates** are `lz4` without and with a
+dictionary at `min_bytes` 64, 128, 256, 512 and 1024, plus the parameters of the rule that covers
+the path today (if any). The answer:
+
+| Key | Meaning |
+|---|---|
+| `elements`, `values_found`, `string_values`, `string_bytes` | the elements carrying the label, how many have a value at the path, how many of those are strings, and their size |
+| `histogram` | the strings by size (`min_bytes`, `max_bytes`, `values`, `bytes`; buckets from 64 B to 16 KiB), to choose `min_bytes` |
+| `candidates` | per candidate: `codec`, `min_bytes`, `dictionary`, `compressed_values` (the strings it would compress), `plain_bytes`, `stored_bytes`, `dictionary_bytes`, `saved_bytes` (= plain - stored - dictionary; negative: the rule costs memory), `ratio`, `current` (the parameters of today's rule), `encode_bytes_per_sec` and `decode_bytes_per_sec` (the speed measured on this data: a read of a compressed value pays the decode) |
+| `best` | the index of the candidate that saves the most, `()` when none saves anything |
+| `current` | today's rule on that path (name, parameters and what it holds now), the baseline |
+| `warnings` | `unknown_label` (no element has the label: a typo?), `no_values` (nothing at the path), `not_strings` (values a rule never compresses), `nothing_qualifies`, `no_saving` |
+| `sampled`, `measured_values` | whether the candidates were measured on a sample (below) |
+
+**The estimate is the rule.** The trial dictionary is built by the same code as a defined rule's
+(the values in id order, up to 1 KiB of each, up to 64 KiB) and a value counts exactly when the
+rule's write path would compress it, so the numbers of a candidate are what `g.compressions()`
+reports after defining that rule on the same data. The byte counts are those of the rule's stats:
+the plain and the compressed size of the values and the dictionary, not the per-value bookkeeping.
+
+**Bounded.** The estimate compresses at most 100,000 strings and 16 MiB of plain text per
+dictionary setting. Above either cap it compresses a deterministic sample (every k-th string in id
+order), says `sampled: true`, and extrapolates each candidate from the exact count and size of the
+strings that reach its threshold; the counts and the histogram stay exact. A running estimate stops
+when the host cancels (the dev server's Stop, a `CancelToken`).
+
+It reads the data of that label, so it asks for `Read` on `Data` of that element kind and label,
+never for a catalog write: `AccessPolicy::read_only()`, the MCP read-only mode and a saved query may
+estimate. A storage without compressed properties answers `Unsupported`.
+
+In the playground, the rule form of **Catalog ▾ ▸ Compression** has an **Estimate** button once
+the label and the path are filled: a table of the candidates with a saving bar each, the best one
+highlighted, the note "the graph was not changed", and **Use** copying a candidate's codec, minimum
+size and dictionary into the form.
+
 ## API
 
-| | Define | List | Drop | Recompress |
-|---|---|---|---|---|
-| Rhai (both spellings) | `g.define_compression(#{..})` | `g.compressions()` | `g.drop_compression(name)` | `g.recompress(name)` |
-| Rust (`GraphTraversalSource`) | `define_compression(name, CompressionDefinition)`, `set_definition(Definition::compression(..))` | `list_definitions(Some(DefinitionKind::COMPRESSION))`, `compression_stats(name)` | `remove_definition(DefinitionKind::COMPRESSION, name)` | `recompress(name)` |
-| Python (`Graph`) | `define_compression(name, label, path, element="vertex", min_bytes=256, dictionary=True)` | `compressions()` | `drop_compression(name)` | `recompress(name)` |
-| Playground | **Catalog ▾ ▸ Compression**: the rules with their stats, a form with field errors | | | |
-| Dev server | `POST /api/compression/define` | `GET /api/compression` | `POST /api/compression/drop` | `POST /api/compression/recompress` |
-| MCP | `define_compression` | `list_compressions` | `drop_compression` | `recompress` |
+| | Define | List | Drop | Recompress | Estimate |
+|---|---|---|---|---|---|
+| Rhai (both spellings) | `g.define_compression(#{..})` | `g.compressions()` | `g.drop_compression(name)` | `g.recompress(name)` | `g.estimate_compression(#{label, path, element?, codec?, min_bytes?, dictionary?})` |
+| Rust (`GraphTraversalSource`) | `define_compression(name, CompressionDefinition)`, `set_definition(Definition::compression(..))` | `list_definitions(Some(DefinitionKind::COMPRESSION))`, `compression_stats(name)` | `remove_definition(DefinitionKind::COMPRESSION, name)` | `recompress(name)` | `estimate_compression(&CompressionEstimateRequest)` |
+| Python (`Graph`) | `define_compression(name, label, path, element="vertex", min_bytes=256, dictionary=True)` | `compressions()` | `drop_compression(name)` | `recompress(name)` | `estimate_compression(label, path, element="vertex", min_bytes=None, dictionary=None)` |
+| Playground | **Catalog ▾ ▸ Compression**: the rules with their stats, a form with field errors and Estimate | | | | |
+| Dev server | `POST /api/compression/define` | `GET /api/compression` | `POST /api/compression/drop` | `POST /api/compression/recompress` | `POST /api/compression/estimate` |
+| MCP | `define_compression` | `list_compressions` | `drop_compression` | `recompress` | `estimate_compression` (also read-only) |
 
 `g.compressions()` lists each rule with `compressed_values`, `plain_bytes`, `stored_bytes` and
 `dictionary_bytes`. `g.memory_usage()` (and `MemoryStats`) adds `compressed_values`,
@@ -113,10 +170,31 @@ let rule = CompressionDefinition::new(ElementKind::Vertex, "customer", "details.
 graph.traversal_mut().define_compression("customer_cv", rule).unwrap();
 ```
 
+The estimate in Rust (`graphersal::catalog`: `CompressionEstimateRequest`, `CompressionCandidate`,
+`CompressionEstimate`); a storage implements it as `GraphStorage::estimate_compression`:
+
+```rust
+use graphersal::prelude::*;
+use graphersal::catalog::{CompressionCandidate, CompressionDefinition, CompressionEstimateRequest};
+use graphersal::storage::ElementKind;
+
+let mut graph = TraversalGraph::new();
+let request = CompressionEstimateRequest::new(ElementKind::Vertex, "customer", "bio")
+    .unwrap()
+    .with_candidates([CompressionCandidate::lz4(256, true), CompressionCandidate::lz4(512, false)]);
+let estimate = graph.traversal().estimate_compression(&request).unwrap();
+if let Some(best) = estimate.best {
+    let rule = CompressionDefinition::new(ElementKind::Vertex, "customer", "bio").unwrap();
+    let rule = estimate.candidates[best].candidate.apply_to(rule);
+    graph.traversal_mut().define_compression("customer_bio", rule).unwrap();
+}
+```
+
 **Authorization**: a rule is the resource `Definition { kind: compression, name }`: define asks
 `Create` (`Update` when it replaces one), drop `Delete`, recompress `Update`, listing `Read`. No data
 request is made (the logical data does not change). `AccessPolicy::read_only()`, the MCP read-only
-mode and a saved query (which never writes the catalog) cannot change rules.
+mode and a saved query (which never writes the catalog) cannot change rules. An estimate asks
+`Read` on the `Data` of its element kind and label.
 
 **The catalog file**: rules travel with the saved queries in one catalog file
 (`{"definitions": [..]}`, the playground's **Catalog ▾ ▸ Save catalog**, the dev server's

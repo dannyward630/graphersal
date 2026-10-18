@@ -93,3 +93,107 @@ test('label suggestions come from the statistics of the chosen element kind', ()
   assert.deepEqual(labelSuggestions(stats, 'edge'), ['knows']);
   assert.deepEqual(labelSuggestions(null, 'vertex'), []);
 });
+
+// ------------------------------------------------------------------ the estimate (issue #12)
+
+import {
+  canEstimate, draftToEstimateSpec, rateText, candidateName, estimateRows, estimateSummary,
+  histogramRows, applyCandidate,
+} from '../js/compression.js';
+
+const ESTIMATE = {
+  element: 'vertex',
+  label: 'customer',
+  path: '$.cv',
+  elements: 3,
+  valuesFound: 3,
+  stringValues: 2,
+  stringBytes: 6000,
+  sampled: false,
+  measuredValues: 2,
+  histogram: [
+    { minBytes: 0, maxBytes: 64, values: 0, bytes: 0 },
+    { minBytes: 1024, maxBytes: 4096, values: 2, bytes: 6000 },
+    { minBytes: 16384, maxBytes: null, values: 0, bytes: 0 },
+  ],
+  candidates: [
+    { codec: 'lz4', minBytes: 64, dictionary: false, compressedValues: 2, plainBytes: 6000, storedBytes: 3000, dictionaryBytes: 0, savedBytes: 3000, ratio: 0.5, current: false, encodeBytesPerSec: 3e8, decodeBytesPerSec: 2 * 1024 * 1024 },
+    { codec: 'lz4', minBytes: 64, dictionary: true, compressedValues: 2, plainBytes: 6000, storedBytes: 1000, dictionaryBytes: 2000, savedBytes: 3000, ratio: 0.17, current: true, encodeBytesPerSec: null, decodeBytesPerSec: null },
+    { codec: 'lz4', minBytes: 4096, dictionary: true, compressedValues: 0, plainBytes: 0, storedBytes: 0, dictionaryBytes: 4000, savedBytes: -4000, ratio: null, current: false },
+  ],
+  best: 0,
+  current: { name: 'cv', codec: 'lz4', minBytes: 64, dictionary: true, stats: { compressedValues: 2, plainBytes: 6000, storedBytes: 1000, dictionaryBytes: 2000 } },
+  warnings: [{ code: 'not_strings', message: '1 value(s) at $.cv are not strings; a rule compresses strings only' }],
+  elapsedMs: 1.5,
+  graphChanged: false,
+};
+
+test('estimate: the form asks once label and path are filled, without its threshold', () => {
+  assert.equal(canEstimate(newDraft()), false);
+  assert.equal(canEstimate({ ...newDraft(), label: 'customer', path: ' ' }), false);
+  assert.equal(canEstimate({ ...newDraft(), label: 'customer', path: 'cv' }), true);
+  assert.deepEqual(draftToEstimateSpec({ ...newDraft(), element: 'edge', label: ' bought ', path: 'notes', minBytesText: '9' }), {
+    spec: { element: 'edge', label: 'bought', path: 'notes' },
+  });
+  assert.deepEqual(draftToEstimateSpec(newDraft()).errors.map((e) => e.field), ['label', 'path']);
+});
+
+test('estimate: rows with saving bars, the best and the current candidate', () => {
+  const rows = estimateRows(ESTIMATE);
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].name, 'lz4');
+  assert.equal(rows[1].name, 'lz4 + dictionary');
+  assert.equal(candidateName({ dictionary: true }), 'lz4 + dictionary');
+  assert.equal(rows[0].threshold, '≥ 64 B');
+  assert.equal(rows[0].sizes, '5.9 KiB → 2.9 KiB');
+  assert.equal(rows[0].ratio, '50 %');
+  assert.equal(rows[0].saved, '2.9 KiB');
+  assert.equal(rows[0].share, 1);
+  assert.equal(rows[0].best, true);
+  assert.equal(rows[1].best, false);
+  assert.equal(rows[1].current, true);
+  assert.equal(rows[1].dictionary, '2 KiB');
+  assert.equal(rows[0].dictionary, '—');
+  assert.equal(rows[0].reads, '2 MiB/s');
+  assert.equal(rows[1].reads, '—');
+  assert.equal(rows[2].saved, 'costs 3.9 KiB');
+  assert.equal(rows[2].share, 0);
+  assert.equal(rows[2].sizes, '—');
+  assert.equal(rateText(0), '—');
+  assert.equal(rateText(undefined), '—');
+  assert.deepEqual(estimateRows(null), []);
+  // Nothing saves: no bar at all.
+  const none = estimateRows({ ...ESTIMATE, best: null, candidates: [ESTIMATE.candidates[2]] });
+  assert.equal(none[0].share, 0);
+  assert.equal(none[0].best, false);
+});
+
+test('estimate: the summary says what was found, that nothing changed, and the warnings', () => {
+  const s = estimateSummary(ESTIMATE);
+  assert.equal(s.found, '3 vertices labelled "customer", 3 values at $.cv, 2 strings (5.9 KiB).');
+  assert.match(estimateSummary({ ...ESTIMATE, element: 'edge', elements: 1 }).found, /^1 edge labelled/);
+  assert.equal(s.notes[0], 'Estimated on the current data; the graph was not changed.');
+  assert.match(s.notes[1], /Today the rule "cv" \(≥ 64 B, dictionary on\) holds 2 values/);
+  assert.deepEqual(s.warnings, ['1 value(s) at $.cv are not strings; a rule compresses strings only']);
+  const sampled = estimateSummary({ ...ESTIMATE, sampled: true, measuredValues: 1000, current: null, warnings: [] });
+  assert.match(sampled.notes[1], /sample of 1000 strings/);
+  assert.equal(sampled.notes.length, 2);
+  assert.deepEqual(estimateSummary(null), { found: '', notes: [], warnings: [] });
+  assert.deepEqual(histogramRows(ESTIMATE), [{ range: '1 KiB – 4 KiB', values: 2, bytes: '5.9 KiB' }]);
+  assert.deepEqual(histogramRows({ histogram: [{ minBytes: 16384, maxBytes: null, values: 1, bytes: 20000 }] }), [
+    { range: '≥ 16 KiB', values: 1, bytes: '19.5 KiB' },
+  ]);
+});
+
+test('estimate: Use copies codec, threshold and dictionary into the form and the spec', () => {
+  const draft = { ...newDraft(), name: 'cv', label: 'customer', path: 'cv' };
+  const used = applyCandidate(draft, ESTIMATE.candidates[1]);
+  assert.equal(used.minBytesText, '64');
+  assert.equal(used.dictionary, true);
+  assert.equal(used.codec, 'lz4');
+  assert.equal(used.label, 'customer');
+  assert.deepEqual(draftToSpec(used).spec, {
+    name: 'cv', element: 'vertex', label: 'customer', path: 'cv', minBytes: 64, dictionary: true, codec: 'lz4',
+  });
+  assert.equal(applyCandidate(draft, { minBytes: 512, dictionary: false }).dictionary, false);
+});

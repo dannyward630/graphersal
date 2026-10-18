@@ -389,6 +389,11 @@ export class HttpEngine extends Engine {
     return this.request('POST', 'compression/recompress', JSON.stringify({ name }));
   }
 
+  // Read-only: an estimate changes nothing and commits nothing.
+  async estimateCompression(spec) {
+    return this.request('POST', 'compression/estimate', JSON.stringify(spec));
+  }
+
   // Property indexes (`/api/indexes*`): a create or drop is a commit and shows in the change
   // feed like any other.
 

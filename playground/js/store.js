@@ -1166,6 +1166,18 @@ export async function dropCompressionRule(name) {
   return res;
 }
 
+/**
+ * The Compression form's Estimate: what rules for the form's element, label and path would hold
+ * over the current data (js/compression.js `draftToEstimateSpec`); changes nothing. Resolves to
+ * the engine's answer: `{ok, estimate}` or `{ok: false, errors}`.
+ */
+export async function estimateCompressionRule(spec) {
+  if (!state.engine || typeof state.engine.estimateCompression !== 'function') {
+    return { ok: false, errors: [{ field: 'general', message: 'This engine cannot estimate compression rules.' }] };
+  }
+  return state.engine.estimateCompression(spec);
+}
+
 /** Rebuilds a rule's dictionary and re-encodes its values; resolves to the rule's entry. */
 export async function recompressRule(name) {
   const res = await state.engine.recompress(name);

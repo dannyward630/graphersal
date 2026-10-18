@@ -32,6 +32,7 @@ mod choose_forms_tests;
 mod column_select_tests;
 mod commit_hook_tests;
 mod compressed_property_tests;
+mod compression_estimate_tests;
 mod custom_id_storage_tests;
 mod dedup_tests;
 mod definition_store_tests;

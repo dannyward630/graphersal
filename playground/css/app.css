@@ -1312,6 +1312,12 @@ dialog * { overscroll-behavior: auto; }
 .catalog-table-wrap { overflow-x: auto; }
 table.data-table.catalog-table td, table.data-table.catalog-table th { white-space: nowrap; max-width: none; }
 .catalog-actions { display: flex; gap: 4px; }
+.cc-estimate { margin: 10px 0; padding: 8px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.cc-estimate-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
+table.cc-estimate-table tr.cc-best td { background: var(--ok-soft); }
+.cc-tag { display: inline-block; padding: 0 5px; border-radius: 8px; font-size: 11px; background: var(--accent-soft); color: var(--accent); }
+.cc-bar { display: inline-block; vertical-align: middle; width: 70px; height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; }
+.cc-bar-fill { display: block; height: 100%; background: var(--ok); }
 
 /* ------------------------------------------------------------------ toasts */
 

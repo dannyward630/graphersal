@@ -18,8 +18,22 @@
 //! - **field errors** (a refused define): `[{field, message, help?}]` with `field` one of
 //!   `name`, `element`, `label`, `path`, `codec`, `minBytes`, `dictionary` or `general`, the
 //!   same shape as the saved queries' editor.
+//! - an **estimate spec** (`estimate_compression`, read-only): `{label, path, element?, codec?,
+//!   minBytes?, dictionary?}`; each optional key given narrows the candidates (none: `lz4`
+//!   with and without a dictionary at 64, 128, 256, 512 and 1024 bytes, plus the current
+//!   rule's parameters);
+//! - an **estimate** (`{ok: true, estimate}`): `{element, label, path, elements, valuesFound,
+//!   stringValues, stringBytes, sampled, measuredValues, histogram: [{minBytes, maxBytes,
+//!   values, bytes}], candidates: [{codec, minBytes, dictionary, compressedValues, plainBytes,
+//!   storedBytes, dictionaryBytes, savedBytes, ratio, current, encodeBytesPerSec,
+//!   decodeBytesPerSec}], best, current: {name, codec, minBytes, dictionary, stats} | null,
+//!   warnings: [{code, message}], elapsedMs, graphChanged: false}`; `best` is the index of the
+//!   candidate that saves the most (`null`: none saves anything).
 
-use graphersal::catalog::{Codec, CompressionDefinition};
+use graphersal::catalog::{
+    Codec, CompressionCandidate, CompressionDefinition, CompressionEstimate,
+    CompressionEstimateRequest,
+};
 use graphersal::catalog::{Definition, DefinitionKind};
 use graphersal::prelude::*;
 use graphersal::{catalog::CompressionStats, storage::ElementKind};
@@ -61,6 +75,200 @@ fn entry(name: &str, rule: &CompressionDefinition, stats: Option<CompressionStat
         "dictionary": rule.dictionary(),
         "stats": stats,
     })
+}
+
+/// The keys an estimate spec may have.
+const ESTIMATE_KEYS: [&str; 6] = [
+    "label",
+    "path",
+    "element",
+    "codec",
+    "minBytes",
+    "dictionary",
+];
+
+/// An estimate as JSON (module docs).
+pub fn estimate_json(estimate: &CompressionEstimate) -> Value {
+    let candidates: Vec<Value> = estimate
+        .candidates
+        .iter()
+        .map(|c| {
+            json!({
+                "codec": c.candidate.codec.name(),
+                "minBytes": c.candidate.min_bytes,
+                "dictionary": c.candidate.dictionary,
+                "compressedValues": c.compressed_values,
+                "plainBytes": c.plain_bytes,
+                "storedBytes": c.stored_bytes,
+                "dictionaryBytes": c.dictionary_bytes,
+                "savedBytes": c.saved_bytes,
+                "ratio": c.ratio(),
+                "current": c.current,
+                "encodeBytesPerSec": c.encode_bytes_per_sec,
+                "decodeBytesPerSec": c.decode_bytes_per_sec,
+            })
+        })
+        .collect();
+    let histogram: Vec<Value> = estimate
+        .histogram
+        .iter()
+        .map(|b| {
+            json!({
+                "minBytes": b.min_bytes,
+                "maxBytes": b.max_bytes,
+                "values": b.values,
+                "bytes": b.bytes,
+            })
+        })
+        .collect();
+    let current = estimate.current.as_ref().map(|current| {
+        json!({
+            "name": current.name,
+            "codec": current.rule.codec().name(),
+            "minBytes": current.rule.min_bytes(),
+            "dictionary": current.rule.dictionary(),
+            "stats": {
+                "compressedValues": current.stats.compressed_values,
+                "plainBytes": current.stats.plain_bytes,
+                "storedBytes": current.stats.stored_bytes,
+                "dictionaryBytes": current.stats.dictionary_bytes,
+            },
+        })
+    });
+    let warnings: Vec<Value> = estimate
+        .warnings
+        .iter()
+        .map(|w| json!({"code": w.code(), "message": w.message(estimate)}))
+        .collect();
+    json!({
+        "element": estimate.element.as_str(),
+        "label": estimate.label,
+        "path": estimate.path,
+        "elements": estimate.elements,
+        "valuesFound": estimate.values_found,
+        "stringValues": estimate.string_values,
+        "stringBytes": estimate.string_bytes,
+        "sampled": estimate.sampled,
+        "measuredValues": estimate.measured_values,
+        "histogram": histogram,
+        "candidates": candidates,
+        "best": estimate.best,
+        "current": current,
+        "warnings": warnings,
+        "elapsedMs": estimate.elapsed_micros as f64 / 1000.0,
+        "graphChanged": false,
+    })
+}
+
+/// The request of an estimate spec (module docs), or the field errors of the form.
+pub fn estimate_request(spec: &Value) -> Result<CompressionEstimateRequest, Vec<FieldError>> {
+    let Some(object) = spec.as_object() else {
+        return Err(vec![FieldError::new(
+            "general",
+            "the estimate is a JSON object {label, path, element?, codec?, minBytes?, \
+             dictionary?}",
+        )]);
+    };
+    if let Some(unknown) = object
+        .keys()
+        .find(|key| !ESTIMATE_KEYS.contains(&key.as_str()))
+    {
+        return Err(vec![FieldError::new(
+            "general",
+            format!(
+                "unknown key '{unknown}' (the keys are {})",
+                ESTIMATE_KEYS.join(", ")
+            ),
+        )]);
+    }
+    let mut errors = Vec::new();
+    let mut text = |key: &str| match spec.get(key) {
+        None | Some(Value::Null) => None,
+        Some(Value::String(text)) if text.trim().is_empty() => None,
+        Some(Value::String(text)) => Some(text.trim().to_string()),
+        Some(_) => {
+            errors.push(FieldError::new(key, format!("{key} must be a string")));
+            None
+        }
+    };
+    let label = text("label").unwrap_or_default();
+    let path = text("path").unwrap_or_default();
+    let element = text("element");
+    let codec = text("codec");
+    if label.is_empty() {
+        errors.push(FieldError::new(
+            "label",
+            "name the vertex or edge label to estimate",
+        ));
+    }
+    if path.is_empty() {
+        errors.push(FieldError::new(
+            "path",
+            "name the property path, for example cv or details.career.cv",
+        ));
+    }
+    let element = match element.as_deref() {
+        None | Some("vertex") => ElementKind::Vertex,
+        Some("edge") => ElementKind::Edge,
+        Some(other) => {
+            errors.push(FieldError::new(
+                "element",
+                format!("'{other}' is not vertex or edge"),
+            ));
+            ElementKind::Vertex
+        }
+    };
+    let codec = match codec.as_deref() {
+        None => None,
+        Some(name) => match Codec::from_name(name) {
+            Some(codec) => Some(codec),
+            None => {
+                errors.push(FieldError::new(
+                    "codec",
+                    format!("unknown codec '{name}' (this version has lz4)"),
+                ));
+                None
+            }
+        },
+    };
+    let min_bytes = match spec.get("minBytes") {
+        None | Some(Value::Null) => None,
+        Some(value) => match value.as_u64().and_then(|n| u32::try_from(n).ok()) {
+            Some(n) => Some(n),
+            None => {
+                errors.push(FieldError::new(
+                    "minBytes",
+                    "minBytes is a whole number of bytes (1 to 16777216)",
+                ));
+                None
+            }
+        },
+    };
+    let dictionary = match spec.get("dictionary") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(flag)) => Some(*flag),
+        Some(_) => {
+            errors.push(FieldError::new("dictionary", "dictionary is true or false"));
+            None
+        }
+    };
+    let mut parsed = None;
+    if !path.is_empty() {
+        match path.parse::<JsonPath>() {
+            Ok(path) => parsed = Some(path),
+            Err(err) => errors.push(FieldError::new("path", err.to_string())),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let Some(path) = parsed else {
+        return Err(vec![FieldError::new("path", "the path is missing")]);
+    };
+    let request = CompressionEstimateRequest::with_path(element, label, path)
+        .with_candidates(CompressionCandidate::matching(codec, min_bytes, dictionary));
+    request.validate().map_err(|err| vec![field_of(&err)])?;
+    Ok(request)
 }
 
 /// The editor field a catalog error of a compression rule belongs to.
@@ -255,6 +463,28 @@ impl Session {
         Ok(self.get_compression(&name))
     }
 
+    /// Estimates compression rules for the `(element, label, path)` of an estimate spec
+    /// (module docs) without changing the graph: answers `{ok: true, estimate}` or `{ok:
+    /// false, errors: [{field, message, help?}]}` (a storage without compressed properties, a
+    /// cancelled estimate: one `general` error), never fails otherwise. Bounded (sampled above
+    /// the engine's caps) and cancellable through [`Self::cancel_token`].
+    pub fn estimate_compression(&self, spec: &Value) -> Value {
+        let answer = estimate_request(spec).and_then(|request| {
+            let cancel = self.cancel_token();
+            cancel.reset();
+            self.graph
+                .estimate_compression_json(&request.with_cancel(cancel))
+                .map_err(|message| vec![FieldError::new("general", message)])
+        });
+        match answer {
+            Ok(estimate) => json!({"ok": true, "estimate": estimate}),
+            Err(errors) => json!({
+                "ok": false,
+                "errors": errors.iter().map(FieldError::to_value).collect::<Vec<_>>(),
+            }),
+        }
+    }
+
     /// Drops the compression rule `name` (its values are decompressed in the same commit):
     /// `true`, or `false` when there was none.
     pub fn drop_compression(&mut self, name: &str) -> Result<bool, String> {
@@ -295,6 +525,18 @@ pub fn compression_in<S: GraphStorage>(g: &S, name: &str) -> Value {
         Some(rule) => entry(name, rule, g.compression_stats(name)),
         None => Value::Null,
     }
+}
+
+/// The estimate of `request` over `g` as JSON ([`estimate_json`]); an error (a storage without
+/// compressed properties: `Unsupported`; a cancelled estimate) as its diagnostic text.
+pub fn estimate_compression_in<S: GraphStorage>(
+    g: &S,
+    request: &CompressionEstimateRequest,
+) -> Result<Value, String> {
+    GraphTraversalSource::new(g)
+        .estimate_compression(request)
+        .map(|estimate| estimate_json(&estimate))
+        .map_err(|err| format_diagnostic(&*err))
 }
 
 /// Stores the checked compression rule `definition` in `g` in ONE commit, with the form's
@@ -422,6 +664,83 @@ mod tests {
                 .unwrap()
                 .contains("drop_compression")
         );
+    }
+
+    #[test]
+    fn an_estimate_answers_candidates_and_changes_nothing() {
+        let mut s = session_with_text();
+        let info = s.statistics();
+        let answer = s.estimate_compression(&json!({"label": "customer", "path": "cv"}));
+        assert_eq!(answer["ok"], true, "{answer}");
+        let estimate = &answer["estimate"];
+        assert_eq!(estimate["path"], "$.cv");
+        assert_eq!(estimate["valuesFound"], 1);
+        assert_eq!(estimate["graphChanged"], false);
+        assert_eq!(estimate["candidates"].as_array().unwrap().len(), 10);
+        assert_eq!(estimate["histogram"][0]["minBytes"], 0);
+        assert!(estimate["best"].is_u64(), "{estimate}");
+        assert_eq!(estimate["current"], Value::Null);
+        assert_eq!(s.statistics(), info, "nothing changed");
+        assert_eq!(s.compression_count(), 0);
+        // One candidate; defining it gives what it promised.
+        let one = s.estimate_compression(&json!({
+            "label": "customer", "path": "cv", "minBytes": 64, "dictionary": false
+        }));
+        let candidates = one["estimate"]["candidates"].as_array().unwrap().clone();
+        assert_eq!(candidates.len(), 1, "{one}");
+        let defined = s.define_compression(&json!({
+            "name": "cv", "label": "customer", "path": "cv", "minBytes": 64, "dictionary": false
+        }));
+        for key in [
+            "compressedValues",
+            "plainBytes",
+            "storedBytes",
+            "dictionaryBytes",
+        ] {
+            assert_eq!(defined["rule"]["stats"][key], candidates[0][key], "{key}");
+        }
+        let again = s.estimate_compression(&json!({"label": "customer", "path": "cv"}));
+        assert_eq!(again["estimate"]["current"]["name"], "cv", "{again}");
+        assert_eq!(
+            again["estimate"]["current"]["stats"]["storedBytes"],
+            candidates[0]["storedBytes"]
+        );
+    }
+
+    #[test]
+    fn an_estimate_spec_has_field_errors() {
+        let s = session_with_text();
+        let fields = |spec: Value| -> Vec<String> {
+            let answer = s.estimate_compression(&spec);
+            assert_eq!(answer["ok"], false, "{answer}");
+            answer["errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e["field"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(fields(json!({"path": "cv"})), ["label"]);
+        assert_eq!(
+            fields(json!({"label": "customer", "path": "a[0]"})),
+            ["path"]
+        );
+        assert_eq!(
+            fields(json!({"label": "customer", "path": "cv", "minBytes": 0})),
+            ["minBytes"]
+        );
+        assert_eq!(
+            fields(json!({
+                "label": "customer", "path": "cv", "element": "node", "codec": "zip",
+                "dictionary": 1
+            })),
+            ["element", "codec", "dictionary"]
+        );
+        assert_eq!(
+            fields(json!({"label": "customer", "path": "cv", "name": "x"})),
+            ["general"]
+        );
+        assert_eq!(fields(json!("cv")), ["general"]);
     }
 
     /// The modern graph twice: as a `TraversalGraph` and wrapped in the `Forwarding` storage

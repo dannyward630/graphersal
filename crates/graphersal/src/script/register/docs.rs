@@ -377,6 +377,9 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
     "traversal" "emit":
         "Within repeat(): also emits the traversers of intermediate iterations (all, or those that match the child traversal or predicate).",
         "g.v(1).repeat(__.out()).times(2).emit().values(\"name\").to_list()" => "[\"josh\", \"lop\", \"vadas\", \"ripple\", \"lop\"]";
+    "traversal" "estimate_compression":
+        "Measures what compression rules for a label and path would save on the current values (lz4 with and without a dictionary at several min_bytes, or the given ones), without changing the graph.",
+        "{ let e = g.estimate_compression(#{label: \"person\", path: \"name\"}); [e.values_found, e.candidates.len(), e.warnings[0].code] }" => "[4, 10, \"nothing_qualifies\"]";
     "traversal" "execute":
         "Runs the traversal and returns an Execution with results, error and optionally the profile; it never throws (see the book page Profiling and execute()).",
         "g.v().count().execute().results" => "[6]";

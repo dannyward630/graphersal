@@ -163,6 +163,18 @@ pub trait AnyGraph: Send + Sync + 'static + sealed::Sealed {
     /// a storage without compressed properties.
     fn compression_stats(&self, name: &str) -> Option<CompressionStats>;
 
+    /// [`GraphTraversalSource::estimate_compression`] under the read lock: what each candidate
+    /// rule would hold over the current values at `(element, label, path)`; changes nothing. A
+    /// storage without compressed properties fails with [`GraphError::Unsupported`] (the
+    /// [`GraphStorage::estimate_compression`] default); a cancelled estimate (the request's or
+    /// the running thread's [`CancelToken`](crate::CancelToken)) with
+    /// [`TraverserError::Cancelled`](crate::TraverserError::Cancelled). Unauthorized: the
+    /// front end asks its authorizer first.
+    fn estimate_compression(
+        &self,
+        request: &crate::graph::CompressionEstimateRequest,
+    ) -> TraverserResult<crate::graph::CompressionEstimate>;
+
     /// [`GraphStorage::property_indexes`] of the storage: the property indexes it serves, with
     /// their stats (empty on a storage without property indexes).
     fn property_indexes(&self) -> Vec<crate::graph::PropertyIndexInfo>;
@@ -363,6 +375,13 @@ where
 
     fn compression_stats(&self, name: &str) -> Option<CompressionStats> {
         self.read().compression_stats(name)
+    }
+
+    fn estimate_compression(
+        &self,
+        request: &crate::graph::CompressionEstimateRequest,
+    ) -> TraverserResult<crate::graph::CompressionEstimate> {
+        GraphTraversalSource::new(&*self.read()).estimate_compression(request)
     }
 
     fn embed_property(

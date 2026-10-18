@@ -1,9 +1,10 @@
 // The models of the Catalog dropdown and its Compression manager: what the engine's
 // `listCompressions()` returns (crates/graphersal-session `compression.rs`: `[{name, element,
 // label, path, codec, minBytes, dictionary, stats: {compressedValues, plainBytes, storedBytes,
-// dictionaryBytes}}]`) turned into rows to show, the form's draft and its spec, and the items of
-// the Catalog dropdown with their counts. Pure functions, no Vue, no DOM (tested under Node:
-// tests/compression.test.mjs).
+// dictionaryBytes}}]`) turned into rows to show, the form's draft and its spec, the form's
+// estimate (`estimateCompression()`: the candidates measured on the current data, the best one,
+// "Use"), and the items of the Catalog dropdown with their counts. Pure functions, no Vue, no DOM
+// (tested under Node: tests/compression.test.mjs).
 
 import { formatBytes } from './statistics.js';
 
@@ -163,8 +164,118 @@ export function draftToSpec(draft) {
     minBytes,
     dictionary: !!draft.dictionary,
   };
+  // A codec appears only once "Use" of an estimate chose one (the engine's default is lz4).
+  if (draft.codec) spec.codec = draft.codec;
   if (draft.replaces) spec.replaces = draft.replaces;
   return { spec };
+}
+
+// ------------------------------------------------------------------ the estimate
+
+/** Whether the form can ask for an estimate: the label and the path are filled. */
+export function canEstimate(draft) {
+  return !!(draft && String(draft.label || '').trim() && String(draft.path || '').trim());
+}
+
+/**
+ * The spec `estimateCompression` takes for the form's element, label and path (every
+ * candidate is measured, so the threshold and dictionary of the form are not sent), or the
+ * field errors of empty fields.
+ * @returns {{spec: object} | {errors: Array<{field:string, message:string}>}}
+ */
+export function draftToEstimateSpec(draft) {
+  const errors = [];
+  const label = String((draft && draft.label) || '').trim();
+  const path = String((draft && draft.path) || '').trim();
+  if (!label) errors.push({ field: 'label', message: 'Name the vertex or edge label to estimate.' });
+  if (!path) errors.push({ field: 'path', message: 'Name the property path to estimate, for example cv.' });
+  if (errors.length) return { errors };
+  return { spec: { element: draft.element === 'edge' ? 'edge' : 'vertex', label, path } };
+}
+
+/** `123456789` bytes per second -> `118 MiB/s`; `—` without a measurement. */
+export function rateText(bytesPerSec) {
+  if (typeof bytesPerSec !== 'number' || !Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return '—';
+  return `${formatBytes(Math.round(bytesPerSec))}/s`;
+}
+
+/** A candidate's name: `lz4`, `lz4 + dictionary`. */
+export function candidateName(candidate) {
+  return `${candidate.codec || 'lz4'}${candidate.dictionary ? ' + dictionary' : ''}`;
+}
+
+/**
+ * The rows of the estimate table (an engine answer's `estimate`: crates/graphersal-session
+ * `compression.rs`): one per candidate with its numbers as text, the share of the largest
+ * saving for the bar (0..1; 0 for a candidate that saves nothing), and whether it is the best
+ * one or the current rule's parameters.
+ */
+export function estimateRows(estimate) {
+  const candidates = (estimate && estimate.candidates) || [];
+  const most = Math.max(0, ...candidates.map((c) => c.savedBytes || 0));
+  return candidates.map((c, index) => ({
+    index,
+    candidate: c,
+    name: candidateName(c),
+    threshold: `≥ ${formatBytes(c.minBytes)}`,
+    values: c.compressedValues || 0,
+    sizes: c.compressedValues ? `${formatBytes(c.plainBytes)} → ${formatBytes(c.storedBytes)}` : '—',
+    dictionary: c.dictionary ? (c.dictionaryBytes ? formatBytes(c.dictionaryBytes) : 'none (too little text)') : '—',
+    saved: c.savedBytes > 0 ? formatBytes(c.savedBytes) : (c.savedBytes < 0 ? `costs ${formatBytes(-c.savedBytes)}` : '—'),
+    share: most > 0 && c.savedBytes > 0 ? c.savedBytes / most : 0,
+    ratio: ratioText(c),
+    reads: rateText(c.decodeBytesPerSec),
+    best: estimate.best === index,
+    current: !!c.current,
+  }));
+}
+
+/**
+ * The lines above the estimate table: what was found at the path, whether it was sampled, the
+ * current rule as the baseline, and the engine's warnings.
+ */
+export function estimateSummary(estimate) {
+  if (!estimate) return { found: '', notes: [], warnings: [] };
+  const element = estimate.element === 'edge' ? 'edge' : 'vertex';
+  const n = (count, one, many) => `${count} ${count === 1 ? one : many}`;
+  const found = `${n(estimate.elements || 0, element, element === 'edge' ? 'edges' : 'vertices')} labelled "${estimate.label}", `
+    + `${n(estimate.valuesFound || 0, 'value', 'values')} at ${estimate.path}, `
+    + `${n(estimate.stringValues || 0, 'string', 'strings')} (${formatBytes(estimate.stringBytes || 0)}).`;
+  const notes = ['Estimated on the current data; the graph was not changed.'];
+  if (estimate.sampled) {
+    notes.push(`Measured on a sample of ${estimate.measuredValues} strings and extrapolated (the counts and sizes are exact).`);
+  }
+  const cur = estimate.current;
+  if (cur) {
+    const s = cur.stats || {};
+    notes.push(`Today the rule "${cur.name}" (≥ ${formatBytes(cur.minBytes)}, dictionary ${cur.dictionary ? 'on' : 'off'}) `
+      + `holds ${s.compressedValues || 0} values, ${formatBytes(s.plainBytes || 0)} → ${formatBytes(s.storedBytes || 0)}.`);
+  }
+  const warnings = (estimate.warnings || []).map((w) => w.message || w.code);
+  return { found, notes, warnings };
+}
+
+/**
+ * The size histogram as rows: `0 B – 64 B: 3 values (168 B)`; empty buckets left out.
+ */
+export function histogramRows(estimate) {
+  return ((estimate && estimate.histogram) || [])
+    .filter((b) => b.values > 0)
+    .map((b) => ({
+      range: b.maxBytes == null ? `≥ ${formatBytes(b.minBytes)}` : `${formatBytes(b.minBytes)} – ${formatBytes(b.maxBytes)}`,
+      values: b.values,
+      bytes: formatBytes(b.bytes),
+    }));
+}
+
+/** "Use": the form's draft with a candidate's codec, threshold and dictionary. */
+export function applyCandidate(draft, candidate) {
+  return {
+    ...draft,
+    codec: candidate.codec || 'lz4',
+    minBytesText: String(candidate.minBytes),
+    dictionary: !!candidate.dictionary,
+  };
 }
 
 /**

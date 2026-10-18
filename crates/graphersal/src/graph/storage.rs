@@ -499,6 +499,21 @@ pub trait GraphStorage: Send + Sync {
         None
     }
 
+    /// Estimates compression rules for one `(element, label, path)` without changing anything
+    /// (book page "Compressed Properties", section "Estimating the gain"): what each candidate
+    /// of `request` would hold over the current values. Reads only: no unit, no commit, no
+    /// catalog change. A storage should stop early, with `cancelled` set, when
+    /// [`CompressionEstimateRequest::cancel_token`](crate::graph::CompressionEstimateRequest::cancel_token)
+    /// is cancelled. Default: [`GraphError::Unsupported`] (a storage without compressed
+    /// properties).
+    fn estimate_compression(
+        &self,
+        request: &crate::graph::CompressionEstimateRequest,
+    ) -> Result<crate::graph::CompressionEstimate, GraphError> {
+        let _ = request;
+        Err(GraphError::unsupported("compressed properties"))
+    }
+
     /// The property indexes this storage maintains and serves (book page "Property Indexes"),
     /// with their current stats: one entry per index the lookups below answer. The optimizer
     /// reads it once per run to pick an index, so it must be cheap (no walk over the data).
@@ -2207,6 +2222,13 @@ impl GraphStorage for TraversalGraph {
         TraversalGraph::compression_stats(self, name)
     }
 
+    fn estimate_compression(
+        &self,
+        request: &crate::graph::CompressionEstimateRequest,
+    ) -> Result<crate::graph::CompressionEstimate, GraphError> {
+        Ok(TraversalGraph::estimate_compression(self, request))
+    }
+
     fn property_indexes(&self) -> Vec<crate::graph::PropertyIndexInfo> {
         self.property_index_infos()
     }
@@ -2657,6 +2679,14 @@ impl<G: GraphStorage> GraphStorage for &G {
     }
 
     #[inline]
+    fn estimate_compression(
+        &self,
+        request: &crate::graph::CompressionEstimateRequest,
+    ) -> Result<crate::graph::CompressionEstimate, GraphError> {
+        (**self).estimate_compression(request)
+    }
+
+    #[inline]
     fn property_indexes(&self) -> Vec<crate::graph::PropertyIndexInfo> {
         (**self).property_indexes()
     }
@@ -3031,6 +3061,14 @@ impl<G: GraphStorage> GraphStorage for Box<G> {
     #[inline]
     fn compression_stats(&self, name: &str) -> Option<crate::graph::CompressionStats> {
         (**self).compression_stats(name)
+    }
+
+    #[inline]
+    fn estimate_compression(
+        &self,
+        request: &crate::graph::CompressionEstimateRequest,
+    ) -> Result<crate::graph::CompressionEstimate, GraphError> {
+        (**self).estimate_compression(request)
     }
 
     #[inline]
@@ -3461,6 +3499,14 @@ impl<G: GraphStorage> GraphStorage for &mut G {
     #[inline]
     fn compression_stats(&self, name: &str) -> Option<crate::graph::CompressionStats> {
         (**self).compression_stats(name)
+    }
+
+    #[inline]
+    fn estimate_compression(
+        &self,
+        request: &crate::graph::CompressionEstimateRequest,
+    ) -> Result<crate::graph::CompressionEstimate, GraphError> {
+        (**self).estimate_compression(request)
     }
 
     #[inline]
@@ -4028,6 +4074,13 @@ impl GraphStorage for Arc<TraversalGraph> {
     #[inline]
     fn compression_stats(&self, name: &str) -> Option<crate::graph::CompressionStats> {
         TraversalGraph::compression_stats(self, name)
+    }
+
+    fn estimate_compression(
+        &self,
+        request: &crate::graph::CompressionEstimateRequest,
+    ) -> Result<crate::graph::CompressionEstimate, GraphError> {
+        Ok(TraversalGraph::estimate_compression(self, request))
     }
 
     #[inline]

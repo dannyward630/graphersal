@@ -7128,3 +7128,38 @@ fn a_traversal_where_a_step_takes_values_is_refused() {
         assert_eq!(count, expected, "{query}");
     }
 }
+
+/// A compression rule's threshold out of range: the help keeps the range and names
+/// `estimate_compression` (issue #12), whose suggested call runs.
+#[cfg(feature = "script")]
+#[test]
+fn a_min_bytes_out_of_range_help_names_estimate_compression() {
+    let mut graph = TraversalGraph::new();
+    let rule = graphersal::catalog::CompressionDefinition::new(
+        graphersal::storage::ElementKind::Vertex,
+        "customer",
+        "cv",
+    )
+    .unwrap()
+    .with_min_bytes(0);
+    let err = graph
+        .traversal_mut()
+        .define_compression("cv", rule)
+        .unwrap_err();
+    let help = err.help().expect("help");
+    assert!(
+        help.contains("min_bytes is the shortest string (in UTF-8 bytes) that is compressed"),
+        "{help}"
+    );
+    assert!(
+        help.contains(r#"g.estimate_compression(#{label: "customer", path: "cv"})"#),
+        "{help}"
+    );
+    let shared = std::sync::Arc::new(Graph::new(graph));
+    let estimate = crate::script_host::eval_value(
+        shared,
+        r#"g.estimate_compression(#{label: "customer", path: "cv"})"#,
+    )
+    .unwrap();
+    assert!(estimate.is_map());
+}

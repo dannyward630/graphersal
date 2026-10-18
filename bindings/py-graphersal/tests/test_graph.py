@@ -494,3 +494,23 @@ def test_property_indexes_create_list_serve_and_drop():
     assert graph.drop_index("weights") is True
     assert graph.drop_index("weights") is False
     assert [index["name"] for index in graph.indexes()] == ["person_age"]
+
+
+def test_compression_estimate_changes_nothing_and_matches_the_rule():
+    graph = graphersal.Graph()
+    cv = "Senior engineer, led the platform team in Rust. " * 20
+    graph.execute('g.add_v("customer").property("cv", text).to_list()', {"text": cv})
+    estimate = graph.estimate_compression("customer", "cv")
+    assert estimate["values_found"] == 1
+    assert len(estimate["candidates"]) == 10
+    assert estimate["current"] is None
+    best = estimate["candidates"][estimate["best"]]
+    assert best["saved_bytes"] > 0
+    assert graph.compressions() == []
+    one = graph.estimate_compression("customer", "cv", min_bytes=64, dictionary=False)
+    assert len(one["candidates"]) == 1
+    graph.define_compression("cv", "customer", "cv", min_bytes=64, dictionary=False)
+    assert graph.compressions()[0]["stored_bytes"] == one["candidates"][0]["stored_bytes"]
+    assert graph.estimate_compression("customer", "cv")["current"]["name"] == "cv"
+    unknown = graph.estimate_compression("custmer", "cv")
+    assert unknown["warnings"][0]["code"] == "unknown_label"

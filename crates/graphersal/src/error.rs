@@ -3299,7 +3299,9 @@ impl DiagnosticError for DefinitionError {
                     .to_string(),
                 "min_bytes" => format!(
                     "min_bytes is the shortest string (in UTF-8 bytes) that is compressed: 1 to \
-                     {} (default {}); shorter strings stay plain.",
+                     {} (default {}); shorter strings stay plain. To choose one, \
+                     g.estimate_compression(#{{label: \"customer\", path: \"cv\"}}) measures \
+                     every threshold on the current data without changing the graph.",
                     crate::graph::compression::MAX_MIN_BYTES,
                     crate::graph::compression::DEFAULT_MIN_BYTES
                 ),

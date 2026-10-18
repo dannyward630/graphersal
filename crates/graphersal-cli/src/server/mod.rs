@@ -956,6 +956,10 @@ fn route(context: &Arc<Context>, request: &mut Request) -> Result<Answer, HttpEr
             let body = json_body(request)?;
             value(context.call(move |s| s.define_compression(&body))?)
         }
+        (Method::Post, "compression/estimate") => {
+            let body = json_body(request)?;
+            value(context.call(move |s| s.estimate_compression(&body))?)
+        }
         (Method::Post, "compression/drop") => {
             let name = body_name(&json_body(request)?)?;
             let dropped = context.call_fallible(move |s| s.drop_compression(&name))?;
@@ -1055,6 +1059,7 @@ fn route(context: &Arc<Context>, request: &mut Request) -> Result<Answer, HttpEr
             | "catalog/load"
             | "compression"
             | "compression/define"
+            | "compression/estimate"
             | "compression/drop"
             | "compression/recompress"
             | "indexes"

@@ -1505,6 +1505,67 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
         Ok(self.storage.compression_stats(name))
     }
 
+    /// Estimates compression rules for one `(element, label, path)` before defining one (book
+    /// page "Compressed Properties", section "Estimating the gain"): every candidate of
+    /// `request` (default: `lz4` with and without a dictionary at several thresholds, plus the
+    /// current rule's parameters) measured over the current values, with what each would save
+    /// and how fast it reads. Read-only: no unit, no commit, the catalog and the data
+    /// unchanged. Asks an attached authorizer for `Read` on the data of that element kind and
+    /// label. An invalid request fails with its
+    /// [`DefinitionError`](crate::error::DefinitionError); a storage without compressed
+    /// properties with [`GraphError::Unsupported`](crate::error::GraphError::Unsupported); a
+    /// cancelled one ([`CancelToken`](crate::CancelToken), the request's or the running
+    /// thread's) with [`TraverserError::Cancelled`](crate::TraverserError::Cancelled).
+    ///
+    /// ```
+    /// use graphersal::prelude::*;
+    /// use graphersal::catalog::{CompressionDefinition, CompressionEstimateRequest};
+    /// use graphersal::storage::ElementKind;
+    ///
+    /// let mut graph = TraversalGraph::new();
+    /// let cv = "Senior engineer, led the platform team. ".repeat(20);
+    /// graph.traversal_mut().add_v("customer").property("cv", cv.as_str()).to_list().unwrap();
+    /// let request = CompressionEstimateRequest::new(ElementKind::Vertex, "customer", "cv").unwrap();
+    /// let estimate = graph.traversal().estimate_compression(&request).unwrap();
+    /// let best = estimate.candidates[estimate.best.unwrap()].clone();
+    /// // What the estimate promised is what the rule holds.
+    /// let rule = CompressionDefinition::new(ElementKind::Vertex, "customer", "cv").unwrap();
+    /// graph.traversal_mut().define_compression("cv", best.candidate.apply_to(rule)).unwrap();
+    /// let stats = graph.traversal().compression_stats("cv").unwrap().unwrap();
+    /// assert_eq!(stats.stored_bytes, best.stored_bytes);
+    /// ```
+    pub fn estimate_compression(
+        &self,
+        request: &crate::graph::CompressionEstimateRequest,
+    ) -> TraverserResult<crate::graph::CompressionEstimate> {
+        if let Some(restrictions) = &self.restrictions {
+            restrictions.authorize(
+                "estimate_compression",
+                &crate::graph::AccessRequest::new(
+                    crate::graph::Action::Read,
+                    crate::graph::Resource::data(Some(request.element()), Some(request.label())),
+                ),
+            )?;
+        }
+        request.validate().map_err(crate::error::GraphError::from)?;
+        let estimate = match (
+            request.cancel_token(),
+            crate::traversal::cancel::CancelToken::current(),
+        ) {
+            (None, Some(token)) => self
+                .storage
+                .estimate_compression(&request.clone().with_cancel(token))?,
+            _ => self.storage.estimate_compression(request)?,
+        };
+        if estimate.cancelled {
+            return Err(TraverserError::Cancelled {
+                elapsed_ms: estimate.elapsed_micros / 1000,
+            }
+            .into());
+        }
+        Ok(estimate)
+    }
+
     /// Declares the property index `name` (book page "Property Indexes"): the `element`s
     /// labelled `label`, ordered by their top-level property `key`. A `v()`/`e()` with that
     /// label and a `has()` on that key (equality, `P.within`, a range) then reads the index

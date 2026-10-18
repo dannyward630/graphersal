@@ -693,6 +693,16 @@ impl Playground {
             .map_err(|e| JsError::new(&e))
     }
 
+    /// Estimates compression rules for an estimate spec (JSON text `{label, path, element?,
+    /// codec?, minBytes?, dictionary?}`) without changing the graph: `{ok, estimate}` or `{ok:
+    /// false, errors: [{field, message, help?}]}` (`graphersal_session::compression`); never
+    /// throws for a refused spec.
+    #[wasm_bindgen(js_name = estimateCompression)]
+    pub fn estimate_compression(&self, spec: &str) -> Result<String, JsError> {
+        let spec = body_json(spec)?;
+        Ok(to_text(&self.session.estimate_compression(&spec)))
+    }
+
     /// The property indexes with their current stats, as JSON text: `[{name, element, label,
     /// key, served, stats}]` (`graphersal_session::indexes`).
     #[wasm_bindgen(js_name = listIndexes)]
@@ -795,6 +805,30 @@ mod tests {
         assert_eq!(json(p.drop_query("names").unwrap())["dropped"], true);
         assert_eq!(json(p.load_catalog(&file, true).unwrap())["loaded"], 1);
         assert_eq!(json(p.info())["savedQueries"], 1);
+    }
+
+    #[test]
+    fn a_compression_estimate_through_the_playground_api() {
+        let json = |text: String| -> Value { serde_json::from_str(&text).expect("JSON") };
+        let mut p = Playground::new();
+        p.load_sample("modern").unwrap();
+        let answer = json(
+            p.estimate_compression(r#"{"label": "person", "path": "name", "minBytes": 1}"#)
+                .unwrap(),
+        );
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert_eq!(answer["estimate"]["valuesFound"], 4);
+        assert_eq!(answer["estimate"]["graphChanged"], false);
+        assert_eq!(
+            answer["estimate"]["candidates"].as_array().unwrap().len(),
+            2
+        );
+        let refused = json(
+            p.estimate_compression(r#"{"label": "person", "path": "a[0]"}"#)
+                .unwrap(),
+        );
+        assert_eq!(refused["errors"][0]["field"], "path");
+        assert_eq!(json(p.info())["compressionRules"], 0);
     }
 
     #[test]

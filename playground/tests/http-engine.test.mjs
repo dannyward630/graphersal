@@ -335,3 +335,12 @@ test('compression rules map to /api/compression*', async () => {
   assert.deepEqual(JSON.parse(calls.find((c) => c.path === '/api/compression/drop').init.body), { name: 'cv' });
   assert.equal((await engine.recompress('cv')).name, 'cv');
 });
+
+test('a compression estimate maps to POST /api/compression/estimate', async () => {
+  const answer = { ok: true, estimate: { valuesFound: 4, candidates: [], best: null, graphChanged: false } };
+  const { fetch, calls } = fakeFetch({ 'POST /api/compression/estimate': [200, answer] });
+  const engine = new HttpEngine(INFO, { base: BASE, fetch });
+  const spec = { element: 'vertex', label: 'person', path: 'name' };
+  assert.deepEqual(await engine.estimateCompression(spec), answer);
+  assert.deepEqual(JSON.parse(calls.find((c) => c.path === '/api/compression/estimate').init.body), spec);
+});

@@ -616,6 +616,15 @@ export class Engine {
   async recompress(name) { throw notImplemented('recompress'); }
 
   /**
+   * Estimates compression rules for `{label, path, element?, codec?, minBytes?, dictionary?}`
+   * without changing the graph: `{ok: true, estimate: {valuesFound, stringValues, histogram,
+   * candidates: [{codec, minBytes, dictionary, compressedValues, plainBytes, storedBytes,
+   * dictionaryBytes, savedBytes, ratio, current, decodeBytesPerSec, ...}], best, current,
+   * warnings, graphChanged: false, ...}}` or `{ok: false, errors: [{field, message, help?}]}`.
+   */
+  async estimateCompression(spec) { throw notImplemented('estimateCompression'); }
+
+  /**
    * The property indexes with their current stats: `[{name, element, label, key, served,
    * stats: {entries, distinctValues, bytes} | null}]` (`stats` null when the storage does not
    * serve indexes).

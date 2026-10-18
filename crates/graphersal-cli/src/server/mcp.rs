@@ -45,10 +45,11 @@
 //! user opens a read-only view of a past state there, the view is server-wide: `graph_info`
 //! carries a `note` saying so, and every tool error carries it too (a write is refused).
 //!
-//! Compression rules (`book/src/users_guide/compressed_properties.md`): `list_compressions` (also in
-//! read-only mode), `define_compression`, `drop_compression` and `recompress` (refused in
-//! read-only mode) wrap the session's `compression` operations; a define or drop is a commit
-//! recorded in the change feed with the client `mcp`.
+//! Compression rules (`book/src/users_guide/compressed_properties.md`): `list_compressions` and
+//! `estimate_compression` (both reading, also in read-only mode: an estimate changes nothing),
+//! `define_compression`, `drop_compression` and `recompress` (refused in read-only mode) wrap
+//! the session's `compression` operations; a define or drop is a commit recorded in the change
+//! feed with the client `mcp`.
 //!
 //! Property indexes (`book/src/users_guide/property_indexes.md`): `list_indexes` (also in
 //! read-only mode), `create_index` and `drop_index` (refused in read-only mode, where the
@@ -449,8 +450,9 @@ new query, check `list_saved_queries`: saved queries are named, parameterized qu
 stored in the graph; run one with `run_saved_query` {name, params} instead of writing it again. \
 Saved queries marked `writes: true` change data (their `effects` say what); run them only when \
 the user asked for that change. Large text that queries rarely read (CVs, descriptions) can be kept \
-compressed in memory with a compression rule: `list_compressions`, `define_compression`, \
-`drop_compression`, `recompress` (reads stay plain). A query that filters a label on a \
+compressed in memory with a compression rule: `list_compressions`, `estimate_compression` \
+(measures the candidate rules on the current data first, changes nothing), \
+`define_compression`, `drop_compression`, `recompress` (reads stay plain). A query that filters a label on a \
 property (`g.v().has_label(\"person\").has(\"age\", P.gt(30))`) and is slow on a large \
 graph can be served by a property index: `list_indexes`, `create_index` {label, key, \
 element?, type?, transform?}, `drop_index`; results never change, `.profile()` names the index \
@@ -658,6 +660,32 @@ fn all_tools() -> Vec<Tool> {
              Each has name, element, label, path, codec, minBytes, dictionary and its current \
              stats (compressedValues, plainBytes, storedBytes, dictionaryBytes).",
             no_args(),
+        ),
+        tool(
+            "estimate_compression",
+            "Estimate a compression rule",
+            Kind::Read,
+            "Measures what compression rules for one vertex or edge label and property path \
+             would hold over the current values, WITHOUT changing the graph: lz4 with and \
+             without a dictionary at minBytes 64, 128, 256, 512 and 1024 (or only the codec, \
+             minBytes and dictionary given), plus the rule that covers the path today. Answers \
+             valuesFound, stringValues, a size histogram, per candidate compressedValues, \
+             plainBytes, storedBytes, dictionaryBytes, savedBytes, ratio and the read \
+             (decode) speed, the best candidate's index and warnings (unknown label, no value \
+             at the path, values that are not strings). Run it before define_compression to \
+             choose minBytes and dictionary, and to catch a typo in the label or path.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string", "description": "The vertex or edge label."},
+                    "path": {"type": "string", "description": "The property path: a name or a jpath of names (details.career.cv)."},
+                    "element": {"type": "string", "enum": ["vertex", "edge"], "description": "Default vertex."},
+                    "codec": {"type": "string", "enum": ["lz4"], "description": "Measure only this codec (default: every codec)."},
+                    "minBytes": {"type": "integer", "minimum": 1, "description": "Measure only this threshold (default: several)."},
+                    "dictionary": {"type": "boolean", "description": "Measure only with (true) or without (false) a dictionary (default: both)."},
+                },
+                "required": ["label", "path"],
+            }),
         ),
         tool(
             "define_compression",
@@ -1126,6 +1154,31 @@ fn run_tool(
             } else {
                 pretty(&list)
             })
+        }
+        "estimate_compression" => {
+            let mut spec = args.clone();
+            // `min_bytes` (the DSL's spelling) is accepted too.
+            if let Some(map) = spec.as_object_mut()
+                && let Some(value) = map.remove("min_bytes")
+            {
+                map.entry("minBytes").or_insert(value);
+            }
+            let answer = context
+                .call(move |s| s.estimate_compression(&spec))
+                .map_err(http_failed)?;
+            if answer["ok"] == json!(true) {
+                Ok(format!(
+                    "Estimate (the graph was not changed; best is the index of the candidate \
+                     that saves the most, savedBytes = plainBytes - storedBytes - \
+                     dictionaryBytes):\n{}",
+                    pretty(&answer["estimate"])
+                ))
+            } else {
+                Err(format!(
+                    "The estimate was refused:\n{}",
+                    pretty(&answer["errors"])
+                ))
+            }
         }
         "define_compression" => {
             let mut spec = args.clone();
