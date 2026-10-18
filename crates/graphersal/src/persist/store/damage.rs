@@ -480,7 +480,7 @@ fn scan_snapshot(
     path: &DirPath,
     max_depth: usize,
     damage: &mut Vec<Damage>,
-) -> Option<SnapScan> {
+) -> Result<Option<SnapScan>, PersistError> {
     let rel = relative(dir, path);
     let manifest_rel = format!("{rel}/{MANIFEST_FILE}");
     let bytes = match read_bounded(&path.join(MANIFEST_FILE), 256 << 20) {
@@ -489,7 +489,7 @@ fn scan_snapshot(
             let mut item = Damage::new(DamageKind::Manifest, &manifest_rel, err.to_string());
             item.snapshot = Some(seq);
             damage.push(item);
-            return None;
+            return Ok(None);
         }
     };
     if bytes.len() >= 2 * FIXED_BYTES + 4 {
@@ -528,7 +528,7 @@ fn scan_snapshot(
             item.offset = Some(err.offset);
             item.snapshot = Some(seq);
             damage.push(item);
-            return None;
+            return Ok(None);
         }
     };
     if manifest.fixed.commit_seq != seq {
@@ -542,7 +542,7 @@ fn scan_snapshot(
         );
         item.snapshot = Some(seq);
         damage.push(item);
-        return None;
+        return Ok(None);
     }
 
     let schema_rel = format!("{rel}/{SCHEMA_FILE}");
@@ -555,8 +555,15 @@ fn scan_snapshot(
                 return Err("length or checksum differs from the manifest".to_string());
             }
             let text = std::str::from_utf8(&bytes).map_err(|_| "not UTF-8".to_string())?;
-            GraphSchema::from_json(text).map_err(|err| format!("invalid schema: {err}"))
+            Ok(text.to_string())
         });
+    // The checksum held: a schema this version cannot parse was written by a newer one
+    // (format spec 16). Salvaging without it would drop it: refused, never damage.
+    let schema = match schema {
+        Ok(text) => Ok(super::super::snapshot::parse_stored_schema(&text, 0, None)
+            .map_err(|err| err.at(&schema_rel, 0))?),
+        Err(reason) => Err(reason),
+    };
     let (schema, schema_damage) = match schema {
         Ok(schema) => (Some(schema), None),
         Err(reason) => {
@@ -605,7 +612,19 @@ fn scan_snapshot(
         let mut all_ok = true;
         for row in rows {
             let ok = match &bytes {
-                Ok(bytes) => chunk_at(bytes, row).map(|_| ()),
+                Ok(bytes) => match chunk_at(bytes, row) {
+                    // An intact chunk of a codec this build lacks (zstd without
+                    // `persist-zstd`, format spec 2): unsupported, never damage, never salvaged.
+                    Ok(raw) if super::super::codec::codec_unavailable(raw.codec) => {
+                        return Err(PersistError::unsupported_content(
+                            &segment_rel,
+                            row.chunk.offset,
+                            "a zstd chunk (codec 2): this build has no `persist-zstd` feature",
+                        ));
+                    }
+                    Ok(_) => Ok(()),
+                    Err(reason) => Err(reason),
+                },
                 Err(err) => Err(format!("the segment file is unreadable ({err})")),
             };
             let damage_index = match &ok {
@@ -656,7 +675,7 @@ fn scan_snapshot(
             damage.push(item);
         }
     }
-    Some(SnapScan {
+    Ok(Some(SnapScan {
         seq,
         path: path.clone(),
         manifest,
@@ -665,7 +684,7 @@ fn scan_snapshot(
         definitions,
         definitions_damage,
         chunks,
-    })
+    }))
 }
 
 /// Decodes the chunks of `scan` that `select` picks (intact ones only), segment by segment.
@@ -765,7 +784,7 @@ impl WalScan {
                 .get(commit.offset + FRAME_BYTES..commit.offset + FRAME_BYTES + commit.len)
                 .ok_or("a WAL segment shrank while it was read")?;
             let version = WalHeader::records_version(bytes);
-            f(decode_commit_in(payload, max_depth, version).map_err(|e| e.reason)?);
+            f(decode_commit_in(payload, max_depth, version, None).map_err(|e| e.reason)?);
             last = commit.seq;
         }
         Ok(())
@@ -907,7 +926,17 @@ fn scan_wal(
                 Frame::Record { len, seq, kind } => {
                     if kind == RECORD_COMMIT {
                         let payload = &bytes[at + FRAME_BYTES..at + FRAME_BYTES + len];
-                        match decode_commit_in(payload, max_depth, version) {
+                        match decode_commit_in(payload, max_depth, version, None) {
+                            // The frame's checksums held and its semantic content (a schema)
+                            // was written by a newer version (format spec 16). Salvaging
+                            // around it would drop it: refused, never damage.
+                            Err(err) if err.unsupported => {
+                                return Err(PersistError::unsupported_content(
+                                    rel,
+                                    (at + FRAME_BYTES) as u64 + err.offset,
+                                    format!("the record of commit {seq}: {}", err.reason),
+                                ));
+                            }
                             Ok(changes) if changes.commit_seq() == seq => {
                                 scan.events.push(WalEvent::Commit(CommitPos {
                                     seq,
@@ -1281,7 +1310,7 @@ pub(super) fn salvage(dir: &DirPath, read: &ReadOptions) -> Result<Salvage, Pers
     let mut scans = Vec::new();
     let listed = list_snapshots(dir)?;
     for (seq, path) in &listed {
-        if let Some(scan) = scan_snapshot(dir, *seq, path, max_depth, &mut damage) {
+        if let Some(scan) = scan_snapshot(dir, *seq, path, max_depth, &mut damage)? {
             scans.push(scan);
         }
     }

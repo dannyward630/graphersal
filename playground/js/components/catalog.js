@@ -313,12 +313,12 @@ export const CompressionManager = {
             </tr></thead>
             <tbody>
               <tr v-for="{ rule, row } in rows" :key="rule.name">
-                <td class="code">{{ row.name }}</td><td>{{ row.codec }}</td><td>{{ row.target }}</td><td class="code">{{ row.path }}</td>
+                <td class="code">{{ row.name }} <span v-if="!row.served" class="badge" :title="row.reason">not applied</span></td><td>{{ row.codec }}<div v-if="!row.served && row.reason" class="muted" style="font-size: 12px">{{ row.reason }}</div></td><td>{{ row.target }}</td><td class="code">{{ row.path }}</td>
                 <td>{{ row.threshold }}</td><td>{{ row.dictionary }}</td><td class="num">{{ row.values }}</td><td class="num">{{ row.distinct }}</td>
                 <td>{{ row.sizes }}</td><td class="num">{{ row.ratio }}</td><td class="num">{{ row.saved }}</td>
                 <td class="catalog-actions">
-                  <button type="button" class="btn small" :disabled="d.busy || state.running" @click="startEdit(rule)">Edit…</button>
-                  <button type="button" class="btn small" :disabled="d.busy || state.running" @click="recompress(rule)"
+                  <button type="button" class="btn small" :disabled="d.busy || state.running || !row.served" @click="startEdit(rule)">Edit…</button>
+                  <button type="button" class="btn small" :disabled="d.busy || state.running || !row.served" @click="recompress(rule)"
                           title="Rebuild the dictionary from the current values and re-encode them (after much data was added; a dedup rule drops the texts no element uses any more); changes no data">Recompress</button>
                   <button type="button" class="btn small danger" :disabled="d.busy || state.running" @click="drop(rule)">Drop</button>
                 </td>

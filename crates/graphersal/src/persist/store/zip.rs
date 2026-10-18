@@ -356,11 +356,31 @@ fn next_entry(
         .read_exact(&mut extra)
         .map_err(|_| corrupt(offset, "the archive ends inside an extra field"))?;
     let name = String::from_utf8(name).map_err(|_| corrupt(offset, "a name that is not UTF-8"))?;
-    if !allowed(&name) || !seen.insert(name.clone()) {
-        return Err(corrupt(
-            offset,
-            format!("unexpected or repeated entry {name:?}"),
-        ));
+    if allowed(&name) && !seen.insert(name.clone()) {
+        return Err(corrupt(offset, format!("repeated entry {name:?}")));
+    }
+    if !allowed(&name) {
+        // A well-formed name outside this version's layout: a file a newer Graphersal puts
+        // into its backups (format spec 16), not damage; this version cannot restore it.
+        let plain = name.split('/').all(|part| {
+            !part.is_empty()
+                && part.len() <= 64
+                && !part.starts_with('.')
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_')
+        });
+        if plain && name.split('/').count() <= 4 {
+            return Err(PersistError::unsupported_content(
+                "backup archive",
+                offset,
+                format!(
+                    "the entry {name:?} is not part of a store of this version (written by a \
+                     newer Graphersal?); restore the backup with that version"
+                ),
+            ));
+        }
+        return Err(corrupt(offset, format!("unexpected entry {name:?}")));
     }
     // zip64: the 64-bit sizes in the extended information field.
     let mut at = 0;
@@ -547,5 +567,30 @@ mod tests {
         assert!(!allowed("snapshots/00000000000000000000/../x"));
         assert!(!allowed("wal/1.wal"));
         assert!(!allowed("LOCK"));
+    }
+
+    /// A well-formed entry outside this version's layout is a file of a newer version (format
+    /// spec 16): refused as unsupported, never damage; a malformed name stays damage.
+    #[test]
+    fn an_entry_of_a_newer_version_is_unsupported_not_damage() {
+        use crate::persist::MemDir;
+        use crate::persist::dir::IntoStoreDir;
+        let archive = |name: &str| {
+            let mut bytes = Vec::new();
+            let mut zip = ZipWriter::new(&mut bytes);
+            zip.add_bytes(name, b"future").unwrap();
+            zip.finish().unwrap();
+            bytes
+        };
+        let dir = DirPath::root(MemDir::new().into_store_dir());
+        let err = restore(archive("CATALOG").as_slice(), &dir).unwrap_err();
+        assert!(
+            matches!(err, PersistError::UnsupportedContent { .. }),
+            "{err}"
+        );
+        assert!(err.to_string().contains("newer Graphersal"), "{err}");
+        let dir = DirPath::root(MemDir::new().into_store_dir());
+        let err = restore(archive("../GRAPH").as_slice(), &dir).unwrap_err();
+        assert!(matches!(err, PersistError::Corrupt { .. }), "{err}");
     }
 }

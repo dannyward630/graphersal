@@ -1358,3 +1358,93 @@ fn a_damaged_segment_to_copy_stops_the_checkpoint() {
         assert_eq!(list_snapshots(&root).unwrap().len(), 1, "{name}");
     }
 }
+
+/// A graph schema a newer version wrote into the snapshot (a keyword this version does not
+/// know; the checksums hold) is never damage (format spec 16): the store opens read-only with
+/// the data and without the schema, every operation that would write a state from it is
+/// refused as unsupported, verify lists no problem, nothing is changed.
+#[test]
+fn a_schema_of_a_newer_version_opens_read_only_never_damage() {
+    let (dir, root) = modern_with(1);
+    let schema =
+        br#"{"mode":"open","vertices":{"person":{"schema":{"type":"object","xFuture":true}}}}"#
+            .to_vec();
+    newest(&root)
+        .join(SCHEMA_FILE)
+        .write_atomic(&schema)
+        .unwrap();
+    edit_manifest(&root, |m| {
+        m.fixed.schema_len = schema.len() as u64;
+        m.fixed.schema_crc = crate::persist::codec::crc(&schema);
+    });
+    let before = dir.file_names();
+    let graph_file = crate::persist::StoreDir::read(&dir, "GRAPH", u64::MAX).unwrap();
+
+    let store = Store::open(&dir, StoreOptions::new()).unwrap();
+    let reason = store.read_only_reason().expect("read-only");
+    assert!(reason.contains("newer Graphersal"), "{reason}");
+    assert!(reason.contains("xFuture"), "{reason}");
+    assert!(store.maintenance().is_none());
+    assert_eq!(store.graph().read().vertex_count(), 6);
+    let err = store
+        .graph()
+        .write()
+        .traversal_mut()
+        .add_v("x")
+        .to_list()
+        .unwrap_err();
+    assert!(err.to_string().contains("read-only"), "{err}");
+    // A state without its schema is never written anywhere.
+    let fork = MemDir::new();
+    let err = store.fork(RecoveryTarget::Latest, &fork).unwrap_err();
+    assert!(
+        matches!(err, PersistError::UnsupportedContent { .. }),
+        "{err}"
+    );
+    store.close().unwrap();
+
+    let err = Store::checkpoint_dir(&dir, StoreOptions::new(), None).unwrap_err();
+    assert!(
+        matches!(err, PersistError::UnsupportedContent { .. }),
+        "{err}"
+    );
+    let help = crate::error::DiagnosticError::help(&err).unwrap();
+    assert!(help.contains("newer Graphersal"), "{help}");
+    let err = Store::repair_dir(&dir, MemDir::new()).unwrap_err();
+    assert!(
+        matches!(err, PersistError::UnsupportedContent { .. }),
+        "{err}"
+    );
+    let report = Store::verify_dir(&dir).unwrap();
+    assert!(report.is_ok(), "{report:?}");
+    assert!(
+        report.notes.iter().any(|n| n.contains("xFuture")),
+        "{report:?}"
+    );
+    assert_eq!(dir.file_names(), before);
+    assert_eq!(
+        crate::persist::StoreDir::read(&dir, "GRAPH", u64::MAX).unwrap(),
+        graph_file
+    );
+    // A backup copies the bytes as they are (its checks are checksums): the copy keeps the
+    // schema for the newer version.
+    let copy = MemDir::new();
+    Store::backup_dir(&dir, &copy).unwrap();
+    let copied = list_snapshots(&DirPath::root(copy.clone().into_store_dir()))
+        .unwrap()
+        .pop()
+        .unwrap()
+        .1;
+    assert_eq!(
+        crate::persist::StoreDir::read(
+            &copy,
+            &format!(
+                "{}/{SCHEMA_FILE}",
+                copied.relative_to(&DirPath::root(copy.clone().into_store_dir()))
+            ),
+            u64::MAX
+        )
+        .unwrap(),
+        schema
+    );
+}

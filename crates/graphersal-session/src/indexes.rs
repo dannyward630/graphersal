@@ -14,8 +14,8 @@
 //!   `transform` is `null` for an index of the values themselves (else `"to_lower"`, or the
 //!   unknown name as read); `served` is false and `stats` `null` when the index is not served,
 //!   and `reason` (else `null`) says why: the storage does not serve indexes (it keeps the
-//!   definition in its catalog, no query reads it), or the index's `type` or `transform` is
-//!   not known to this version (a newer one wrote it,
+//!   definition in its catalog, no query reads it), or the index's `type`, `transform` or
+//!   `element` is not known to this version (a newer one wrote it,
 //!   [`PropertyIndexDefinition::unserved_reason`]); `skipped` counts elements whose non-null
 //!   value the index does not hold (a `to_lower` index is used by queries only while it is 0);
 //!   `bytes` is the storage's estimate of the index's memory;
@@ -96,7 +96,7 @@ fn entry(name: &str, index: &PropertyIndexDefinition, stats: Option<PropertyInde
     });
     json!({
         "name": name,
-        "element": index.element().as_str(),
+        "element": index.element_name(),
         "label": index.label(),
         "key": index.key(),
         "type": index.index_type().as_str(),

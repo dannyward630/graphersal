@@ -472,7 +472,7 @@ fn open_chunk<'c>(
     chunk: &RawChunk<'c>,
 ) -> DecodeResult<(std::borrow::Cow<'c, [u8]>, Vec<CompactString>, usize)> {
     let payload = codec::decompress(chunk.codec, chunk.stored, chunk.uncompressed)
-        .map_err(|reason| DecodeError::new(chunk.offset, reason))?;
+        .map_err(|reason| codec::decompress_error(chunk.codec, chunk.offset, reason))?;
     let mut reader = Reader::new(&payload);
     let count = reader.count(1)?;
     let mut table = Vec::with_capacity(count);

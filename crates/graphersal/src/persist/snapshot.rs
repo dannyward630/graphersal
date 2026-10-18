@@ -143,6 +143,10 @@ impl WriteOptions {
 pub struct ReadOptions {
     memory_limit: Option<u64>,
     max_value_depth: usize,
+    /// Set only for a READ-ONLY load (a Store opened read-only, format spec 16): a graph schema
+    /// this version cannot parse is loaded as no schema and noted here instead of failing the
+    /// load. Never set where the loaded state may be written anywhere (a lossy view).
+    pub(crate) newer_schema: Option<NewerContent>,
 }
 
 impl Default for ReadOptions {
@@ -150,6 +154,54 @@ impl Default for ReadOptions {
         Self {
             memory_limit: None,
             max_value_depth: DEFAULT_MAX_VALUE_DEPTH,
+            newer_schema: None,
+        }
+    }
+}
+
+/// The notes of a read-only load about content a newer version wrote that this one shows
+/// leniently ([`ReadOptions::newer_schema`]); shared by the clones of the options.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct NewerContent(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl NewerContent {
+    /// Records one note.
+    pub(crate) fn note(&self, note: String) {
+        if let Ok(mut notes) = self.0.lock() {
+            notes.push(note);
+        }
+    }
+
+    /// The first note, if any.
+    pub(crate) fn first(&self) -> Option<String> {
+        self.0.lock().ok().and_then(|notes| notes.first().cloned())
+    }
+}
+
+/// Parses the schema text of a snapshot or a WAL record (CRC-checked): text this version cannot
+/// parse is content of a newer version, never damage. With `newer` (a read-only load) it is
+/// loaded as no schema and noted; otherwise it is [`DecodeError::unsupported`].
+pub(crate) fn parse_stored_schema(
+    text: &str,
+    offset: u64,
+    newer: Option<&NewerContent>,
+) -> Result<GraphSchema, super::codec::DecodeError> {
+    match GraphSchema::from_json(text) {
+        Ok(schema) => Ok(schema),
+        Err(err) => {
+            let reason = format!(
+                "invalid schema for this version (it uses something this version does not \
+                 know: a newer Graphersal wrote it): {err}"
+            );
+            match newer {
+                Some(newer) => {
+                    newer.note(format!(
+                        "{reason}; it is shown without its schema, read-only"
+                    ));
+                    Ok(GraphSchema::default())
+                }
+                None => Err(super::codec::DecodeError::unsupported(offset, reason)),
+            }
         }
     }
 }
@@ -1160,9 +1212,8 @@ pub(crate) fn load_snapshot<S: PersistentStorage + ?Sized, R: Read>(
     }
     let schema_text = std::str::from_utf8(&schema_bytes)
         .map_err(|_| PersistError::corrupt("schema.json", schema_at, "not UTF-8"))?;
-    let schema = GraphSchema::from_json(schema_text).map_err(|err| {
-        PersistError::corrupt("schema.json", schema_at, format!("invalid schema: {err}"))
-    })?;
+    let schema = parse_stored_schema(schema_text, 0, options.newer_schema.as_ref())
+        .map_err(|err| err.at("schema.json", schema_at))?;
 
     graph.load_schema(schema)?;
     let max_depth = options.max_value_depth;
@@ -1314,6 +1365,8 @@ pub(crate) fn restore_definitions<S: PersistentStorage + ?Sized>(
     max_depth: usize,
 ) -> Result<(), PersistError> {
     for record in &manifest.definitions {
+        // A payload whose fields this version cannot read is kept (opaque or not served); a
+        // payload that is not a valid property map is damage (format spec 6.3, 16).
         let definition = record
             .decode_in(max_depth, manifest.fixed.version.0)
             .map_err(|err| {

@@ -50,6 +50,24 @@ pub enum PersistError {
         supported: u32,
     },
 
+    /// A part of a file whose checksum is valid holds content this version cannot interpret: a
+    /// schema keyword, a definition payload or a WAL record body written by a newer Graphersal
+    /// (format spec 16). Never damage: nothing is changed, the store is never opened in
+    /// maintenance mode or repaired by this version (a repair would drop what it cannot read).
+    #[error(
+        "Unsupported content in the {location} at byte {offset}: {reason} (its checksum is \
+         valid: written by a newer Graphersal, not damage)"
+    )]
+    #[non_exhaustive]
+    UnsupportedContent {
+        /// Which file or section.
+        location: String,
+        /// The byte offset within it.
+        offset: u64,
+        /// What this version cannot interpret.
+        reason: String,
+    },
+
     /// The snapshot does not fit into the memory budget: its header's estimate of the loaded
     /// graph is larger than the limit given to the load.
     #[error(
@@ -617,6 +635,18 @@ impl PersistError {
         }
     }
 
+    pub(crate) fn unsupported_content(
+        location: impl Into<String>,
+        offset: u64,
+        reason: impl Into<String>,
+    ) -> Self {
+        PersistError::UnsupportedContent {
+            location: location.into(),
+            offset,
+            reason: reason.into(),
+        }
+    }
+
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn store(
         operation: &'static str,
@@ -655,6 +685,12 @@ impl DiagnosticError for PersistError {
                  damaged: this build refuses it without reading further or changing anything, \
                  and it is never opened in maintenance mode, repaired or upgraded here (a \
                  repair by this build would lose what it cannot read)."
+                .to_string(),
+            PersistError::UnsupportedContent { .. } => "The store or file holds content a \
+                 newer Graphersal wrote (its checksum is valid, so the bytes are intact); open \
+                 it with that version (or a later one). It is not damaged: this build changes \
+                 nothing, and it never repairs it (a repair by this build would drop what it \
+                 cannot read). Do not run graphersal store repair on it with this version."
                 .to_string(),
             PersistError::MemoryBudget { .. } => "Raise the memory limit of the load \
                  (ReadOptions::with_memory_limit, Python memory_limit=...) or load the graph on \
@@ -746,7 +782,10 @@ impl DiagnosticError for PersistError {
                  version does not know; a write from this version would leave it inconsistent. \
                  Read the data here (queries work), and open the store read-write with that \
                  newer version (graphersal store info {path} shows the store's position). A \
-                 fork or backup keeps the definition and stays read-only for this version."
+                 backup copies it byte for byte; a fork keeps a critical definition and stays \
+                 read-only for this version (a graph schema of a newer version cannot be forked \
+                 here: this version would drop it). Never run graphersal store repair on it \
+                 with this version."
             ),
             PersistError::IsBackup { path, .. } => format!(
                 "Read it read-only: Store::open_backup or Store::open_read_only (CLI: graphersal \

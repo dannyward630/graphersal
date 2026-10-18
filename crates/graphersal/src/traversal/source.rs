@@ -1479,6 +1479,21 @@ impl<'g, S: GraphStorage + 'g> crate::GraphTraversalSource<'g, S> {
         )?;
         if self.storage.recompress(name)? {
             Ok(())
+        } else if let Some(reason) = self
+            .storage
+            .definition(DefinitionKind::COMPRESSION, name)
+            .and_then(|definition| definition.as_compression())
+            .and_then(|rule| rule.unserved_reason())
+        {
+            // A rule of a newer version: kept, never applied (format spec 16).
+            Err(
+                crate::error::GraphError::from(crate::error::DefinitionError::InvalidField {
+                    name: name.to_string(),
+                    field: "codec".to_string(),
+                    reason,
+                })
+                .into(),
+            )
         } else {
             Err(
                 crate::error::GraphError::from(crate::error::DefinitionError::NotFound {

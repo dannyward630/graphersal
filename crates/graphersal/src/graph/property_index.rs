@@ -370,6 +370,9 @@ pub struct PropertyIndexDefinition {
     /// (the key order and every key of a newer version), so the definition survives byte for
     /// byte.
     original: Option<PropertyMap>,
+    /// An element kind name this version does not know, as read (the index is kept, never
+    /// built or served; `element` is a placeholder).
+    unknown_element: Option<String>,
 }
 
 impl PropertyIndexDefinition {
@@ -384,6 +387,7 @@ impl PropertyIndexDefinition {
             transform: None,
             extra: PropertyMap::default(),
             original: None,
+            unknown_element: None,
         }
     }
 
@@ -399,8 +403,11 @@ impl PropertyIndexDefinition {
     /// assert_eq!(index.index_type().as_str(), "memory-ordered");
     /// ```
     pub fn with_type(mut self, index_type: PropertyIndexType) -> Self {
-        self.index_type = index_type;
-        self.original = None;
+        // An index of an unknown element kind is kept as read.
+        if self.unknown_element.is_none() {
+            self.index_type = index_type;
+            self.original = None;
+        }
         self
     }
 
@@ -422,8 +429,11 @@ impl PropertyIndexDefinition {
     /// assert_eq!(index.default_name(), "person_name_to_lower");
     /// ```
     pub fn with_transform(mut self, transform: Option<PropertyIndexTransform>) -> Self {
-        self.transform = transform;
-        self.original = None;
+        // An index of an unknown element kind is kept as read.
+        if self.unknown_element.is_none() {
+            self.transform = transform;
+            self.original = None;
+        }
         self
     }
 
@@ -465,6 +475,12 @@ impl PropertyIndexDefinition {
     /// an index of a type this version does not know (`"index type 'x' is not known to this
     /// version ..."`). Listings show it next to `served: false`.
     pub fn unserved_reason(&self) -> Option<String> {
+        if let Some(element) = &self.unknown_element {
+            return Some(format!(
+                "element kind '{element}' is not known to this version (a newer Graphersal \
+                 wrote it); the definition is kept, queries scan"
+            ));
+        }
         if let PropertyIndexType::Unknown(name) = &self.index_type {
             return Some(format!(
                 "index type '{name}' is not known to this version (a newer Graphersal wrote \
@@ -482,7 +498,8 @@ impl PropertyIndexDefinition {
 
     /// Whether this version builds and serves the index (its type and transform are known).
     pub(crate) fn is_served_type(&self) -> bool {
-        self.index_type.is_known()
+        self.unknown_element.is_none()
+            && self.index_type.is_known()
             && self
                 .transform
                 .as_ref()
@@ -527,6 +544,15 @@ impl PropertyIndexDefinition {
         name: &str,
         schema: Option<&GraphSchema>,
     ) -> Result<(), DefinitionError> {
+        if let Some(element) = &self.unknown_element {
+            return Err(DefinitionError::InvalidField {
+                name: name.to_string(),
+                field: "element".to_string(),
+                reason: format!(
+                    "'{element}' is not an element kind this version knows (known: vertex, edge)"
+                ),
+            });
+        }
         if let PropertyIndexType::Unknown(type_name) = &self.index_type {
             return Err(DefinitionError::InvalidField {
                 name: name.to_string(),
@@ -574,9 +600,19 @@ impl PropertyIndexDefinition {
         })
     }
 
-    /// The element kind the index covers.
+    /// The element kind the index covers (`Vertex` for an index whose element kind this
+    /// version does not know: see [`Self::element_name`]).
     pub fn element(&self) -> ElementKind {
         self.element
+    }
+
+    /// The element kind's name (`"vertex"`, `"edge"`), or the unknown name as read (an index
+    /// of a newer version, kept and not served: [`Self::unserved_reason`]).
+    pub fn element_name(&self) -> &str {
+        match &self.unknown_element {
+            Some(name) => name,
+            None => self.element.as_str(),
+        }
     }
 
     /// The label the index covers (it need not exist yet).
@@ -680,14 +716,13 @@ impl PropertyIndexDefinition {
                     .ok_or_else(|| malformed(key, "must be a string")),
             }
         };
+        let mut unknown_element = None;
         let element = match text("element")?.as_deref() {
             None | Some("vertex") => ElementKind::Vertex,
             Some("edge") => ElementKind::Edge,
             Some(other) => {
-                return Err(malformed(
-                    "element",
-                    &format!("'{other}' is not \"vertex\" or \"edge\""),
-                ));
+                unknown_element = Some(other.to_string());
+                ElementKind::Vertex
             }
         };
         let label = text("label")?.ok_or_else(|| DefinitionError::Malformed {
@@ -704,6 +739,7 @@ impl PropertyIndexDefinition {
         let mut index = PropertyIndexDefinition::new(element, label, key)
             .with_type(index_type)
             .with_transform(transform);
+        index.unknown_element = unknown_element;
         const KNOWN: [&str; 5] = ["element", "label", "key", "type", "transform"];
         for (key, value) in map {
             if !KNOWN.contains(&key.as_str()) && !skip.contains(&key.as_str()) {
@@ -816,7 +852,7 @@ pub(crate) fn check_conflict(
             continue;
         }
         if let Some(existing) = other.as_property_index()
-            && existing.element() == index.element()
+            && existing.element_name() == index.element_name()
             && existing.label() == index.label()
             && existing.key() == index.key()
             && existing.index_type() == index.index_type()
@@ -829,7 +865,7 @@ pub(crate) fn check_conflict(
                 reason: format!(
                     "the index '{}' already covers {} '{}' on '{}' (type '{}'{})",
                     other.name(),
-                    index.element().as_str(),
+                    index.element_name(),
                     index.label(),
                     index.key(),
                     index.index_type(),

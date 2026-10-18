@@ -3516,6 +3516,11 @@ fn load_latest(
         }
     }
     let replay = wal_after(&segments, snapshot_seq).to_vec();
+    // A graph schema a newer version wrote is shown as no schema and the store opens read-only
+    // (format spec 16): only this load is lenient, never a load whose state is written.
+    let newer = super::snapshot::NewerContent::default();
+    let mut read = options.read.clone();
+    read.newer_schema = Some(newer.clone());
     let plan = LoadPlan {
         snapshot: snapshot_path.clone(),
         journals: replay
@@ -3523,7 +3528,7 @@ fn load_latest(
             .map(|(_, path)| (path.clone(), None))
             .collect(),
         target: RecoveryTarget::Latest,
-        read: options.read.clone(),
+        read,
         chain: graph_file.chain(),
     };
     let recovered = graph.reload(&plan)?;
@@ -3556,7 +3561,7 @@ fn load_latest(
     // nothing is written from here on, not even the torn-tail cut.
     // The manifest was read by the load just now: a failure here is a real one (an I/O error,
     // or damage that opens the store in maintenance mode), never "nothing critical".
-    let read_only = match graph.critical_definition() {
+    let read_only = match graph.critical_definition().or_else(|| newer.first()) {
         Some(reason) => Some(reason),
         None => read_manifest(&snapshot_path)?.1.critical_segment_reason(),
     };
@@ -3858,11 +3863,16 @@ fn complete_intent(dir: &DirPath, intent: &Intent) -> Result<(), PersistError> {
         "attic_restore" => return rollback::apply_restore(dir, intent, None),
         // Clears the intent itself.
         backup::INCREMENT_OP => return backup::undo_increment(dir, intent),
+        // An operation of a newer version: it cannot be completed here, and it is not damage
+        // (format spec 16); the store is left as it is.
         other => {
-            return Err(PersistError::corrupt(
+            return Err(PersistError::unsupported_content(
                 files::INTENT_FILE,
                 0,
-                format!("unknown operation {other:?} (written by a newer Graphersal?)"),
+                format!(
+                    "an interrupted operation {other:?} this version does not know (written by \
+                     a newer Graphersal?); complete it with that version"
+                ),
             ));
         }
     }

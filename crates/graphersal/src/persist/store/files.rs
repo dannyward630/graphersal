@@ -381,6 +381,23 @@ impl GraphFile {
         out
     }
 
+    /// The state word of an intact `GRAPH` file of this store format when it is a value this
+    /// version does not know (`0` clean and `1` open are known), `None` otherwise.
+    pub(crate) fn unknown_state(bytes: &[u8]) -> Option<u32> {
+        if bytes.len() < GRAPH_FIXED_BYTES + 4 || &bytes[..8] != GRAPH_MAGIC {
+            return None;
+        }
+        let word = |at: usize| {
+            u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        if crc(&bytes[..GRAPH_FIXED_BYTES - 4]) != word(GRAPH_FIXED_BYTES - 4)
+            || word(8) != STORE_VERSION
+        {
+            return None;
+        }
+        Some(word(12)).filter(|state| *state > 1)
+    }
+
     /// Decodes and checks a `GRAPH` file; an older version is refused here, a newer one is
     /// returned as found
     /// (the caller guards it).
@@ -655,6 +672,22 @@ pub(crate) fn refuse_newer_version(dir: &DirPath) -> Result<(), PersistError> {
     }
     if let Some(found) = newer {
         return Err(newer_store(dir, found));
+    }
+    // An intact GRAPH of this store format whose state word a newer version gave a value this
+    // one does not know (format spec 5.1, 16): not damage, refused.
+    for name in [GRAPH_FILE, GRAPH_COPY] {
+        if let Ok(bytes) = read_bounded(&dir.join(name), 64 << 20)
+            && let Some(state) = GraphFile::unknown_state(&bytes)
+        {
+            return Err(PersistError::unsupported_content(
+                dir.join(name).display(),
+                12,
+                format!(
+                    "the store state {state} is not known to this version (written by a newer \
+                     Graphersal?)"
+                ),
+            ));
+        }
     }
     refuse_newer_files(dir, dir, 0)
 }

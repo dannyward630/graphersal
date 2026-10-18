@@ -820,6 +820,9 @@ pub struct QueryDefinition {
     params: Vec<(String, QueryParam)>,
     meta: Option<String>,
     extra: PropertyMap,
+    /// The `params` value of a stored payload this version cannot read (a newer Graphersal
+    /// wrote it) and why: kept and written back unchanged, the query is not run.
+    unreadable_params: Option<Box<(ElementProperty, String)>>,
 }
 
 impl QueryDefinition {
@@ -834,6 +837,7 @@ impl QueryDefinition {
             params: Vec::new(),
             meta: None,
             extra: PropertyMap::default(),
+            unreadable_params: None,
         }
     }
 
@@ -858,6 +862,10 @@ impl QueryDefinition {
     /// Builder: adds the parameter `name` at the end, or replaces the one of that name in its
     /// place.
     pub fn with_param(mut self, name: impl Into<String>, param: QueryParam) -> Self {
+        // Parameters this version could not read are kept as read: none is added.
+        if self.unreadable_params.is_some() {
+            return self;
+        }
         let name = name.into();
         match self.params.iter_mut().find(|(n, _)| *n == name) {
             Some((_, slot)) => *slot = param,
@@ -917,6 +925,20 @@ impl QueryDefinition {
         self.meta.as_deref()
     }
 
+    /// Why this version cannot run the query, `None` when it can: its stored parameters use
+    /// something this version does not know (a newer Graphersal wrote them, for example a
+    /// schema keyword). Such a query is kept, listed and written back unchanged; a call is
+    /// refused with this reason. [`Self::params`] is empty for it.
+    pub fn unsupported_reason(&self) -> Option<String> {
+        self.unreadable_params.as_ref().map(|unreadable| {
+            format!(
+                "its parameters cannot be read by this version (a newer Graphersal wrote \
+                 them?): {}; the query is kept unchanged and not run",
+                unreadable.1
+            )
+        })
+    }
+
     /// The payload keys this version does not know, kept as read and written back after the
     /// known ones (a definition written by a newer version keeps them through this one).
     pub fn extra(&self) -> &PropertyMap {
@@ -974,10 +996,10 @@ impl QueryDefinition {
         }
         map.insert("dialect", ElementProperty::from(self.dialect.as_str()));
         map.insert("source", ElementProperty::from(self.source.as_str()));
-        let params = if params_object {
-            self.params_value()
-        } else {
-            ElementProperty::from(self.params_to_json())
+        let params = match &self.unreadable_params {
+            Some(unreadable) => unreadable.0.clone(),
+            None if params_object => self.params_value(),
+            None => ElementProperty::from(self.params_to_json()),
         };
         map.insert("params", params);
         if let Some(meta) = &self.meta {
@@ -1012,16 +1034,39 @@ impl QueryDefinition {
             query.dialect = dialect;
         }
         query.meta = text("meta")?;
+        // The parameters of a stored payload that this version cannot read (a newer one wrote
+        // them) keep the definition: they are kept as read and the query is not run.
+        let keep_unreadable = |value: &ElementProperty, err: DefinitionError| {
+            if params_object {
+                Err(err)
+            } else {
+                Ok(Box::new((value.clone(), err.to_string())))
+            }
+        };
         query.params = match map.get("params") {
             None => Vec::new(),
-            Some(ElementProperty::String(json)) => {
-                let value = parse_json(json).map_err(|err| match err {
-                    DefinitionError::Malformed { reason } => malformed("/params", reason),
-                    other => other,
-                })?;
-                parse_params(&value, false)?
+            Some(raw @ ElementProperty::String(json)) => {
+                let parsed = parse_json(json)
+                    .map_err(|err| match err {
+                        DefinitionError::Malformed { reason } => malformed("/params", reason),
+                        other => other,
+                    })
+                    .and_then(|value| parse_params(&value, false));
+                match parsed {
+                    Ok(params) => params,
+                    Err(err) => {
+                        query.unreadable_params = Some(keep_unreadable(raw, err)?);
+                        Vec::new()
+                    }
+                }
             }
-            Some(value @ ElementProperty::Object(_)) => parse_params(value, false)?,
+            Some(value @ ElementProperty::Object(_)) => match parse_params(value, false) {
+                Ok(params) => params,
+                Err(err) => {
+                    query.unreadable_params = Some(keep_unreadable(value, err)?);
+                    Vec::new()
+                }
+            },
             Some(_) => {
                 let expected = if params_object {
                     "must be an object"

@@ -304,6 +304,15 @@ pub(super) fn check_segment_stream(
                 }
             }
             Ok(None) => break,
+            // Content of a newer version behind valid checksums (format spec 16): the copy
+            // takes its bytes as they are; not damage.
+            Err(PersistError::UnsupportedContent { .. }) => {
+                check.end = reader.offset();
+                if let Some((start, seq)) = reader.unsupported_seq() {
+                    check.last_record = Some(start);
+                    check.commits.push((start, seq));
+                }
+            }
             Err(err) => {
                 let (offset, reason) = located(err);
                 findings.problem(relative.clone(), offset, reason);

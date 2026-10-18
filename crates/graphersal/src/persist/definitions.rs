@@ -60,9 +60,13 @@ impl DefinitionRecord {
         })
     }
 
-    /// The definition: a known kind's payload decoded (a payload that is not a valid map of its
-    /// kind, or that has a reserved key, is invalid: `Err` with the reason and the offset within
-    /// the payload), an unknown kind kept opaque.
+    /// The definition: a known kind's payload decoded, an unknown kind kept opaque. A payload
+    /// that is not a valid property map (or has a reserved key) is invalid: `Err` with the
+    /// reason and the offset within the payload. A valid map whose fields this version cannot
+    /// read as its kind (a newer Graphersal wrote them) is never an error: the definition is
+    /// kept opaque, its bytes written back unchanged (format spec 16 rule 2); an unknown value
+    /// of a known key it does understand (a compression codec, an index type) is decoded into a
+    /// definition that is kept and not served.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn decode(&self, max_depth: usize) -> DecodeResult<Definition> {
         self.decode_in(max_depth, FORMAT_VERSION)
@@ -82,19 +86,31 @@ impl DefinitionRecord {
             ));
         }
         let map = decode_payload_in(&self.payload, max_depth, version)?;
-        let invalid = |err: crate::error::DefinitionError| {
-            DecodeError::new(0, format!("invalid {kind} payload: {err}"))
+        let decoded = if kind == DefinitionKind::COMPRESSION {
+            CompressionDefinition::from_payload(&map)
+                .map(|rule| Definition::compression(self.name.clone(), rule))
+        } else if kind == DefinitionKind::PROPERTY_INDEX {
+            PropertyIndexDefinition::from_payload(&map)
+                .map(|index| Definition::property_index(self.name.clone(), index))
+        } else {
+            QueryDefinition::from_payload(&map)
+                .map(|query| Definition::query(self.name.clone(), query))
         };
-        if kind == DefinitionKind::COMPRESSION {
-            let rule = CompressionDefinition::from_payload(&map).map_err(invalid)?;
-            return Ok(Definition::compression(self.name.clone(), rule).with_flags(flags));
+        match decoded {
+            Ok(definition) => Ok(definition.with_flags(flags)),
+            Err(err) => {
+                tracing::warn!(
+                    "the {kind} '{}' is kept opaque: this version cannot read its payload ({err})",
+                    self.name
+                );
+                Ok(Definition::opaque(
+                    kind,
+                    flags,
+                    self.name.clone(),
+                    self.payload.clone(),
+                ))
+            }
         }
-        if kind == DefinitionKind::PROPERTY_INDEX {
-            let index = PropertyIndexDefinition::from_payload(&map).map_err(invalid)?;
-            return Ok(Definition::property_index(self.name.clone(), index).with_flags(flags));
-        }
-        let query = QueryDefinition::from_payload(&map).map_err(invalid)?;
-        Ok(Definition::query(self.name.clone(), query).with_flags(flags))
     }
 
     /// Writes the record: `kind u8 | flags u8 | name string | length uvar | payload`.
@@ -223,9 +239,14 @@ pub(crate) fn critical_unknown<'a>(
         .into_iter()
         .find(|d| d.flags().is_critical() && d.is_opaque())
         .map(|d| {
+            let what = if d.kind().is_known() {
+                "whose payload this version cannot read (a newer Graphersal wrote it)"
+            } else {
+                "which this version does not know"
+            };
             format!(
-                "it holds the critical definition '{}' of {}, which this version does not \
-                 know (a writer that does not maintain it would corrupt it)",
+                "it holds the critical definition '{}' of {}, {what} (a writer that does not \
+                 maintain it would corrupt it)",
                 d.name(),
                 d.kind()
             )

@@ -656,7 +656,9 @@ impl TraversalGraph {
             .iter()
             .filter(|d| d.kind() == DefinitionKind::COMPRESSION)
             .find_map(|definition| {
-                let rule = definition.as_compression()?;
+                let rule = definition
+                    .as_compression()
+                    .filter(|rule| rule.is_served())?;
                 (rule.element() == request.element
                     && rule.label() == request.label
                     && rule.path() == &request.path)

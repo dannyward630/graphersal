@@ -64,6 +64,7 @@ mod flatmap_buffer_reuse_tests;
 // dev-dependency on that crate would link a second copy of `graphersal` into this binary).
 mod foreign_storage_tests;
 mod foreign_store_tests;
+mod forward_compat_tests;
 #[allow(dead_code)]
 #[path = "../../../graphersal-storage-tests/src/forwarding.rs"]
 mod forwarding;

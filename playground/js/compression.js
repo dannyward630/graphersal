@@ -94,8 +94,12 @@ export function ruleRow(rule) {
   const dedup = rule.codec === 'dedup';
   return {
     name: rule.name,
+    // A rule the engine does not apply (a codec, element kind or path of a newer version, or a
+    // storage without compressed properties): `reason` says why.
+    served: rule.served !== false,
+    reason: rule.served === false ? (rule.reason || '') : '',
     codec: rule.codec || 'lz4',
-    target: `${rule.element === 'edge' ? 'edge' : 'vertex'} ${rule.label}`,
+    target: `${rule.element || 'vertex'} ${rule.label}`,
     path: rule.path,
     threshold: `≥ ${formatBytes(rule.minBytes)}`,
     dictionary: dedup ? '—' : (rule.dictionary ? (s.dictionaryBytes ? formatBytes(s.dictionaryBytes) : 'yes (none yet)') : 'no'),

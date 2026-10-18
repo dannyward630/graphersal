@@ -544,7 +544,8 @@ class Graph:
         a dictionary) or stored once per distinct value (``codec="dedup"``: ``min_bytes`` 25,
         no dictionary) and read plain."""
     def compressions(self, *, policy: Optional[AccessPolicy] = None) -> list[dict[str, Any]]:
-        """The compression rules with their current stats."""
+        """The compression rules with their current stats; ``served`` is ``False`` (with a
+        ``reason``) for a rule this version keeps but does not apply."""
     def drop_compression(self, name: str, *, policy: Optional[AccessPolicy] = None) -> bool:
         """Removes the compression rule and decompresses its values; ``False`` when there is
         none."""

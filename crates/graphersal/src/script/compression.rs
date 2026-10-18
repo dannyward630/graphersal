@@ -24,9 +24,14 @@ const KEYS: [&str; 7] = [
     "dictionary",
 ];
 
-/// One rule as a map: name, element, label, path, codec, min_bytes, dictionary and its
-/// current stats (compressed_values, plain_bytes, stored_bytes, dictionary_bytes,
-/// distinct_values).
+/// Why a rule of a known codec is not applied: the storage applies no compression rules.
+const STORAGE_APPLIES_NONE: &str = "this storage keeps the rule in its catalog but does not \
+                                    apply compression rules; values stay plain";
+
+/// One rule as a map: name, element, label, path, codec, min_bytes, dictionary, served (with
+/// `reason` when it is not applied: a codec, element kind or path of a newer version, or a
+/// storage without compressed properties) and its current stats (compressed_values,
+/// plain_bytes, stored_bytes, dictionary_bytes, distinct_values).
 pub(crate) fn rule_entry(
     definition: &Definition,
     stats: Option<crate::graph::CompressionStats>,
@@ -34,15 +39,22 @@ pub(crate) fn rule_entry(
     let rule = definition.as_compression()?;
     let mut map = rhai::Map::new();
     map.insert("name".into(), definition.name().to_string().into());
-    map.insert("element".into(), rule.element().as_str().to_string().into());
+    map.insert("element".into(), rule.element_name().to_string().into());
     map.insert("label".into(), rule.label().to_string().into());
     map.insert("path".into(), rule.path_text().into());
-    map.insert("codec".into(), rule.codec().name().to_string().into());
+    map.insert("codec".into(), rule.codec_name().to_string().into());
     map.insert(
         "min_bytes".into(),
         Dynamic::from_int(rule.min_bytes() as i64),
     );
     map.insert("dictionary".into(), Dynamic::from_bool(rule.dictionary()));
+    map.insert("served".into(), Dynamic::from_bool(stats.is_some()));
+    if stats.is_none() {
+        let reason = rule
+            .unserved_reason()
+            .unwrap_or_else(|| STORAGE_APPLIES_NONE.to_string());
+        map.insert("reason".into(), reason.into());
+    }
     let stats = stats.unwrap_or_default();
     let int = |n: u64| Dynamic::from_int(i64::try_from(n).unwrap_or(i64::MAX));
     map.insert("compressed_values".into(), int(stats.compressed_values));

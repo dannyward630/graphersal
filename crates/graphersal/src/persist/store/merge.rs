@@ -71,7 +71,7 @@ use crate::graph::PersistentStorage;
 use crate::graph::TraversalGraph;
 use crate::graph::change::Mutation;
 use crate::graph::memory::{loaded_edge_bytes, loaded_vertex_bytes};
-use crate::graph::schema::{ElementKind, GraphSchema};
+use crate::graph::schema::ElementKind;
 
 /// The largest `schema.json` read (as for snapshot loads).
 const MAX_SCHEMA_BYTES: u64 = 256 << 20;
@@ -662,9 +662,10 @@ fn context(base: &Base, touched: &Touched, depth: usize) -> Result<TraversalGrap
         .with_last_committed_at(fixed.last_commit_at)
         .with_sequences(fixed.node_sequence, fixed.edge_sequence);
     let schema_location = format!("{}/{SCHEMA_FILE}", base.path.display());
-    *delta.schema.write() = GraphSchema::from_json(&base.schema).map_err(|err| {
-        PersistError::corrupt(schema_location, 0, format!("invalid schema: {err}"))
-    })?;
+    // A schema this version cannot parse was written by a newer one (format spec 16): the
+    // merge is refused, never damage.
+    *delta.schema.write() = super::super::snapshot::parse_stored_schema(&base.schema, 0, None)
+        .map_err(|err| err.at(schema_location, 0))?;
     restore_definitions(&mut delta, &base.manifest, depth)?;
 
     // Edges first: their endpoints join the vertices to load.

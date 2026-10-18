@@ -364,7 +364,7 @@ pub(crate) fn scan_marks(segments: &[(u64, DirPath)], max_depth: usize) -> Vec<M
         let Ok(mut reader) = JournalReader::open(source, index, max_depth) else {
             continue;
         };
-        while let Ok(Some((_, _, record))) = reader.next_record() {
+        while let Ok(Some((_, _, record))) = reader.next_known_record(&mut |_| {}) {
             if let JournalRecord::Mark(mark) = record {
                 marks.push(mark);
             }

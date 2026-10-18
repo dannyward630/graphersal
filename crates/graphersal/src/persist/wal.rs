@@ -12,6 +12,7 @@ use super::codec::{
 };
 use super::definitions::DefinitionRecord;
 use super::error::PersistError;
+use super::snapshot::NewerContent;
 use crate::graph::change::{
     ChangeSet, CommitMetadata, CommitStamp, EdgeState, ElementRef, Mutation, VertexState,
 };
@@ -383,12 +384,12 @@ fn read_labels(r: &mut Reader<'_>) -> DecodeResult<Vec<String>> {
     Ok(labels)
 }
 
-fn read_schema(r: &mut Reader<'_>) -> DecodeResult<Box<GraphSchema>> {
+/// Reads a schema image of op 9: text this version cannot parse is content of a newer version
+/// ([`super::snapshot::parse_stored_schema`]), never damage.
+fn read_schema(r: &mut Reader<'_>, newer: Option<&NewerContent>) -> DecodeResult<Box<GraphSchema>> {
     let at = r.offset();
     let text = r.str()?;
-    GraphSchema::from_json(text)
-        .map(Box::new)
-        .map_err(|err| DecodeError::new(at, format!("invalid schema: {err}")))
+    super::snapshot::parse_stored_schema(text, at, newer).map(Box::new)
 }
 
 /// Reads `opt(definition)` of op 10: `u8 0` none, `u8 1` followed by a definition of the op's
@@ -432,14 +433,17 @@ fn read_definition_image(
 /// Decodes a commit payload into its [`ChangeSet`].
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn decode_commit(payload: &[u8], max_depth: usize) -> DecodeResult<ChangeSet> {
-    decode_commit_in(payload, max_depth, FORMAT_VERSION)
+    decode_commit_in(payload, max_depth, FORMAT_VERSION, None)
 }
 
 /// [`decode_commit`] of a record of a journal of file format `version` (its header's).
+/// `newer`: a read-only load, which shows a schema this version cannot parse as no schema
+/// ([`ReadOptions`](super::ReadOptions) of a read-only open).
 pub(crate) fn decode_commit_in(
     payload: &[u8],
     max_depth: usize,
     version: u32,
+    newer: Option<&NewerContent>,
 ) -> DecodeResult<ChangeSet> {
     let mut r = Reader::new(payload);
     let stamp = CommitStamp {
@@ -457,12 +461,15 @@ pub(crate) fn decode_commit_in(
         let uncompressed = r.u32()? as usize;
         let stored = r.bytes(r.remaining())?;
         codec::decompress(codec_byte, stored, uncompressed)
-            .map_err(|reason| DecodeError::new(codec_at, reason))?
+            .map_err(|reason| codec::decompress_error(codec_byte, codec_at, reason))?
     };
     let shift = |e: DecodeError| {
-        DecodeError::new(body_at, format!("{} (body byte {})", e.reason, e.offset))
+        let mut shifted =
+            DecodeError::new(body_at, format!("{} (body byte {})", e.reason, e.offset));
+        shifted.unsupported = e.unsupported;
+        shifted
     };
-    decode_body(&body, stamp, max_depth, version).map_err(shift)
+    decode_body(&body, stamp, max_depth, version, newer).map_err(shift)
 }
 
 fn decode_body(
@@ -470,6 +477,7 @@ fn decode_body(
     stamp: CommitStamp,
     max_depth: usize,
     version: u32,
+    newer: Option<&NewerContent>,
 ) -> DecodeResult<ChangeSet> {
     let mut r = Reader::new(body).with_version(version);
     let keys = InlineKeys;
@@ -552,8 +560,8 @@ fn decode_body(
                 label: r.str()?.to_string(),
             },
             9 => Mutation::SetSchema {
-                before: read_schema(&mut r)?,
-                after: read_schema(&mut r)?,
+                before: read_schema(&mut r, newer)?,
+                after: read_schema(&mut r, newer)?,
             },
             10 => {
                 let kind = DefinitionKind::from_code(r.u8()?);
@@ -654,6 +662,11 @@ pub struct JournalReader<R: Read> {
     /// The file format version of the header (records are read with its value tags).
     version: u32,
     done: bool,
+    /// A read-only load's lenient schema reading ([`decode_commit_in`]).
+    newer: Option<NewerContent>,
+    /// `(record start, frame commit_seq)` of the last commit record whose body this version
+    /// could not decode ([`PersistError::UnsupportedContent`]; the reader can go on after it).
+    unsupported_seq: Option<(u64, u64)>,
 }
 
 /// Opens a journal stream: reads and checks its header ([`JournalReader`]).
@@ -703,7 +716,43 @@ impl<R: Read> JournalReader<R> {
             torn: None,
             version,
             done: false,
+            newer: None,
+            unsupported_seq: None,
         })
+    }
+
+    /// The same reader showing a schema this version cannot parse as no schema, noted in
+    /// `newer` (a read-only load only, format spec 16).
+    pub(crate) fn with_newer_schema(mut self, newer: Option<NewerContent>) -> Self {
+        self.newer = newer;
+        self
+    }
+
+    /// [`Self::next_record`], going on past records whose checksums hold but whose body this
+    /// version cannot decode (content of a newer version, format spec 16): for scans that
+    /// only need what they can read (marks, counts). `skipped` gets the frame commit_seq of
+    /// every skipped commit.
+    pub(crate) fn next_known_record(
+        &mut self,
+        skipped: &mut impl FnMut(u64),
+    ) -> Result<Option<(u64, u64, JournalRecord)>, PersistError> {
+        loop {
+            match self.next_record() {
+                Err(PersistError::UnsupportedContent { .. }) => {
+                    if let Some((_, seq)) = self.unsupported_seq {
+                        skipped(seq);
+                    }
+                }
+                other => return other,
+            }
+        }
+    }
+
+    /// `(record start, frame commit_seq)` of the last commit record [`Self::next_record`]
+    /// refused with [`PersistError::UnsupportedContent`]: its checksums held, so the reader may
+    /// go on after it.
+    pub(crate) fn unsupported_seq(&self) -> Option<(u64, u64)> {
+        self.unsupported_seq
     }
 
     /// The lineage id in the header.
@@ -740,6 +789,18 @@ impl<R: Read> JournalReader<R> {
     fn corrupt(&mut self, offset: u64, reason: impl Into<String>) -> PersistError {
         self.done = true;
         PersistError::corrupt(format!("journal {}", self.index), offset, reason)
+    }
+
+    /// A commit record whose checksums hold but whose semantic content (a schema) this version
+    /// cannot interpret (format spec 16): content of a newer version, never damage. The reader
+    /// stays usable: the next record follows.
+    fn unsupported(&mut self, start: u64, offset: u64, seq: u64, reason: String) -> PersistError {
+        self.unsupported_seq = Some((start, seq));
+        PersistError::unsupported_content(
+            format!("journal {}", self.index),
+            offset,
+            format!("the record of commit {seq}: {reason}"),
+        )
     }
 
     /// The next record with its byte offset and frame commit_seq.
@@ -828,8 +889,23 @@ impl<R: Read> JournalReader<R> {
         let payload_at = start + FRAME_BYTES as u64;
         let record = match header.record_type {
             RECORD_COMMIT => {
-                let changes = decode_commit_in(payload, self.max_depth, self.version)
-                    .map_err(|err| self.corrupt(payload_at + err.offset, err.reason))?;
+                // Semantic content this version cannot interpret (a schema of a newer version)
+                // behind valid checksums is never damage (format spec 16); a value encoding it
+                // cannot decode is damage (value tags are guarded by the format version).
+                let changes =
+                    decode_commit_in(payload, self.max_depth, self.version, self.newer.as_ref())
+                        .map_err(|err| {
+                            if err.unsupported {
+                                self.unsupported(
+                                    start,
+                                    payload_at + err.offset,
+                                    commit_seq,
+                                    err.reason,
+                                )
+                            } else {
+                                self.corrupt(payload_at + err.offset, err.reason)
+                            }
+                        })?;
                 if changes.commit_seq() != commit_seq {
                     return Err(self.corrupt(start, "frame and payload commit_seq differ"));
                 }

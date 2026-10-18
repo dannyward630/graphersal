@@ -1017,9 +1017,10 @@ impl Graph {
     }
 
     /// ``graph.compressions(*, policy=None)``: the compression rules as a ``list`` of ``dict``
-    /// (``name``, ``element``, ``label``, ``path``, ``codec``, ``min_bytes``, ``dictionary``
-    /// and the current ``compressed_values``, ``plain_bytes``, ``stored_bytes``,
-    /// ``dictionary_bytes``, ``distinct_values``).
+    /// (``name``, ``element``, ``label``, ``path``, ``codec``, ``min_bytes``, ``dictionary``,
+    /// ``served``, ``reason`` when it is not applied (a codec, element kind or path of a newer
+    /// version: kept, values stay plain) and the current ``compressed_values``,
+    /// ``plain_bytes``, ``stored_bytes``, ``dictionary_bytes``, ``distinct_values``).
     #[pyo3(signature = (*, policy=None))]
     fn compressions(
         &self,

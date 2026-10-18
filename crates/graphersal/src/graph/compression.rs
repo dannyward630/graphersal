@@ -142,6 +142,11 @@ impl Codec {
 ///
 /// Equality compares the effective parameters: a threshold or dictionary flag left at the
 /// codec's default equals the same value given explicitly.
+///
+/// A rule read from a payload whose `codec`, `element` or `path` this version does not know
+/// (a newer Graphersal wrote it) is kept, never applied: its values stay plain, it is listed
+/// with [`Self::unserved_reason`], and its payload is written back exactly as read (format
+/// spec 6.3, 16). Front ends never create one: they take only the known codec names.
 #[derive(Debug, Clone)]
 pub struct CompressionDefinition {
     element: ElementKind,
@@ -153,6 +158,22 @@ pub struct CompressionDefinition {
     /// `None`: the codec's default ([`Codec::supports_dictionary`]).
     dictionary: Option<bool>,
     extra: PropertyMap,
+    /// The parts this version does not know and the payload as read (`None`: a rule this
+    /// version applies).
+    foreign: Option<Box<ForeignRule>>,
+}
+
+/// What a newer version wrote into a compression rule that this version does not know.
+#[derive(Debug, Clone, PartialEq)]
+struct ForeignRule {
+    /// The unknown codec name, as read.
+    codec: Option<String>,
+    /// The unknown element kind name, as read.
+    element: Option<String>,
+    /// The path text this version cannot parse, as read.
+    path: Option<String>,
+    /// The whole payload as read, written back unchanged.
+    payload: PropertyMap,
 }
 
 impl PartialEq for CompressionDefinition {
@@ -164,6 +185,7 @@ impl PartialEq for CompressionDefinition {
             && self.min_bytes() == other.min_bytes()
             && self.dictionary() == other.dictionary()
             && self.extra == other.extra
+            && self.foreign == other.foreign
     }
 }
 
@@ -206,28 +228,93 @@ impl CompressionDefinition {
             min_bytes: None,
             dictionary: None,
             extra: PropertyMap::default(),
+            foreign: None,
         }
     }
 
     /// The same rule with this threshold: strings shorter than `min_bytes` (UTF-8 bytes) stay
-    /// plain.
+    /// plain. On a rule of a newer version ([`Self::unserved_reason`]) it changes nothing:
+    /// such a rule is kept as read.
     pub fn with_min_bytes(mut self, min_bytes: u32) -> Self {
-        self.min_bytes = Some(min_bytes);
+        if self.foreign.is_none() {
+            self.min_bytes = Some(min_bytes);
+        }
         self
     }
 
     /// The same rule with or without a dictionary (`lz4` only: a `dedup` rule with a
-    /// dictionary is refused by [`Definition::validate`]).
+    /// dictionary is refused by [`Definition::validate`]). On a rule of a newer version it
+    /// changes nothing.
     pub fn with_dictionary(mut self, dictionary: bool) -> Self {
-        self.dictionary = Some(dictionary);
+        if self.foreign.is_none() {
+            self.dictionary = Some(dictionary);
+        }
         self
     }
 
     /// The same rule with this codec (a threshold and a dictionary flag not set explicitly
-    /// follow the codec's defaults).
+    /// follow the codec's defaults). On a rule of a newer version it changes nothing.
     pub fn with_codec(mut self, codec: Codec) -> Self {
-        self.codec = codec;
+        if self.foreign.is_none() {
+            self.codec = codec;
+        }
         self
+    }
+
+    /// Why this version keeps the rule without applying it, `None` when it applies it: its
+    /// `codec`, `element` or `path` was written by a newer Graphersal (`"codec 'zstd' is not
+    /// known to this version ..."`). Its values stay plain; listings show it next to
+    /// `served: false`.
+    ///
+    /// ```
+    /// use graphersal::catalog::CompressionDefinition;
+    /// use graphersal::prelude::PropertyMap;
+    ///
+    /// let mut payload = PropertyMap::default();
+    /// payload.insert("label", "doc".into());
+    /// payload.insert("path", "body".into());
+    /// payload.insert("codec", "zstd".into());
+    /// let rule = CompressionDefinition::from_payload(&payload).unwrap();
+    /// assert!(rule.unserved_reason().unwrap().contains("'zstd'"));
+    /// assert_eq!(rule.codec_name(), "zstd");
+    /// assert_eq!(rule.to_payload(), payload);
+    /// ```
+    pub fn unserved_reason(&self) -> Option<String> {
+        let foreign = self.foreign.as_ref()?;
+        let what = if let Some(codec) = &foreign.codec {
+            format!("codec '{codec}'")
+        } else if let Some(element) = &foreign.element {
+            format!("element kind '{element}'")
+        } else if let Some(path) = &foreign.path {
+            format!("path '{path}'")
+        } else {
+            "the rule".to_string()
+        };
+        Some(format!(
+            "{what} is not known to this version (a newer Graphersal wrote it); the rule is \
+             kept and not applied, its values stay plain"
+        ))
+    }
+
+    /// Whether this version applies the rule (its codec, element kind and path are known).
+    pub(crate) fn is_served(&self) -> bool {
+        self.foreign.is_none()
+    }
+
+    /// The codec's name: [`Codec::name`], or the unknown name as read.
+    pub fn codec_name(&self) -> &str {
+        match self.foreign.as_ref().and_then(|f| f.codec.as_deref()) {
+            Some(name) => name,
+            None => self.codec.name(),
+        }
+    }
+
+    /// The element kind's name (`"vertex"`, `"edge"`), or the unknown name as read.
+    pub fn element_name(&self) -> &str {
+        match self.foreign.as_ref().and_then(|f| f.element.as_deref()) {
+            Some(name) => name,
+            None => self.element.as_str(),
+        }
     }
 
     /// The element kind the rule applies to.
@@ -245,9 +332,13 @@ impl CompressionDefinition {
         &self.path
     }
 
-    /// The canonical text of the path (`$.details.career.cv`).
+    /// The canonical text of the path (`$.details.career.cv`); the text as read for a path
+    /// this version cannot parse.
     pub fn path_text(&self) -> String {
-        self.path.to_string()
+        match self.foreign.as_ref().and_then(|f| f.path.as_deref()) {
+            Some(text) => text.to_string(),
+            None => self.path.to_string(),
+        }
     }
 
     /// The codec.
@@ -289,8 +380,12 @@ impl CompressionDefinition {
     /// The payload property map (format spec 6.3), in this key order: `element` (`"vertex"` or
     /// `"edge"`), `label`, `path` (canonical jpath text), `codec` (`"lz4"` or `"dedup"`),
     /// `min_bytes` (int64), `dictionary` (boolean), then the unknown keys. The effective
-    /// threshold and dictionary flag are always written.
+    /// threshold and dictionary flag are always written. A rule of a newer version
+    /// ([`Self::unserved_reason`]) gives its payload back exactly as read.
     pub fn to_payload(&self) -> PropertyMap {
+        if let Some(foreign) = &self.foreign {
+            return foreign.payload.clone();
+        }
         let mut map = PropertyMap::default();
         map.insert("element", self.element.as_str().into());
         map.insert("label", self.label.as_str().into());
@@ -306,7 +401,9 @@ impl CompressionDefinition {
 
     /// Reads a payload map (the inverse of [`Self::to_payload`]; `skip` lists envelope keys of
     /// the exchange form). Missing optional keys take their defaults; a known key of the wrong
-    /// type is an error; unknown keys are kept. Not validated.
+    /// type is an error; unknown keys are kept. A `codec` or `element` name this version does
+    /// not know, or a `path` it cannot parse, is never an error: the rule is kept as read and
+    /// not applied ([`Self::unserved_reason`]). Not validated.
     pub fn from_payload(payload: &PropertyMap) -> Result<CompressionDefinition, DefinitionError> {
         Self::read_fields(payload, &[])
     }
@@ -327,14 +424,18 @@ impl CompressionDefinition {
                     .ok_or_else(|| malformed(key, "must be a string")),
             }
         };
+        let mut foreign = ForeignRule {
+            codec: None,
+            element: None,
+            path: None,
+            payload: PropertyMap::default(),
+        };
         let element = match text("element")?.as_deref() {
             None | Some("vertex") => ElementKind::Vertex,
             Some("edge") => ElementKind::Edge,
             Some(other) => {
-                return Err(malformed(
-                    "element",
-                    &format!("'{other}' is not \"vertex\" or \"edge\""),
-                ));
+                foreign.element = Some(other.to_string());
+                ElementKind::Vertex
             }
         };
         let label = text("label")?.ok_or_else(|| DefinitionError::Malformed {
@@ -343,13 +444,19 @@ impl CompressionDefinition {
         let path_text = text("path")?.ok_or_else(|| DefinitionError::Malformed {
             reason: "'path' is missing".to_string(),
         })?;
-        let path: JsonPath = path_text
-            .parse()
-            .map_err(|err: crate::TraverserError| malformed("path", &err.to_string()))?;
+        let path: JsonPath = match path_text.parse() {
+            Ok(path) => path,
+            Err(_) => {
+                foreign.path = Some(path_text);
+                JsonPath(Arc::new(Vec::new()))
+            }
+        };
         let mut rule = CompressionDefinition::with_path(element, label, path);
         if let Some(codec) = text("codec")? {
-            rule.codec = Codec::from_name(&codec)
-                .ok_or_else(|| malformed("codec", &format!("unknown codec '{codec}'")))?;
+            match Codec::from_name(&codec) {
+                Some(known) => rule.codec = known,
+                None => foreign.codec = Some(codec),
+            }
         }
         if let Some(value) = map.get("min_bytes") {
             rule.min_bytes = Some(
@@ -378,6 +485,14 @@ impl CompressionDefinition {
             if !KNOWN.contains(&key.as_str()) && !skip.contains(&key.as_str()) {
                 rule.extra.insert(key.clone(), value.to_logical());
             }
+        }
+        if foreign.codec.is_some() || foreign.element.is_some() || foreign.path.is_some() {
+            for (key, value) in map {
+                if !skip.contains(&key.as_str()) {
+                    foreign.payload.insert(key.clone(), value.to_logical());
+                }
+            }
+            rule.foreign = Some(Box::new(foreign));
         }
         Ok(rule)
     }
@@ -411,6 +526,11 @@ impl CompressionDefinition {
                 "a label cannot contain '::' (the multi-label separator)".to_string(),
             ));
         }
+        // A rule of a newer version is kept as read: its parameters follow that version's
+        // rules, which this one does not know.
+        if self.foreign.is_some() {
+            return self.check_reserved_keys(name);
+        }
         if let Some(reason) = path_problem(&self.path) {
             return Err(field("path", reason));
         }
@@ -433,17 +553,23 @@ impl CompressionDefinition {
                 ),
             ));
         }
-        if let Some(key) = self
+        self.check_reserved_keys(name)
+    }
+
+    /// No unknown payload key is a reserved one.
+    fn check_reserved_keys(&self, name: &str) -> Result<(), DefinitionError> {
+        match self
             .extra
             .keys()
             .find(|key| crate::graph::definition::RESERVED_PAYLOAD_KEYS.contains(&key.as_str()))
         {
-            return Err(field(
-                "payload",
-                format!("the payload key '{key}' is reserved"),
-            ));
+            Some(key) => Err(DefinitionError::InvalidField {
+                name: name.to_string(),
+                field: "payload".to_string(),
+                reason: format!("the payload key '{key}' is reserved"),
+            }),
+            None => Ok(()),
         }
-        Ok(())
     }
 }
 
@@ -714,7 +840,7 @@ impl CompressionRules {
     ) -> CompressionRules {
         let mut rules = CompressionRules::default();
         for definition in definitions {
-            let Some(rule) = definition.as_compression() else {
+            let Some(rule) = definition.as_compression().filter(|rule| rule.is_served()) else {
                 continue;
             };
             let mut state = Rule {
@@ -1199,8 +1325,11 @@ impl TraversalGraph {
         let new_rule = self
             .definitions
             .get(DefinitionKind::COMPRESSION, name)
-            .and_then(|definition| definition.as_compression().cloned());
-        let old_rule = old.and_then(|definition| definition.as_compression().cloned());
+            .and_then(|definition| definition.as_compression().cloned())
+            .filter(CompressionDefinition::is_served);
+        let old_rule = old
+            .and_then(|definition| definition.as_compression().cloned())
+            .filter(CompressionDefinition::is_served);
         if new_rule.is_none() && old_rule.is_none() {
             return;
         }
@@ -1458,10 +1587,12 @@ pub(crate) fn check_conflict(
         if other.kind() != DefinitionKind::COMPRESSION || other.name() == definition.name() {
             continue;
         }
+        // By name: a rule of a newer version (unknown element kind or path) conflicts with
+        // a rule of the same text, so a newer version never finds two rules on one path.
         if let Some(existing) = other.as_compression()
-            && existing.element() == rule.element()
+            && existing.element_name() == rule.element_name()
             && existing.label() == rule.label()
-            && existing.path() == rule.path()
+            && existing.path_text() == rule.path_text()
         {
             return Err(DefinitionError::Conflict {
                 kind: "compression rule".to_string(),
@@ -1470,7 +1601,7 @@ pub(crate) fn check_conflict(
                 reason: format!(
                     "the rule '{}' already covers {} '{}' at {}",
                     other.name(),
-                    rule.element().as_str(),
+                    rule.element_name(),
                     rule.label(),
                     rule.path_text()
                 ),

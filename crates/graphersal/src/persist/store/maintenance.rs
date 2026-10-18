@@ -457,11 +457,21 @@ pub(super) fn last_commit_in_files(
         else {
             continue;
         };
-        let mut found = None;
-        while let Ok(Some((_, _, record))) = reader.next_record() {
+        let mut found: Option<(u64, i64)> = None;
+        // A commit of a newer version (format spec 16) counts; its time is not read.
+        let mut skipped = None;
+        while let Ok(Some((_, _, record))) =
+            reader.next_known_record(&mut |seq| skipped = Some(seq))
+        {
+            if let Some(seq) = skipped.take() {
+                found = Some((seq, found.map_or(last.1, |f| f.1)));
+            }
             if let JournalRecord::Commit(changes) = record {
                 found = Some((changes.commit_seq(), changes.committed_at()));
             }
+        }
+        if let Some(seq) = skipped {
+            found = Some((seq, found.map_or(last.1, |f| f.1)));
         }
         if let Some(found) = found {
             if found.0 > last.0 {
@@ -499,7 +509,7 @@ pub(super) fn definitions_in_files(
         else {
             continue;
         };
-        while let Ok(Some((_, _, record))) = reader.next_record() {
+        while let Ok(Some((_, _, record))) = reader.next_known_record(&mut |_| {}) {
             let JournalRecord::Commit(changes) = record else {
                 continue;
             };
@@ -610,6 +620,10 @@ pub(super) fn verify(
         }
         let loaded = DirSnapshotReader::open(path).and_then(|reader| read_snapshot(reader, &read));
         match loaded {
+            // Content of a newer version behind valid checksums (format spec 16): not damage.
+            Err(err @ PersistError::UnsupportedContent { .. }) => {
+                report.notes.push(format!("{rel}: {err}"));
+            }
             Ok(graph) => {
                 if graph.last_commit_seq() != *seq {
                     problem(
@@ -718,48 +732,57 @@ pub(super) fn verify(
             );
         }
         loop {
-            match reader.next_record() {
+            let (offset, seq) = match reader.next_record() {
                 Ok(None) => break,
                 Ok(Some((offset, _, record))) => {
                     report.records_checked += 1;
                     match record {
-                        JournalRecord::Commit(changes) => {
-                            let seq = changes.commit_seq();
-                            if seq < *first {
-                                problem(
-                                    &mut report,
-                                    &rel,
-                                    Some(offset),
-                                    format!(
-                                        "commit {seq} before the segment's first commit {first}"
-                                    ),
-                                );
-                            }
-                            if let Some(prev) = previous
-                                && seq != prev + 1
-                            {
-                                problem(
-                                    &mut report,
-                                    &rel,
-                                    Some(offset),
-                                    format!("commit {seq} follows commit {prev} (a gap)"),
-                                );
-                            }
-                            if report.first_commit == 0 {
-                                report.first_commit = seq;
-                            }
-                            report.last_commit = seq;
-                            previous = Some(seq);
+                        JournalRecord::Commit(changes) => (offset, changes.commit_seq()),
+                        JournalRecord::Mark(mark) => {
+                            wal_marks.push(mark);
+                            continue;
                         }
-                        JournalRecord::Mark(mark) => wal_marks.push(mark),
-                        JournalRecord::Checkpoint { .. } => {}
+                        JournalRecord::Checkpoint { .. } => continue,
+                    }
+                }
+                // Content of a newer version behind valid checksums (format spec 16): not
+                // damage; the records after it are checked on.
+                Err(err @ PersistError::UnsupportedContent { .. }) => {
+                    report.records_checked += 1;
+                    report.notes.push(format!("{rel}: {err}"));
+                    match reader.unsupported_seq() {
+                        Some(record) => record,
+                        None => continue,
                     }
                 }
                 Err(err) => {
                     problem(&mut report, &rel, None, err.to_string());
                     break;
                 }
+            };
+            if seq < *first {
+                problem(
+                    &mut report,
+                    &rel,
+                    Some(offset),
+                    format!("commit {seq} before the segment's first commit {first}"),
+                );
             }
+            if let Some(prev) = previous
+                && seq != prev + 1
+            {
+                problem(
+                    &mut report,
+                    &rel,
+                    Some(offset),
+                    format!("commit {seq} follows commit {prev} (a gap)"),
+                );
+            }
+            if report.first_commit == 0 {
+                report.first_commit = seq;
+            }
+            report.last_commit = seq;
+            previous = Some(seq);
         }
         if let Some(torn) = reader.torn_tail() {
             if last_segment {

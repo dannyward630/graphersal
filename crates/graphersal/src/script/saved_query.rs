@@ -244,6 +244,9 @@ pub fn saved_query_effects(
     name: &str,
     query: &QueryDefinition,
 ) -> Result<SavedQueryEffects, String> {
+    if let Some(reason) = query.unsupported_reason() {
+        return Err(reason);
+    }
     let compiled = compile(engine, name, query);
     let compiled = compiled.as_ref().as_ref().map_err(Clone::clone)?;
     let Ok(own) = &compiled.effects else {
@@ -1263,6 +1266,9 @@ impl ScriptGraphTraversalSource {
                 "it is kept opaque (this version could not decode it)".to_string(),
             ));
         };
+        if let Some(reason) = query.unsupported_reason() {
+            return Err(invalid_body(reason));
+        }
         let compiled = compile(ctx.engine(), name, query);
         let compiled = match compiled.as_ref() {
             Ok(compiled) => compiled,

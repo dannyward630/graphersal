@@ -238,3 +238,18 @@ test('dedup: the form switches codec defaults, the spec has no dictionary, rows 
   const summary = m.estimateSummary({ element: 'vertex', label: 'symbol', path: '$.path', current: { name: 'p', codec: 'dedup', minBytes: 25, stats: rule.stats } });
   assert.match(summary.notes[1], /Today the dedup rule "p" \(≥ 25 B\) shares 12 values \(3 distinct\)/);
 });
+
+test('a rule of a newer version: listed, not applied, with its reason', () => {
+  const rule = {
+    name: 'body', element: 'vertex', label: 'doc', path: '$.body', codec: 'zstd', minBytes: 256,
+    dictionary: true, served: false,
+    reason: "codec 'zstd' is not known to this version (a newer Graphersal wrote it)", stats: null,
+  };
+  const row = ruleRow(rule);
+  assert.equal(row.served, false);
+  assert.equal(row.codec, 'zstd');
+  assert.match(row.reason, /zstd/u);
+  assert.equal(row.values, 0);
+  assert.equal(ruleRow(RULE).served, true);
+  assert.equal(ruleRow({ ...RULE, element: 'property' }).target, 'property customer');
+});

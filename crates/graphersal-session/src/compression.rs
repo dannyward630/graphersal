@@ -10,10 +10,15 @@
 //! JSON forms:
 //!
 //! - an **entry** (`list_compressions`): `{name, element: "vertex"|"edge", label, path, codec:
-//!   "lz4"|"dedup", minBytes, dictionary, stats: {compressedValues, plainBytes, storedBytes,
-//!   dictionaryBytes, distinctValues}}`; `path` is the canonical jpath text
-//!   (`$.details.career.cv`); for a `dedup` rule `compressedValues` counts the shared values
-//!   and `distinctValues` the distinct texts among them;
+//!   "lz4"|"dedup", minBytes, dictionary, served, reason, stats: {compressedValues,
+//!   plainBytes, storedBytes, dictionaryBytes, distinctValues}}`; `path` is the canonical
+//!   jpath text (`$.details.career.cv`); for a `dedup` rule `compressedValues` counts the
+//!   shared values and `distinctValues` the distinct texts among them; `served` is false and
+//!   `stats` `null` when the rule is not applied, and `reason` (else `null`) says why: the
+//!   storage applies no compression rules, or the rule's `codec`, `element` or `path` is not
+//!   known to this version (a newer one wrote it, kept as read,
+//!   [`CompressionDefinition::unserved_reason`]; `codec`/`element`/`path` show the names as
+//!   read);
 //! - a **spec** (`define_compression`): `{name, label, path, element?, codec?, minBytes?,
 //!   dictionary?, replaces?}`; `codec` is `"lz4"` (default: minBytes 256, a dictionary) or
 //!   `"dedup"` (minBytes 25, no dictionary: `dictionary: true` is a field error); `replaces`
@@ -62,6 +67,10 @@ const KEYS: [&str; 8] = [
 
 /// The entry of one rule (module docs); `stats` is `null` when the storage reports none (a
 /// storage without compressed properties keeps the rule but never applies it).
+/// Why a rule of a known codec is not applied: the storage applies no compression rules.
+const STORAGE_APPLIES_NONE: &str = "this storage keeps the rule in its catalog but does not \
+                                    apply compression rules; values stay plain";
+
 fn entry(name: &str, rule: &CompressionDefinition, stats: Option<CompressionStats>) -> Value {
     let stats = stats.map(|stats| {
         json!({
@@ -72,14 +81,21 @@ fn entry(name: &str, rule: &CompressionDefinition, stats: Option<CompressionStat
             "distinctValues": stats.distinct_values,
         })
     });
+    let served = stats.is_some();
+    let reason = (!served).then(|| {
+        rule.unserved_reason()
+            .unwrap_or_else(|| STORAGE_APPLIES_NONE.to_string())
+    });
     json!({
         "name": name,
-        "element": rule.element().as_str(),
+        "element": rule.element_name(),
         "label": rule.label(),
         "path": rule.path_text(),
-        "codec": rule.codec().name(),
+        "codec": rule.codec_name(),
         "minBytes": rule.min_bytes(),
         "dictionary": rule.dictionary(),
+        "served": served,
+        "reason": reason,
         "stats": stats,
     })
 }
@@ -869,5 +885,36 @@ mod tests {
         let entry = entry("cv", rule().as_compression().unwrap(), None);
         assert_eq!(entry["stats"], Value::Null);
         assert_eq!(entry["path"], "$.cv");
+    }
+
+    /// A rule of a newer version (an unknown codec): listed with the codec as read, not
+    /// applied, with the reason; recompress names the reason.
+    #[test]
+    fn a_rule_of_a_newer_version_is_listed_not_applied() {
+        let mut map = PropertyMap::default();
+        map.insert("label", "customer".into());
+        map.insert("path", "cv".into());
+        map.insert("codec", "zstd".into());
+        let rule = CompressionDefinition::from_payload(&map).unwrap();
+        let mut g = TraversalGraph::new();
+        g.set_definition(Definition::compression("cv", rule))
+            .unwrap();
+        let listed = compression_in(&g, "cv");
+        assert_eq!(listed["codec"], "zstd");
+        assert_eq!(listed["served"], false);
+        assert_eq!(listed["stats"], Value::Null);
+        assert!(
+            listed["reason"].as_str().unwrap().contains("'zstd'"),
+            "{listed}"
+        );
+        let err = recompress_in(&mut g, "cv").unwrap_err();
+        assert!(err.contains("not known to this version"), "{err}");
+        // A rule this version applies is served, without a reason.
+        let known = CompressionDefinition::new(ElementKind::Vertex, "customer", "bio").unwrap();
+        g.set_definition(Definition::compression("bio", known))
+            .unwrap();
+        let listed = compression_in(&g, "bio");
+        assert_eq!(listed["served"], true);
+        assert_eq!(listed["reason"], Value::Null);
     }
 }

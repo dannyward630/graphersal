@@ -658,9 +658,10 @@ fn all_tools() -> Vec<Tool> {
             "The compression rules of the graph: strings of one vertex or edge label at one \
              property path that are kept LZ4-compressed in memory (codec lz4) or stored once \
              per distinct value (codec dedup); reads are always plain. Each has name, element, \
-             label, path, codec, minBytes, dictionary and its current stats (compressedValues, \
-             plainBytes, storedBytes, dictionaryBytes, distinctValues: the distinct texts of a \
-             dedup rule).",
+             label, path, codec, minBytes, dictionary, served (false: the rule is kept but \
+             not applied, values stay plain; reason says why, such as a codec of a newer \
+             version) and its current stats (compressedValues, plainBytes, storedBytes, \
+             dictionaryBytes, distinctValues: the distinct texts of a dedup rule).",
             no_args(),
         ),
         tool(

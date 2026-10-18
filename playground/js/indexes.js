@@ -59,7 +59,7 @@ export function indexRow(index) {
   const served = index.served !== false && !!s;
   return {
     name: index.name,
-    target: `${index.element === 'edge' ? 'edge' : 'vertex'} ${index.label}`,
+    target: `${index.element || 'vertex'} ${index.label}`,
     key: index.key,
     served,
     entries: served ? s.entries : '—',

@@ -58,6 +58,9 @@ pub(crate) struct DecodeError {
     /// [`FORMAT_VERSION`] in an otherwise intact header (format spec 15): written by a newer
     /// Graphersal, never damage.
     pub(crate) newer_version: Option<u32>,
+    /// Content behind a valid checksum that this version cannot interpret (format spec 16):
+    /// written by a newer Graphersal, never damage ([`super::PersistError::UnsupportedContent`]).
+    pub(crate) unsupported: bool,
 }
 
 impl DecodeError {
@@ -66,6 +69,16 @@ impl DecodeError {
             offset,
             reason: reason.into(),
             newer_version: None,
+            unsupported: false,
+        }
+    }
+
+    /// Content whose checksum is valid but that this version cannot interpret (format spec
+    /// 16): a schema keyword, a payload field or a record body of a newer Graphersal.
+    pub(crate) fn unsupported(offset: u64, reason: impl Into<String>) -> Self {
+        Self {
+            unsupported: true,
+            ..Self::new(offset, reason)
         }
     }
 
@@ -79,6 +92,7 @@ impl DecodeError {
                  reads up to version {FORMAT_VERSION})"
             ),
             newer_version: Some(found),
+            unsupported: false,
         }
     }
 
@@ -108,6 +122,13 @@ impl DecodeError {
                 found,
                 supported: FORMAT_VERSION,
             };
+        }
+        if self.unsupported {
+            return super::PersistError::unsupported_content(
+                location,
+                base.saturating_add(self.offset),
+                self.reason,
+            );
         }
         super::PersistError::corrupt(location, base.saturating_add(self.offset), self.reason)
     }
@@ -876,6 +897,23 @@ pub(crate) fn compress(raw: &[u8], codec: Codec) -> (u8, Option<Vec<u8>>) {
 /// per 255 bytes); a declared size beyond this bound cannot be genuine.
 const LZ4_MAX_RATIO: usize = 255;
 
+/// Whether `codec` is a block codec of the format that this build cannot decode (zstd, codec
+/// 2, without the `persist-zstd` feature): such a block is unsupported, never damage (format
+/// spec 2).
+pub(crate) fn codec_unavailable(codec: u8) -> bool {
+    codec == 2 && !cfg!(feature = "persist-zstd")
+}
+
+/// The failure of [`decompress`] at `offset`: unsupported for a codec this build lacks
+/// ([`codec_unavailable`]), else invalid bytes.
+pub(crate) fn decompress_error(codec: u8, offset: u64, reason: String) -> DecodeError {
+    if codec_unavailable(codec) {
+        DecodeError::unsupported(offset, reason)
+    } else {
+        DecodeError::new(offset, reason)
+    }
+}
+
 /// Decompresses `stored` (codec byte `codec`) into exactly `uncompressed` bytes. The size is
 /// checked against [`MAX_BLOCK_BYTES`] and the codec's expansion bound before anything is
 /// allocated.
@@ -983,5 +1021,20 @@ mod tests {
         assert!(decompress(0, &[1, 2, 3], 4).is_err());
         assert!(decompress(9, &[], 0).is_err());
         assert!(decompress(1, &[0u8; 4], MAX_BLOCK_BYTES + 1).is_err());
+    }
+
+    /// A block of a codec of the format that this build lacks is unsupported, never damage
+    /// (format spec 2); an unknown codec byte or invalid bytes are damage.
+    #[test]
+    fn a_codec_this_build_lacks_is_unsupported_not_damage() {
+        assert_eq!(codec_unavailable(2), !cfg!(feature = "persist-zstd"));
+        assert!(!codec_unavailable(1) && !codec_unavailable(9));
+        assert!(!decompress_error(9, 0, "x".into()).unsupported);
+        assert!(!decompress_error(1, 0, "x".into()).unsupported);
+        #[cfg(not(feature = "persist-zstd"))]
+        {
+            let reason = decompress(2, &[1, 2, 3], 3).unwrap_err();
+            assert!(decompress_error(2, 0, reason).unsupported);
+        }
     }
 }

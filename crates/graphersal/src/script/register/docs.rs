@@ -303,7 +303,7 @@ pub(crate) const DOCS: &[FnDoc] = docs! {
         "Appends the given list (or the list a child traversal yields) to the incoming list, duplicates kept.",
         "g.inject([1, 2]).combine([2, 3]).next()" => "[1, 2, 2, 3]";
     "traversal" "compressions":
-        "Lists the compression rules as maps: name, element, label, path, codec, min_bytes, dictionary and the current compressed_values, plain_bytes, stored_bytes, dictionary_bytes.",
+        "Lists the compression rules as maps: name, element, label, path, codec, min_bytes, dictionary, served (with reason when not applied) and the current compressed_values, plain_bytes, stored_bytes, dictionary_bytes.",
         "{ g.define_compression(#{name: \"bio\", label: \"person\", path: \"details.bio\"}); g.compressions().map(|r| r.path) }" => "[\"$.details.bio\"]";
     "traversal" "concat":
         "Appends strings (or the strings child traversals yield) to the incoming string.",

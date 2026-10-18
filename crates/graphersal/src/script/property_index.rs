@@ -27,10 +27,7 @@ fn index_entry(
     let index = definition.as_property_index()?;
     let mut map = rhai::Map::new();
     map.insert("name".into(), definition.name().to_string().into());
-    map.insert(
-        "element".into(),
-        index.element().as_str().to_string().into(),
-    );
+    map.insert("element".into(), index.element_name().to_string().into());
     map.insert("label".into(), index.label().to_string().into());
     map.insert("key".into(), index.key().to_string().into());
     map.insert(
