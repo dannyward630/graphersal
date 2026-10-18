@@ -14,6 +14,20 @@ with a default, new `#[non_exhaustive]` types).
 
 ## Added
 
+- **Saved queries that write**
+  ([#11](https://github.com/graphersal/graphersal/issues/11);
+  [Queries that read and queries that write](../users_guide/saved_queries.md#queries-that-read-and-queries-that-write)):
+  a saved query may now change data. Its **effects** (which elements of which labels it may
+  create, update or delete) are inferred from its body when it is saved, never declared; a call
+  asks the permission check for the whole effect set first and runs as one unit, so a failing
+  call changes nothing. Schema, catalog and file writes, and writes the inference cannot see
+  (behind `Fn`, `call`, `eval`, `import` or a computed query name), are refused when the query is
+  saved. `g.queries()` lists `writes` and `effects`; the playground marks queries R/O or R/W and
+  previews a writing call before it runs; the MCP server lists the effects, hides writing queries
+  in its read-only mode, and the AI Chat runs one only after the user confirmed it. A writing query
+  is stored in the dialect `graphersal-rhai/2`; read-only queries stay `graphersal-rhai/1`, so
+  0.2.0 still runs them and lists a writing one as not runnable
+  ([Unavailable queries and older versions](../users_guide/saved_queries.md#unavailable-queries-and-older-versions)).
 - **Estimate a compression rule before defining it**
   ([#12](https://github.com/graphersal/graphersal/issues/12);
   [Estimating the gain](../users_guide/compressed_properties.md#estimating-the-gain)):
@@ -90,6 +104,12 @@ with a default, new `#[non_exhaustive]` types).
 
 ## Fixed
 
+- **A traversal where a step takes values is refused**
+  ([#9](https://github.com/graphersal/graphersal/issues/9)): an anonymous traversal given to an
+  argument that takes ids, labels, property keys or values (`has_value(__.is("marko"))`,
+  `has_label(__..)`, `out(__..)`, `values(__..)`, ...) was silently turned into a string and
+  matched nothing. It is now an error whose help names the step that runs a traversal there.
+  New: `has(T.id, traversal)` and `has(T.label, traversal)`, as in TinkerPop.
 - **`g.memory_usage()` counts the hash index of every map.** It counted a property map, a nested
   object, a value map and the id and label indexes by their entries only and missed the hash
   table beside them, so `property_bytes` and `index_bytes` were 10-20 % low. They now match the
