@@ -530,7 +530,7 @@ fn speed(bytes: u64, elapsed: web_time::Duration) -> Option<f64> {
 }
 
 fn cancelled(token: &Option<CancelToken>, at: usize) -> bool {
-    at % CANCEL_EVERY == 0 && token.as_ref().is_some_and(CancelToken::is_cancelled)
+    at.is_multiple_of(CANCEL_EVERY) && token.as_ref().is_some_and(CancelToken::is_cancelled)
 }
 
 /// Compresses every text of `texts` with `dictionary` (the rule's write path), then
