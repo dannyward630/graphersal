@@ -969,12 +969,14 @@ impl Graph {
         )
     }
 
-    /// ``graph.define_compression(name, label, path, element="vertex", min_bytes=256,
-    /// dictionary=True, *, policy=None)``: stores (or replaces) a compression rule, like the
-    /// DSL's ``g.define_compression(#{..})``: strings of ``element``s labelled ``label`` at
-    /// ``path`` (a jpath of names such as ``"details.career.cv"``) are kept compressed in
-    /// memory and read plain. The label's values are re-encoded at once.
-    #[pyo3(signature = (name, label, path, element="vertex", min_bytes=256, dictionary=true, *, policy=None))]
+    /// ``graph.define_compression(name, label, path, element="vertex", min_bytes=None,
+    /// dictionary=None, codec=None, *, policy=None)``: stores (or replaces) a compression rule,
+    /// like the DSL's ``g.define_compression(#{..})``: strings of ``element``s labelled
+    /// ``label`` at ``path`` (a jpath of names such as ``"details.career.cv"``) are kept
+    /// compressed in memory (``codec="lz4"``, the default: ``min_bytes`` 256 and a dictionary
+    /// unless given) or stored once per distinct value (``codec="dedup"``: ``min_bytes`` 25, no
+    /// dictionary) and read plain. The label's values are re-encoded at once.
+    #[pyo3(signature = (name, label, path, element="vertex", min_bytes=None, dictionary=None, codec=None, *, policy=None))]
     #[allow(clippy::too_many_arguments)]
     fn define_compression(
         &self,
@@ -983,8 +985,9 @@ impl Graph {
         label: &str,
         path: &str,
         element: &str,
-        min_bytes: i64,
-        dictionary: bool,
+        min_bytes: Option<i64>,
+        dictionary: Option<bool>,
+        codec: Option<&str>,
         policy: Option<PyRef<'_, AccessPolicy>>,
     ) -> PyResult<()> {
         let params = PyDict::new(py);
@@ -992,23 +995,31 @@ impl Graph {
         params.set_item("rule_label", label)?;
         params.set_item("rule_path", path)?;
         params.set_item("rule_element", element)?;
-        params.set_item("rule_min_bytes", min_bytes)?;
-        params.set_item("rule_dictionary", dictionary)?;
-        self.run(
-            py,
+        let mut script = String::from(
             "g.define_compression(#{name: rule_name, label: rule_label, path: rule_path, \
-             element: rule_element, min_bytes: rule_min_bytes, dictionary: rule_dictionary})",
-            Some(&params),
-            false,
-            policy.as_deref(),
-        )?;
+             element: rule_element",
+        );
+        if let Some(min_bytes) = min_bytes {
+            params.set_item("rule_min_bytes", min_bytes)?;
+            script.push_str(", min_bytes: rule_min_bytes");
+        }
+        if let Some(dictionary) = dictionary {
+            params.set_item("rule_dictionary", dictionary)?;
+            script.push_str(", dictionary: rule_dictionary");
+        }
+        if let Some(codec) = codec {
+            params.set_item("rule_codec", codec)?;
+            script.push_str(", codec: rule_codec");
+        }
+        script.push_str("})");
+        self.run(py, &script, Some(&params), false, policy.as_deref())?;
         Ok(())
     }
 
     /// ``graph.compressions(*, policy=None)``: the compression rules as a ``list`` of ``dict``
     /// (``name``, ``element``, ``label``, ``path``, ``codec``, ``min_bytes``, ``dictionary``
     /// and the current ``compressed_values``, ``plain_bytes``, ``stored_bytes``,
-    /// ``dictionary_bytes``).
+    /// ``dictionary_bytes``, ``distinct_values``).
     #[pyo3(signature = (*, policy=None))]
     fn compressions(
         &self,
@@ -1060,16 +1071,18 @@ impl Graph {
     }
 
     /// ``graph.estimate_compression(label, path, element="vertex", min_bytes=None,
-    /// dictionary=None, *, policy=None)``: what compression rules for ``element``s labelled
-    /// ``label`` at ``path`` would hold over the current values, like the DSL's
-    /// ``g.estimate_compression(#{..})``, without changing the graph. ``min_bytes`` and
-    /// ``dictionary`` narrow the candidates (default: ``lz4`` with and without a dictionary at
-    /// 64, 128, 256, 512 and 1024 bytes, plus the current rule's parameters). A ``dict`` with
-    /// ``values_found``, ``string_values``, ``histogram``, ``candidates`` (``min_bytes``,
+    /// dictionary=None, codec=None, *, policy=None)``: what compression rules for ``element``s
+    /// labelled ``label`` at ``path`` would hold over the current values, like the DSL's
+    /// ``g.estimate_compression(#{..})``, without changing the graph. ``min_bytes``,
+    /// ``dictionary`` and ``codec`` (``"lz4"``, ``"dedup"`` or a list of them) narrow the
+    /// candidates (default: ``lz4`` with and without a dictionary at 64, 128, 256, 512 and 1024
+    /// bytes, plus the current rule's parameters). A ``dict`` with ``values_found``,
+    /// ``string_values``, ``histogram``, ``candidates`` (``codec``, ``min_bytes``,
     /// ``dictionary``, ``compressed_values``, ``plain_bytes``, ``stored_bytes``,
-    /// ``dictionary_bytes``, ``saved_bytes``, ``ratio``, ``decode_bytes_per_sec``, ...),
-    /// ``best`` (an index into ``candidates`` or ``None``), ``current`` and ``warnings``.
-    #[pyo3(signature = (label, path, element="vertex", min_bytes=None, dictionary=None, *, policy=None))]
+    /// ``dictionary_bytes``, ``distinct_values``, ``saved_bytes``, ``ratio``,
+    /// ``decode_bytes_per_sec``, ...), ``best`` (an index into ``candidates`` or ``None``),
+    /// ``current`` and ``warnings``.
+    #[pyo3(signature = (label, path, element="vertex", min_bytes=None, dictionary=None, codec=None, *, policy=None))]
     #[allow(clippy::too_many_arguments)]
     fn estimate_compression(
         &self,
@@ -1079,6 +1092,7 @@ impl Graph {
         element: &str,
         min_bytes: Option<i64>,
         dictionary: Option<bool>,
+        codec: Option<Bound<'_, PyAny>>,
         policy: Option<PyRef<'_, AccessPolicy>>,
     ) -> PyResult<Py<PyAny>> {
         let params = PyDict::new(py);
@@ -1095,6 +1109,26 @@ impl Graph {
         if let Some(dictionary) = dictionary {
             params.set_item("est_dictionary", dictionary)?;
             script.push_str(", dictionary: est_dictionary");
+        }
+        if let Some(codec) = codec {
+            // A codec name, or a list of them (a script parameter is a scalar: one each).
+            if let Ok(name) = codec.extract::<String>() {
+                params.set_item("est_codec", name)?;
+                script.push_str(", codec: est_codec");
+            } else {
+                let names: Vec<String> = codec.extract().map_err(|_| {
+                    pyo3::exceptions::PyTypeError::new_err(
+                        "codec is a codec name (\"lz4\", \"dedup\") or a list of them",
+                    )
+                })?;
+                let mut list = Vec::with_capacity(names.len());
+                for (at, name) in names.into_iter().enumerate() {
+                    let key = format!("est_codec_{at}");
+                    params.set_item(key.as_str(), name)?;
+                    list.push(key);
+                }
+                script.push_str(&format!(", codec: [{}]", list.join(", ")));
+            }
         }
         script.push_str("})");
         self.run(py, &script, Some(&params), false, policy.as_deref())

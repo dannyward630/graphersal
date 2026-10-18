@@ -73,6 +73,7 @@ pub(crate) fn property_exceeds_depth(value: &ElementProperty, max: usize) -> boo
             ElementProperty::Null
             | ElementProperty::String(_)
             | ElementProperty::Compressed(_)
+            | ElementProperty::Deduped(_)
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
             | ElementProperty::Uuid(_)

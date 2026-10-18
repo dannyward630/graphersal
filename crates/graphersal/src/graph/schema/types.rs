@@ -113,7 +113,9 @@ pub fn type_of(prop: &ElementProperty) -> Option<ValueType> {
         } else {
             ValueType::Float64
         }),
-        ElementProperty::String(_) | ElementProperty::Compressed(_) => Some(ValueType::String),
+        ElementProperty::String(_)
+        | ElementProperty::Compressed(_)
+        | ElementProperty::Deduped(_) => Some(ValueType::String),
         ElementProperty::Uuid(_) => Some(ValueType::Uuid),
         ElementProperty::Temporal(value) => Some(ValueType::of_temporal(value.kind())),
         ElementProperty::Vector(value) => Some(ValueType::Vector(value.element())),

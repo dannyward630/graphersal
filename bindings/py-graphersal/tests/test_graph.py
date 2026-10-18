@@ -514,3 +514,27 @@ def test_compression_estimate_changes_nothing_and_matches_the_rule():
     assert graph.estimate_compression("customer", "cv")["current"]["name"] == "cv"
     unknown = graph.estimate_compression("custmer", "cv")
     assert unknown["warnings"][0]["code"] == "unknown_label"
+
+
+def test_a_dedup_rule_shares_repeated_values_and_the_estimate_matches():
+    graph = graphersal.Graph()
+    for i in range(12):
+        graph.execute(
+            'g.add_v("symbol").property("path", p).to_list()',
+            {"p": f"crates/graphersal/src/graph/file_{i % 3}.rs"},
+        )
+    estimate = graph.estimate_compression("symbol", "path", codec=["lz4", "dedup"])
+    best = estimate["candidates"][estimate["best"]]
+    assert best["codec"] == "dedup"
+    assert best["distinct_values"] == 3
+    graph.define_compression("path", "symbol", "path", codec="dedup", min_bytes=best["min_bytes"])
+    rule = graph.compressions()[0]
+    assert rule["codec"] == "dedup"
+    assert rule["dictionary"] is False
+    assert rule["distinct_values"] == 3
+    assert rule["stored_bytes"] == best["stored_bytes"]
+    assert sorted(set(graph.execute('g.v().values("path").to_list()'))) == [
+        f"crates/graphersal/src/graph/file_{k}.rs" for k in range(3)
+    ]
+    with pytest.raises(graphersal.GraphersalError):
+        graph.define_compression("bad", "symbol", "doc", codec="dedup", dictionary=True)

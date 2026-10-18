@@ -103,7 +103,11 @@ fn kind_of(
         ElementProperty::Boolean(_) => JsonType::Boolean,
         ElementProperty::Number(n) if n.is_i64() => JsonType::Integer,
         ElementProperty::Number(_) => JsonType::Number,
-        ElementProperty::String(_) | ElementProperty::Compressed(_) if format.is_none() => {
+        ElementProperty::String(_)
+        | ElementProperty::Compressed(_)
+        | ElementProperty::Deduped(_)
+            if format.is_none() =>
+        {
             JsonType::String
         }
         // `string` + `format: uuid` is a uuid, `string` + `format: date-time` a datetime, ...
@@ -114,6 +118,7 @@ fn kind_of(
         }
         ElementProperty::String(_)
         | ElementProperty::Compressed(_)
+        | ElementProperty::Deduped(_)
         | ElementProperty::Uuid(_)
         | ElementProperty::Temporal(_) => return None,
         // `array` + `format: vector` is a vector of the declared element and dimension; a
@@ -389,7 +394,9 @@ pub(crate) fn check_constraints(
     };
     match value {
         // A compressed string is checked on its text (decompressed into the scratch buffer).
-        ElementProperty::String(_) | ElementProperty::Compressed(_) => value
+        ElementProperty::String(_)
+        | ElementProperty::Compressed(_)
+        | ElementProperty::Deduped(_) => value
             .with_text(|s| -> Result<(), SchemaError> {
                 let length = s.chars().count() as u64;
                 if let Some(min) = constraints.min_length

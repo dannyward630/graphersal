@@ -291,6 +291,7 @@ fn literal_matches<S: GraphStorage>(
         ElementProperty::Null => PValue::Null,
         ElementProperty::String(text) => PValue::String(text.clone()),
         ElementProperty::Compressed(text) => PValue::String(text.text()),
+        ElementProperty::Deduped(text) => PValue::String(text.as_str().into()),
         ElementProperty::Number(number) => PValue::Number(number.clone()),
         ElementProperty::Boolean(flag) => PValue::Boolean(*flag),
         ElementProperty::Uuid(bits) => PValue::Uuid(*bits),

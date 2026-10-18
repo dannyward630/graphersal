@@ -25,7 +25,8 @@ const KEYS: [&str; 7] = [
 ];
 
 /// One rule as a map: name, element, label, path, codec, min_bytes, dictionary and its
-/// current stats (compressed_values, plain_bytes, stored_bytes, dictionary_bytes).
+/// current stats (compressed_values, plain_bytes, stored_bytes, dictionary_bytes,
+/// distinct_values).
 pub(crate) fn rule_entry(
     definition: &Definition,
     stats: Option<crate::graph::CompressionStats>,
@@ -48,6 +49,7 @@ pub(crate) fn rule_entry(
     map.insert("plain_bytes".into(), int(stats.plain_bytes));
     map.insert("stored_bytes".into(), int(stats.stored_bytes));
     map.insert("dictionary_bytes".into(), int(stats.dictionary_bytes));
+    map.insert("distinct_values".into(), int(stats.distinct_values));
     Some(map)
 }
 
@@ -119,6 +121,7 @@ pub(crate) fn estimate_entry(estimate: &CompressionEstimate) -> rhai::Map {
             entry.insert("plain_bytes".into(), int(c.plain_bytes));
             entry.insert("stored_bytes".into(), int(c.stored_bytes));
             entry.insert("dictionary_bytes".into(), int(c.dictionary_bytes));
+            entry.insert("distinct_values".into(), int(c.distinct_values));
             entry.insert("saved_bytes".into(), Dynamic::from_int(c.saved_bytes));
             entry.insert("ratio".into(), float_or_unit(c.ratio()));
             entry.insert("current".into(), Dynamic::from_bool(c.current));
@@ -160,6 +163,7 @@ pub(crate) fn estimate_entry(estimate: &CompressionEstimate) -> rhai::Map {
             "dictionary_bytes".into(),
             int(current.stats.dictionary_bytes),
         );
+        entry.insert("distinct_values".into(), int(current.stats.distinct_values));
         Dynamic::from_map(entry)
     });
     map.insert("current".into(), current);
@@ -211,9 +215,10 @@ impl ScriptGraphTraversalSource {
     /// `g.define_compression(#{name, label, path, element?, codec?, min_bytes?, dictionary?})`
     /// / `g.defineCompression(..)`: stores (or replaces) a compression rule. `path` is a string
     /// read as a jpath (`"details.career.cv"`, because it IS a path) or a `jpath(..)`;
-    /// `element` is `"vertex"` (default) or `"edge"`, `codec` `"lz4"`, `min_bytes` 256 and
-    /// `dictionary` true by default. The explicit pass re-encodes the label's values in the
-    /// same unit. Asks for `Create` on the rule (`Update` when it replaces one).
+    /// `element` is `"vertex"` (default) or `"edge"`, `codec` `"lz4"` (default: `min_bytes`
+    /// 256, `dictionary` true) or `"dedup"` (each distinct value stored once: `min_bytes` 25,
+    /// no dictionary; `dictionary: true` is refused). The explicit pass re-encodes the label's
+    /// values in the same unit. Asks for `Create` on the rule (`Update` when it replaces one).
     pub fn define_compression(&mut self, spec: Dynamic) -> Result<(), Box<EvalAltResult>> {
         let operation = "define_compression";
         let actual = type_name_of(&spec);
@@ -277,10 +282,7 @@ impl ScriptGraphTraversalSource {
         let mut rule = CompressionDefinition::with_path(element, label, path);
         if let Some(codec) = optional_text(operation, "codec", take("codec"))? {
             let codec = Codec::from_name(&codec).ok_or_else(|| {
-                mismatch(
-                    "codec \"lz4\" (the only codec of this version)".into(),
-                    format!("\"{codec}\""),
-                )
+                mismatch("codec \"lz4\" or \"dedup\"".into(), format!("\"{codec}\""))
             })?;
             rule = rule.with_codec(codec);
         }
@@ -329,7 +331,9 @@ impl ScriptGraphTraversalSource {
     /// hold over the current values, without changing anything (read-only, commits nothing).
     /// Without `codec`/`min_bytes`/`dictionary` every default candidate is measured (`lz4`
     /// with and without a dictionary at 64, 128, 256, 512 and 1024 bytes, plus the current
-    /// rule's parameters); each given key narrows the set. Answers a map
+    /// rule's parameters); each given key narrows the set. `codec` is `"lz4"`, `"dedup"` (at
+    /// 25, 64, 128 and 256 bytes) or a list of them (`["lz4", "dedup"]` compares both). Answers
+    /// a map
     /// (`estimate_entry`). Asks for `Read` on the data of that element kind and label.
     pub fn estimate_compression(&mut self, spec: Dynamic) -> Result<rhai::Map, Box<EvalAltResult>> {
         let operation = "estimate_compression";
@@ -392,15 +396,39 @@ impl ScriptGraphTraversalSource {
                 ));
             }
         };
-        let codec = match optional_text(operation, "codec", take("codec"))? {
-            None => None,
-            Some(codec) => Some(Codec::from_name(&codec).ok_or_else(|| {
-                mismatch(
-                    "codec \"lz4\" (the only codec of this version)".into(),
-                    format!("\"{codec}\""),
-                )
-            })?),
+        let codec_value = take("codec");
+        let codec_names: Vec<String> = if codec_value.is_unit() {
+            Vec::new()
+        } else if let Some(list) = codec_value.read_lock::<rhai::Array>() {
+            let mut names = Vec::new();
+            for item in list.iter() {
+                match item.clone().into_immutable_string() {
+                    Ok(name) => names.push(name.to_string()),
+                    Err(actual) => {
+                        return Err(mismatch(
+                            "codec as \"lz4\", \"dedup\" or a list of them".into(),
+                            format!("a list holding a {actual}"),
+                        ));
+                    }
+                }
+            }
+            names
+        } else {
+            match optional_text(operation, "codec", codec_value)? {
+                Some(name) => vec![name],
+                None => Vec::new(),
+            }
         };
+        let mut codecs: Vec<Codec> = Vec::new();
+        for name in &codec_names {
+            let codec = Codec::from_name(name).ok_or_else(|| {
+                mismatch(
+                    "codec \"lz4\", \"dedup\" or a list of them".into(),
+                    format!("\"{name}\""),
+                )
+            })?;
+            codecs.push(codec);
+        }
         let min_bytes = take("min_bytes");
         let min_bytes = if min_bytes.is_unit() {
             None
@@ -427,7 +455,9 @@ impl ScriptGraphTraversalSource {
             })?)
         };
         let request = CompressionEstimateRequest::with_path(element, label.as_str(), path)
-            .with_candidates(CompressionCandidate::matching(codec, min_bytes, dictionary));
+            .with_candidates(CompressionCandidate::matching_codecs(
+                &codecs, min_bytes, dictionary,
+            ));
         request
             .validate()
             .map_err(|err| graph_fail(crate::error::GraphError::from(err)))?;
@@ -446,8 +476,8 @@ impl ScriptGraphTraversalSource {
     }
 
     /// `g.compressions()`: every compression rule as a map (name, element, label, path, codec,
-    /// min_bytes, dictionary, compressed_values, plain_bytes, stored_bytes, dictionary_bytes),
-    /// by name. Asks for `Read` on the rules.
+    /// min_bytes, dictionary, compressed_values, plain_bytes, stored_bytes, dictionary_bytes,
+    /// distinct_values), by name. Asks for `Read` on the rules.
     pub fn compressions(&mut self) -> Result<rhai::Array, Box<EvalAltResult>> {
         self.require_compression("compressions", Action::Read, None)?;
         let graph = self.compression_graph("compressions")?;

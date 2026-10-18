@@ -84,6 +84,16 @@ pub(super) fn lines(
             bytes("compression_dictionary_bytes")
         ));
     }
+    let deduped = memory["deduped_values"].as_u64().unwrap_or(0);
+    if deduped > 0 {
+        let bytes = |key: &str| bytes_text(memory[key].as_u64().unwrap_or(0));
+        lines.push(format!(
+            "Deduplicated: {} values, {} shared as {}",
+            count_text(deduped),
+            bytes("deduped_plain_bytes"),
+            bytes("dedup_table_bytes")
+        ));
+    }
     lines
 }
 

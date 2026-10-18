@@ -218,6 +218,7 @@ impl<'g, S: GraphStorage + 'g> StepSelect<'g, S> {
                 ElementProperty::Null
                 | ElementProperty::String(_)
                 | ElementProperty::Compressed(_)
+                | ElementProperty::Deduped(_)
                 | ElementProperty::Number(_)
                 | ElementProperty::Boolean(_)
                 | ElementProperty::Uuid(_)

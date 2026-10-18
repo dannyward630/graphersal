@@ -451,12 +451,15 @@ order, followed by the unknown keys:
 | `element` | string: `"vertex"` or `"edge"` |
 | `label` | string: the label |
 | `path` | string: canonical jpath text of object keys only (`$.details.career.cv`) |
-| `codec` | string: `"lz4"` |
+| `codec` | string: `"lz4"` (each value compressed) or `"dedup"` (each distinct value held once in memory; since 0.2.1) |
 | `min_bytes` | int64: strings shorter than this (UTF-8 bytes) stay plain, 1 to 16777216 |
-| `dictionary` | boolean: whether the load builds a dictionary from the rule's values |
+| `dictionary` | boolean: whether the load builds a dictionary from the rule's values (`lz4` only; `true` with `"dedup"` is invalid) |
 
 `label` and `path` are required; `element` defaults to `"vertex"`, `codec` to `"lz4"`,
-`min_bytes` to 256, `dictionary` to `true`. Two rules with the same `element`, `label` and `path`
+`min_bytes` to 256 (`lz4`) or 25 (`dedup`), `dictionary` to `true` (`lz4`) or `false` (`dedup`);
+writers always write `min_bytes` and `dictionary`. A reader that does not know a `codec` value
+cannot decode the payload (it is damage, like any invalid payload of a known kind); the codec
+changes no stored data, which stays plain. Two rules with the same `element`, `label` and `path`
 are invalid (a writer refuses the second).
 
 A **property index** (kind 2, not critical) orders the elements of one element kind and label by

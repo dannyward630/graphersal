@@ -27,3 +27,24 @@ with a default, new `#[non_exhaustive]` types).
   compression rule form (a table of the candidates with saving bars, the best highlighted, **Use**
   fills the form), the dev server's `POST /api/compression/estimate` and the MCP tool
   `estimate_compression`. The help of an out-of-range `min_bytes` names it.
+- **A `dedup` codec for repeated values**
+  ([#13](https://github.com/graphersal/graphersal/issues/13);
+  [Deduplicating repeated values](../users_guide/compressed_properties.md#deduplicating-repeated-values)):
+  `g.define_compression(#{name, label, path, codec: "dedup"})` stores every distinct value at the
+  rule's path once, in a table of the rule, and every element keeps only a reference. For long
+  values repeated across many elements (file paths, URLs, addresses, category texts); strings of at
+  most 24 bytes are stored inline and never shared (the default `min_bytes` of a dedup rule is 25),
+  and `dictionary: true` with `dedup` is refused with a help that names the fix. Reads stay plain
+  and cost nothing extra, query results never change, change sets, exports and files hold plain
+  values (no format change: a load shares the values again). `g.compressions()` reports the shared
+  values (`compressed_values`), `distinct_values`, plain and stored bytes (each distinct text once
+  plus 32 bytes); `g.memory_usage()` adds `deduped_values`, `deduped_plain_bytes` and
+  `dedup_table_bytes` (each shared text once, part of `property_bytes`). The estimate measures
+  dedup with `codec: "dedup"` or `codec: ["lz4", "dedup"]` (exact, never sampled; per candidate
+  `distinct_values`; the warning `high_cardinality` when the values are mostly distinct) and
+  includes a dedup rule that covers the path today. Rust `Codec::Dedup`,
+  `CompressionCandidate::dedup`/`matching_codecs`, Python `define_compression(..., codec="dedup")`
+  and `estimate_compression(..., codec=[...])`, the playground's codec choice and dedup rows in the
+  estimate table, the MCP tools `define_compression`/`estimate_compression`. A 0.2.0 reader cannot
+  decode a dedup rule (it reports the definition as damage): drop dedup rules before opening a store
+  with 0.2.0.

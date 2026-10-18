@@ -56,6 +56,7 @@ fn convert(value: &ElementProperty) -> Result<Duration, String> {
         ElementProperty::Temporal(Temporal::Duration(duration)) => Ok(*duration),
         ElementProperty::String(text) => parse(text),
         ElementProperty::Compressed(text) => text.with_text(parse),
+        ElementProperty::Deduped(text) => parse(text.as_str()),
         ElementProperty::Null => Err("null is not a duration".to_string()),
         other => Err(format!(
             "a {} is not a duration",

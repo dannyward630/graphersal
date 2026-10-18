@@ -533,13 +533,16 @@ class Graph:
         label: str,
         path: str,
         element: str = "vertex",
-        min_bytes: int = 256,
-        dictionary: bool = True,
+        min_bytes: Optional[int] = None,
+        dictionary: Optional[bool] = None,
+        codec: Optional[str] = None,
         *,
         policy: Optional[AccessPolicy] = None,
     ) -> None:
         """Stores (or replaces) a compression rule: strings of ``element``s labelled ``label``
-        at ``path`` are kept compressed in memory and read plain."""
+        at ``path`` are kept compressed in memory (``codec="lz4"``, default: ``min_bytes`` 256,
+        a dictionary) or stored once per distinct value (``codec="dedup"``: ``min_bytes`` 25,
+        no dictionary) and read plain."""
     def compressions(self, *, policy: Optional[AccessPolicy] = None) -> list[dict[str, Any]]:
         """The compression rules with their current stats."""
     def drop_compression(self, name: str, *, policy: Optional[AccessPolicy] = None) -> bool:
@@ -554,6 +557,7 @@ class Graph:
         element: str = "vertex",
         min_bytes: Optional[int] = None,
         dictionary: Optional[bool] = None,
+        codec: Optional[Union[str, list[str]]] = None,
         *,
         policy: Optional[AccessPolicy] = None,
     ) -> dict[str, Any]:

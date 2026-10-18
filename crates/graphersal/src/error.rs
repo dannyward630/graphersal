@@ -3299,12 +3299,21 @@ impl DiagnosticError for DefinitionError {
                     .to_string(),
                 "min_bytes" => format!(
                     "min_bytes is the shortest string (in UTF-8 bytes) that is compressed: 1 to \
-                     {} (default {}); shorter strings stay plain. To choose one, \
-                     g.estimate_compression(#{{label: \"customer\", path: \"cv\"}}) measures \
-                     every threshold on the current data without changing the graph.",
+                     {} (default {}; {} for codec \"dedup\"); shorter strings stay plain. To \
+                     choose one, g.estimate_compression(#{{label: \"customer\", path: \"cv\"}}) \
+                     measures every threshold on the current data without changing the graph \
+                     (add codec: \"dedup\" for the dedup thresholds).",
                     crate::graph::compression::MAX_MIN_BYTES,
-                    crate::graph::compression::DEFAULT_MIN_BYTES
+                    crate::graph::compression::DEFAULT_MIN_BYTES,
+                    crate::graph::compression::DEFAULT_DEDUP_MIN_BYTES
                 ),
+                "dictionary" => "A dictionary belongs to codec \"lz4\" (it primes the \
+                                 compression of similar texts). A \"dedup\" rule stores each \
+                                 distinct value once and has none: leave dictionary out, for \
+                                 example g.define_compression(#{name: \"symbol_path\", label: \
+                                 \"symbol\", path: \"path\", codec: \"dedup\"}), or use codec \
+                                 \"lz4\" to keep the dictionary."
+                    .to_string(),
                 "label" => "Name the vertex or edge label the rule (or index) applies to, for \
                             example \"customer\"; it need not exist yet."
                     .to_string(),

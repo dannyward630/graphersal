@@ -7163,3 +7163,44 @@ fn a_min_bytes_out_of_range_help_names_estimate_compression() {
     .unwrap();
     assert!(estimate.is_map());
 }
+
+/// A dictionary on a `dedup` rule (issue #13): the help says a dictionary belongs to lz4 and
+/// shows the dedup rule without it, and that call runs; the help of an out-of-range threshold
+/// names the dedup default and the dedup estimate.
+#[cfg(feature = "script")]
+#[test]
+fn a_dictionary_on_a_dedup_rule_help_names_the_fix() {
+    use graphersal::catalog::{Codec, CompressionDefinition};
+    use graphersal::storage::ElementKind;
+    let mut graph = TraversalGraph::new();
+    let rule = CompressionDefinition::new(ElementKind::Vertex, "symbol", "path")
+        .unwrap()
+        .with_codec(Codec::Dedup)
+        .with_dictionary(true);
+    let err = graph
+        .traversal_mut()
+        .define_compression("symbol_path", rule)
+        .unwrap_err();
+    let help = err.help().expect("help");
+    assert!(
+        help.contains(r#"A dictionary belongs to codec "lz4""#),
+        "{help}"
+    );
+    let fix = r#"g.define_compression(#{name: "symbol_path", label: "symbol", path: "path", codec: "dedup"})"#;
+    assert!(help.contains(fix), "{help}");
+    let shared = std::sync::Arc::new(Graph::new(graph));
+    let _ = crate::script_host::eval_value(shared.clone(), fix).unwrap();
+    assert_eq!(shared.read().definitions().count(), 1);
+
+    let rule = CompressionDefinition::new(ElementKind::Vertex, "symbol", "path")
+        .unwrap()
+        .with_codec(Codec::Dedup)
+        .with_min_bytes(0);
+    let err = TraversalGraph::new()
+        .traversal_mut()
+        .define_compression("p", rule)
+        .unwrap_err();
+    let help = err.help().expect("help");
+    assert!(help.contains(r#"25 for codec "dedup""#), "{help}");
+    assert!(help.contains(r#"codec: "dedup""#), "{help}");
+}

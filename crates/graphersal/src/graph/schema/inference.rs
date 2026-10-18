@@ -98,7 +98,9 @@ impl Observed {
             ElementProperty::Number(n) if n.is_i64() => self.integer = true,
             ElementProperty::Number(_) => self.number = true,
             // A compressed string is a string (D5).
-            ElementProperty::String(_) | ElementProperty::Compressed(_) => self.string = true,
+            ElementProperty::String(_)
+            | ElementProperty::Compressed(_)
+            | ElementProperty::Deduped(_) => self.string = true,
             ElementProperty::Uuid(_) => self.uuid = true,
             ElementProperty::Temporal(value) => {
                 self.temporal.insert(value.kind());

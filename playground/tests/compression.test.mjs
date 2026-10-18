@@ -197,3 +197,44 @@ test('estimate: Use copies codec, threshold and dictionary into the form and the
   });
   assert.equal(applyCandidate(draft, { minBytes: 512, dictionary: false }).dictionary, false);
 });
+
+test('dedup: the form switches codec defaults, the spec has no dictionary, rows show distinct values', async () => {
+  const m = await import('../js/compression.js');
+  const draft = { ...m.newDraft(), name: 'p', label: 'symbol', path: 'path' };
+  const dedup = m.withCodec(draft, 'dedup');
+  assert.equal(dedup.codec, 'dedup');
+  assert.equal(dedup.minBytesText, String(m.DEFAULT_DEDUP_MIN_BYTES));
+  assert.equal(dedup.dictionary, false);
+  assert.deepEqual(m.draftToSpec({ ...dedup, dictionary: true }).spec, {
+    name: 'p', element: 'vertex', label: 'symbol', path: 'path', minBytes: 25, dictionary: false, codec: 'dedup',
+  });
+  assert.equal(m.draftToSpec({ ...dedup, minBytesText: '' }).spec.minBytes, 25);
+  // Back to lz4: its defaults return; a threshold the user typed stays.
+  const back = m.withCodec(dedup, 'lz4');
+  assert.equal(back.minBytesText, String(m.DEFAULT_MIN_BYTES));
+  assert.equal(back.dictionary, true);
+  assert.equal(m.withCodec({ ...draft, minBytesText: '40' }, 'dedup').minBytesText, '40');
+  // A stored dedup rule: its draft keeps the codec, its row shows distinct values.
+  const rule = {
+    name: 'p', element: 'vertex', label: 'symbol', path: '$.path', codec: 'dedup', minBytes: 25, dictionary: false,
+    stats: { compressedValues: 12, plainBytes: 600, storedBytes: 240, dictionaryBytes: 0, distinctValues: 3 },
+  };
+  assert.equal(m.draftFromRule(rule).codec, 'dedup');
+  assert.equal(m.draftFromRule(rule).dictionary, false);
+  const row = m.ruleRow(rule);
+  assert.equal(row.codec, 'dedup');
+  assert.equal(row.distinct, '3');
+  assert.equal(row.dictionary, '—');
+  assert.equal(m.ruleRow({ ...rule, codec: 'lz4' }).distinct, '—');
+  // Estimate rows: a dedup candidate reads as plain and has a distinct count.
+  const rows = m.estimateRows({
+    best: 0,
+    candidates: [{ codec: 'dedup', minBytes: 25, dictionary: false, compressedValues: 12, plainBytes: 600, storedBytes: 240, dictionaryBytes: 0, distinctValues: 3, savedBytes: 360 }],
+  });
+  assert.equal(rows[0].name, 'dedup');
+  assert.equal(rows[0].distinct, '3');
+  assert.equal(rows[0].reads, 'as plain');
+  assert.deepEqual([...m.ESTIMATE_CODECS], ['lz4', 'dedup']);
+  const summary = m.estimateSummary({ element: 'vertex', label: 'symbol', path: '$.path', current: { name: 'p', codec: 'dedup', minBytes: 25, stats: rule.stats } });
+  assert.match(summary.notes[1], /Today the dedup rule "p" \(≥ 25 B\) shares 12 values \(3 distinct\)/);
+});

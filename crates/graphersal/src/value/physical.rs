@@ -181,6 +181,7 @@ pub(crate) fn lower(value: &ElementProperty) -> PhysicalValue<'_> {
         ElementProperty::Compressed(text) => {
             PhysicalValue::String(Cow::Owned(text.text().into_string()))
         }
+        ElementProperty::Deduped(text) => PhysicalValue::String(Cow::Borrowed(text.as_str())),
         ElementProperty::Uuid(u) => {
             PhysicalValue::String(Cow::Owned(format_canonical(*u).into_string()))
         }
@@ -1054,6 +1055,7 @@ mod serde_glue {
                 ElementProperty::Null
                 | ElementProperty::String(_)
                 | ElementProperty::Compressed(_)
+                | ElementProperty::Deduped(_)
                 | ElementProperty::Number(_)
                 | ElementProperty::Boolean(_)
                 | ElementProperty::Vertex(_)

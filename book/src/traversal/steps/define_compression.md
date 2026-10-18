@@ -3,7 +3,7 @@
 
 `define_compression` · `defineCompression` · category: [Compressed properties](../../traversal/step_reference.md#compressed-properties)
 
-Stores (or replaces) a compression rule #{name, label, path, element, codec, min_bytes, dictionary}: strings at that path are kept compressed in memory and read plain (see the book page Compressed Properties).
+Stores (or replaces) a compression rule #{name, label, path, element, codec, min_bytes, dictionary}: strings at that path are kept compressed in memory (codec "lz4") or stored once per distinct value (codec "dedup") and read plain (see the book page Compressed Properties).
 
 ## Forms
 

@@ -73,6 +73,7 @@ impl StepHasValue {
             ElementProperty::Array(_) => false,
             ElementProperty::String(_)
             | ElementProperty::Compressed(_)
+            | ElementProperty::Deduped(_)
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
             | ElementProperty::Uuid(_)
@@ -359,6 +360,7 @@ impl<B: Into<PValue> + Debug + Clone + Send + Sync> StepHasValueP<B> {
             ElementProperty::Array(_) => Ok(false),
             ElementProperty::String(_)
             | ElementProperty::Compressed(_)
+            | ElementProperty::Deduped(_)
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
             | ElementProperty::Uuid(_)
@@ -637,6 +639,7 @@ impl StepHasValueAny {
             ElementProperty::Array(_) => false,
             ElementProperty::String(_)
             | ElementProperty::Compressed(_)
+            | ElementProperty::Deduped(_)
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
             | ElementProperty::Uuid(_)

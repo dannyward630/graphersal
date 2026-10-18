@@ -44,6 +44,7 @@ fn string_length_of(value: &ElementProperty) -> TraverserResult<Option<usize>> {
         ElementProperty::Null => Ok(None),
         ElementProperty::String(text) => Ok(Some(char_count(text))),
         ElementProperty::Compressed(text) => Ok(Some(text.with_text(char_count))),
+        ElementProperty::Deduped(text) => Ok(Some(char_count(text.as_str()))),
         ElementProperty::Object(_) | ElementProperty::Map(_) => Err(not_a_string("object")),
         ElementProperty::Array(_) => Err(not_a_string("array")),
         ElementProperty::Vertex(_) => Err(not_a_string("vertex")),

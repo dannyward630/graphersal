@@ -476,7 +476,9 @@ impl<'a, S: GraphStorage> Cursor<'a, S> {
         match self {
             Cursor::Property(property) => match property {
                 ElementProperty::Null => "null",
-                ElementProperty::String(_) | ElementProperty::Compressed(_) => "string",
+                ElementProperty::String(_)
+                | ElementProperty::Compressed(_)
+                | ElementProperty::Deduped(_) => "string",
                 ElementProperty::Number(_) => "number",
                 ElementProperty::Boolean(_) => "boolean",
                 ElementProperty::Uuid(_) => "uuid",

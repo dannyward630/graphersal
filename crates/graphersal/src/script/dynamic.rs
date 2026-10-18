@@ -426,6 +426,7 @@ pub(crate) fn element_property_to_dynamic(value: ElementProperty) -> Dynamic {
         ElementProperty::String(value) => Dynamic::from(value.to_string()),
         // A script value is always plain (D5).
         ElementProperty::Compressed(text) => compressed_to_dynamic(&text),
+        ElementProperty::Deduped(text) => Dynamic::from(text.as_str().to_string()),
         ElementProperty::Boolean(value) => Dynamic::from_bool(value),
         ElementProperty::Uuid(value) => Dynamic::from(ScriptUuid(value)),
         // One script type per temporal type (`datetime`, `date`, ...): a result fed back into

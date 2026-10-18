@@ -98,6 +98,15 @@ export function statisticsModel(raw) {
               { name: 'Compression dictionaries', text: formatBytes(m.compression_dictionary_bytes) },
             ]
           : []),
+        // Dedup rules: the shared values and their tables (part of Properties).
+        ...(m.deduped_values
+          ? [
+              {
+                name: 'Shared strings (dedup)',
+                text: `${m.deduped_values} (${formatBytes(m.deduped_plain_bytes)} → ${formatBytes(m.dedup_table_bytes)})`,
+              },
+            ]
+          : []),
         // Property indexes (Catalog ▸ Property indexes): only when the graph has some.
         ...(m.property_index_bytes ? [{ name: 'Property indexes', text: formatBytes(m.property_index_bytes) }] : []),
         { name: 'Total', text: formatBytes(m.total_bytes) },

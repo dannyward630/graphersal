@@ -11,7 +11,10 @@
 //! - a value qualifies exactly when the rule's write path would compress it
 //!   ([`CompressedText::compress`]: `>= min_bytes`, at most 90 %);
 //! - bytes are counted like [`TraversalGraph::compression_stats`] (plain length, compressed
-//!   length, dictionary length).
+//!   length, dictionary length);
+//! - a `dedup` candidate shares a value exactly when the rule would (`dedup_qualifies`) and
+//!   counts each distinct text once with its overhead, like the stats of a dedup rule. Dedup
+//!   needs no trial encoding, so its numbers are always exact (never sampled).
 //!
 //! So below the caps, the numbers of a candidate EQUAL what `compression_stats` reports after
 //! defining that rule on the same data. Above the caps (`max_values` strings or `max_bytes`
@@ -27,19 +30,24 @@ use compact_str::CompactString;
 
 use crate::error::DefinitionError;
 use crate::graph::compression::{
-    Codec, CompressionDefinition, CompressionStats, dictionary_from, path_problem, value_at,
+    Codec, CompressionDefinition, CompressionStats, dedup_qualifies, dictionary_from, path_problem,
+    value_at,
 };
 use crate::graph::definition::DefinitionKind;
 use crate::graph::schema::ElementKind;
 use crate::graph::{GraphStorage, TraversalGraph};
 use crate::traversal::cancel::CancelToken;
 use crate::value::compressed::{CompressedText, CompressionDictionary};
+use crate::value::deduped::DEDUP_ENTRY_OVERHEAD;
 use crate::value::json_path::JsonPathSegment;
 use crate::value::{ElementProperty, JsonPath};
 
 /// The `min_bytes` thresholds of the default candidate set (each with and without a
 /// dictionary).
 pub const DEFAULT_ESTIMATE_THRESHOLDS: [u32; 5] = [64, 128, 256, 512, 1024];
+/// The `min_bytes` thresholds a `dedup` estimate measures when none is given
+/// ([`CompressionCandidate::matching`] with codec `dedup`).
+pub const DEFAULT_DEDUP_ESTIMATE_THRESHOLDS: [u32; 4] = [25, 64, 128, 256];
 /// The default cap on the strings an estimate compresses; above it a sample is measured.
 pub const DEFAULT_ESTIMATE_MAX_VALUES: usize = 100_000;
 /// The default cap on the plain bytes an estimate compresses (16 MiB); above it a sample is
@@ -50,8 +58,8 @@ const HISTOGRAM_BOUNDS: [u64; 8] = [0, 64, 128, 256, 512, 1024, 4096, 16384];
 /// How many items a loop handles between two cancellation checks.
 const CANCEL_EVERY: usize = 256;
 
-/// One rule an estimate measures: a codec and its options (today `lz4` with or without a
-/// dictionary, at a threshold). A codec a later version adds (and its options) becomes another
+/// One rule an estimate measures: a codec and its options (`lz4` with or without a dictionary,
+/// or `dedup`, at a threshold). A codec a later version adds (and its options) becomes another
 /// candidate of the same list; the fields are public to read, built with the constructors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -79,13 +87,19 @@ impl CompressionCandidate {
         Self::new(Codec::Lz4, min_bytes, dictionary)
     }
 
+    /// A `dedup` candidate (no dictionary).
+    pub fn dedup(min_bytes: u32) -> Self {
+        Self::new(Codec::Dedup, min_bytes, false)
+    }
+
     /// The candidate a stored rule is (its codec, threshold and dictionary flag).
     pub fn of_rule(rule: &CompressionDefinition) -> Self {
         Self::new(rule.codec(), rule.min_bytes(), rule.dictionary())
     }
 
     /// The default candidate set: `lz4` at every [`DEFAULT_ESTIMATE_THRESHOLDS`] threshold,
-    /// first without, then with a dictionary.
+    /// first without, then with a dictionary. `dedup` is measured when asked for
+    /// ([`Self::matching`] / [`Self::matching_codecs`]) and when it is the current rule's codec.
     pub fn defaults() -> Vec<CompressionCandidate> {
         let mut out = Vec::new();
         for min_bytes in DEFAULT_ESTIMATE_THRESHOLDS {
@@ -98,7 +112,9 @@ impl CompressionCandidate {
     /// The candidates a front end's optional fields ask for (`g.estimate_compression(#{..})`,
     /// the session's spec): each given field narrows the default set, so `min_bytes` alone
     /// measures that threshold with and without a dictionary. Nothing given: empty (the
-    /// request then takes the default set plus the current rule's parameters).
+    /// request then takes the default set plus the current rule's parameters). Codec `dedup`
+    /// without `min_bytes` measures [`DEFAULT_DEDUP_ESTIMATE_THRESHOLDS`], without a dictionary
+    /// (`dictionary: true` with `dedup` is kept, so that validation refuses it).
     pub fn matching(
         codec: Option<Codec>,
         min_bytes: Option<u32>,
@@ -108,18 +124,41 @@ impl CompressionCandidate {
             return Vec::new();
         }
         let codec = codec.unwrap_or_default();
-        let thresholds: Vec<u32> = match min_bytes {
-            Some(min_bytes) => vec![min_bytes],
-            None => DEFAULT_ESTIMATE_THRESHOLDS.to_vec(),
+        let thresholds: Vec<u32> = match (min_bytes, codec) {
+            (Some(min_bytes), _) => vec![min_bytes],
+            (None, Codec::Lz4) => DEFAULT_ESTIMATE_THRESHOLDS.to_vec(),
+            (None, Codec::Dedup) => DEFAULT_DEDUP_ESTIMATE_THRESHOLDS.to_vec(),
         };
-        let dictionaries: Vec<bool> = match dictionary {
-            Some(flag) => vec![flag],
-            None => vec![false, true],
+        let dictionaries: Vec<bool> = match (dictionary, codec.supports_dictionary()) {
+            (Some(flag), _) => vec![flag],
+            (None, true) => vec![false, true],
+            (None, false) => vec![false],
         };
         let mut out = Vec::new();
         for min_bytes in thresholds {
             for &dictionary in &dictionaries {
                 out.push(Self::new(codec, min_bytes, dictionary));
+            }
+        }
+        out
+    }
+
+    /// [`Self::matching`] for several codecs, concatenated in the given order (empty `codecs`:
+    /// [`Self::matching`] without a codec). `[Codec::Lz4, Codec::Dedup]` compares both.
+    pub fn matching_codecs(
+        codecs: &[Codec],
+        min_bytes: Option<u32>,
+        dictionary: Option<bool>,
+    ) -> Vec<CompressionCandidate> {
+        if codecs.is_empty() {
+            return Self::matching(None, min_bytes, dictionary);
+        }
+        let mut out: Vec<CompressionCandidate> = Vec::new();
+        for &codec in codecs {
+            for candidate in Self::matching(Some(codec), min_bytes, dictionary) {
+                if !out.contains(&candidate) {
+                    out.push(candidate);
+                }
             }
         }
         out
@@ -306,12 +345,16 @@ pub struct SizeBucket {
 pub struct CandidateEstimate {
     /// The candidate.
     pub candidate: CompressionCandidate,
-    /// The values the rule would store compressed (`>= min_bytes` and at most 90 %).
+    /// The values the rule would store compressed (`lz4`: `>= min_bytes` and at most 90 %) or
+    /// share (`dedup`: `>= min_bytes` and longer than 24 bytes).
     pub compressed_values: u64,
     /// Their plain size in bytes.
     pub plain_bytes: u64,
-    /// Their compressed size in bytes (without the dictionary).
+    /// Their stored size in bytes: compressed without the dictionary (`lz4`), each distinct
+    /// value once with its 32 bytes of overhead (`dedup`, like [`CompressionStats`]).
     pub stored_bytes: u64,
+    /// The distinct values among `compressed_values` (`dedup`; 0 for `lz4`).
+    pub distinct_values: u64,
     /// The size of the dictionary the rule would build (0: none).
     pub dictionary_bytes: u64,
     /// `plain_bytes - stored_bytes - dictionary_bytes`: what the rule would save (negative: it
@@ -365,11 +408,19 @@ pub enum EstimateWarning {
     NothingQualifies,
     /// Values would be compressed, but no candidate saves memory (the dictionary costs more).
     NoSaving,
+    /// A `dedup` candidate would share values, but none saves memory: the values are mostly
+    /// distinct (dedup pays for long values repeated across many elements).
+    HighCardinality {
+        /// The distinct values among them (of the dedup candidate sharing the most).
+        distinct_values: u64,
+        /// The values it would share.
+        values: u64,
+    },
 }
 
 impl EstimateWarning {
     /// A stable short code: `unknown_label`, `no_values`, `not_strings`, `nothing_qualifies`,
-    /// `no_saving`.
+    /// `no_saving`, `high_cardinality`.
     pub fn code(&self) -> &'static str {
         match self {
             EstimateWarning::UnknownLabel => "unknown_label",
@@ -377,6 +428,7 @@ impl EstimateWarning {
             EstimateWarning::NotStrings { .. } => "not_strings",
             EstimateWarning::NothingQualifies => "nothing_qualifies",
             EstimateWarning::NoSaving => "no_saving",
+            EstimateWarning::HighCardinality { .. } => "high_cardinality",
         }
     }
 
@@ -407,6 +459,15 @@ impl EstimateWarning {
                  dictionary false)"
                     .to_string()
             }
+            EstimateWarning::HighCardinality {
+                distinct_values,
+                values,
+            } => format!(
+                "{distinct_values} of the {values} long strings at {} are distinct: dedup \
+                 stores each distinct value once and saves nothing here (it pays for long values \
+                 repeated across many elements; lz4 may suit long text better)",
+                estimate.path
+            ),
         }
     }
 }
@@ -638,6 +699,7 @@ impl TraversalGraph {
             let len = match value {
                 ElementProperty::String(text) => text.len(),
                 ElementProperty::Compressed(text) => text.plain_len(),
+                ElementProperty::Deduped(text) => text.len(),
                 _ => continue,
             };
             estimate.string_values += 1;
@@ -654,12 +716,14 @@ impl TraversalGraph {
             lengths.push(len);
         }
 
-        // The sample: every string below the caps, else every `step`-th in id order.
+        // The sample: every string below the caps, else every `step`-th in id order (the lz4
+        // trials read it; dedup reads every string, below).
         let floor = candidates
             .iter()
+            .filter(|c| c.codec == Codec::Lz4)
             .map(|c| c.min_bytes as usize)
             .min()
-            .unwrap_or(0);
+            .unwrap_or(usize::MAX);
         let (max_values, max_bytes) = request.limits();
         let step = (strings.len().div_ceil(max_values))
             .max((estimate.string_bytes as usize).div_ceil(max_bytes))
@@ -712,6 +776,34 @@ impl TraversalGraph {
             }
         }
 
+        // Dedup (exact, every string): the distinct texts that reach the lowest dedup
+        // threshold, with their length and how often each occurs.
+        let dedup_floor = candidates
+            .iter()
+            .filter(|c| c.codec == Codec::Dedup)
+            .map(|c| c.min_bytes as usize)
+            .min();
+        let mut distinct: Vec<(usize, u64)> = Vec::new();
+        if let Some(dedup_floor) = dedup_floor {
+            let mut counts: std::collections::HashMap<Cow<'_, str>, u64> =
+                std::collections::HashMap::new();
+            for (at, (value, &len)) in strings.iter().zip(&lengths).enumerate() {
+                if cancelled(&token, at) {
+                    return finish(estimate, true);
+                }
+                if !dedup_qualifies(len, dedup_floor) {
+                    continue;
+                }
+                if let Some(text) = value.text() {
+                    *counts.entry(text).or_insert(0) += 1;
+                }
+            }
+            distinct = counts
+                .iter()
+                .map(|(text, &count)| (text.len(), count))
+                .collect();
+        }
+
         let current = estimate
             .current
             .as_ref()
@@ -723,6 +815,12 @@ impl TraversalGraph {
                     dictionary.as_ref().map_or(0, |d| d.len() as u64),
                 ),
                 Codec::Lz4 => (plain_trial.as_ref(), 0),
+                Codec::Dedup => {
+                    estimate
+                        .candidates
+                        .push(dedup_estimate(*candidate, &distinct, current));
+                    continue;
+                }
             };
             let threshold = candidate.min_bytes as usize;
             let (mut values, mut plain, mut stored) = (0u64, 0u64, 0u64);
@@ -760,6 +858,7 @@ impl TraversalGraph {
                 plain_bytes: plain,
                 stored_bytes: stored,
                 dictionary_bytes,
+                distinct_values: 0,
                 saved_bytes: saved,
                 current: current == Some(*candidate),
                 encode_bytes_per_sec: trial.and_then(|t| t.encode),
@@ -793,6 +892,56 @@ impl TraversalGraph {
         } else if compressed_any && best.is_none() {
             estimate.warnings.push(EstimateWarning::NoSaving);
         }
+        let dedup: Vec<&CandidateEstimate> = estimate
+            .candidates
+            .iter()
+            .filter(|c| c.candidate.codec == Codec::Dedup && c.compressed_values > 0)
+            .collect();
+        if !dedup.is_empty()
+            && dedup.iter().all(|c| c.saved_bytes <= 0)
+            && let Some(widest) = dedup.iter().max_by_key(|c| c.compressed_values)
+        {
+            let warning = EstimateWarning::HighCardinality {
+                distinct_values: widest.distinct_values,
+                values: widest.compressed_values,
+            };
+            estimate.warnings.push(warning);
+        }
         finish(estimate, false)
+    }
+}
+
+/// What a `dedup` candidate would hold, from the distinct texts (length, occurrences) that
+/// reach the lowest dedup threshold: the occurrences of those at its threshold are shared,
+/// each distinct one stored once with its overhead (like `compression_stats`).
+fn dedup_estimate(
+    candidate: CompressionCandidate,
+    distinct: &[(usize, u64)],
+    current: Option<CompressionCandidate>,
+) -> CandidateEstimate {
+    let threshold = candidate.min_bytes as usize;
+    let (mut values, mut plain, mut stored, mut kinds) = (0u64, 0u64, 0u64, 0u64);
+    for &(len, count) in distinct {
+        if !dedup_qualifies(len, threshold) {
+            continue;
+        }
+        values += count;
+        plain += count * len as u64;
+        stored += (len + DEDUP_ENTRY_OVERHEAD) as u64;
+        kinds += 1;
+    }
+    let saved =
+        i64::try_from(plain).unwrap_or(i64::MAX) - i64::try_from(stored).unwrap_or(i64::MAX);
+    CandidateEstimate {
+        candidate,
+        compressed_values: values,
+        plain_bytes: plain,
+        stored_bytes: stored,
+        dictionary_bytes: 0,
+        distinct_values: kinds,
+        saved_bytes: saved,
+        current: current == Some(candidate),
+        encode_bytes_per_sec: None,
+        decode_bytes_per_sec: None,
     }
 }

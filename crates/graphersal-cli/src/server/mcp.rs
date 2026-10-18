@@ -656,9 +656,11 @@ fn all_tools() -> Vec<Tool> {
             "Compression rules",
             Kind::Read,
             "The compression rules of the graph: strings of one vertex or edge label at one \
-             property path that are kept LZ4-compressed in memory (reads are always plain). \
-             Each has name, element, label, path, codec, minBytes, dictionary and its current \
-             stats (compressedValues, plainBytes, storedBytes, dictionaryBytes).",
+             property path that are kept LZ4-compressed in memory (codec lz4) or stored once \
+             per distinct value (codec dedup); reads are always plain. Each has name, element, \
+             label, path, codec, minBytes, dictionary and its current stats (compressedValues, \
+             plainBytes, storedBytes, dictionaryBytes, distinctValues: the distinct texts of a \
+             dedup rule).",
             no_args(),
         ),
         tool(
@@ -668,19 +670,27 @@ fn all_tools() -> Vec<Tool> {
             "Measures what compression rules for one vertex or edge label and property path \
              would hold over the current values, WITHOUT changing the graph: lz4 with and \
              without a dictionary at minBytes 64, 128, 256, 512 and 1024 (or only the codec, \
-             minBytes and dictionary given), plus the rule that covers the path today. Answers \
+             minBytes and dictionary given; codec [\"lz4\", \"dedup\"] also measures dedup at \
+             25, 64, 128 and 256), plus the rule that covers the path today. Answers \
              valuesFound, stringValues, a size histogram, per candidate compressedValues, \
-             plainBytes, storedBytes, dictionaryBytes, savedBytes, ratio and the read \
-             (decode) speed, the best candidate's index and warnings (unknown label, no value \
-             at the path, values that are not strings). Run it before define_compression to \
-             choose minBytes and dictionary, and to catch a typo in the label or path.",
+             plainBytes, storedBytes, dictionaryBytes, distinctValues (dedup), savedBytes, ratio \
+             and the read (decode) speed, the best candidate's index and warnings (unknown \
+             label, no value at the path, values that are not strings, high_cardinality: \
+             dedup saves nothing). Run it before define_compression to choose the codec, \
+             minBytes and dictionary, and to catch a typo in the label or path.",
             json!({
                 "type": "object",
                 "properties": {
                     "label": {"type": "string", "description": "The vertex or edge label."},
                     "path": {"type": "string", "description": "The property path: a name or a jpath of names (details.career.cv)."},
                     "element": {"type": "string", "enum": ["vertex", "edge"], "description": "Default vertex."},
-                    "codec": {"type": "string", "enum": ["lz4"], "description": "Measure only this codec (default: every codec)."},
+                    "codec": {
+                        "description": "Measure only this codec, or these codecs (default: lz4 only). dedup stores each distinct value once: long repeated values.",
+                        "oneOf": [
+                            {"type": "string", "enum": ["lz4", "dedup"]},
+                            {"type": "array", "items": {"type": "string", "enum": ["lz4", "dedup"]}},
+                        ],
+                    },
                     "minBytes": {"type": "integer", "minimum": 1, "description": "Measure only this threshold (default: several)."},
                     "dictionary": {"type": "boolean", "description": "Measure only with (true) or without (false) a dictionary (default: both)."},
                 },
@@ -694,9 +704,12 @@ fn all_tools() -> Vec<Tool> {
             "Stores (or replaces) a compression rule: strings of `element`s labelled `label` at \
              `path` (a jpath of names such as \"bio\" or \"details.career.cv\"; no index) are \
              kept compressed in memory when they are at least minBytes long and compress to at \
-             most 90 %. The label's existing values are re-encoded at once. Worth it for large \
-             text that queries rarely read (CVs, descriptions, document bodies); a read or a \
-             has() on such a field decompresses it. One rule per element, label and path.",
+             most 90 %, or (codec dedup) stored once per distinct value when they are at least \
+             minBytes and more than 24 bytes long. The label's existing values are re-encoded \
+             at once. lz4 is worth it for large text that queries rarely read (CVs, \
+             descriptions, document bodies; a read or a has() decompresses it); dedup for long \
+             values repeated across many elements (paths, URLs, addresses, category texts; \
+             reads cost nothing extra). One rule per element, label and path.",
             json!({
                 "type": "object",
                 "properties": {
@@ -704,8 +717,9 @@ fn all_tools() -> Vec<Tool> {
                     "label": {"type": "string", "description": "The vertex or edge label."},
                     "path": {"type": "string", "description": "The property path: a name or a jpath of names (details.career.cv)."},
                     "element": {"type": "string", "enum": ["vertex", "edge"], "description": "Default vertex."},
-                    "minBytes": {"type": "integer", "minimum": 1, "description": "Shorter strings stay plain (default 256)."},
-                    "dictionary": {"type": "boolean", "description": "Build a dictionary from the rule's values (default true)."},
+                    "codec": {"type": "string", "enum": ["lz4", "dedup"], "description": "lz4 (default) compresses each value; dedup stores each distinct value once."},
+                    "minBytes": {"type": "integer", "minimum": 1, "description": "Shorter strings stay plain (default 256 for lz4, 25 for dedup)."},
+                    "dictionary": {"type": "boolean", "description": "lz4 only: build a dictionary from the rule's values (default true; a dedup rule has none)."},
                     "replaces": {"type": "string", "description": "Rename: the rule this one replaces (dropped in the same commit)."},
                 },
                 "required": ["name", "label", "path"],

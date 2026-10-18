@@ -94,6 +94,7 @@ fn classify_property<S: GraphStorage>(
         ElementProperty::Null
         | ElementProperty::String(_)
         | ElementProperty::Compressed(_)
+        | ElementProperty::Deduped(_)
         | ElementProperty::Number(_)
         | ElementProperty::Boolean(_)
         | ElementProperty::Uuid(_)
@@ -167,6 +168,7 @@ pub(crate) fn local_len<S: GraphStorage>(
             ElementProperty::Null
             | ElementProperty::String(_)
             | ElementProperty::Compressed(_)
+            | ElementProperty::Deduped(_)
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
             | ElementProperty::Uuid(_)
@@ -247,6 +249,7 @@ fn slice_stored<S: GraphStorage>(
         ElementProperty::Null
         | ElementProperty::String(_)
         | ElementProperty::Compressed(_)
+        | ElementProperty::Deduped(_)
         | ElementProperty::Number(_)
         | ElementProperty::Boolean(_)
         | ElementProperty::Uuid(_)
@@ -452,6 +455,9 @@ fn local_string_item<S: GraphStorage>(
         LocalItem::Stored(ElementProperty::Compressed(text)) => {
             let value = text.with_text(|text| f(text))?;
             bounded_string(context, value)
+        }
+        LocalItem::Stored(ElementProperty::Deduped(text)) => {
+            bounded_string(context, f(text.as_str())?)
         }
         LocalItem::Stored(
             other @ (ElementProperty::Number(_)

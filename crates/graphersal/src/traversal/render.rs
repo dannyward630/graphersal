@@ -293,6 +293,7 @@ pub(crate) fn cut_nested(prop: &ElementProperty, limit: &ItemLimit) -> ElementPr
         ElementProperty::Null => ElementProperty::Null,
         ElementProperty::String(s) => ElementProperty::String(s.clone()),
         ElementProperty::Compressed(text) => ElementProperty::String(text.text()),
+        ElementProperty::Deduped(text) => ElementProperty::String(text.as_str().into()),
         ElementProperty::Number(n) => ElementProperty::Number(n.clone()),
         ElementProperty::Boolean(b) => ElementProperty::Boolean(*b),
         ElementProperty::Uuid(u) => ElementProperty::Uuid(*u),

@@ -181,6 +181,7 @@ pub(super) fn convert(value: &ElementProperty, kind: TemporalKind) -> Result<Tem
         ElementProperty::Temporal(temporal) => from_temporal(*temporal, kind),
         ElementProperty::String(text) => from_text(text, kind),
         ElementProperty::Compressed(text) => text.with_text(|text| from_text(text, kind)),
+        ElementProperty::Deduped(text) => from_text(text.as_str(), kind),
         ElementProperty::Number(number) if kind == TemporalKind::DateTime => {
             match number.as_i64() {
                 Some(millis) => DateTime::from_epoch_millis(millis)

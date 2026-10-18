@@ -1893,6 +1893,7 @@ fn write_typed(value: &ElementProperty, out: &mut String) -> Result<(), Physical
         ElementProperty::String(s) => write_json_string(s, out)?,
         // Files hold the plain value (D5).
         ElementProperty::Compressed(text) => text.with_text(|s| write_json_string(s, out))?,
+        ElementProperty::Deduped(text) => write_json_string(text.as_str(), out)?,
         ElementProperty::Number(number) => match number.n {
             N::NegInt(i) => write!(out, "{{\"@type\":\"g:Int64\",\"@value\":{i}}}")?,
             N::Float(f) => {

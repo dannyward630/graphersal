@@ -148,6 +148,7 @@ fn write_literal(out: &mut String, value: &ElementProperty) {
         ElementProperty::Number(n) => out.push_str(&rhai_number(n)),
         ElementProperty::String(s) => out.push_str(&rhai_string(s)),
         ElementProperty::Compressed(text) => text.with_text(|s| out.push_str(&rhai_string(s))),
+        ElementProperty::Deduped(text) => out.push_str(&rhai_string(text.as_str())),
         ElementProperty::Uuid(bits) => {
             let _ = write!(
                 out,

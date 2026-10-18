@@ -311,7 +311,7 @@ pub(crate) fn kind_of<S: GraphStorage>(
         ElementProperty::Object(_) | ElementProperty::Map(_) => Kind::Map,
         ElementProperty::Null
         | ElementProperty::String(_)
-        | ElementProperty::Compressed(_)
+        | ElementProperty::Compressed(_) | ElementProperty::Deduped(_)
         | ElementProperty::Number(_)
         | ElementProperty::Boolean(_)
         | ElementProperty::Uuid(_)

@@ -421,6 +421,7 @@ fn transition<S: GraphStorage>(
             }
             let value = value.and_then(|value| match value {
                 ElementProperty::String(value) => Some(value.as_str()),
+                ElementProperty::Deduped(value) => Some(value.as_str()),
                 ElementProperty::Compressed(_)
                 | ElementProperty::Null
                 | ElementProperty::Number(_)

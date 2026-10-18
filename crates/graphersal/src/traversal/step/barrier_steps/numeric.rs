@@ -389,6 +389,7 @@ impl ExtremumAccumulator {
             }
             ElementProperty::String(_)
             | ElementProperty::Compressed(_)
+            | ElementProperty::Deduped(_)
             | ElementProperty::Boolean(_)
             | ElementProperty::Uuid(_)
             | ElementProperty::Temporal(_) => {
@@ -429,7 +430,9 @@ impl ExtremumAccumulator {
 
 fn kind_name(value: &ElementProperty) -> &'static str {
     match value {
-        ElementProperty::String(_) | ElementProperty::Compressed(_) => "string",
+        ElementProperty::String(_)
+        | ElementProperty::Compressed(_)
+        | ElementProperty::Deduped(_) => "string",
         ElementProperty::Boolean(_) => "boolean",
         ElementProperty::Uuid(_) => "uuid",
         ElementProperty::Temporal(value) => value.kind().name(),

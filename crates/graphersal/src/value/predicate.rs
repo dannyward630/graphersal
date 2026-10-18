@@ -290,6 +290,7 @@ impl<'a> Scalar<'a> {
             ElementProperty::Compressed(text) => {
                 Some(Scalar::Str(Cow::Owned(text.text().into_string())))
             }
+            ElementProperty::Deduped(text) => Some(Scalar::Str(Cow::Borrowed(text.as_str()))),
             ElementProperty::Uuid(u) => Some(Scalar::Uuid(*u)),
             ElementProperty::Temporal(t) => Some(Scalar::Temporal(*t)),
             ElementProperty::Vector(v) => Some(Scalar::Vector(v)),

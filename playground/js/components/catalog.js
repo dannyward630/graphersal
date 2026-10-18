@@ -31,6 +31,7 @@ import {
 import {
   ruleRow, totals, newDraft, draftFromRule, draftToSpec, labelSuggestions,
   canEstimate, draftToEstimateSpec, estimateRows, estimateSummary, histogramRows, applyCandidate,
+  CODECS, ESTIMATE_CODECS, withCodec,
 } from '../compression.js';
 import { queryTree, signatureText, errorsByField, accessBadge } from '../saved-queries.js';
 import {
@@ -185,7 +186,8 @@ export const CompressionManager = {
       }
       Object.assign(d, { estimating: true, estimateErrors: [] });
       try {
-        const res = await estimateCompressionRule(local.spec);
+        // lz4 and dedup side by side (the form's codec is chosen from the table's "Use").
+        const res = await estimateCompressionRule({ ...local.spec, codec: [...ESTIMATE_CODECS] });
         if (res && res.ok) {
           d.estimate = res.estimate;
         } else {
@@ -201,6 +203,9 @@ export const CompressionManager = {
     }
     function useCandidate(candidate) {
       if (d.draft) Object.assign(d.draft, applyCandidate(d.draft, candidate));
+    }
+    function setCodec(codec) {
+      if (d.draft) Object.assign(d.draft, withCodec(d.draft, codec));
     }
 
     async function loadLabels() {
@@ -286,7 +291,7 @@ export const CompressionManager = {
     expose({ open, close });
     return {
       state, dlg, d, rows, sum, suggestions, formatBytes, close, startNew, startEdit, cancelForm, save, recompress, drop,
-      estimateTable, estimateText, histogram, estimable, estimate, useCandidate,
+      estimateTable, estimateText, histogram, estimable, estimate, useCandidate, setCodec, codecs: CODECS,
     };
   },
   template: `
@@ -297,24 +302,24 @@ export const CompressionManager = {
     </div>
     <div class="dialog-body">
       <template v-if="!d.draft">
-        <p class="muted sq-note">A rule keeps the strings of one vertex or edge label at one property path LZ4-compressed in memory (when at least the minimum size and at most 90 % after compression). Reads are always plain; a read or a has() on such a field decompresses it. Files hold plain text. Rules travel with the catalog file and with a snapshot.</p>
+        <p class="muted sq-note">A rule keeps the strings of one vertex or edge label at one property path LZ4-compressed in memory (codec lz4: when at least the minimum size and at most 90 % after compression; a read or a has() on such a field decompresses it), or stores each distinct value once and lets every element point to it (codec dedup: long values repeated across many elements, such as paths, URLs or category texts; strings of up to 24 bytes are stored inline and never shared). Reads are always plain. Files hold plain text. Rules travel with the catalog file and with a snapshot.</p>
         <div v-if="state.compressionsError" class="field-error">{{ state.compressionsError }}</div>
         <p v-else-if="!rows.length" class="muted">No compression rules yet. Large text that queries rarely read (a CV, a description, a document body) is the use case.</p>
         <div v-else class="catalog-table-wrap">
           <table class="data-table catalog-table">
             <thead><tr>
-              <th>Name</th><th>Applies to</th><th>Path</th><th>Min. size</th><th>Dictionary</th>
-              <th class="num">Values</th><th>Plain → stored</th><th class="num">Ratio</th><th class="num">Saved</th><th></th>
+              <th>Name</th><th>Codec</th><th>Applies to</th><th>Path</th><th>Min. size</th><th>Dictionary</th>
+              <th class="num">Values</th><th class="num" title="dedup: the distinct texts the shared values hold">Distinct</th><th>Plain → stored</th><th class="num">Ratio</th><th class="num">Saved</th><th></th>
             </tr></thead>
             <tbody>
               <tr v-for="{ rule, row } in rows" :key="rule.name">
-                <td class="code">{{ row.name }}</td><td>{{ row.target }}</td><td class="code">{{ row.path }}</td>
-                <td>{{ row.threshold }}</td><td>{{ row.dictionary }}</td><td class="num">{{ row.values }}</td>
+                <td class="code">{{ row.name }}</td><td>{{ row.codec }}</td><td>{{ row.target }}</td><td class="code">{{ row.path }}</td>
+                <td>{{ row.threshold }}</td><td>{{ row.dictionary }}</td><td class="num">{{ row.values }}</td><td class="num">{{ row.distinct }}</td>
                 <td>{{ row.sizes }}</td><td class="num">{{ row.ratio }}</td><td class="num">{{ row.saved }}</td>
                 <td class="catalog-actions">
                   <button type="button" class="btn small" :disabled="d.busy || state.running" @click="startEdit(rule)">Edit…</button>
                   <button type="button" class="btn small" :disabled="d.busy || state.running" @click="recompress(rule)"
-                          title="Rebuild the dictionary from the current values and re-encode them (after much data was added); changes no data">Recompress</button>
+                          title="Rebuild the dictionary from the current values and re-encode them (after much data was added; a dedup rule drops the texts no element uses any more); changes no data">Recompress</button>
                   <button type="button" class="btn small danger" :disabled="d.busy || state.running" @click="drop(rule)">Drop</button>
                 </td>
               </tr>
@@ -349,18 +354,23 @@ export const CompressionManager = {
           <input id="cc-path" type="text" v-model="d.draft.path" :class="{ invalid: d.errors.path }" placeholder="details.career.cv" autocomplete="off" spellcheck="false">
           <div v-for="m in d.errors.path || []" class="field-error sq-span">{{ m }}</div>
           <span class="hint">A property name or a path of names (cv, details.career.cv); no index such as [0].</span>
+          <label for="cc-codec">Codec</label>
+          <select id="cc-codec" :value="d.draft.codec || 'lz4'" @change="setCodec($event.target.value)" :class="{ invalid: d.errors.codec }" style="justify-self:start">
+            <option v-for="c in codecs" :key="c" :value="c">{{ c }}</option>
+          </select>
+          <span class="hint">{{ (d.draft.codec || 'lz4') === 'dedup' ? 'Each distinct value stored once, every element points to it: for long values repeated across many elements. Reads cost nothing extra.' : 'Each value LZ4-compressed: for large text that queries rarely read.' }}</span>
           <label for="cc-min">Minimum size</label>
           <input id="cc-min" type="text" inputmode="numeric" v-model="d.draft.minBytesText" :class="{ invalid: d.errors.minBytes }" style="width:14ch;justify-self:start">
           <div v-for="m in d.errors.minBytes || []" class="field-error sq-span">{{ m }}</div>
           <span class="hint">Bytes (UTF-8); shorter strings stay plain.</span>
           <label for="cc-dict">Dictionary</label>
-          <span><input id="cc-dict" type="checkbox" v-model="d.draft.dictionary"> <label for="cc-dict" class="muted">built from a sample of the rule's values (better ratio for many similar texts)</label></span>
+          <span><input id="cc-dict" type="checkbox" v-model="d.draft.dictionary" :disabled="d.draft.codec === 'dedup'"> <label for="cc-dict" class="muted">{{ d.draft.codec === 'dedup' ? 'lz4 only (a dedup rule has none)' : "built from a sample of the rule's values (better ratio for many similar texts)" }}</label></span>
           <div v-for="m in d.errors.dictionary || []" class="field-error sq-span">{{ m }}</div>
         </div>
         <div class="cc-estimate">
           <div class="cc-estimate-head">
             <button type="button" class="btn" :disabled="!estimable || d.estimating || d.busy || state.running" @click="estimate"
-                    title="Measure lz4 with and without a dictionary at several minimum sizes on the current values of this label and path; changes nothing">{{ d.estimating ? 'Estimating…' : 'Estimate' }}</button>
+                    title="Measure lz4 with and without a dictionary and dedup at several minimum sizes on the current values of this label and path; changes nothing">{{ d.estimating ? 'Estimating…' : 'Estimate' }}</button>
             <span class="muted">{{ estimable ? 'What would a rule here save? Measured on the current data; the graph is not changed.' : 'Fill in the label and the path to estimate what a rule would save.' }}</span>
           </div>
           <div v-for="m in d.estimateErrors" class="field-error">{{ m }}</div>
@@ -371,13 +381,13 @@ export const CompressionManager = {
             <div v-if="estimateTable.length" class="catalog-table-wrap">
               <table class="data-table catalog-table cc-estimate-table">
                 <thead><tr>
-                  <th>Codec</th><th>Min. size</th><th class="num">Values</th><th>Plain → stored</th><th>Dictionary</th>
-                  <th class="num">Ratio</th><th>Saved</th><th title="Decompression speed: every read of a compressed value pays it">Reads</th><th></th>
+                  <th>Codec</th><th>Min. size</th><th class="num">Values</th><th class="num" title="dedup: the distinct texts among the values">Distinct</th><th>Plain → stored</th><th>Dictionary</th>
+                  <th class="num">Ratio</th><th>Saved</th><th title="Decompression speed: every read of a compressed value pays it (a shared dedup value reads as plain)">Reads</th><th></th>
                 </tr></thead>
                 <tbody>
                   <tr v-for="r in estimateTable" :key="r.index" :class="{ 'cc-best': r.best }">
                     <td>{{ r.name }} <span v-if="r.best" class="cc-tag">best</span> <span v-if="r.current" class="cc-tag">current</span></td>
-                    <td>{{ r.threshold }}</td><td class="num">{{ r.values }}</td><td>{{ r.sizes }}</td><td>{{ r.dictionary }}</td>
+                    <td>{{ r.threshold }}</td><td class="num">{{ r.values }}</td><td class="num">{{ r.distinct }}</td><td>{{ r.sizes }}</td><td>{{ r.dictionary }}</td>
                     <td class="num">{{ r.ratio }}</td>
                     <td><span class="cc-bar" aria-hidden="true"><span class="cc-bar-fill" :style="{ width: (100 * r.share).toFixed(1) + '%' }"></span></span> {{ r.saved }}</td>
                     <td>{{ r.reads }}</td>

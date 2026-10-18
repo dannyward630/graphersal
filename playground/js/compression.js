@@ -1,7 +1,7 @@
 // The models of the Catalog dropdown and its Compression manager: what the engine's
 // `listCompressions()` returns (crates/graphersal-session `compression.rs`: `[{name, element,
 // label, path, codec, minBytes, dictionary, stats: {compressedValues, plainBytes, storedBytes,
-// dictionaryBytes}}]`) turned into rows to show, the form's draft and its spec, the form's
+// dictionaryBytes, distinctValues}}]`; codec "lz4" or "dedup") turned into rows to show, the form's draft and its spec, the form's
 // estimate (`estimateCompression()`: the candidates measured on the current data, the best one,
 // "Use"), and the items of the Catalog dropdown with their counts. Pure functions, no Vue, no DOM
 // (tested under Node: tests/compression.test.mjs).
@@ -10,6 +10,17 @@ import { formatBytes } from './statistics.js';
 
 /** The default threshold of a rule (the engine's `DEFAULT_MIN_BYTES`). */
 export const DEFAULT_MIN_BYTES = 256;
+/** The default threshold of a dedup rule (the engine's `DEFAULT_DEDUP_MIN_BYTES`). */
+export const DEFAULT_DEDUP_MIN_BYTES = 25;
+/** The codecs the form offers: lz4 compresses each value, dedup stores each distinct value once. */
+export const CODECS = Object.freeze(['lz4', 'dedup']);
+/** The codecs the form's Estimate measures (the engine's estimate spec takes a list). */
+export const ESTIMATE_CODECS = Object.freeze(['lz4', 'dedup']);
+
+/** The default threshold of a codec. */
+export function defaultMinBytes(codec) {
+  return codec === 'dedup' ? DEFAULT_DEDUP_MIN_BYTES : DEFAULT_MIN_BYTES;
+}
 /** The largest threshold (the engine's `MAX_MIN_BYTES`, the default `traversal.max_string_bytes`). */
 export const MAX_MIN_BYTES = 16 * 1024 * 1024;
 
@@ -80,12 +91,16 @@ export function ratioText(stats) {
  */
 export function ruleRow(rule) {
   const s = rule.stats || {};
+  const dedup = rule.codec === 'dedup';
   return {
     name: rule.name,
+    codec: rule.codec || 'lz4',
     target: `${rule.element === 'edge' ? 'edge' : 'vertex'} ${rule.label}`,
     path: rule.path,
     threshold: `≥ ${formatBytes(rule.minBytes)}`,
-    dictionary: rule.dictionary ? (s.dictionaryBytes ? formatBytes(s.dictionaryBytes) : 'yes (none yet)') : 'no',
+    dictionary: dedup ? '—' : (rule.dictionary ? (s.dictionaryBytes ? formatBytes(s.dictionaryBytes) : 'yes (none yet)') : 'no'),
+    // A dedup rule: how many distinct texts its shared values hold.
+    distinct: dedup ? String(s.distinctValues || 0) : '—',
     values: s.compressedValues || 0,
     sizes: s.compressedValues ? `${formatBytes(s.plainBytes)} → ${formatBytes(s.storedBytes)}` : '—',
     ratio: ratioText(s),
@@ -119,19 +134,38 @@ export function newDraft() {
   };
 }
 
-/** The draft of a stored rule (Edit): its path without the leading `$.` when it is plain names. */
+/**
+ * The draft of a stored rule (Edit): its path without the leading `$.` when it is plain names.
+ * A dedup rule keeps its codec in the draft (an lz4 rule leaves it out: the engine's default).
+ */
 export function draftFromRule(rule) {
   const path = String(rule.path || '');
   const plain = /^\$\.[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(path);
-  return {
+  const draft = {
     name: rule.name,
     element: rule.element === 'edge' ? 'edge' : 'vertex',
     label: rule.label,
     path: plain ? path.slice(2) : path,
-    minBytesText: String(rule.minBytes ?? DEFAULT_MIN_BYTES),
-    dictionary: rule.dictionary !== false,
+    minBytesText: String(rule.minBytes ?? defaultMinBytes(rule.codec)),
+    dictionary: rule.codec === 'dedup' ? false : rule.dictionary !== false,
     replaces: rule.name,
   };
+  if (rule.codec && rule.codec !== 'lz4') draft.codec = rule.codec;
+  return draft;
+}
+
+/**
+ * The draft with another codec chosen in the form: dedup has no dictionary, and a threshold
+ * still at the former codec's default moves to the new codec's default.
+ */
+export function withCodec(draft, codec) {
+  const from = draft.codec || 'lz4';
+  const next = { ...draft, codec };
+  const text = String(draft.minBytesText ?? '').trim();
+  if (!text || text === String(defaultMinBytes(from))) next.minBytesText = String(defaultMinBytes(codec));
+  if (codec === 'dedup') next.dictionary = false;
+  else if (from === 'dedup') next.dictionary = true;
+  return next;
 }
 
 /**
@@ -148,7 +182,7 @@ export function draftToSpec(draft) {
   if (!label) errors.push({ field: 'label', message: 'Name the vertex or edge label the rule applies to.' });
   if (!path) errors.push({ field: 'path', message: 'Name the property path, for example cv or details.career.cv.' });
   const minText = String(draft.minBytesText ?? '').trim();
-  let minBytes = DEFAULT_MIN_BYTES;
+  let minBytes = defaultMinBytes(draft.codec);
   if (minText) {
     minBytes = Number(minText);
     if (!Number.isInteger(minBytes) || minBytes < 1 || minBytes > MAX_MIN_BYTES) {
@@ -162,7 +196,8 @@ export function draftToSpec(draft) {
     label,
     path,
     minBytes,
-    dictionary: !!draft.dictionary,
+    // A dedup rule has no dictionary.
+    dictionary: draft.codec === 'dedup' ? false : !!draft.dictionary,
   };
   // A codec appears only once "Use" of an estimate chose one (the engine's default is lz4).
   if (draft.codec) spec.codec = draft.codec;
@@ -199,7 +234,7 @@ export function rateText(bytesPerSec) {
   return `${formatBytes(Math.round(bytesPerSec))}/s`;
 }
 
-/** A candidate's name: `lz4`, `lz4 + dictionary`. */
+/** A candidate's name: `lz4`, `lz4 + dictionary`, `dedup`. */
 export function candidateName(candidate) {
   return `${candidate.codec || 'lz4'}${candidate.dictionary ? ' + dictionary' : ''}`;
 }
@@ -221,10 +256,13 @@ export function estimateRows(estimate) {
     values: c.compressedValues || 0,
     sizes: c.compressedValues ? `${formatBytes(c.plainBytes)} → ${formatBytes(c.storedBytes)}` : '—',
     dictionary: c.dictionary ? (c.dictionaryBytes ? formatBytes(c.dictionaryBytes) : 'none (too little text)') : '—',
+    // A dedup candidate: the distinct texts among the values it would share.
+    distinct: c.codec === 'dedup' ? String(c.distinctValues || 0) : '—',
     saved: c.savedBytes > 0 ? formatBytes(c.savedBytes) : (c.savedBytes < 0 ? `costs ${formatBytes(-c.savedBytes)}` : '—'),
     share: most > 0 && c.savedBytes > 0 ? c.savedBytes / most : 0,
     ratio: ratioText(c),
-    reads: rateText(c.decodeBytesPerSec),
+    // A shared value reads like a plain one.
+    reads: c.codec === 'dedup' ? 'as plain' : rateText(c.decodeBytesPerSec),
     best: estimate.best === index,
     current: !!c.current,
   }));
@@ -246,7 +284,11 @@ export function estimateSummary(estimate) {
     notes.push(`Measured on a sample of ${estimate.measuredValues} strings and extrapolated (the counts and sizes are exact).`);
   }
   const cur = estimate.current;
-  if (cur) {
+  if (cur && cur.codec === 'dedup') {
+    const s = cur.stats || {};
+    notes.push(`Today the dedup rule "${cur.name}" (≥ ${formatBytes(cur.minBytes)}) shares ${s.compressedValues || 0} values `
+      + `(${s.distinctValues || 0} distinct), ${formatBytes(s.plainBytes || 0)} → ${formatBytes(s.storedBytes || 0)}.`);
+  } else if (cur) {
     const s = cur.stats || {};
     notes.push(`Today the rule "${cur.name}" (≥ ${formatBytes(cur.minBytes)}, dictionary ${cur.dictionary ? 'on' : 'off'}) `
       + `holds ${s.compressedValues || 0} values, ${formatBytes(s.plainBytes || 0)} → ${formatBytes(s.storedBytes || 0)}.`);

@@ -3,7 +3,7 @@
 
 `estimate_compression` · `estimateCompression` · category: [Compressed properties](../../traversal/step_reference.md#compressed-properties)
 
-Measures what compression rules for a label and path would save on the current values (lz4 with and without a dictionary at several min_bytes, or the given ones), without changing the graph.
+Measures what compression rules for a label and path would save on the current values (lz4 with and without a dictionary at several min_bytes, or the given ones; codec: "dedup" or ["lz4", "dedup"] measures deduplication too), without changing the graph.
 
 ## Forms
 

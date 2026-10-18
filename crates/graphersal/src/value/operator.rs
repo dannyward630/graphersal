@@ -359,7 +359,9 @@ fn into_value_map(value: ElementProperty) -> ValueMap {
 pub(crate) fn describe(value: &ElementProperty) -> String {
     let kind = match value {
         ElementProperty::Null => "null",
-        ElementProperty::String(_) | ElementProperty::Compressed(_) => "string",
+        ElementProperty::String(_)
+        | ElementProperty::Compressed(_)
+        | ElementProperty::Deduped(_) => "string",
         ElementProperty::Number(n) if n.is_i64() => "int64",
         ElementProperty::Number(_) => "float64",
         ElementProperty::Boolean(_) => "boolean",

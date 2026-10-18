@@ -18,6 +18,7 @@ pub(crate) fn format_cell(prop: &ElementProperty, limit: &ItemLimit) -> String {
         ElementProperty::Null => "-".to_string(),
         ElementProperty::String(s) => s.to_string(),
         ElementProperty::Compressed(text) => text.text().into_string(),
+        ElementProperty::Deduped(text) => text.as_str().to_string(),
         ElementProperty::Number(n) => format!("{}", n),
         ElementProperty::Boolean(b) => {
             if *b {

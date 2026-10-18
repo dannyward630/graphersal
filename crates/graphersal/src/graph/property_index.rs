@@ -1047,6 +1047,7 @@ impl IndexKey {
             }),
             ElementProperty::String(text) => Some(IndexKey::Str(text.clone())),
             ElementProperty::Compressed(text) => Some(IndexKey::Str(text.text())),
+            ElementProperty::Deduped(text) => Some(IndexKey::Str(text.as_str().into())),
             ElementProperty::Uuid(bits) => Some(IndexKey::Uuid((*bits >> 64) as u64, *bits as u64)),
             ElementProperty::Temporal(value) => Some(match *value {
                 Temporal::Date(date) => IndexKey::Date(date.days_since_epoch()),

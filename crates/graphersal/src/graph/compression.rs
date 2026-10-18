@@ -1,13 +1,17 @@
 //! Compressed properties (`book/src/users_guide/compressed_properties.md`; book page "Compressed
-//! Properties"): rules that keep large strings LZ4-compressed in memory.
+//! Properties"): rules that keep large strings LZ4-compressed in memory, or long repeated strings
+//! stored once (codec `dedup`).
 //!
 //! A rule is a catalog definition of kind [`DefinitionKind::COMPRESSION`]
 //! ([`CompressionDefinition`]): element kind + label + a jpath of names. A string stored at a
 //! rule's path is kept as [`ElementProperty::Compressed`] when it is at least
 //! [`CompressionDefinition::min_bytes`] long and its compressed form is at most 90 % of the plain
-//! size; every other stored value is plain (**the invariant**, D6). The graph keeps the rules'
-//! in-memory state here (`CompressionRules`: the parsed paths and the dictionaries), derived from
-//! the catalog like an index:
+//! size; every other stored value is plain (**the invariant**, D6). Under a `dedup` rule a string
+//! at the path is kept as [`ElementProperty::Deduped`] when it is at least `min_bytes` and longer
+//! than the inline capacity of a `CompactString` (24 bytes on 64-bit targets: a shorter string
+//! owns no heap to share), and it points to the ONE copy of its text in the rule's table. The
+//! graph keeps the rules' in-memory state here (`CompressionRules`: the parsed paths, the
+//! dictionaries and the dedup tables), derived from the catalog like an index:
 //!
 //! - the write path normalizes the touched top-level key (D7), a label change the vertex;
 //! - a define, redefine or drop runs the **explicit pass** over the rule's `(element, label)`
@@ -15,10 +19,15 @@
 //! - a rollback normalizes what it restores and re-runs the pass of an undone rule change (D10);
 //! - a load runs one pass over every rule after the elements and the catalog are in place (D11).
 //!
+//! A dedup table entry that no element references any more (its value was overwritten or its
+//! element dropped) is swept lazily: when the table has doubled since its last sweep, after a
+//! rollback, by `recompress` and by a load (each table holds at most about twice its live
+//! entries).
+//!
 //! The pass changes no logical data: it records nothing in the undo log and emits no mutation
 //! (a unit that only recompresses commits nothing).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use compact_str::CompactString;
@@ -28,11 +37,19 @@ use crate::graph::definition::{Definition, DefinitionBody, DefinitionKind};
 use crate::graph::schema::ElementKind;
 use crate::graph::{GraphStorage, TraversalGraph};
 use crate::value::compressed::{CompressedText, CompressionDictionary, MAX_DICTIONARY_BYTES};
+use crate::value::deduped::{DEDUP_ENTRY_OVERHEAD, DedupedText};
 use crate::value::json_path::JsonPathSegment;
 use crate::value::{ElementProperty, JsonPath, PropertyMap};
 
-/// The default [`CompressionDefinition::min_bytes`].
+/// The default [`CompressionDefinition::min_bytes`] of an `lz4` rule.
 pub const DEFAULT_MIN_BYTES: u32 = 256;
+/// The default [`CompressionDefinition::min_bytes`] of a `dedup` rule: one byte more than the
+/// inline capacity of a string on 64-bit targets (24 bytes), the shortest string that owns heap
+/// to share.
+pub const DEFAULT_DEDUP_MIN_BYTES: u32 = 25;
+/// A string of at most this many bytes is stored inline (no heap): a `dedup` rule never shares
+/// it, whatever its `min_bytes` (24 on 64-bit targets).
+pub(crate) const INLINE_TEXT_BYTES: usize = std::mem::size_of::<CompactString>();
 /// The largest [`CompressionDefinition::min_bytes`]: the default `traversal.max_string_bytes`
 /// (16 MiB); a longer threshold could never be reached by a string a step builds.
 pub const MAX_MIN_BYTES: u32 = 16 * 1024 * 1024;
@@ -43,20 +60,26 @@ pub const MAX_LABEL_BYTES: usize = 1024;
 /// How many bytes of one value the dictionary sample takes at most.
 const SAMPLE_BYTES_PER_VALUE: usize = 1024;
 
-/// The codec of a compression rule. Only LZ4 in this version (`zstd` may follow).
+/// The codec of a compression rule: `lz4` (large text, compressed per value) or `dedup` (long
+/// repeated values, stored once per distinct value).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum Codec {
     /// LZ4 block compression (`lz4_flex`), optionally with a dictionary.
     #[default]
     Lz4,
+    /// Deduplication: every distinct value at the rule's path is stored once in the rule's
+    /// table and every element keeps a reference to it (book page "Compressed Properties",
+    /// section "Deduplicating repeated values"). No dictionary.
+    Dedup,
 }
 
 impl Codec {
-    /// The codec's name (`"lz4"`).
+    /// The codec's name (`"lz4"`, `"dedup"`).
     pub fn name(self) -> &'static str {
         match self {
             Codec::Lz4 => "lz4",
+            Codec::Dedup => "dedup",
         }
     }
 
@@ -64,7 +87,26 @@ impl Codec {
     pub fn from_name(name: &str) -> Option<Codec> {
         match name {
             "lz4" => Some(Codec::Lz4),
+            "dedup" => Some(Codec::Dedup),
             _ => None,
+        }
+    }
+
+    /// The `min_bytes` of a rule of this codec that does not set one: [`DEFAULT_MIN_BYTES`]
+    /// for `lz4`, [`DEFAULT_DEDUP_MIN_BYTES`] for `dedup`.
+    pub fn default_min_bytes(self) -> u32 {
+        match self {
+            Codec::Lz4 => DEFAULT_MIN_BYTES,
+            Codec::Dedup => DEFAULT_DEDUP_MIN_BYTES,
+        }
+    }
+
+    /// Whether a rule of this codec can build a dictionary (`lz4` only); it is also the
+    /// `dictionary` of a rule that does not set one.
+    pub fn supports_dictionary(self) -> bool {
+        match self {
+            Codec::Lz4 => true,
+            Codec::Dedup => false,
         }
     }
 }
@@ -83,21 +125,53 @@ impl Codec {
 /// assert_eq!(rule.path_text(), "$.details.career.cv");
 /// assert_eq!(rule.min_bytes(), 512);
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+///
+/// A `dedup` rule stores each distinct value once; its defaults are `min_bytes` 25 and no
+/// dictionary:
+///
+/// ```
+/// use graphersal::catalog::{Codec, CompressionDefinition};
+/// use graphersal::storage::ElementKind;
+///
+/// let rule = CompressionDefinition::new(ElementKind::Vertex, "symbol", "path")
+///     .unwrap()
+///     .with_codec(Codec::Dedup);
+/// assert_eq!(rule.min_bytes(), 25);
+/// assert!(!rule.dictionary());
+/// ```
+///
+/// Equality compares the effective parameters: a threshold or dictionary flag left at the
+/// codec's default equals the same value given explicitly.
+#[derive(Debug, Clone)]
 pub struct CompressionDefinition {
     element: ElementKind,
     label: String,
     path: JsonPath,
     codec: Codec,
-    min_bytes: u32,
-    dictionary: bool,
+    /// `None`: the codec's default ([`Codec::default_min_bytes`]).
+    min_bytes: Option<u32>,
+    /// `None`: the codec's default ([`Codec::supports_dictionary`]).
+    dictionary: Option<bool>,
     extra: PropertyMap,
+}
+
+impl PartialEq for CompressionDefinition {
+    fn eq(&self, other: &Self) -> bool {
+        self.element == other.element
+            && self.label == other.label
+            && self.path == other.path
+            && self.codec == other.codec
+            && self.min_bytes() == other.min_bytes()
+            && self.dictionary() == other.dictionary()
+            && self.extra == other.extra
+    }
 }
 
 impl CompressionDefinition {
     /// A rule for `element`s labelled `label` at `path` (a jpath of names: `"cv"`,
     /// `"details.career.cv"`, `"$.a['b c']"`), with the defaults `lz4`, `min_bytes` 256 and a
-    /// dictionary. A path that does not parse is an error; an index segment or an empty path is
+    /// dictionary (a `dedup` rule, [`Self::with_codec`], defaults to `min_bytes` 25 and no
+    /// dictionary). A path that does not parse is an error; an index segment or an empty path is
     /// rejected by [`Definition::validate`] (and by this constructor).
     pub fn new(
         element: ElementKind,
@@ -129,8 +203,8 @@ impl CompressionDefinition {
             label: label.into(),
             path,
             codec: Codec::Lz4,
-            min_bytes: DEFAULT_MIN_BYTES,
-            dictionary: true,
+            min_bytes: None,
+            dictionary: None,
             extra: PropertyMap::default(),
         }
     }
@@ -138,17 +212,19 @@ impl CompressionDefinition {
     /// The same rule with this threshold: strings shorter than `min_bytes` (UTF-8 bytes) stay
     /// plain.
     pub fn with_min_bytes(mut self, min_bytes: u32) -> Self {
-        self.min_bytes = min_bytes;
+        self.min_bytes = Some(min_bytes);
         self
     }
 
-    /// The same rule with or without a dictionary.
+    /// The same rule with or without a dictionary (`lz4` only: a `dedup` rule with a
+    /// dictionary is refused by [`Definition::validate`]).
     pub fn with_dictionary(mut self, dictionary: bool) -> Self {
-        self.dictionary = dictionary;
+        self.dictionary = Some(dictionary);
         self
     }
 
-    /// The same rule with this codec.
+    /// The same rule with this codec (a threshold and a dictionary flag not set explicitly
+    /// follow the codec's defaults).
     pub fn with_codec(mut self, codec: Codec) -> Self {
         self.codec = codec;
         self
@@ -179,14 +255,18 @@ impl CompressionDefinition {
         self.codec
     }
 
-    /// Strings shorter than this many UTF-8 bytes stay plain.
+    /// Strings shorter than this many UTF-8 bytes stay plain (the codec's default when not
+    /// set: 256 for `lz4`, 25 for `dedup`).
     pub fn min_bytes(&self) -> u32 {
         self.min_bytes
+            .unwrap_or_else(|| self.codec.default_min_bytes())
     }
 
-    /// Whether the explicit pass builds a dictionary from the rule's values.
+    /// Whether the explicit pass builds a dictionary from the rule's values (the codec's
+    /// default when not set: true for `lz4`, false for `dedup`).
     pub fn dictionary(&self) -> bool {
         self.dictionary
+            .unwrap_or_else(|| self.codec.supports_dictionary())
     }
 
     /// Payload keys this version does not know, kept and written back.
@@ -207,16 +287,17 @@ impl CompressionDefinition {
     }
 
     /// The payload property map (format spec 6.3), in this key order: `element` (`"vertex"` or
-    /// `"edge"`), `label`, `path` (canonical jpath text), `codec` (`"lz4"`), `min_bytes`
-    /// (int64), `dictionary` (boolean), then the unknown keys.
+    /// `"edge"`), `label`, `path` (canonical jpath text), `codec` (`"lz4"` or `"dedup"`),
+    /// `min_bytes` (int64), `dictionary` (boolean), then the unknown keys. The effective
+    /// threshold and dictionary flag are always written.
     pub fn to_payload(&self) -> PropertyMap {
         let mut map = PropertyMap::default();
         map.insert("element", self.element.as_str().into());
         map.insert("label", self.label.as_str().into());
         map.insert("path", self.path_text().into());
         map.insert("codec", self.codec.name().into());
-        map.insert("min_bytes", ElementProperty::from(self.min_bytes as i64));
-        map.insert("dictionary", ElementProperty::Boolean(self.dictionary));
+        map.insert("min_bytes", ElementProperty::from(self.min_bytes() as i64));
+        map.insert("dictionary", ElementProperty::Boolean(self.dictionary()));
         for (key, value) in &self.extra {
             map.0.entry(key.clone()).or_insert_with(|| value.clone());
         }
@@ -271,15 +352,19 @@ impl CompressionDefinition {
                 .ok_or_else(|| malformed("codec", &format!("unknown codec '{codec}'")))?;
         }
         if let Some(value) = map.get("min_bytes") {
-            rule.min_bytes = value
-                .as_i64()
-                .and_then(|n| u32::try_from(n).ok())
-                .ok_or_else(|| malformed("min_bytes", "must be a number from 0 to 2^32-1"))?;
+            rule.min_bytes = Some(
+                value
+                    .as_i64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or_else(|| malformed("min_bytes", "must be a number from 0 to 2^32-1"))?,
+            );
         }
         if let Some(value) = map.get("dictionary") {
-            rule.dictionary = value
-                .as_boolean()
-                .ok_or_else(|| malformed("dictionary", "must be a boolean"))?;
+            rule.dictionary = Some(
+                value
+                    .as_boolean()
+                    .ok_or_else(|| malformed("dictionary", "must be a boolean"))?,
+            );
         }
         const KNOWN: [&str; 6] = [
             "element",
@@ -329,12 +414,22 @@ impl CompressionDefinition {
         if let Some(reason) = path_problem(&self.path) {
             return Err(field("path", reason));
         }
-        if self.min_bytes == 0 || self.min_bytes > MAX_MIN_BYTES {
+        let min_bytes = self.min_bytes();
+        if min_bytes == 0 || min_bytes > MAX_MIN_BYTES {
             return Err(field(
                 "min_bytes",
                 format!(
-                    "{} is outside 1 to {MAX_MIN_BYTES} (the default traversal.max_string_bytes)",
-                    self.min_bytes
+                    "{min_bytes} is outside 1 to {MAX_MIN_BYTES} (the default traversal.max_string_bytes)"
+                ),
+            ));
+        }
+        if self.dictionary() && !self.codec.supports_dictionary() {
+            return Err(field(
+                "dictionary",
+                format!(
+                    "a {} rule has no dictionary (it stores each distinct value once); leave \
+                     dictionary out or set it to false",
+                    self.codec.name()
                 ),
             ));
         }
@@ -381,6 +476,78 @@ pub(crate) fn path_problem(path: &JsonPath) -> Option<String> {
 // The in-memory state of the rules
 // ---------------------------------------------------------------------------------------------
 
+/// The table of a `dedup` rule: the one shared copy of every distinct value the rule stores.
+/// An entry is live while an element (or the undo log, or a copy a caller holds) references
+/// it; one only the table holds is swept lazily (module docs).
+#[derive(Debug, Default)]
+pub(crate) struct DedupTable {
+    entries: HashSet<Arc<str>>,
+    /// The size at which the next insertion sweeps first.
+    sweep_at: usize,
+}
+
+/// The smallest size at which [`DedupTable`] sweeps before an insertion.
+const DEDUP_SWEEP_MIN: usize = 256;
+
+impl DedupTable {
+    /// The shared copy of `text`, made when the table has none.
+    fn intern(&mut self, text: &str) -> Arc<str> {
+        if let Some(shared) = self.entries.get(text) {
+            return shared.clone();
+        }
+        self.insert(Arc::from(text))
+    }
+
+    /// The table's copy of the text `shared` holds: `shared` itself when the table has none
+    /// (it becomes the table's copy), `None` when it already IS the table's copy.
+    fn adopt(&mut self, shared: &Arc<str>) -> Option<Arc<str>> {
+        match self.entries.get(&**shared) {
+            Some(own) if Arc::ptr_eq(own, shared) => None,
+            Some(own) => Some(own.clone()),
+            None => {
+                self.insert(shared.clone());
+                None
+            }
+        }
+    }
+
+    fn insert(&mut self, shared: Arc<str>) -> Arc<str> {
+        if self.entries.len() >= self.sweep_at {
+            self.sweep();
+        }
+        self.entries.insert(shared.clone());
+        shared
+    }
+
+    /// Drops every entry only the table holds.
+    pub(crate) fn sweep(&mut self) {
+        self.entries.retain(|shared| Arc::strong_count(shared) > 1);
+        self.sweep_at = (2 * self.entries.len()).max(DEDUP_SWEEP_MIN);
+    }
+
+    /// Whether `shared` is the table's copy of its text.
+    fn holds(&self, shared: &Arc<str>) -> bool {
+        self.entries
+            .get(&**shared)
+            .is_some_and(|own| Arc::ptr_eq(own, shared))
+    }
+
+    /// How many entries the table holds (live or not yet swept).
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// The heap bytes of the table: every shared text once (its bytes and the two reference
+    /// counts of its allocation) and the hash set's slots (a fat pointer and a control byte
+    /// per bucket).
+    pub(crate) fn heap_bytes(&self) -> u64 {
+        let counts = 2 * std::mem::size_of::<usize>();
+        let texts: usize = self.entries.iter().map(|text| text.len() + counts).sum();
+        let slots = self.entries.capacity() * (std::mem::size_of::<Arc<str>>() + 1);
+        (texts + slots) as u64
+    }
+}
+
 /// One active rule.
 #[derive(Debug, Clone)]
 pub(crate) struct Rule {
@@ -388,9 +555,13 @@ pub(crate) struct Rule {
     element: ElementKind,
     label: CompactString,
     path: Vec<CompactString>,
+    codec: Codec,
     min_bytes: usize,
     use_dictionary: bool,
     dictionary: Option<Arc<CompressionDictionary>>,
+    /// The table of a `dedup` rule (`None` for `lz4`). Behind a mutex: the write path
+    /// normalizes under a shared borrow of the rules.
+    dedup: Option<Arc<parking_lot::Mutex<DedupTable>>>,
 }
 
 /// The rules of a graph, by element kind and label (derived from the catalog).
@@ -551,16 +722,23 @@ impl CompressionRules {
                 element: rule.element(),
                 label: CompactString::from(rule.label()),
                 path: rule.names(),
+                codec: rule.codec(),
                 min_bytes: rule.min_bytes() as usize,
                 use_dictionary: rule.dictionary(),
                 dictionary: None,
+                dedup: None,
             };
+            let kept = previous
+                .find(&state.name)
+                .filter(|old| old.same_parameters(&state));
             if state.use_dictionary {
-                state.dictionary = previous.find(&state.name).and_then(|old| {
-                    (old.same_parameters(&state))
-                        .then(|| old.dictionary.clone())
-                        .flatten()
-                });
+                state.dictionary = kept.and_then(|old| old.dictionary.clone());
+            }
+            match state.codec {
+                Codec::Dedup => {
+                    state.dedup = Some(kept.and_then(|old| old.dedup.clone()).unwrap_or_default());
+                }
+                Codec::Lz4 => {}
             }
             rules
                 .by_kind_mut(state.element)
@@ -592,6 +770,21 @@ impl CompressionRules {
         self.vertex.values().chain(self.edge.values()).flatten()
     }
 
+    /// Sweeps every dedup table (after a rollback: entries only the table holds go).
+    pub(crate) fn sweep_dedup(&self) {
+        for table in self.iter().filter_map(|rule| rule.dedup.as_ref()) {
+            table.lock().sweep();
+        }
+    }
+
+    /// The summed heap bytes of the dedup tables (each table once).
+    pub(crate) fn dedup_table_bytes(&self) -> u64 {
+        self.iter()
+            .filter_map(|rule| rule.dedup.as_ref())
+            .map(|table| table.lock().heap_bytes())
+            .sum()
+    }
+
     /// The summed size of the distinct dictionaries.
     pub(crate) fn dictionary_bytes(&self) -> u64 {
         let mut seen: Vec<*const CompressionDictionary> = Vec::new();
@@ -612,16 +805,29 @@ impl Rule {
         self.element == other.element
             && self.label == other.label
             && self.path == other.path
+            && self.codec == other.codec
             && self.min_bytes == other.min_bytes
             && self.use_dictionary == other.use_dictionary
     }
 
-    /// The compressed form of `text` under this rule, `None` when it stays plain.
+    /// The compressed form of `text` under this (`lz4`) rule, `None` when it stays plain.
     fn encode(&self, text: &str) -> Option<CompressedText> {
         if text.len() < self.min_bytes {
             return None;
         }
         CompressedText::compress(text, self.dictionary.as_ref())
+    }
+
+    /// Whether a `dedup` rule shares a string of `len` bytes.
+    fn dedup_qualifies(&self, len: usize) -> bool {
+        dedup_qualifies(len, self.min_bytes)
+    }
+
+    /// The shared form of `text` under this `dedup` rule, `None` when it stays plain.
+    fn share(&self, text: &str) -> Option<ElementProperty> {
+        let table = self.dedup.as_ref()?;
+        self.dedup_qualifies(text.len())
+            .then(|| ElementProperty::Deduped(DedupedText::new(table.lock().intern(text))))
     }
 
     fn same_dictionary(&self, value: &CompressedText) -> bool {
@@ -642,25 +848,9 @@ fn normalize_value(value: &mut ElementProperty, rules: &[(&[CompactString], &Rul
         return;
     }
     if let Some((_, rule)) = rules.iter().find(|(rest, _)| rest.is_empty()) {
-        match value {
-            ElementProperty::String(text) => {
-                if let Some(compressed) = rule.encode(text) {
-                    *value = ElementProperty::Compressed(Box::new(compressed));
-                }
-            }
-            ElementProperty::Compressed(compressed) => {
-                if compressed.plain_len() < rule.min_bytes
-                    || (force && !rule.same_dictionary(compressed))
-                {
-                    let text = compressed.text();
-                    *value = match rule.encode(&text) {
-                        Some(again) => ElementProperty::Compressed(Box::new(again)),
-                        None => ElementProperty::String(text),
-                    };
-                }
-            }
-            // A non-string at a rule path is left as it is (nothing below it is a rule leaf).
-            _ => value.make_logical(),
+        match rule.codec {
+            Codec::Lz4 => normalize_lz4(value, rule, force),
+            Codec::Dedup => normalize_dedup(value, rule),
         }
         return;
     }
@@ -677,6 +867,73 @@ fn normalize_value(value: &mut ElementProperty, rules: &[(&[CompactString], &Rul
         }
         _ => value.make_logical(),
     }
+}
+
+/// [`normalize_value`] at the leaf of an `lz4` rule.
+fn normalize_lz4(value: &mut ElementProperty, rule: &Rule, force: bool) {
+    match value {
+        ElementProperty::String(text) => {
+            if let Some(compressed) = rule.encode(text) {
+                *value = ElementProperty::Compressed(Box::new(compressed));
+            }
+        }
+        ElementProperty::Compressed(compressed) => {
+            if compressed.plain_len() < rule.min_bytes
+                || (force && !rule.same_dictionary(compressed))
+            {
+                let text = compressed.text();
+                *value = match rule.encode(&text) {
+                    Some(again) => ElementProperty::Compressed(Box::new(again)),
+                    None => ElementProperty::String(text),
+                };
+            }
+        }
+        // Shared by a former dedup rule: compressed or plain now.
+        ElementProperty::Deduped(shared) => {
+            *value = match rule.encode(shared.as_str()) {
+                Some(compressed) => ElementProperty::Compressed(Box::new(compressed)),
+                None => ElementProperty::String(shared.as_str().into()),
+            };
+        }
+        // A non-string at a rule path is left as it is (nothing below it is a rule leaf).
+        _ => value.make_logical(),
+    }
+}
+
+/// [`normalize_value`] at the leaf of a `dedup` rule: a qualifying string becomes (or stays) a
+/// reference to the table's copy, anything else at the leaf is plain.
+fn normalize_dedup(value: &mut ElementProperty, rule: &Rule) {
+    match value {
+        ElementProperty::String(text) => {
+            if let Some(shared) = rule.share(text) {
+                *value = shared;
+            }
+        }
+        ElementProperty::Deduped(shared) => {
+            if !rule.dedup_qualifies(shared.len()) {
+                *value = ElementProperty::String(shared.as_str().into());
+            } else if let Some(table) = rule.dedup.as_ref() {
+                // A value restored from the undo log, or made under the rule's former table,
+                // points to the current table's copy.
+                if let Some(own) = table.lock().adopt(shared.shared()) {
+                    *value = ElementProperty::Deduped(DedupedText::new(own));
+                }
+            }
+        }
+        // Compressed by a former lz4 rule: shared or plain now.
+        ElementProperty::Compressed(compressed) => {
+            let text = compressed.text();
+            *value = rule.share(&text).unwrap_or(ElementProperty::String(text));
+        }
+        _ => value.make_logical(),
+    }
+}
+
+/// Whether a `dedup` rule with threshold `min_bytes` shares a string of `len` bytes: at least
+/// `min_bytes` and longer than the inline capacity (a shorter string owns no heap). The ONE
+/// qualification of the write path, the invariant check and the estimate.
+pub(crate) fn dedup_qualifies(len: usize, min_bytes: usize) -> bool {
+    len >= min_bytes && len > INLINE_TEXT_BYTES
 }
 
 /// The value at `path` inside `properties`, when every step is an object key.
@@ -720,18 +977,29 @@ pub(crate) fn dictionary_from(
 }
 
 /// What one rule holds right now ([`TraversalGraph::compression_stats`]).
+///
+/// For a `dedup` rule `compressed_values` counts the references (one per element whose value
+/// is shared), `distinct_values` the distinct texts among them and `stored_bytes` each distinct
+/// text once plus 32 bytes for it (its allocation's two reference counts and its table slot, on
+/// 64-bit targets): a reference itself costs nothing beyond the property slot a plain string
+/// occupies too.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct CompressionStats {
-    /// Values stored compressed at the rule's path (elements of the rule's label).
+    /// Values stored compressed (`lz4`) or shared (`dedup`) at the rule's path (elements of the
+    /// rule's label).
     pub compressed_values: u64,
     /// Their plain size in bytes.
     pub plain_bytes: u64,
-    /// Their compressed size in bytes (without the dictionary).
+    /// Their stored size in bytes: the compressed blocks without the dictionary (`lz4`), the
+    /// distinct texts once with their overhead (`dedup`).
     pub stored_bytes: u64,
     /// The size of the rule's dictionary in bytes (0: none).
     pub dictionary_bytes: u64,
+    /// The distinct values among `compressed_values` (`dedup`; 0 for `lz4`).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub distinct_values: u64,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -991,7 +1259,19 @@ impl TraversalGraph {
         let (element, label) = (rule.element, rule.label.clone());
         self.compression_build_dictionary(name);
         self.compression_normalize_label(element, &label, true);
+        // A dedup table keeps only what the label's values reference.
+        if let Some(table) = self.compression.find(name).and_then(|r| r.dedup.as_ref()) {
+            table.lock().sweep();
+        }
         true
+    }
+
+    /// How many entries the table of the `dedup` rule `name` holds, live or not yet swept
+    /// (`None`: no such rule, or not a dedup rule). A test helper.
+    #[doc(hidden)]
+    pub fn dedup_table_len(&self, name: &str) -> Option<usize> {
+        let table = self.compression.find(name)?.dedup.as_ref()?;
+        Some(table.lock().len())
     }
 
     /// What the compression rule `name` holds right now (`None`: no such rule): the compressed
@@ -1002,12 +1282,22 @@ impl TraversalGraph {
             dictionary_bytes: rule.dictionary.as_ref().map_or(0, |d| d.len() as u64),
             ..CompressionStats::default()
         };
-        let mut count = |properties: &PropertyMap| {
-            if let Some(ElementProperty::Compressed(text)) = value_at(properties, &rule.path) {
+        let mut seen: HashSet<*const u8> = HashSet::new();
+        let mut count = |properties: &PropertyMap| match value_at(properties, &rule.path) {
+            Some(ElementProperty::Compressed(text)) => {
                 stats.compressed_values += 1;
                 stats.plain_bytes += text.plain_len() as u64;
                 stats.stored_bytes += text.stored_len() as u64;
             }
+            Some(ElementProperty::Deduped(text)) => {
+                stats.compressed_values += 1;
+                stats.plain_bytes += text.len() as u64;
+                if seen.insert(Arc::as_ptr(text.shared()).cast::<u8>()) {
+                    stats.distinct_values += 1;
+                    stats.stored_bytes += (text.len() + DEDUP_ENTRY_OVERHEAD) as u64;
+                }
+            }
+            _ => {}
         };
         match rule.element {
             ElementKind::Vertex => {
@@ -1029,8 +1319,9 @@ impl TraversalGraph {
     }
 
     /// Checks the compression invariant (D6) over the whole graph: a string at a rule path is
-    /// compressed iff it qualifies, nothing else is compressed. `Err` names the first element
-    /// and path that break it. A test helper; it decompresses and compresses as it goes.
+    /// compressed (`lz4`) or shared through the rule's table (`dedup`) iff it qualifies,
+    /// nothing else is compressed or shared. `Err` names the first element and path that break
+    /// it. A test helper; it decompresses and compresses as it goes.
     #[doc(hidden)]
     pub fn check_compression_invariant(&self) -> Result<(), String> {
         for (id, labels, properties, _) in self.graph.node_weights() {
@@ -1074,6 +1365,9 @@ impl TraversalGraph {
 
 fn check_value(value: &ElementProperty, rules: &[(&[CompactString], &Rule)]) -> Result<(), String> {
     if let Some((_, rule)) = rules.iter().find(|(rest, _)| rest.is_empty()) {
+        if rule.codec == Codec::Dedup {
+            return check_dedup_value(value, rule);
+        }
         return match value {
             ElementProperty::String(text) => match rule.encode(text) {
                 Some(_) => Err(format!(
@@ -1093,6 +1387,7 @@ fn check_value(value: &ElementProperty, rules: &[(&[CompactString], &Rule)]) -> 
                     Ok(())
                 }
             }
+            ElementProperty::Deduped(_) => Err("a shared value at an lz4 rule path".to_string()),
             other if other.holds_compressed() => {
                 Err("a compressed value inside a non-string at a rule path".to_string())
             }
@@ -1101,6 +1396,7 @@ fn check_value(value: &ElementProperty, rules: &[(&[CompactString], &Rule)]) -> 
     }
     match value {
         ElementProperty::Compressed(_) => Err("a compressed value outside every rule".to_string()),
+        ElementProperty::Deduped(_) => Err("a shared value outside every rule".to_string()),
         ElementProperty::Object(map) => {
             for (key, child) in map.iter() {
                 let below: Vec<(&[CompactString], &Rule)> = rules
@@ -1114,6 +1410,36 @@ fn check_value(value: &ElementProperty, rules: &[(&[CompactString], &Rule)]) -> 
         }
         other if other.holds_compressed() => {
             Err("a compressed value outside every rule".to_string())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// [`check_value`] at the leaf of a `dedup` rule.
+fn check_dedup_value(value: &ElementProperty, rule: &Rule) -> Result<(), String> {
+    match value {
+        ElementProperty::String(text) if rule.dedup_qualifies(text.len()) => Err(format!(
+            "a string of {} bytes that qualifies for dedup is stored plain",
+            text.len()
+        )),
+        ElementProperty::Deduped(shared) => {
+            if !rule.dedup_qualifies(shared.len()) {
+                Err("a value below min_bytes or inline is shared".to_string())
+            } else if !rule
+                .dedup
+                .as_ref()
+                .is_some_and(|table| table.lock().holds(shared.shared()))
+            {
+                Err("a shared value is not the copy in the rule's table".to_string())
+            } else {
+                Ok(())
+            }
+        }
+        ElementProperty::Compressed(_) => {
+            Err("an lz4-compressed value at a dedup rule path".to_string())
+        }
+        other if other.holds_compressed() => {
+            Err("a compressed or shared value inside a non-string at a rule path".to_string())
         }
         _ => Ok(()),
     }

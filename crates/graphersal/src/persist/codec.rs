@@ -284,6 +284,10 @@ fn put_value_at<K: KeyWriter>(
             put_u8(out, tag::STRING);
             text.with_text(|text| put_str(out, text));
         }
+        ElementProperty::Deduped(text) => {
+            put_u8(out, tag::STRING);
+            put_str(out, text.as_str());
+        }
         ElementProperty::Uuid(uuid) => {
             put_u8(out, tag::UUID);
             out.extend_from_slice(&uuid.to_be_bytes());

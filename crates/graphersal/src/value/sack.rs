@@ -84,6 +84,7 @@ impl ScalarKey {
             },
             ElementProperty::String(s) => ScalarKey::Str(s.clone()),
             ElementProperty::Compressed(text) => ScalarKey::Str(text.text()),
+            ElementProperty::Deduped(text) => ScalarKey::Str(text.as_str().into()),
             ElementProperty::Uuid(u) => ScalarKey::Uuid(*u),
             ElementProperty::Temporal(t) => ScalarKey::Temporal(Box::new(t.bits())),
             // Not interned: a vector gets a fresh handle like a container.

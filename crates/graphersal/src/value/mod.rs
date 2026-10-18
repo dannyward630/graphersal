@@ -17,6 +17,8 @@ pub mod cast;
 pub mod column;
 /// [`CompressedText`], a string kept compressed in memory by a compression rule.
 pub mod compressed;
+/// [`DedupedText`], a string shared through a `dedup` compression rule's table.
+pub mod deduped;
 /// The value-depth limit: bounded nesting so recursive readers stay bounded.
 pub(crate) mod depth;
 /// [`Direction`], the `Direction.OUT/IN/BOTH` edge-direction token.
@@ -75,6 +77,7 @@ pub use cast::CastPolicy;
 pub use column::Column;
 pub use compact_str::CompactString;
 pub use compressed::CompressedText;
+pub use deduped::DedupedText;
 pub use direction::Direction;
 pub use dt::DT;
 pub use element_value::{EdgeValue, VertexRef, VertexValue};
@@ -167,6 +170,15 @@ pub enum ElementProperty {
     /// [`GraphStorage::vertex_properties`]) is
     /// normalized under the graph's rules like any other string.
     Compressed(Box<CompressedText>),
+    /// A string a `dedup` compression rule stores once per distinct value: the element keeps a
+    /// reference to the text in the rule's table (`book/src/users_guide/compressed_properties.md`,
+    /// section "Deduplicating repeated values").
+    ///
+    /// **Storage-only** like [`Self::Compressed`], with the same contract: every read that
+    /// leaves the graph goes through [`Self::logical`] (or [`Self::with_text`]), which yields
+    /// the plain string; it is the string it holds for equality, hashing and ordering. A write
+    /// of a `Deduped` value is normalized under the graph's rules like any other string.
+    Deduped(DedupedText),
 }
 
 impl Clone for ElementProperty {
@@ -185,6 +197,7 @@ impl Clone for ElementProperty {
             ElementProperty::Edge(map) => ElementProperty::Edge(map.clone()),
             ElementProperty::Map(map) => ElementProperty::Map(map.clone()),
             ElementProperty::Compressed(text) => clone_compressed(text),
+            ElementProperty::Deduped(text) => ElementProperty::Deduped(text.clone()),
         }
     }
 }
@@ -204,9 +217,11 @@ impl PartialEq for ElementProperty {
         match (self, other) {
             (E::Null, E::Null) => true,
             (E::String(a), E::String(b)) => a == b,
-            (E::String(_), E::Compressed(_))
-            | (E::Compressed(_), E::String(_))
-            | (E::Compressed(_), E::Compressed(_)) => compressed_eq(self, other),
+            (E::String(_), E::Compressed(_) | E::Deduped(_))
+            | (E::Compressed(_) | E::Deduped(_), E::String(_))
+            | (E::Compressed(_) | E::Deduped(_), E::Compressed(_) | E::Deduped(_)) => {
+                compressed_eq(self, other)
+            }
             (E::Number(a), E::Number(b)) => a == b,
             (E::Boolean(a), E::Boolean(b)) => a == b,
             (E::Uuid(a), E::Uuid(b)) => a == b,
@@ -230,7 +245,8 @@ impl PartialEq for ElementProperty {
                 | E::Vertex(_)
                 | E::Edge(_)
                 | E::Map(_)
-                | E::Compressed(_),
+                | E::Compressed(_)
+                | E::Deduped(_),
                 _,
             ) => false,
         }
@@ -256,15 +272,21 @@ fn compare_text(a: &ElementProperty, b: &ElementProperty) -> std::cmp::Ordering 
         .unwrap_or(std::cmp::Ordering::Equal)
 }
 
-/// The equality of two string values of which at least one is compressed; out of line so the
-/// recursive `eq` keeps a small stack frame.
+/// The equality of two string values of which at least one is compressed or deduplicated; out
+/// of line so the recursive `eq` keeps a small stack frame. Two references to one shared text
+/// are equal without reading it.
 #[inline(never)]
 #[cold]
 fn compressed_eq(a: &ElementProperty, b: &ElementProperty) -> bool {
     match (a, b) {
         (ElementProperty::Compressed(a), ElementProperty::Compressed(b)) => a.logical_eq(b),
+        (ElementProperty::Deduped(a), ElementProperty::Deduped(b)) => a.logical_eq(b),
         (ElementProperty::String(a), ElementProperty::Compressed(b))
         | (ElementProperty::Compressed(b), ElementProperty::String(a)) => b.eq_str(a),
+        (ElementProperty::String(a), ElementProperty::Deduped(b))
+        | (ElementProperty::Deduped(b), ElementProperty::String(a)) => a.as_str() == b.as_str(),
+        (ElementProperty::Compressed(a), ElementProperty::Deduped(b))
+        | (ElementProperty::Deduped(b), ElementProperty::Compressed(a)) => a.eq_str(b.as_str()),
         _ => false,
     }
 }
@@ -299,6 +321,7 @@ impl ElementProperty {
     pub fn into_logical(self) -> ElementProperty {
         match self {
             ElementProperty::Compressed(text) => ElementProperty::String(text.text()),
+            ElementProperty::Deduped(text) => ElementProperty::String(text.as_str().into()),
             ElementProperty::Array(mut items) => {
                 for item in items.iter_mut().filter(|item| item.holds_compressed()) {
                     *item = std::mem::replace(item, ElementProperty::Null).into_logical();
@@ -352,7 +375,8 @@ impl ElementProperty {
         }
     }
 
-    /// Whether a [`ElementProperty::Compressed`] value is inside `self` (or is `self`).
+    /// Whether a storage-only value ([`ElementProperty::Compressed`] or
+    /// [`ElementProperty::Deduped`]) is inside `self` (or is `self`).
     pub fn holds_compressed(&self) -> bool {
         self.holds_compressed_within(0)
     }
@@ -366,7 +390,7 @@ impl ElementProperty {
             return self.holds_compressed_deep();
         }
         match self {
-            ElementProperty::Compressed(_) => true,
+            ElementProperty::Compressed(_) | ElementProperty::Deduped(_) => true,
             ElementProperty::Array(items) => items
                 .iter()
                 .any(|item| item.holds_compressed_within(depth + 1)),
@@ -401,7 +425,7 @@ impl ElementProperty {
         let mut current = self;
         loop {
             match current {
-                ElementProperty::Compressed(_) => return true,
+                ElementProperty::Compressed(_) | ElementProperty::Deduped(_) => return true,
                 ElementProperty::Array(items) => stack.extend(items.iter()),
                 ElementProperty::Object(map) => stack.extend(map.values()),
                 ElementProperty::Vertex(vertex) => stack.extend(vertex.properties().values()),
@@ -434,6 +458,7 @@ impl ElementProperty {
         match self {
             ElementProperty::String(text) => Some(f(text.as_str())),
             ElementProperty::Compressed(text) => Some(text.with_text(f)),
+            ElementProperty::Deduped(text) => Some(f(text.as_str())),
             _ => None,
         }
     }
@@ -442,7 +467,9 @@ impl ElementProperty {
     pub fn is_text(&self) -> bool {
         matches!(
             self,
-            ElementProperty::String(_) | ElementProperty::Compressed(_)
+            ElementProperty::String(_)
+                | ElementProperty::Compressed(_)
+                | ElementProperty::Deduped(_)
         )
     }
 
@@ -452,6 +479,7 @@ impl ElementProperty {
         match self {
             ElementProperty::String(text) => Some(Cow::Borrowed(text.as_str())),
             ElementProperty::Compressed(text) => Some(Cow::Owned(text.text().into_string())),
+            ElementProperty::Deduped(text) => Some(Cow::Borrowed(text.as_str())),
             _ => None,
         }
     }
@@ -470,6 +498,7 @@ impl ElementProperty {
             ElementProperty::Null
             | ElementProperty::String(_)
             | ElementProperty::Compressed(_)
+            | ElementProperty::Deduped(_)
             | ElementProperty::Number(_)
             | ElementProperty::Boolean(_)
             | ElementProperty::Uuid(_)
@@ -635,6 +664,8 @@ impl ElementProperty {
             ElementProperty::String(value) => compact_string_heap_bytes(value),
             // The stored (compressed) size; the dictionary is shared and counted per rule.
             ElementProperty::Compressed(text) => text.heap_bytes(),
+            // Shared: the text is counted once, in its rule's table (`MemoryStats`).
+            ElementProperty::Deduped(_) => 0,
             ElementProperty::Array(values) => {
                 let container =
                     values.capacity() as u64 * std::mem::size_of::<ElementProperty>() as u64;
@@ -705,7 +736,9 @@ fn type_rank(value: &ElementProperty) -> u8 {
         // among them), before strings; among themselves by `Vector`'s own `Ord`.
         ElementProperty::Vector(_) => 4,
         // A compressed string is the string it holds.
-        ElementProperty::String(_) | ElementProperty::Compressed(_) => 5,
+        ElementProperty::String(_)
+        | ElementProperty::Compressed(_)
+        | ElementProperty::Deduped(_) => 5,
         ElementProperty::Uuid(_) => 6,
         ElementProperty::Array(_) => 7,
         ElementProperty::Object(_) => 8,
@@ -795,8 +828,12 @@ pub(crate) fn compare_element_property(
         (ElementProperty::Number(a), ElementProperty::Number(b)) => a.cmp(b),
         (ElementProperty::String(a), ElementProperty::String(b)) => a.as_str().cmp(b.as_str()),
         // A compressed string orders as the string it holds.
-        (ElementProperty::Compressed(_), b) if b.is_text() => compare_text(a, b),
-        (a, ElementProperty::Compressed(_)) if a.is_text() => compare_text(a, b),
+        (ElementProperty::Compressed(_) | ElementProperty::Deduped(_), b) if b.is_text() => {
+            compare_text(a, b)
+        }
+        (a, ElementProperty::Compressed(_) | ElementProperty::Deduped(_)) if a.is_text() => {
+            compare_text(a, b)
+        }
         (ElementProperty::Uuid(a), ElementProperty::Uuid(b)) => a.cmp(b),
         // Different temporal kinds order by kind (date, localdatetime, datetime, time,
         // duration), then by value; a datetime by its instant.
@@ -909,6 +946,7 @@ impl fmt::Debug for ElementProperty {
             ElementProperty::Temporal(value) => write!(f, "{value}"),
             ElementProperty::Vector(value) => write!(f, "{value}"),
             ElementProperty::Compressed(text) => write!(f, "{text:?}"),
+            ElementProperty::Deduped(text) => write!(f, "{text:?}"),
         }
     }
 }
@@ -1086,6 +1124,7 @@ impl std::hash::Hash for ElementProperty {
             ElementProperty::String(val) => Self::hash_string_key(val, state),
             // Hashes as the string it holds (logical equality).
             ElementProperty::Compressed(val) => hash_compressed(val, state),
+            ElementProperty::Deduped(val) => Self::hash_string_key(val.as_str(), state),
             ElementProperty::Number(val) => {
                 state.write_u8(2);
                 val.hash(state);
@@ -1452,6 +1491,9 @@ impl<S: GraphStorage> From<&ElementProperty> for TraverserValue<S> {
             ElementProperty::Compressed(text) => {
                 TraverserValue::Computed(ElementProperty::String(text.text()), None)
             }
+            ElementProperty::Deduped(text) => {
+                TraverserValue::Computed(ElementProperty::String(text.as_str().into()), None)
+            }
             ElementProperty::Array(value) => {
                 TraverserValue::Array(value.iter().map(|r| r.into()).collect())
             }
@@ -1488,6 +1530,9 @@ impl<S: GraphStorage> From<ElementProperty> for TraverserValue<S> {
             // Boundary (D5): a stream value is always plain.
             ElementProperty::Compressed(text) => {
                 TraverserValue::Computed(ElementProperty::String(text.text()), None)
+            }
+            ElementProperty::Deduped(text) => {
+                TraverserValue::Computed(ElementProperty::String(text.as_str().into()), None)
             }
             ElementProperty::Array(array) => {
                 TraverserValue::Array(array.into_iter().map(|r| r.into()).collect())
@@ -2050,6 +2095,7 @@ impl<S: GraphStorage> TraverserValue<S> {
                 ElementProperty::Null
                 | ElementProperty::String(_)
                 | ElementProperty::Compressed(_)
+                | ElementProperty::Deduped(_)
                 | ElementProperty::Number(_)
                 | ElementProperty::Boolean(_)
                 | ElementProperty::Uuid(_)
@@ -2182,7 +2228,9 @@ impl<S: GraphStorage> TraverserValue<S> {
                 }
                 ElementProperty::Map(map) => map.get_str(prop).map(ElementProperty::to_logical),
                 ElementProperty::Null => None,
-                ElementProperty::String(_) | ElementProperty::Compressed(_) => None,
+                ElementProperty::String(_)
+                | ElementProperty::Compressed(_)
+                | ElementProperty::Deduped(_) => None,
                 ElementProperty::Array(_) => None,
                 ElementProperty::Number(_) => None,
                 ElementProperty::Boolean(_) => None,
@@ -2217,7 +2265,9 @@ impl<S: GraphStorage> TraverserValue<S> {
                             map.get_str(prop).map(ElementProperty::to_logical)
                         }
                         ElementProperty::Null => None,
-                        ElementProperty::String(_) | ElementProperty::Compressed(_) => None,
+                        ElementProperty::String(_)
+                        | ElementProperty::Compressed(_)
+                        | ElementProperty::Deduped(_) => None,
                         ElementProperty::Array(_) => None,
                         ElementProperty::Number(_) => None,
                         ElementProperty::Boolean(_) => None,
@@ -2262,7 +2312,9 @@ impl<S: GraphStorage> TraverserValue<S> {
                             map.get_str(prop).map(ElementProperty::to_logical)
                         }
                         ElementProperty::Null => None,
-                        ElementProperty::String(_) | ElementProperty::Compressed(_) => None,
+                        ElementProperty::String(_)
+                        | ElementProperty::Compressed(_)
+                        | ElementProperty::Deduped(_) => None,
                         ElementProperty::Array(_) => None,
                         ElementProperty::Number(_) => None,
                         ElementProperty::Boolean(_) => None,
@@ -2544,6 +2596,7 @@ fn arg_text(value: &ElementProperty) -> String {
     match value {
         ElementProperty::String(text) => text.to_string(),
         ElementProperty::Compressed(text) => text.text().into_string(),
+        ElementProperty::Deduped(text) => text.as_str().to_string(),
         // A uuid names itself by its canonical text, anything else by its compact JSON text. Only a
         // non-finite float nested in a container makes the conversion fail; the text must merely be
         // deterministic, since no label or key can equal it.
@@ -2565,6 +2618,7 @@ impl From<ElementProperty> for ArgStrings {
         match value {
             ElementProperty::String(value) => ArgStrings::String(value.into_string()),
             ElementProperty::Compressed(text) => ArgStrings::String(text.text().into_string()),
+            ElementProperty::Deduped(text) => ArgStrings::String(text.as_str().to_string()),
             ElementProperty::Object(obj) => {
                 let id = obj.get("id");
                 match id {
@@ -2593,6 +2647,7 @@ impl From<&ElementProperty> for ArgStrings {
         match value {
             ElementProperty::String(value) => ArgStrings::String(value.to_string()),
             ElementProperty::Compressed(text) => ArgStrings::String(text.text().into_string()),
+            ElementProperty::Deduped(text) => ArgStrings::String(text.as_str().to_string()),
             ElementProperty::Object(obj) => {
                 let id = obj.get("id");
                 match id {

@@ -9,24 +9,30 @@
 //!
 //! JSON forms:
 //!
-//! - an **entry** (`list_compressions`): `{name, element: "vertex"|"edge", label, path, codec,
-//!   minBytes, dictionary, stats: {compressedValues, plainBytes, storedBytes,
-//!   dictionaryBytes}}`; `path` is the canonical jpath text (`$.details.career.cv`);
+//! - an **entry** (`list_compressions`): `{name, element: "vertex"|"edge", label, path, codec:
+//!   "lz4"|"dedup", minBytes, dictionary, stats: {compressedValues, plainBytes, storedBytes,
+//!   dictionaryBytes, distinctValues}}`; `path` is the canonical jpath text
+//!   (`$.details.career.cv`); for a `dedup` rule `compressedValues` counts the shared values
+//!   and `distinctValues` the distinct texts among them;
 //! - a **spec** (`define_compression`): `{name, label, path, element?, codec?, minBytes?,
-//!   dictionary?, replaces?}`; `replaces` names the rule an edit started from (a rename stores
-//!   the new name and drops the old one in one commit);
+//!   dictionary?, replaces?}`; `codec` is `"lz4"` (default: minBytes 256, a dictionary) or
+//!   `"dedup"` (minBytes 25, no dictionary: `dictionary: true` is a field error); `replaces`
+//!   names the rule an edit started from (a rename stores the new name and drops the old one
+//!   in one commit);
 //! - **field errors** (a refused define): `[{field, message, help?}]` with `field` one of
 //!   `name`, `element`, `label`, `path`, `codec`, `minBytes`, `dictionary` or `general`, the
 //!   same shape as the saved queries' editor.
 //! - an **estimate spec** (`estimate_compression`, read-only): `{label, path, element?, codec?,
 //!   minBytes?, dictionary?}`; each optional key given narrows the candidates (none: `lz4`
 //!   with and without a dictionary at 64, 128, 256, 512 and 1024 bytes, plus the current
-//!   rule's parameters);
+//!   rule's parameters); `codec` is a name or a list of names (`["lz4", "dedup"]` measures
+//!   both; `dedup` at 25, 64, 128 and 256 bytes);
 //! - an **estimate** (`{ok: true, estimate}`): `{element, label, path, elements, valuesFound,
 //!   stringValues, stringBytes, sampled, measuredValues, histogram: [{minBytes, maxBytes,
 //!   values, bytes}], candidates: [{codec, minBytes, dictionary, compressedValues, plainBytes,
-//!   storedBytes, dictionaryBytes, savedBytes, ratio, current, encodeBytesPerSec,
-//!   decodeBytesPerSec}], best, current: {name, codec, minBytes, dictionary, stats} | null,
+//!   storedBytes, dictionaryBytes, distinctValues, savedBytes, ratio, current,
+//!   encodeBytesPerSec, decodeBytesPerSec}], best, current: {name, codec, minBytes, dictionary,
+//!   stats} | null,
 //!   warnings: [{code, message}], elapsedMs, graphChanged: false}`; `best` is the index of the
 //!   candidate that saves the most (`null`: none saves anything).
 
@@ -63,6 +69,7 @@ fn entry(name: &str, rule: &CompressionDefinition, stats: Option<CompressionStat
             "plainBytes": stats.plain_bytes,
             "storedBytes": stats.stored_bytes,
             "dictionaryBytes": stats.dictionary_bytes,
+            "distinctValues": stats.distinct_values,
         })
     });
     json!({
@@ -101,6 +108,7 @@ pub fn estimate_json(estimate: &CompressionEstimate) -> Value {
                 "plainBytes": c.plain_bytes,
                 "storedBytes": c.stored_bytes,
                 "dictionaryBytes": c.dictionary_bytes,
+                "distinctValues": c.distinct_values,
                 "savedBytes": c.saved_bytes,
                 "ratio": c.ratio(),
                 "current": c.current,
@@ -132,6 +140,7 @@ pub fn estimate_json(estimate: &CompressionEstimate) -> Value {
                 "plainBytes": current.stats.plain_bytes,
                 "storedBytes": current.stats.stored_bytes,
                 "dictionaryBytes": current.stats.dictionary_bytes,
+                "distinctValues": current.stats.distinct_values,
             },
         })
     });
@@ -194,7 +203,23 @@ pub fn estimate_request(spec: &Value) -> Result<CompressionEstimateRequest, Vec<
     let label = text("label").unwrap_or_default();
     let path = text("path").unwrap_or_default();
     let element = text("element");
-    let codec = text("codec");
+    // `codec` is a name or a list of names.
+    let codec_names: Vec<String> = match spec.get("codec") {
+        Some(Value::Array(items)) => {
+            let names: Vec<String> = items
+                .iter()
+                .filter_map(|item| item.as_str().map(|name| name.trim().to_string()))
+                .collect();
+            if names.len() != items.len() {
+                errors.push(FieldError::new(
+                    "codec",
+                    "codec is a codec name or a list of them (\"lz4\", \"dedup\")",
+                ));
+            }
+            names
+        }
+        _ => text("codec").into_iter().collect(),
+    };
     if label.is_empty() {
         errors.push(FieldError::new(
             "label",
@@ -218,19 +243,16 @@ pub fn estimate_request(spec: &Value) -> Result<CompressionEstimateRequest, Vec<
             ElementKind::Vertex
         }
     };
-    let codec = match codec.as_deref() {
-        None => None,
-        Some(name) => match Codec::from_name(name) {
-            Some(codec) => Some(codec),
-            None => {
-                errors.push(FieldError::new(
-                    "codec",
-                    format!("unknown codec '{name}' (this version has lz4)"),
-                ));
-                None
-            }
-        },
-    };
+    let mut codecs: Vec<Codec> = Vec::new();
+    for name in &codec_names {
+        match Codec::from_name(name) {
+            Some(codec) => codecs.push(codec),
+            None => errors.push(FieldError::new(
+                "codec",
+                format!("unknown codec '{name}' (this version has lz4 and dedup)"),
+            )),
+        }
+    }
     let min_bytes = match spec.get("minBytes") {
         None | Some(Value::Null) => None,
         Some(value) => match value.as_u64().and_then(|n| u32::try_from(n).ok()) {
@@ -265,8 +287,9 @@ pub fn estimate_request(spec: &Value) -> Result<CompressionEstimateRequest, Vec<
     let Some(path) = parsed else {
         return Err(vec![FieldError::new("path", "the path is missing")]);
     };
-    let request = CompressionEstimateRequest::with_path(element, label, path)
-        .with_candidates(CompressionCandidate::matching(codec, min_bytes, dictionary));
+    let request = CompressionEstimateRequest::with_path(element, label, path).with_candidates(
+        CompressionCandidate::matching_codecs(&codecs, min_bytes, dictionary),
+    );
     request.validate().map_err(|err| vec![field_of(&err)])?;
     Ok(request)
 }
@@ -277,7 +300,7 @@ fn field_of(err: &DefinitionError) -> FieldError {
     error.field = match err {
         DefinitionError::InvalidName { .. } => "name".to_string(),
         DefinitionError::InvalidField { field, .. } => match field.as_str() {
-            "label" | "path" => field.clone(),
+            "label" | "path" | "dictionary" | "codec" => field.clone(),
             "min_bytes" => "minBytes".to_string(),
             _ => "general".to_string(),
         },
@@ -387,7 +410,7 @@ impl Session {
             Some(name) => Codec::from_name(name).unwrap_or_else(|| {
                 errors.push(FieldError::new(
                     "codec",
-                    format!("unknown codec '{name}' (this version has lz4)"),
+                    format!("unknown codec '{name}' (this version has lz4 and dedup)"),
                 ));
                 Codec::Lz4
             }),
@@ -741,6 +764,63 @@ mod tests {
             ["general"]
         );
         assert_eq!(fields(json!("cv")), ["general"]);
+    }
+
+    #[test]
+    fn a_dedup_rule_is_defined_listed_and_estimated() {
+        let mut s = Session::new();
+        let out = s.execute(
+            r#"for i in 0..12 { g.add_v("symbol").property("path", "crates/graphersal/src/graph/file_" + (i % 3) + ".rs").to_list(); }"#,
+            &crate::RunOptions::default(),
+        );
+        assert!(out.contains("\"ok\":true"), "{out}");
+        // Both codecs side by side, one request; dedup wins for three repeated paths.
+        let answer = s.estimate_compression(&json!({
+            "label": "symbol", "path": "path", "codec": ["lz4", "dedup"]
+        }));
+        assert_eq!(answer["ok"], true, "{answer}");
+        let candidates = answer["estimate"]["candidates"].as_array().unwrap().clone();
+        assert_eq!(candidates.len(), 14, "{answer}");
+        let best = &candidates[answer["estimate"]["best"].as_u64().unwrap() as usize];
+        assert_eq!(best["codec"], "dedup", "{answer}");
+        assert_eq!(best["distinctValues"], 3);
+        // The rule holds what the estimate said.
+        let defined = s.define_compression(&json!({
+            "name": "path", "label": "symbol", "path": "path", "codec": "dedup",
+            "minBytes": best["minBytes"]
+        }));
+        assert_eq!(defined["ok"], true, "{defined}");
+        assert_eq!(defined["rule"]["codec"], "dedup");
+        assert_eq!(defined["rule"]["dictionary"], false);
+        for key in [
+            "compressedValues",
+            "plainBytes",
+            "storedBytes",
+            "distinctValues",
+        ] {
+            assert_eq!(defined["rule"]["stats"][key], best[key], "{key}");
+        }
+        // A dictionary does not go with dedup: a field error on dictionary, with help.
+        let refused = s.define_compression(&json!({
+            "name": "other", "label": "symbol", "path": "doc", "codec": "dedup", "dictionary": true
+        }));
+        assert_eq!(refused["errors"][0]["field"], "dictionary", "{refused}");
+        assert!(
+            refused["errors"][0]["help"]
+                .as_str()
+                .unwrap()
+                .contains("dedup")
+        );
+        let refused = s.estimate_compression(&json!({
+            "label": "symbol", "path": "path", "codec": ["dedup", 3]
+        }));
+        assert_eq!(refused["errors"][0]["field"], "codec", "{refused}");
+        // The reads stay plain.
+        let out = s.execute(
+            r#"g.v().has_label("symbol").values("path").dedup().count()"#,
+            &crate::RunOptions::default(),
+        );
+        assert!(out.contains("3"), "{out}");
     }
 
     /// The modern graph twice: as a `TraversalGraph` and wrapped in the `Forwarding` storage

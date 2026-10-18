@@ -69,6 +69,9 @@ impl ElementProperty {
         if let ElementProperty::Compressed(text) = self {
             return ElementProperty::String(text.text()).cast(target);
         }
+        if let ElementProperty::Deduped(text) = self {
+            return ElementProperty::String(text.as_str().into()).cast(target);
+        }
 
         match target {
             ValueType::Null => self.cast_failure(target),

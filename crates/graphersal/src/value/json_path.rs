@@ -552,7 +552,9 @@ use crate::value::PropertyMap;
 fn value_kind(value: &ElementProperty) -> &'static str {
     match value {
         ElementProperty::Null => "null",
-        ElementProperty::String(_) | ElementProperty::Compressed(_) => "string",
+        ElementProperty::String(_)
+        | ElementProperty::Compressed(_)
+        | ElementProperty::Deduped(_) => "string",
         ElementProperty::Number(_) => "number",
         ElementProperty::Boolean(_) => "boolean",
         ElementProperty::Uuid(_) => "uuid",

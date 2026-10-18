@@ -19,6 +19,11 @@ g.compressions()                                                         // the 
 g.memory_usage()                                                         // compressed_values, ...
 ```
 
+Long values that **repeat** across many elements (file paths, URLs, addresses, category or status
+texts) are a different case: a rule with `codec: "dedup"`
+[stores each distinct value once](#deduplicating-repeated-values) and lets every element point to
+it.
+
 Not sure a rule pays off, or which `min_bytes` to take? [Estimate it first](#estimating-the-gain):
 `g.estimate_compression(#{label: "customer", path: "bio"})` measures the candidate rules on the
 current data without changing anything.
@@ -58,9 +63,9 @@ has:
 | `element` | `"vertex"` or `"edge"` | `"vertex"` |
 | `label` | the label the rule applies to (it need not exist yet) | required |
 | `path` | a property name or a jpath of names: `"cv"`, `"details.career.cv"`, `jpath("$['a b'].c")`; no index (`[0]`, `[-1]`): arrays are not compressed in this version | required |
-| `codec` | `"lz4"` (the only codec of this version) | `"lz4"` |
-| `min_bytes` | strings shorter than this (UTF-8 bytes) stay plain; 1 to 16 MiB | 256 |
-| `dictionary` | build a dictionary from the rule's values | `true` |
+| `codec` | `"lz4"` (compress each value) or `"dedup"` ([store each distinct value once](#deduplicating-repeated-values)) | `"lz4"` |
+| `min_bytes` | strings shorter than this (UTF-8 bytes) stay plain; 1 to 16 MiB | 256 (`lz4`), 25 (`dedup`) |
+| `dictionary` | build a dictionary from the rule's values (`lz4` only; `true` with `dedup` is refused) | `true` (`lz4`), `false` (`dedup`) |
 
 - **Any number of rules**: several paths on one label, the same path on different labels, vertex
   and edge labels. One rule per element kind, label and path: a second one is refused
@@ -89,6 +94,49 @@ written before a dictionary exists (a rule on an empty label) is compressed with
 next `recompress` or load. Every compressed value carries its dictionary, so it stays readable when
 the rule changes.
 
+## Deduplicating repeated values
+
+A rule with `codec: "dedup"` keeps **one copy of every distinct value** at its path in a table of
+the rule, and every element whose value is that text keeps only a reference to it. Reads stay plain
+and cost nothing extra (the text is read in place, nothing is decompressed); query results, change
+sets, exports and files never change, and the files keep their format (plain values; a load shares
+them again).
+
+```rhai
+// Every `symbol` vertex's `path` (a few hundred distinct file paths over 100,000 symbols).
+g.define_compression(#{name: "symbol_path", label: "symbol", path: "path", codec: "dedup"});
+g.compressions()[0]          // compressed_values (the shared values), distinct_values, ...
+```
+
+**When it pays**: long values repeated across many elements, such as file paths, URLs, addresses,
+category, status or type texts. Measured on a code knowledge graph: the `path` of its symbols took
+1.17 MB of heap for 816 distinct values, about 40 KB deduplicated.
+
+**When it does not**:
+
+- **Short values.** A string of at most 24 bytes (on 64-bit targets) is stored **inline** in the
+  property slot and owns no heap: there is nothing to share, so a dedup rule never shares it,
+  whatever its `min_bytes` (`repo`, `kind`, `origin`, short codes and names). The default
+  `min_bytes` of a dedup rule is therefore 25.
+- **Mostly distinct values.** Every distinct value costs its bytes plus 32 bytes (the reference
+  counts of its shared copy and its slot in the table), so a path whose values rarely repeat (ids,
+  descriptions, CVs) costs more than it saves. The estimate warns with `high_cardinality`; for long
+  unique text use `lz4`.
+
+The rule's numbers: `compressed_values` counts the shared values (one per element), `distinct_values`
+the distinct texts among them, `plain_bytes` their plain size and `stored_bytes` each distinct text
+once plus 32 bytes for it; a reference itself costs nothing beyond the property slot a plain string
+occupies too. `saved_bytes` of an estimate is `plain_bytes - stored_bytes`.
+
+A text no element references any more (it was overwritten, its element dropped) leaves the table
+lazily: when the table has doubled since its last sweep, after a rolled-back transaction, on
+`g.recompress(name)` and on a load, so a table holds at most about twice its live values.
+`g.memory_usage()` reports `deduped_values`, `deduped_plain_bytes` and `dedup_table_bytes` (every
+shared text once, part of `property_bytes`).
+
+`lz4` and `dedup` are one rule per element kind, label and path: redefining the rule with the other
+codec re-encodes its values in the same commit.
+
 ## Estimating the gain
 
 Before defining a rule, an **estimate** measures what rules for one element kind, label and path
@@ -105,20 +153,24 @@ e.candidates[e.best]          // the candidate that saves the most
 // Only some candidates: each key given narrows the set.
 g.estimate_compression(#{label: "customer", path: "details.career.cv", min_bytes: 512});
 g.estimate_compression(#{element: "edge", label: "bought", path: "notes", dictionary: false});
+// Deduplication, alone or side by side with lz4.
+g.estimate_compression(#{label: "symbol", path: "path", codec: "dedup"});
+g.estimate_compression(#{label: "symbol", path: "path", codec: ["lz4", "dedup"]});
 ```
 
 Without `codec`, `min_bytes` and `dictionary` the **candidates** are `lz4` without and with a
 dictionary at `min_bytes` 64, 128, 256, 512 and 1024, plus the parameters of the rule that covers
-the path today (if any). The answer:
+the path today (if any, a dedup rule too). `codec: "dedup"` measures dedup at `min_bytes` 25, 64,
+128 and 256; a list of codecs measures each codec's candidates. The answer:
 
 | Key | Meaning |
 |---|---|
 | `elements`, `values_found`, `string_values`, `string_bytes` | the elements carrying the label, how many have a value at the path, how many of those are strings, and their size |
 | `histogram` | the strings by size (`min_bytes`, `max_bytes`, `values`, `bytes`; buckets from 64 B to 16 KiB), to choose `min_bytes` |
-| `candidates` | per candidate: `codec`, `min_bytes`, `dictionary`, `compressed_values` (the strings it would compress), `plain_bytes`, `stored_bytes`, `dictionary_bytes`, `saved_bytes` (= plain - stored - dictionary; negative: the rule costs memory), `ratio`, `current` (the parameters of today's rule), `encode_bytes_per_sec` and `decode_bytes_per_sec` (the speed measured on this data: a read of a compressed value pays the decode) |
+| `candidates` | per candidate: `codec`, `min_bytes`, `dictionary`, `compressed_values` (the strings it would compress or share), `plain_bytes`, `stored_bytes`, `dictionary_bytes`, `distinct_values` (dedup: the distinct texts among them), `saved_bytes` (= plain - stored - dictionary; negative: the rule costs memory), `ratio`, `current` (the parameters of today's rule), `encode_bytes_per_sec` and `decode_bytes_per_sec` (the speed measured on this data: a read of a compressed value pays the decode; `()` for dedup, whose reads cost nothing extra) |
 | `best` | the index of the candidate that saves the most, `()` when none saves anything |
 | `current` | today's rule on that path (name, parameters and what it holds now), the baseline |
-| `warnings` | `unknown_label` (no element has the label: a typo?), `no_values` (nothing at the path), `not_strings` (values a rule never compresses), `nothing_qualifies`, `no_saving` |
+| `warnings` | `unknown_label` (no element has the label: a typo?), `no_values` (nothing at the path), `not_strings` (values a rule never compresses), `nothing_qualifies`, `no_saving`, `high_cardinality` (dedup would share values but saves nothing: they are mostly distinct) |
 | `sampled`, `measured_values` | whether the candidates were measured on a sample (below) |
 
 **The estimate is the rule.** The trial dictionary is built by the same code as a defined rule's
@@ -130,17 +182,19 @@ the plain and the compressed size of the values and the dictionary, not the per-
 **Bounded.** The estimate compresses at most 100,000 strings and 16 MiB of plain text per
 dictionary setting. Above either cap it compresses a deterministic sample (every k-th string in id
 order), says `sampled: true`, and extrapolates each candidate from the exact count and size of the
-strings that reach its threshold; the counts and the histogram stay exact. A running estimate stops
+strings that reach its threshold; the counts and the histogram stay exact, and so do the dedup
+candidates (they need no trial compression: every string is counted). A running estimate stops
 when the host cancels (the dev server's Stop, a `CancelToken`).
 
 It reads the data of that label, so it asks for `Read` on `Data` of that element kind and label,
 never for a catalog write: `AccessPolicy::read_only()`, the MCP read-only mode and a saved query may
 estimate. A storage without compressed properties answers `Unsupported`.
 
-In the playground, the rule form of **Catalog ▾ ▸ Compression** has an **Estimate** button once
-the label and the path are filled: a table of the candidates with a saving bar each, the best one
-highlighted, the note "the graph was not changed", and **Use** copying a candidate's codec, minimum
-size and dictionary into the form.
+In the playground, the rule form of **Catalog ▾ ▸ Compression** has a **Codec** choice (`lz4` or
+`dedup`; the dictionary is lz4 only) and an **Estimate** button once the label and the path are
+filled: a table of the lz4 and dedup candidates (with the distinct values of each dedup candidate)
+with a saving bar each, the best one highlighted, the note "the graph was not changed", and **Use**
+copying a candidate's codec, minimum size and dictionary into the form.
 
 ## API
 
@@ -148,15 +202,17 @@ size and dictionary into the form.
 |---|---|---|---|---|---|
 | Rhai (both spellings) | `g.define_compression(#{..})` | `g.compressions()` | `g.drop_compression(name)` | `g.recompress(name)` | `g.estimate_compression(#{label, path, element?, codec?, min_bytes?, dictionary?})` |
 | Rust (`GraphTraversalSource`) | `define_compression(name, CompressionDefinition)`, `set_definition(Definition::compression(..))` | `list_definitions(Some(DefinitionKind::COMPRESSION))`, `compression_stats(name)` | `remove_definition(DefinitionKind::COMPRESSION, name)` | `recompress(name)` | `estimate_compression(&CompressionEstimateRequest)` |
-| Python (`Graph`) | `define_compression(name, label, path, element="vertex", min_bytes=256, dictionary=True)` | `compressions()` | `drop_compression(name)` | `recompress(name)` | `estimate_compression(label, path, element="vertex", min_bytes=None, dictionary=None)` |
+| Python (`Graph`) | `define_compression(name, label, path, element="vertex", min_bytes=None, dictionary=None, codec=None)` | `compressions()` | `drop_compression(name)` | `recompress(name)` | `estimate_compression(label, path, element="vertex", min_bytes=None, dictionary=None, codec=None)` |
 | Playground | **Catalog ▾ ▸ Compression**: the rules with their stats, a form with field errors and Estimate | | | | |
 | Dev server | `POST /api/compression/define` | `GET /api/compression` | `POST /api/compression/drop` | `POST /api/compression/recompress` | `POST /api/compression/estimate` |
 | MCP | `define_compression` | `list_compressions` | `drop_compression` | `recompress` | `estimate_compression` (also read-only) |
 
-`g.compressions()` lists each rule with `compressed_values`, `plain_bytes`, `stored_bytes` and
-`dictionary_bytes`. `g.memory_usage()` (and `MemoryStats`) adds `compressed_values`,
-`compressed_plain_bytes`, `compressed_stored_bytes` and `compression_dictionary_bytes`;
-`property_bytes` counts the compressed (stored) size.
+`g.compressions()` lists each rule with `compressed_values`, `plain_bytes`, `stored_bytes`,
+`dictionary_bytes` and `distinct_values` (dedup). `g.memory_usage()` (and `MemoryStats`) adds
+`compressed_values`, `compressed_plain_bytes`, `compressed_stored_bytes` and
+`compression_dictionary_bytes` (lz4), and `deduped_values`, `deduped_plain_bytes` and
+`dedup_table_bytes` (dedup); `property_bytes` counts the compressed (stored) size and every shared
+text once.
 
 ```rust
 use graphersal::prelude::*;
@@ -202,7 +258,9 @@ mode and a saved query (which never writes the catalog) cannot change rules. An 
 snapshot and a Store carry the catalog, so a rule survives every store operation (WAL replay,
 checkpoint, fork, backup, restore, repair, rollback); the files hold plain values, and the load
 compresses again. A version that does not know the kind keeps the rule unchanged and only loses the
-compression (the definition is not critical).
+compression (the definition is not critical). A version that knows the kind but not the codec
+(0.2.0 reading a `dedup` rule written by 0.2.1) cannot decode the rule's payload and reports the
+definition as damage; drop dedup rules before opening a store with an older version.
 
 In the playground, **Catalog ▾ ▸ Compression** lists the rules with their statistics (here 400
 customer biographies, about 1 KiB each) and defines, edits, recompresses and drops them:

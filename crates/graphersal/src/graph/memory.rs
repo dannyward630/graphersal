@@ -60,6 +60,8 @@ pub struct MemoryStats {
     /// key and every stored [`crate::ElementProperty`]'s own owned heap data, walked recursively
     /// via [`crate::ElementProperty::estimated_heap_bytes`] (nested objects the same way).
     ///
+    /// The shared texts of the `dedup` rules are included once ([`Self::dedup_table_bytes`]).
+    ///
     /// **This is the O(n) part of `memory_usage()`** — it visits every vertex, every edge, and
     /// every property. Expected cost is roughly proportional to `vertex_count + edge_count` times
     /// the average property count per element; see the benchmark in `benches/graph.rs` for a
@@ -78,6 +80,20 @@ pub struct MemoryStats {
     /// The entries of the property indexes (book page "Property Indexes"), an estimate; part
     /// of [`Self::total_bytes`]. Not part of [`Self::index_bytes`] (the id and label indexes).
     pub property_index_bytes: u64,
+    /// Strings shared through the tables of `dedup` compression rules (book page "Compressed
+    /// Properties", section "Deduplicating repeated values"): the references, one per stored
+    /// value. A reference owns no heap; the shared text is counted once, in
+    /// [`Self::dedup_table_bytes`].
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub deduped_values: u64,
+    /// The plain size of the shared strings (every reference with its text's length), in bytes.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub deduped_plain_bytes: u64,
+    /// The tables of the `dedup` rules, in bytes: every shared text once (its bytes and the
+    /// reference counts of its allocation, also an entry not swept yet) plus the tables' slots.
+    /// Part of [`Self::property_bytes`].
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub dedup_table_bytes: u64,
 }
 
 impl MemoryStats {
@@ -167,6 +183,9 @@ pub(crate) fn compute(graph: &super::TraversalGraph) -> MemoryStats {
     structure_bytes += graph.node_generations.heap_bytes() + graph.edge_generations.heap_bytes();
 
     let index_bytes = graph.index.estimated_heap_bytes();
+    // The shared texts: once, in their tables (a reference counts 0 in the walk above).
+    let dedup_table_bytes = graph.compression.dedup_table_bytes();
+    property_bytes += dedup_table_bytes;
 
     MemoryStats {
         structure_bytes,
@@ -177,6 +196,9 @@ pub(crate) fn compute(graph: &super::TraversalGraph) -> MemoryStats {
         compressed_stored_bytes: compressed.stored,
         compression_dictionary_bytes: graph.compression.dictionary_bytes(),
         property_index_bytes: graph.property_indexes.bytes(),
+        deduped_values: compressed.deduped,
+        deduped_plain_bytes: compressed.deduped_plain,
+        dedup_table_bytes,
     }
 }
 
@@ -186,6 +208,8 @@ struct CompressedCount {
     values: u64,
     plain: u64,
     stored: u64,
+    deduped: u64,
+    deduped_plain: u64,
 }
 
 impl CompressedCount {
@@ -196,6 +220,10 @@ impl CompressedCount {
                 self.values += 1;
                 self.plain += text.plain_len() as u64;
                 self.stored += text.stored_len() as u64;
+            }
+            ElementProperty::Deduped(text) => {
+                self.deduped += 1;
+                self.deduped_plain += text.len() as u64;
             }
             ElementProperty::Object(map) => map.values().for_each(|value| self.add(value)),
             _ => {}

@@ -424,8 +424,13 @@ impl TraversalGraph {
     /// `after_rollback(reason)` to every hook.
     pub(crate) fn rollback_undo_unit(&mut self, mark: UnitMark, reason: &RollbackReason) {
         let notify = self.undo.depth == 1 && self.undo.hooks.is_active() && self.undo.changed;
+        let sweep = self.undo.depth == 1 && self.undo.changed;
         self.undo_to(mark);
         self.undo.close();
+        // The values the unit wrote are gone: a dedup table drops the entries only it holds.
+        if sweep {
+            self.compression.sweep_dedup();
+        }
         if notify {
             self.undo.hooks.after_rollback(reason);
         }
