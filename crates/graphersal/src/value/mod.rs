@@ -611,8 +611,11 @@ impl ElementProperty {
     /// Estimated heap footprint of this value's owned indirect data, in bytes. `0` for every
     /// inline/`Copy` variant (`Null`, `Number`, `Boolean`, `Uuid`); for `String`, only the bytes
     /// actually heap-allocated by `CompactString` (its own inline-vs-heap threshold is respected,
-    /// so a short string correctly contributes `0`); for `Array`/`Object`/`Vertex`/`Edge`, the
-    /// container's own `.capacity()` contribution plus a recursive sum over every element.
+    /// so a short string correctly contributes `0`); for `Array`, the `Vec`'s `.capacity()` times
+    /// the value size; for `Object`/`Map`/`Vertex`/`Edge`, the box, the map's entries and hash
+    /// index sized from its `.capacity()` (`property_map::index_map_heap_bytes`), heap-allocated
+    /// ids and labels, plus a recursive sum over every element. A `Vector` reports its shared
+    /// allocation in every holder; a compressed string its box and stored block.
     ///
     /// This is a `size_of`/`capacity`-based estimate, not a true allocator measurement — see
     /// [`crate::graph::MemoryStats`] and `MemorySource::Estimated` for the accuracy caveat. It is
@@ -629,13 +632,7 @@ impl ElementProperty {
             | ElementProperty::Temporal(_) => 0,
             // The components exactly, plus the `Arc` allocation's header.
             ElementProperty::Vector(vector) => vector.heap_bytes(),
-            ElementProperty::String(value) => {
-                if value.is_heap_allocated() {
-                    value.capacity() as u64
-                } else {
-                    0
-                }
-            }
+            ElementProperty::String(value) => compact_string_heap_bytes(value),
             // The stored (compressed) size; the dictionary is shared and counted per rule.
             ElementProperty::Compressed(text) => text.heap_bytes(),
             ElementProperty::Array(values) => {
@@ -647,19 +644,19 @@ impl ElementProperty {
                         .map(ElementProperty::estimated_heap_bytes)
                         .sum::<u64>()
             }
-            ElementProperty::Object(element) => estimated_element_heap_bytes(element),
-            ElementProperty::Vertex(vertex) => {
-                estimated_element_heap_bytes(vertex.properties())
-                    + vertex
-                        .labels()
-                        .iter()
-                        .map(|label| label.capacity() as u64)
-                        .sum::<u64>()
+            // The box holds the map's inline part; its entries and index are heap of their own.
+            ElementProperty::Object(element) => {
+                std::mem::size_of::<PropertyMap>() as u64 + estimated_element_heap_bytes(element)
             }
-            ElementProperty::Edge(edge) => estimated_element_heap_bytes(edge.properties()),
+            ElementProperty::Vertex(vertex) => {
+                std::mem::size_of::<element_value::VertexValue>() as u64 + vertex.heap_bytes()
+            }
+            ElementProperty::Edge(edge) => {
+                std::mem::size_of::<element_value::EdgeValue>() as u64 + edge.heap_bytes()
+            }
             ElementProperty::Map(map) => {
-                let entry_size = std::mem::size_of::<(ElementProperty, ElementProperty)>() as u64;
-                map.len() as u64 * entry_size
+                std::mem::size_of::<value_map::ValueMap>() as u64
+                    + map.table_heap_bytes()
                     + map
                         .iter()
                         .map(|(k, v)| k.estimated_heap_bytes() + v.estimated_heap_bytes())
@@ -863,21 +860,30 @@ pub(crate) fn logical_element(element: &PropertyMap) -> PropertyMap {
         .collect()
 }
 
-/// Estimated heap footprint of an [`PropertyMap`] (a vertex/edge property map): the map's own
-/// `.capacity()` contribution plus each key's heap bytes (via [`CompactString::is_heap_allocated`])
-/// and each value's [`ElementProperty::estimated_heap_bytes`]. Shared by
-/// [`crate::graph::GraphStorage::memory_usage`]'s `property_bytes` walk and `.profile()`'s
+/// Estimated heap footprint of a [`PropertyMap`] (a vertex/edge property map): the map's own two
+/// allocations, its entries and its hash index, sized from its `.capacity()` by
+/// [`property_map::index_map_heap_bytes`], plus each key's heap bytes (via
+/// [`CompactString::is_heap_allocated`]) and each value's [`ElementProperty::estimated_heap_bytes`].
+/// Shared by [`crate::graph::GraphStorage::memory_usage`]'s `property_bytes` walk and `.profile()`'s
 /// per-step estimation (D1/D3).
 pub(crate) fn estimated_element_heap_bytes(element: &PropertyMap) -> u64 {
-    let entry_size = std::mem::size_of::<(CompactString, ElementProperty)>() as u64;
-    let mut total = element.0.capacity() as u64 * entry_size;
+    let mut total =
+        property_map::index_map_heap_bytes::<CompactString, ElementProperty>(element.0.capacity());
     for (key, value) in element.iter() {
-        if key.is_heap_allocated() {
-            total += key.capacity() as u64;
-        }
+        total += compact_string_heap_bytes(key);
         total += value.estimated_heap_bytes();
     }
     total
+}
+
+/// The heap bytes of a [`CompactString`]: its capacity when it spilled to the heap, `0` when it
+/// is stored inline.
+pub(crate) fn compact_string_heap_bytes(text: &CompactString) -> u64 {
+    if text.is_heap_allocated() {
+        text.capacity() as u64
+    } else {
+        0
+    }
 }
 
 impl fmt::Debug for ElementProperty {

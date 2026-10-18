@@ -64,6 +64,14 @@ impl ValueMap {
         self.entries.is_empty()
     }
 
+    /// The heap bytes of the map's own entries and hash index (not what the keys and values
+    /// own), sized from its capacity like a property map's.
+    pub(crate) fn table_heap_bytes(&self) -> u64 {
+        super::property_map::index_map_heap_bytes::<ElementProperty, ElementProperty>(
+            self.entries.capacity(),
+        )
+    }
+
     /// The value stored under `key`.
     pub fn get(&self, key: &ElementProperty) -> Option<&ElementProperty> {
         self.entries.get(key)

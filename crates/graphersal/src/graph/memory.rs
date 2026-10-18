@@ -49,12 +49,16 @@ pub struct MemoryStats {
     /// built here).
     pub structure_bytes: u64,
     /// The label index (`node_labels`/`edge_labels`) and the ID index (`nodes`/`edges`) in
-    /// `GraphIndex`, via each collection's `.capacity()` — including every label bucket `Vec`,
-    /// not just the outer maps.
+    /// `GraphIndex`, via each collection's `.capacity()` — including every label bucket set,
+    /// not just the outer maps. Each map counts both of its allocations: the entries (cached hash,
+    /// key, value) and the hash index (one `usize` slot and one control byte per bucket).
     pub index_bytes: u64,
     /// Estimated heap footprint of vertex/edge properties: each element's property map's own
-    /// `.capacity()` contribution, plus every stored [`crate::ElementProperty`]'s own owned heap
-    /// data, walked recursively via [`crate::ElementProperty::estimated_heap_bytes`].
+    /// two allocations, sized from its `.capacity()` — the entries (per slot the cached hash, the
+    /// key and the value: 64 bytes on 64-bit targets) and the hash index (per bucket a `usize`
+    /// and a control byte, buckets a power of two at most 7/8 full) — plus each heap-allocated
+    /// key and every stored [`crate::ElementProperty`]'s own owned heap data, walked recursively
+    /// via [`crate::ElementProperty::estimated_heap_bytes`] (nested objects the same way).
     ///
     /// **This is the O(n) part of `memory_usage()`** — it visits every vertex, every edge, and
     /// every property. Expected cost is roughly proportional to `vertex_count + edge_count` times
@@ -127,6 +131,7 @@ impl MemoryStats {
 /// property), while `property_bytes` walks only each element's `PropertyMap`.
 pub(crate) fn compute(graph: &super::TraversalGraph) -> MemoryStats {
     use super::{EdgeData, VertexData};
+    use crate::value::compact_string_heap_bytes as string_heap;
 
     let (node_cap, edge_cap) = graph.graph.capacity();
     let node_slot_size = std::mem::size_of::<petgraph::graph::Node<Option<VertexData>>>() as u64;
@@ -137,16 +142,10 @@ pub(crate) fn compute(graph: &super::TraversalGraph) -> MemoryStats {
     let mut compressed = CompressedCount::default();
 
     for (id, labels, properties, _) in graph.graph.node_weights() {
-        if id.is_heap_allocated() {
-            structure_bytes += id.capacity() as u64;
-        }
+        structure_bytes += string_heap(id);
         structure_bytes +=
             labels.capacity() as u64 * std::mem::size_of::<compact_str::CompactString>() as u64;
-        for label in labels.iter() {
-            if label.is_heap_allocated() {
-                structure_bytes += label.capacity() as u64;
-            }
-        }
+        structure_bytes += labels.iter().map(string_heap).sum::<u64>();
         property_bytes += crate::value::estimated_element_heap_bytes(properties);
         if !graph.compression.is_empty() {
             properties.values().for_each(|value| compressed.add(value));
@@ -154,14 +153,8 @@ pub(crate) fn compute(graph: &super::TraversalGraph) -> MemoryStats {
     }
 
     for (id, edge_label, properties, _) in graph.graph.edge_weights() {
-        if id.is_heap_allocated() {
-            structure_bytes += id.capacity() as u64;
-        }
-        if let Some(label) = edge_label
-            && label.is_heap_allocated()
-        {
-            structure_bytes += label.capacity() as u64;
-        }
+        structure_bytes += string_heap(id);
+        structure_bytes += edge_label.as_ref().map_or(0, string_heap);
         if let Some(properties) = properties {
             property_bytes += crate::value::estimated_element_heap_bytes(properties);
             if !graph.compression.is_empty() {
@@ -210,13 +203,12 @@ impl CompressedCount {
     }
 }
 
-/// The heap bytes of a `CompactString` (zero when it is stored inline).
-fn string_heap(text: &compact_str::CompactString) -> u64 {
-    if text.is_heap_allocated() {
-        text.capacity() as u64
-    } else {
-        0
-    }
+/// What one entry adds to an `IndexMap<K, V>` of the indexes, amortized: its bucket in the
+/// entries (`hash + key + value`) plus its index slot (a `usize` and one control byte). Spare
+/// capacity is not apportioned, so a full walk ([`compute`]) reports somewhat more.
+fn index_entry_bytes<K, V>() -> u64 {
+    use std::mem::size_of;
+    (size_of::<(usize, K, V)>() + size_of::<usize>() + 1) as u64
 }
 
 /// What one vertex adds to [`compute`]'s figure for a freshly loaded graph (its slot, id,
@@ -229,13 +221,17 @@ pub(crate) fn loaded_vertex_bytes(
     labels: &[compact_str::CompactString],
     properties: &crate::value::PropertyMap,
 ) -> u64 {
+    use crate::value::compact_string_heap_bytes;
+    use compact_str::CompactString;
     use std::mem::size_of;
     let slot = size_of::<petgraph::graph::Node<Option<super::VertexData>>>() as u64;
-    let index_entry = size_of::<(compact_str::CompactString, super::VertexHandle)>() as u64;
-    let mut bytes = slot + index_entry + string_heap(id);
+    let mut bytes = slot
+        + index_entry_bytes::<CompactString, super::VertexHandle>()
+        + compact_string_heap_bytes(id);
+    // The label `Vec` slot and the entry in the label's bucket set.
     bytes += labels.len() as u64
-        * (size_of::<compact_str::CompactString>() + size_of::<super::VertexHandle>()) as u64;
-    bytes += labels.iter().map(string_heap).sum::<u64>();
+        * (size_of::<CompactString>() as u64 + index_entry_bytes::<super::VertexHandle, ()>());
+    bytes += labels.iter().map(compact_string_heap_bytes).sum::<u64>();
     bytes + crate::value::estimated_element_heap_bytes(properties)
 }
 
@@ -246,20 +242,20 @@ pub(crate) fn loaded_edge_bytes(
     label: Option<&str>,
     properties: Option<&crate::value::PropertyMap>,
 ) -> u64 {
+    use compact_str::CompactString;
     use std::mem::size_of;
     let slot = size_of::<petgraph::graph::Edge<Option<super::EdgeData>>>() as u64;
-    let index_entry = size_of::<(compact_str::CompactString, super::EdgeHandle)>() as u64;
     let heap = |text: &str| -> u64 {
-        // A `CompactString` keeps up to 24 bytes inline.
-        if text.len() > 24 {
+        // A `CompactString` keeps up to its own size inline (24 bytes on 64-bit targets).
+        if text.len() > size_of::<CompactString>() {
             text.len() as u64
         } else {
             0
         }
     };
-    let mut bytes = slot + index_entry + heap(id);
+    let mut bytes = slot + index_entry_bytes::<CompactString, super::EdgeHandle>() + heap(id);
     if let Some(label) = label {
-        bytes += heap(label) + size_of::<super::EdgeHandle>() as u64;
+        bytes += heap(label) + index_entry_bytes::<super::EdgeHandle, ()>();
     }
     bytes + properties.map_or(0, crate::value::estimated_element_heap_bytes)
 }

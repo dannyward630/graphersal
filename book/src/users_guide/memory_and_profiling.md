@@ -27,7 +27,13 @@ With [property indexes](property_indexes.md) it reports `property_index_bytes`, 
 their entries (part of `total_bytes`; `0` without indexes).
 
 All figures are **estimates**: they sum `std::mem::size_of`/capacity-based arithmetic over the
-structures that back the graph, not a true allocator-level accounting. Two caveats worth knowing:
+structures that back the graph, not a true allocator-level accounting. Every hash map (an
+element's property map, a nested object, the ID and label indexes) counts both of its allocations:
+the entries (per slot a cached hash, the key and the value; 64 bytes for a property on a 64-bit
+target) and the hash index (a pointer-sized slot and a control byte per bucket, at most 7/8 full).
+A vertex with five small properties thus costs about 106 bytes per property, which is what the
+allocator reports for it. Allocator rounding and bookkeeping are not counted. Two caveats worth
+knowing:
 
 - **`structure_bytes` can be a loose bound on a heavily churned graph.** The underlying storage
   never releases a removed vertex/edge's slot immediately (it keeps the slot to preserve other
