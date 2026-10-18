@@ -2853,6 +2853,7 @@ fn mcp_on_a_store_offers_the_graph_tools_only() {
             "list_saved_queries",
             "run_saved_query",
             "list_compressions",
+            "estimate_compression",
             "define_compression",
             "drop_compression",
             "recompress",
