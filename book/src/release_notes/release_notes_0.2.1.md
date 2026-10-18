@@ -83,6 +83,15 @@ with a default, new `#[non_exhaustive]` types).
     is refused, a backup copies it as it is.
   - An unknown interrupted operation (`INTENT`), an unknown `GRAPH` state value and a
     well-formed backup archive entry this version does not know are refused as unsupported.
+  - A block compressed with zstd, read by a build without the `persist-zstd` feature, is
+    reported as unsupported (format spec 2.1), no longer as damage.
   - New error `PersistError::UnsupportedContent` (*written by a newer Graphersal, not damage*);
     `graphersal store verify` lists such content as a `note:`, not as damage.
 
+## Fixed
+
+- **`g.memory_usage()` counts the hash index of every map.** It counted a property map, a nested
+  object, a value map and the id and label indexes by their entries only and missed the hash
+  table beside them, so `property_bytes` and `index_bytes` were 10-20 % low. They now match the
+  bytes the allocator measures (the `large` sample graph: 74.2 MiB before, 92.0 MiB now). Nothing
+  grew: the figure was wrong, not the memory.
